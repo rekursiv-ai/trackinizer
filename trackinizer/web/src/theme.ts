@@ -1,5 +1,11 @@
 import { useSyncExternalStore } from "react";
-import { choosePreferences, type Preferences, preferences, subscribePreferences, usePreferences } from "./preferences";
+import {
+  choosePreferences,
+  type Preferences,
+  preferences,
+  subscribePreferences,
+  usePreferences,
+} from "./preferences";
 
 export type ThemePreference = "dark" | "light" | "system";
 
@@ -36,9 +42,8 @@ export function readTheme(): ThemePreference {
 
 /** Apply a preference without changing the current page or its data. */
 export function applyTheme(choice: ThemePreference): void {
-  const resolved = choice === "system"
-    ? (matchMedia(SYSTEM_DARK).matches ? "dark" : "light")
-    : choice;
+  const resolved =
+    choice === "system" ? (matchMedia(SYSTEM_DARK).matches ? "dark" : "light") : choice;
   document.documentElement.dataset.theme = resolved;
   const meta = document.querySelector('meta[name="theme-color"]');
   meta?.setAttribute("content", resolved === "dark" ? "#090a0b" : "#edf1f5");
@@ -54,7 +59,9 @@ export function applySkin(skin: Skin): void {
 export function chooseTheme(choice: ThemePreference): void {
   applyTheme(choice);
   void choosePreferences({ theme: choice });
-  listeners.forEach((listener) => listener());
+  listeners.forEach((listener) => {
+    listener();
+  });
 }
 
 /** Show a skin at once and keep it in the user's preferences. */
@@ -67,9 +74,14 @@ export function chooseSkin(skin: Skin): void {
  * The theme chosen, and the one shown (`light` or `dark`), kept current
  * wherever it is chosen: Settings and the sidebar's theme button show the same.
  */
-export function useTheme(): { readonly choice: ThemePreference; readonly shown: "light" | "dark" } {
+export function useTheme(): {
+  readonly choice: ThemePreference;
+  readonly shown: "light" | "dark";
+} {
   const choice = usePreferences().theme;
-  const shown = useSyncExternalStore(subscribe, () => (document.documentElement.dataset.theme === "light" ? "light" : "dark"));
+  const shown = useSyncExternalStore(subscribe, () =>
+    document.documentElement.dataset.theme === "light" ? "light" : "dark",
+  );
   return { choice, shown };
 }
 
@@ -78,7 +90,9 @@ export function installTheme(): void {
   const show = () => {
     applyTheme(readTheme());
     applySkin(preferences().skin);
-    listeners.forEach((listener) => listener());
+    listeners.forEach((listener) => {
+      listener();
+    });
   };
   applyTheme(readTheme());
   applySkin(preferences().skin);

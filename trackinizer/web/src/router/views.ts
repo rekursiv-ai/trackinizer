@@ -6,14 +6,38 @@
 import { lazyView } from "./lazy";
 import { parseHash, type Route } from "./route";
 
-export const DetailView = lazyView(() => import("../detail"), (module) => module.DetailView);
-export const ActivityView = lazyView(() => import("../activity"), (module) => module.ActivityView);
-export const ConsoleView = lazyView(() => import("../console"), (module) => module.ConsoleView);
-export const CreateView = lazyView(() => import("../create"), (module) => module.CreateView);
-export const SettingsView = lazyView(() => import("../settings"), (module) => module.SettingsView);
-export const AdminView = lazyView(() => import("../admin"), (module) => module.AdminView);
-export const SearchView = lazyView(() => import("../search"), (module) => module.SearchView);
-export const GraphView = lazyView(() => import("../graph"), (module) => module.GraphView);
+export const DetailView = lazyView(
+  () => import("../detail"),
+  (module) => module.DetailView,
+);
+export const ActivityView = lazyView(
+  () => import("../activity"),
+  (module) => module.ActivityView,
+);
+export const ConsoleView = lazyView(
+  () => import("../console"),
+  (module) => module.ConsoleView,
+);
+export const CreateView = lazyView(
+  () => import("../create"),
+  (module) => module.CreateView,
+);
+export const SettingsView = lazyView(
+  () => import("../settings"),
+  (module) => module.SettingsView,
+);
+export const AdminView = lazyView(
+  () => import("../admin"),
+  (module) => module.AdminView,
+);
+export const SearchView = lazyView(
+  () => import("../search"),
+  (module) => module.SearchView,
+);
+export const GraphView = lazyView(
+  () => import("../graph"),
+  (module) => module.GraphView,
+);
 /**
  * Load the view `hash` opens, so that its chunk downloads beside the boot reads
  * rather than after them. Settles once the chunk has loaded or failed; a load
@@ -27,7 +51,9 @@ export async function preloadView(hash: string): Promise<void> {
   await VIEWS[route.name]?.preload().catch(() => {});
 }
 
-const VIEWS: { readonly [name in Route["name"]]?: { readonly preload: () => Promise<void> } } = {
+const VIEWS: {
+  readonly [name in Route["name"]]?: { readonly preload: () => Promise<void> };
+} = {
   ref: DetailView,
   lookup: DetailView,
   activity: ActivityView,

@@ -16,6 +16,7 @@ import {
   relationOptions,
   switchKind,
 } from "./draft";
+import { must } from "../must";
 
 const NEW = uuid(900);
 const PARENT = { id: uuid(1), kind: "Issue", seq: 1, title: "Parent" } as const;
@@ -34,21 +35,30 @@ function draftOf(kind: Draft["kind"], change: Partial<Draft> = {}): Draft {
 }
 
 /** `relations` of `kind`'s draft, by option key and target. */
-function related(kind: Draft["kind"], picks: readonly [string, Related["target"]][]): Related[] {
+function related(
+  kind: Draft["kind"],
+  picks: readonly [string, Related["target"]][],
+): Related[] {
   const options = relationOptions(kind, META.edges);
-  return picks.map(([key, target]) => ({ option: options.find((option) => option.key === key)!, target }));
+  return picks.map(([key, target]) => ({
+    option: must(options.find((option) => option.key === key)),
+    target,
+  }));
 }
 
 /** Send `draft`'s create against a server that creates `NEW`; returns the id and the one request it made. */
 async function send(draft: Draft) {
   const sent = stubFetch((request) =>
-    Response.json(new URL(request.url).pathname.endsWith("/batch") ? { ids: [NEW] } : { id: NEW }, { status: 201 }),
+    Response.json(
+      new URL(request.url).pathname.endsWith("/batch") ? { ids: [NEW] } : { id: NEW },
+      { status: 201 },
+    ),
   );
   const made = createEdit(draft, formFields(draft.kind, META.fieldOwners));
   if ("error" in made) throw new Error(made.error);
   const id = await made.edit.request.send();
   expect(sent).toHaveLength(1);
-  return { id, request: sent[0]!, touches: made.edit.touches };
+  return { id, request: must(sent[0]), touches: made.edit.touches };
 }
 
 test("an issue with relations its body takes is one create, with those relations in the body", async () => {
@@ -56,7 +66,11 @@ test("an issue with relations its body takes is one create, with those relations
     title: "  Ship   it ",
     description: " Why \n",
     fields: { validation: "It ships" },
-    chips: { ...emptyDraft("Issue").chips, owner: "ada@example.com", labels: ["webui"] },
+    chips: {
+      ...emptyDraft("Issue").chips,
+      owner: "ada@example.com",
+      labels: ["webui"],
+    },
     relations: related("Issue", [
       ["narrows:out", PARENT],
       ["requires:out", BLOCKER],
@@ -108,7 +122,12 @@ test("a belief's evidence goes in its body as citations", async () => {
 
 test("each field is sent as its value type, and an empty one not at all", async () => {
   const paper = draftOf("Paper", {
-    fields: { authors: " Ada Lovelace, , Alan Turing ", publish_date: "2024-07-21", venue: "  ", publication_type: "article" },
+    fields: {
+      authors: " Ada Lovelace, , Alan Turing ",
+      publish_date: "2024-07-21",
+      venue: "  ",
+      publication_type: "article",
+    },
   });
   expect((await send(paper)).request.body).toEqual({
     title: "Ship it",
@@ -122,17 +141,30 @@ test("each field is sent as its value type, and an empty one not at all", async 
     fields: { config: '{"lr": 0.1}', outcome: "Better" },
     relations: related("Experiment", [["field:codechanges", COMMIT]]),
   });
-  expect((await send(experiment)).request.body).toMatchObject({ config: { lr: 0.1 }, outcome: "Better", codechanges: [COMMIT.id] });
+  expect((await send(experiment)).request.body).toMatchObject({
+    config: { lr: 0.1 },
+    outcome: "Better",
+    codechanges: [COMMIT.id],
+  });
 });
 
 test("a relation the body cannot hold makes it one batch: the row, and edges from item 0, as Respond does", async () => {
-  const answer = draftOf("Artifact", { relations: related("Artifact", [["produced_by:out", PARENT]]) });
+  const answer = draftOf("Artifact", {
+    relations: related("Artifact", [["produced_by:out", PARENT]]),
+  });
   const { id, request } = await send(answer);
   expect(id).toBe(NEW);
   const [item] = (request.body as { items: { idempotency_key: string }[] }).items;
   expect(request).toMatchObject({ method: "POST", path: "/api/inquiries/batch" });
   expect(request.body).toEqual({
-    items: [{ kind: "Artifact", title: "Ship it", status: "active", idempotency_key: item!.idempotency_key }],
+    items: [
+      {
+        kind: "Artifact",
+        title: "Ship it",
+        status: "active",
+        idempotency_key: must(item).idempotency_key,
+      },
+    ],
     edges: [{ edge_kind: "produced_by", from_index: 0, to_id: PARENT.id }],
   });
   expect(request.headers["idempotency-key"]).toBeUndefined();
@@ -160,7 +192,10 @@ test("a field that cannot be sent stops the create with its label and why; nothi
 
 test("the form asks for exactly the fields each kind's create body takes, less chips and relations", () => {
   const fields = Object.fromEntries(
-    creatableKinds(META.kinds).map((kind) => [kind, formFields(kind, META.fieldOwners).map((field) => field.name)]),
+    creatableKinds(META.kinds).map((kind) => [
+      kind,
+      formFields(kind, META.fieldOwners).map((field) => field.name),
+    ]),
   );
   expect(fields).toEqual({
     Issue: ["validation"],
@@ -188,10 +223,15 @@ test("the form asks for exactly the fields each kind's create body takes, less c
   for (const kind of creatableKinds(META.kinds)) {
     const model = schemaOf({ $ref: `#/components/schemas/Submit${kind}` });
     const routes = editableFields(kind);
-    for (const name of [...fields[kind]!, ...Object.keys(emptyDraft(kind).chips)]) {
+    for (const name of [
+      ...must(fields[kind]),
+      ...Object.keys(emptyDraft(kind).chips),
+    ]) {
       const property = model.properties?.[name];
       expect(property, `${kind}.${name}`).toBeDefined();
-      expect(jsonType(property!), `${kind}.${name}`).toBe(routes[name]!.value.type);
+      expect(jsonType(must(property)), `${kind}.${name}`).toBe(
+        must(routes[name]).value.type,
+      );
     }
   }
 });
@@ -207,34 +247,64 @@ type Schema = {
 
 function schemaOf(schema: Schema): Schema {
   const schemas: { readonly [name: string]: Schema } = openapi.components.schemas;
-  return schema.$ref ? schemaOf(schemas[schema.$ref.split("/").at(-1)!]!) : schema;
+  return schema.$ref
+    ? schemaOf(must(schemas[must(schema.$ref.split("/").at(-1))]))
+    : schema;
 }
 
 /** The JSON type a value of `schema` has when set: `null` aside, `$ref`s followed. */
 function jsonType(schema: Schema): string | undefined {
   const resolved = schemaOf(schema);
   const set = resolved.anyOf?.map(schemaOf).filter((member) => member.type !== "null");
-  return set?.length === 1 ? jsonType(set[0]!) : resolved.type;
+  return set?.length === 1 ? jsonType(must(set[0])) : resolved.type;
 }
 
 test("a new Belief starts at the old UI's 0.5 confidence, which its create sends unless changed (B8)", async () => {
   expect(emptyDraft("Belief").fields).toEqual({ confidence: "0.5" });
   expect(emptyDraft("Issue").fields).toEqual({});
-  expect((await send(draftOf("Belief"))).request.body).toMatchObject({ judgement: "unproven", confidence: 0.5 });
-  expect(nextDraft(draftOf("Belief", { fields: { confidence: "0.9" } })).fields).toEqual({ confidence: "0.5" });
+  expect((await send(draftOf("Belief"))).request.body).toMatchObject({
+    judgement: "unproven",
+    confidence: 0.5,
+  });
+  expect(
+    nextDraft(draftOf("Belief", { fields: { confidence: "0.9" } })).fields,
+  ).toEqual({ confidence: "0.5" });
 });
 
 test("a new draft's chips are the kind's, at the mock's defaults, with no owner", () => {
-  expect(emptyDraft("Issue").chips).toEqual({ status: "active", priority: 20, issue_kind: ["task"], owner: null, subscribers: [], labels: [] });
-  expect(emptyDraft("Belief").chips).toEqual({ judgement: "unproven", status: "active", owner: null, subscribers: [], labels: [] });
-  expect(Object.keys(emptyDraft("WebSearch").chips)).toEqual(["status", "owner", "subscribers", "labels"]);
+  expect(emptyDraft("Issue").chips).toEqual({
+    status: "active",
+    priority: 20,
+    issue_kind: ["task"],
+    owner: null,
+    subscribers: [],
+    labels: [],
+  });
+  expect(emptyDraft("Belief").chips).toEqual({
+    judgement: "unproven",
+    status: "active",
+    owner: null,
+    subscribers: [],
+    labels: [],
+  });
+  expect(Object.keys(emptyDraft("WebSearch").chips)).toEqual([
+    "status",
+    "owner",
+    "subscribers",
+    "labels",
+  ]);
 });
 
 test("switching kind keeps the text, the shared chips and the relations the new kind can take", () => {
   const issue = draftOf("Issue", {
     description: "Why",
     fields: { validation: "It ships" },
-    chips: { ...emptyDraft("Issue").chips, status: "complete", priority: 5, labels: ["webui"] },
+    chips: {
+      ...emptyDraft("Issue").chips,
+      status: "complete",
+      priority: 5,
+      labels: ["webui"],
+    },
     relations: related("Issue", [
       ["narrows:out", PARENT],
       ["produced_by:out", PAPER],
@@ -253,7 +323,10 @@ test("switching kind keeps the text, the shared chips and the relations the new 
 });
 
 test("the relations offered are the topology's, each read from the new inquiry, then its lists of ids", () => {
-  const options = (kind: Draft["kind"]) => relationOptions(kind, META.edges).map((option) => `${option.label}: ${option.targetKinds.join(" ")}`);
+  const options = (kind: Draft["kind"]) =>
+    relationOptions(kind, META.edges).map(
+      (option) => `${option.label}: ${option.targetKinds.join(" ")}`,
+    );
   expect(options("Experiment")).toEqual([
     "Produced by: Issue Artifact Experiment Paper Belief CodeChange WebResult WebSearch AgentSession",
     "Produces: Issue Artifact Experiment Paper Belief CodeChange WebResult WebSearch AgentSession",
@@ -269,10 +342,23 @@ test("the relations offered are the topology's, each read from the new inquiry, 
 
 test("every kind but AgentSession can be created; New makes the kind on screen when it can", () => {
   const creatable = creatableKinds([...META.kinds, "Ticket"]);
-  expect(creatable).toEqual(["Issue", "Artifact", "Experiment", "Paper", "Belief", "CodeChange", "WebResult", "WebSearch"]);
+  expect(creatable).toEqual([
+    "Issue",
+    "Artifact",
+    "Experiment",
+    "Paper",
+    "Belief",
+    "CodeChange",
+    "WebResult",
+    "WebSearch",
+  ]);
   expect(createKindFor({ name: "list", kind: "Paper" }, creatable)).toBe("Paper");
-  expect(createKindFor({ name: "ref", kind: "Belief", seq: 3 }, creatable)).toBe("Belief");
-  expect(createKindFor({ name: "list", kind: "AgentSession" }, creatable)).toBe("Issue");
+  expect(createKindFor({ name: "ref", kind: "Belief", seq: 3 }, creatable)).toBe(
+    "Belief",
+  );
+  expect(createKindFor({ name: "list", kind: "AgentSession" }, creatable)).toBe(
+    "Issue",
+  );
   expect(createKindFor({ name: "activity" }, creatable)).toBe("Issue");
   expect(formatRoute({ name: "new", kind: "Paper" })).toBe("#/new/Paper");
 });

@@ -16,7 +16,12 @@ export type History = { readonly first: number; readonly now: number };
 export type Span = { readonly start: number; readonly end: number };
 
 /** The bars for a span: `count` buckets of `seconds` each, from `since` (a multiple of the bucket) to `until`. */
-export type Bucketing = { readonly since: number; readonly until: number; readonly seconds: number; readonly count: number };
+export type Bucketing = {
+  readonly since: number;
+  readonly until: number;
+  readonly seconds: number;
+  readonly count: number;
+};
 
 /** A labelled time on the band's axis. */
 export type Tick = { readonly at: number; readonly label: string };
@@ -45,17 +50,29 @@ export function moveTo(view: View, end: number, history: History): View {
  * feed's newest record, say); with none, or one off the band, the right edge
  * stays. A live band zoomed about now stays live.
  */
-export function zoomTo(view: View, zoom: Zoom, history: History, fixed: number | null): View {
+export function zoomTo(
+  view: View,
+  zoom: Zoom,
+  history: History,
+  fixed: number | null,
+): View {
   const span = spanOf(view, history);
   const onBand = fixed !== null && fixed >= span.start && fixed <= span.end;
   const kept = onBand ? fixed : span.end;
-  return moveTo({ zoom, end: view.end }, kept + (1 - fractionOf(span, kept)) * ZOOM_MS[zoom], history);
+  return moveTo(
+    { zoom, end: view.end },
+    kept + (1 - fractionOf(span, kept)) * ZOOM_MS[zoom],
+    history,
+  );
 }
 
 /** The scroll track's span: the history, or the band's span when that is longer. */
 export function trackOf(view: View, history: History): Span {
   const span = spanOf(view, history);
-  return { start: Math.min(history.first, span.start), end: Math.max(history.now, span.end) };
+  return {
+    start: Math.min(history.first, span.start),
+    end: Math.max(history.now, span.end),
+  };
 }
 
 /** The time `fraction` of the way along `span`. */
@@ -69,9 +86,15 @@ export function fractionOf(span: Span, time: number): number {
 }
 
 /** The part of the band `shown` covers, as fractions of it; null when it is off the band or unknown. */
-export function markOf(span: Span, shown: Span | null): { readonly left: number; readonly right: number } | null {
+export function markOf(
+  span: Span,
+  shown: Span | null,
+): { readonly left: number; readonly right: number } | null {
   if (!shown || shown.end < span.start || shown.start > span.end) return null;
-  return { left: Math.max(0, fractionOf(span, shown.start)), right: Math.min(1, fractionOf(span, shown.end)) };
+  return {
+    left: Math.max(0, fractionOf(span, shown.start)),
+    right: Math.min(1, fractionOf(span, shown.end)),
+  };
 }
 
 /**
@@ -83,7 +106,8 @@ export function bucketsFor(span: Span, widthPx: number): Bucketing {
   const bars = Math.min(MAX_BUCKETS - 1, Math.max(2, Math.floor(widthPx / BAR_PX)));
   // One bar fewer than fit, since aligning both ends can add one.
   const least = (span.end - span.start) / (bars - 1) / 1000;
-  const seconds = BUCKET_SECONDS.find((step) => step >= least) ?? Math.ceil(least / DAY_S) * DAY_S;
+  const seconds =
+    BUCKET_SECONDS.find((step) => step >= least) ?? Math.ceil(least / DAY_S) * DAY_S;
   const ms = seconds * 1000;
   const since = Math.floor(span.start / ms) * ms;
   const until = Math.ceil(span.end / ms) * ms;
@@ -101,7 +125,11 @@ export function ticks(span: Span, widthPx: number): Tick[] {
   if (step < DAY_MS) {
     // Local, so ticks fall on the hour in a zone half an hour off UTC too.
     const offset = -new Date(span.start).getTimezoneOffset() * 60_000;
-    for (let time = Math.ceil((span.start + offset) / step) * step - offset; time <= span.end; time += step) {
+    for (
+      let time = Math.ceil((span.start + offset) / step) * step - offset;
+      time <= span.end;
+      time += step
+    ) {
       found.push({ at: time, label: labelOf(time) });
     }
     return found;
@@ -119,7 +147,9 @@ export function ticks(span: Span, widthPx: number): Tick[] {
 /** `HH:MM`, or the date at midnight. */
 function labelOf(time: number): string {
   const local = new Date(time);
-  return local.getHours() || local.getMinutes() ? CLOCK.format(local) : DATE.format(local);
+  return local.getHours() || local.getMinutes()
+    ? CLOCK.format(local)
+    : DATE.format(local);
 }
 
 /** `end` moved to where a band at `zoom` ends no later than now, and starts no earlier than the history when it fits. */
@@ -141,13 +171,22 @@ const BAR_PX = 6;
 const MAX_BUCKETS = 1000;
 
 /** Round bucket lengths, in seconds; past the last, whole days. */
-const BUCKET_SECONDS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10_800, 21_600, 43_200, 86_400];
+const BUCKET_SECONDS = [
+  1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10_800, 21_600, 43_200,
+  86_400,
+];
 
 /** The least room for a tick's label, in px. */
 const TICK_PX = 160;
 
 /** Round tick steps; past the last, whole days. */
-const TICK_MS = [1, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10_080].map((minutes) => minutes * MINUTE_MS);
+const TICK_MS = [1, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10_080].map(
+  (minutes) => minutes * MINUTE_MS,
+);
 
-const CLOCK = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const CLOCK = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
 const DATE = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" });

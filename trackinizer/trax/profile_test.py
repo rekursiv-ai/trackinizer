@@ -33,24 +33,24 @@ def test_current_profile_resolution(
 
 def test_load_profile_reads_current() -> None:
     assert profile.load_profile() == Profile(url="http://127.0.0.1:8765")
-    profile.save_profile("default", Profile(url="http://saved:9000/"))
-    assert profile.load_profile() == Profile(url="http://saved:9000")
+    profile.save_profile("default", Profile(url="https://saved:9000/"))
+    assert profile.load_profile() == Profile(url="https://saved:9000")
     profile.switch_profile("prod")
-    profile.save_profile("prod", Profile(url="http://prod:7000", author="alice"))
-    assert profile.load_profile() == Profile(url="http://prod:7000", author="alice")
+    profile.save_profile("prod", Profile(url="https://prod:7000", author="alice"))
+    assert profile.load_profile() == Profile(url="https://prod:7000", author="alice")
     assert (
         config_dir() / "rekursiv-ai" / "trax" / "current"
     ).read_text().strip() == "prod"
 
 
 def test_profile_file_format_round_trip() -> None:
-    profile.save_profile("prod", Profile(url="http://x:1", author="alice"))
+    profile.save_profile("prod", Profile(url="https://x:1", author="alice"))
     text = (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "prod").read_text()
-    assert text == "url=http://x:1\nauthor=alice\n"
-    profile.save_profile("dev", Profile(url="http://x:2"))
+    assert text == "url=https://x:1\nauthor=alice\n"
+    profile.save_profile("dev", Profile(url="https://x:2"))
     assert (
         config_dir() / "rekursiv-ai" / "trax" / "profiles" / "dev"
-    ).read_text() == "url=http://x:2\n"
+    ).read_text() == "url=https://x:2\n"
 
 
 def test_profile_rejects_url_without_scheme() -> None:
@@ -64,29 +64,29 @@ def test_profile_rejects_url_without_scheme() -> None:
 def test_profile_api_key_round_trip() -> None:
     profile.save_profile(
         "prod",
-        Profile(url="http://x:1", author="alice", api_key="trax_secret_xyz"),
+        Profile(url="https://x:1", author="alice", api_key="trax_secret_xyz"),
     )
     text = (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "prod").read_text()
-    assert text == "url=http://x:1\nauthor=alice\napi_key=trax_secret_xyz\n"
+    assert text == "url=https://x:1\nauthor=alice\napi_key=trax_secret_xyz\n"
     loaded = profile.read_profile("prod")
     assert loaded == Profile(
-        url="http://x:1",
+        url="https://x:1",
         author="alice",
         api_key="trax_secret_xyz",
     )
 
 
 def test_profile_file_is_mode_0600() -> None:
-    profile.save_profile("prod", Profile(url="http://x:1"))
+    profile.save_profile("prod", Profile(url="https://x:1"))
     path = config_dir() / "rekursiv-ai" / "trax" / "profiles" / "prod"
     assert path.stat().st_mode & 0o777 == 0o600
     path.chmod(0o644)
-    profile.save_profile("prod", Profile(url="http://x:1", api_key="trax_topsecret"))
+    profile.save_profile("prod", Profile(url="https://x:1", api_key="trax_topsecret"))
     assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_current_profile_pointer_is_mode_0600() -> None:
-    profile.save_profile("prod", Profile(url="http://x:1"))
+    profile.save_profile("prod", Profile(url="https://x:1"))
     profile.switch_profile("prod")
     path = config_dir() / "rekursiv-ai" / "trax" / "current"
     assert path.read_text() == "prod\n"
@@ -95,15 +95,15 @@ def test_current_profile_pointer_is_mode_0600() -> None:
 
 def test_list_and_del_profiles() -> None:
     assert profile.list_profiles() == []
-    profile.save_profile("dev", Profile(url="http://dev:1"))
-    profile.save_profile("prod", Profile(url="http://prod:2", author="bob"))
+    profile.save_profile("dev", Profile(url="https://dev:1"))
+    profile.save_profile("prod", Profile(url="https://prod:2", author="bob"))
     assert profile.list_profiles() == [
-        ("dev", Profile(url="http://dev:1")),
-        ("prod", Profile(url="http://prod:2", author="bob")),
+        ("dev", Profile(url="https://dev:1")),
+        ("prod", Profile(url="https://prod:2", author="bob")),
     ]
     assert profile.del_profile("dev") is True
     assert profile.list_profiles() == [
-        ("prod", Profile(url="http://prod:2", author="bob")),
+        ("prod", Profile(url="https://prod:2", author="bob")),
     ]
     assert profile.del_profile("dev") is False
 
@@ -123,7 +123,7 @@ def test_load_profile_raises_when_env_points_to_missing(
 
 
 def test_del_active_profile_refused() -> None:
-    profile.save_profile("prod", Profile(url="http://prod:1"))
+    profile.save_profile("prod", Profile(url="https://prod:1"))
     profile.switch_profile("prod")
     with pytest.raises(ClientError, match="cannot delete active profile"):
         profile.del_profile("prod")
@@ -132,11 +132,11 @@ def test_del_active_profile_refused() -> None:
 
 def test_read_profile_ignores_comments_and_blank_lines() -> None:
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
-        "# comment\n\nurl=http://x.example\n",
+        "# comment\n\nurl=https://x.example\n",
         encoding="utf-8",
     )
     p = profile.read_profile("alpha")
-    assert p.url == "http://x.example"
+    assert p.url == "https://x.example"
 
 
 def test_read_profile_of_an_unsaved_name_raises() -> None:
@@ -156,7 +156,7 @@ def test_read_profile_missing_url_raises() -> None:
 def test_iter_profiles_skips_non_files() -> None:
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "subdir").mkdir()
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
-        "url=http://x.example\n",
+        "url=https://x.example\n",
     )
     names = [n for n, _ in profile.list_profiles()]
     assert "subdir" not in names
@@ -165,7 +165,7 @@ def test_iter_profiles_skips_non_files() -> None:
 
 def test_iter_profiles_silently_drops_unreadable() -> None:
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
-        "url=http://x.example\n",
+        "url=https://x.example\n",
     )
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "broken").write_text(
         "not-a-profile\n",
@@ -185,7 +185,7 @@ def test_profile_name_rejects_path_traversal(bad: str) -> None:
     must reject it before any filesystem access.
     """
     with pytest.raises(ClientError, match="invalid profile name"):
-        profile.save_profile(bad, Profile(url="http://x.example"))
+        profile.save_profile(bad, Profile(url="https://x.example"))
     with pytest.raises(ClientError, match="invalid profile name"):
         profile.read_profile(bad)
     with pytest.raises(ClientError, match="invalid profile name"):
@@ -346,7 +346,7 @@ def test_a_usable_profile_is_a_pinned_one_or_a_saved_default(
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
     assert not profile.has_usable_profile()
 
-    profile.save_profile("work", Profile(url="http://work:9000"))
+    profile.save_profile("work", Profile(url="https://work:9000"))
     assert not profile.has_usable_profile()
 
     profile.switch_profile("work")
@@ -356,7 +356,7 @@ def test_a_usable_profile_is_a_pinned_one_or_a_saved_default(
 def test_a_saved_default_profile_is_usable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
 
-    profile.save_profile("default", Profile(url="http://work:9000"))
+    profile.save_profile("default", Profile(url="https://work:9000"))
 
     assert profile.has_usable_profile()
 
@@ -378,11 +378,11 @@ def test_a_profile_name_that_could_leave_the_directory_is_refused(name: str) -> 
 def test_profile_repr_and_str_hold_no_key_text() -> None:
     """A traceback or log line that shows a ``Profile`` must not print its key."""
     key = "tok-SENTINEL-7b41d9"
-    shown = Profile(url="http://prod:9000", author="alice", api_key=key)
+    shown = Profile(url="https://prod:9000", author="alice", api_key=key)
 
     assert key not in repr(shown)
     assert key not in str(shown)
-    assert shown != Profile(url="http://prod:9000", author="alice", api_key="other")
+    assert shown != Profile(url="https://prod:9000", author="alice", api_key="other")
 
 
 def test_read_missing_profile_names_it_and_preserves_the_cause() -> None:

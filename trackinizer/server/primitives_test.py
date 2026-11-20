@@ -19,7 +19,6 @@ from trackinizer.server.primitives import (
     insert_inquiry,
     lookup_kind,
     lookup_kinds,
-    upsert_embedding,
     validate_edge_priority,
     validate_edge_valence,
     validate_list_references,
@@ -130,22 +129,6 @@ class TestInsertInquiryGuards:
             for column in sql.partition("(")[2].partition(")")[0].split(",")
         ]
         assert call.args[1 + columns.index("description")] is None
-
-
-class TestEmbeddings:
-    @pytest.mark.asyncio
-    async def test_an_embedding_is_upserted_as_pgvector_text(self) -> None:
-        conn = make_conn()
-        inquiry = new_uuid()
-
-        await upsert_embedding(cast(Conn, conn), inquiry, "stub", [0.5, 1.0])
-
-        call = conn.execute.call_args
-        assert call is not None
-        sql, *args = call.args
-        assert isinstance(sql, str)
-        assert "ON CONFLICT (inquiry_id, model) DO UPDATE" in sql
-        assert args == [inquiry, "stub", "[0.5,1.0]"]
 
 
 class TestPureFunctions:

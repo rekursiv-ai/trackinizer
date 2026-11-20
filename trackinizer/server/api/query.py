@@ -24,7 +24,6 @@ from pydantic import TypeAdapter
 from treekle import from_plain, json_loads
 
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import get_store, tag_kind, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import (
@@ -36,14 +35,16 @@ from trackinizer.server.api.locks import require_writable
 from trackinizer.server.api.session_access import (
     require_row_purge,
     require_row_write,
+)
+from trackinizer.server.api.session_identity import (
+    hidden_session,
+    request_principal,
     session_reader,
 )
-from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
-from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.columns import (
     flat_column_specs,
@@ -52,6 +53,7 @@ from trackinizer.types.columns import (
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import (
     KIND_TO_CLASS,
+    AgentSession,
     Inquiry,
 )
 from trackinizer.wire.bodies import ClaimNextIssue, FieldMutation
@@ -499,24 +501,9 @@ async def by_seq_route(
     """
     store = get_store(request)
     principal = await request_principal(request, identity)
-    params: list[object] = [kind, seq]
-    predicate = inquiry_read_filter(
-        "inquiries.id",
-        policy=store.access_policy,
-        principal=principal,
-        params=params,
-    )
-    async with store.engine.acquire() as conn:
-        row = await conn.fetchrow(
-            vetted_sql(
-                "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2",
-                "" if predicate == "TRUE" else f" AND ({predicate})",
-            ),
-            *params,
-        )
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"{kind}#{seq} not found")
-        target_id = cast(uuid.UUID, row["id"])
+    target_id = await store.inquiry_id(kind, seq, principal=principal)
+    if target_id is None:
+        raise HTTPException(status_code=404, detail=f"{kind}#{seq} not found")
     return _require_found(
         tag_kind(await store.get_inquiry(target_id, principal=principal)),
     )
@@ -539,14 +526,17 @@ async def get_inquiry_route(
       inquiry: Full tagged row; a missing or denied row raises 404.
 
     """
-    return _require_found(
-        tag_kind(
-            await get_store(request).get_inquiry(
-                target_id,
-                principal=await request_principal(request, identity),
-            ),
-        ),
+    store = get_store(request)
+    row = await store.get_inquiry(
+        target_id,
+        principal=await request_principal(request, identity),
     )
+    if identity.process is not None and (
+        not isinstance(row, AgentSession)
+        or row.account.lower() != identity.email.lower()
+    ):
+        raise hidden_session(None)
+    return _require_found(tag_kind(row))
 
 
 # -- Inquiry delete ---------------------------------------------------------

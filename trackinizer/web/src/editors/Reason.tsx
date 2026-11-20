@@ -112,7 +112,10 @@ export function ReasonDialog({
             <div className="modal-f">
               <div className="spacer" />
               <Dialog.Close className="btn ghost">Cancel</Dialog.Close>
-              <button type="submit" className={ask.danger ? "btn danger" : "btn primary"}>
+              <button
+                type="submit"
+                className={ask.danger ? "btn danger" : "btn primary"}
+              >
                 {ask.confirm} <kbd>{keyCaps("$mod+Enter")[0]}</kbd>
               </button>
             </div>

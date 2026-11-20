@@ -88,7 +88,7 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
     )
     assert await store.get_inquiry(session_id) is not None
 
-    written, _skipped, _slash = await store.append_session_records(
+    written, _skipped = await store.append_session_records(
         session_id,
         [
             SessionRecordRow.of(

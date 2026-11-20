@@ -16,7 +16,15 @@ export const PEEK: PanelSpec = { id: "peek", name: "Peek", side: "right", keys: 
  * the close button takes its place, and the detail stays mounted, hidden, so an
  * edit begun in it is there on expanding.
  */
-export function Peek({ row, panel, onClose }: { row: { readonly kind: string; readonly seq: number }; panel: Panel; onClose: () => void }) {
+export function Peek({
+  row,
+  panel,
+  onClose,
+}: {
+  row: { readonly kind: string; readonly seq: number };
+  panel: Panel;
+  onClose: () => void;
+}) {
   const ref = { name: "ref", kind: row.kind, seq: row.seq } as const;
   const id = useId();
   // The detail's keys are a page's (its Escape goes back to the list), and being
@@ -24,7 +32,12 @@ export function Peek({ row, panel, onClose }: { row: { readonly kind: string; re
   // A registry of its own, bound to no keys, keeps the peek from acting as a page.
   const [detailCommands] = useState(() => new CommandRegistry());
   const close = (
-    <button type="button" className="icon-btn" onClick={onClose} aria-label="Close peek">
+    <button
+      type="button"
+      className="icon-btn"
+      onClick={onClose}
+      aria-label="Close peek"
+    >
       <Icon name="x" />
     </button>
   );
@@ -42,7 +55,12 @@ export function Peek({ row, panel, onClose }: { row: { readonly kind: string; re
       {/* Collapsed, the strip takes its id; it drops `.peek`, whose display: flex
           would show it and whose rules (graph.css, live.css) place an open Peek;
           and its bar goes, as two toggles would share the one `Panel.button`. */}
-      <aside id={collapsed ? undefined : id} className={collapsed ? undefined : "peek"} aria-label="Peek" hidden={collapsed}>
+      <aside
+        id={collapsed ? undefined : id}
+        className={collapsed ? undefined : "peek"}
+        aria-label="Peek"
+        hidden={collapsed}
+      >
         {collapsed ? null : (
           <div className="peek-bar">
             <span className="mono">

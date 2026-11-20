@@ -1,7 +1,14 @@
-import { type ReactNode, type RefObject, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useLayoutEffect,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import { type Command, keyCaps } from "../commands/registry";
 import { Icon } from "./icons";
 import "./panel.css";
+import { must } from "../must";
 
 /** A side panel that collapses, as its view declares it. */
 export type PanelSpec = {
@@ -45,16 +52,32 @@ export function usePanel(spec: PanelSpec): Panel {
     // Whatever changes it, its button or its key alike: what the button controls
     // (the panel, or the strip in its place) hides or goes, and a focus in it
     // would be left there, or on the page.
-    const region = document.getElementById(button.current?.getAttribute("aria-controls") ?? "");
-    refocus.current = next !== now() && (region?.contains(document.activeElement) ?? false);
+    const region = document.getElementById(
+      button.current?.getAttribute("aria-controls") ?? "",
+    );
+    refocus.current =
+      next !== now() && (region?.contains(document.activeElement) ?? false);
     keep(key, next);
   };
-  return { ...spec, collapsed, button, refocus, setCollapsed, toggle: () => setCollapsed(!now()) };
+  return {
+    ...spec,
+    collapsed,
+    button,
+    refocus,
+    setCollapsed,
+    toggle: () => setCollapsed(!now()),
+  };
 }
 
 /** The command that collapses or expands `panel`, under its keys and the palette's Panels, for its view to mount while it shows. */
 export function panelCommand(panel: Panel): Command {
-  return { id: `panel.${panel.id}`, title: action(panel), keys: panel.keys, section: "Panels", run: panel.toggle };
+  return {
+    id: `panel.${panel.id}`,
+    title: action(panel),
+    keys: panel.keys,
+    section: "Panels",
+    run: panel.toggle,
+  };
 }
 
 /**
@@ -105,7 +128,11 @@ export function PanelStrip({
   children?: ReactNode;
 }) {
   return (
-    <aside id={id} aria-label={label} className={`panel-strip is-${panel.side} ${className}`.trim()}>
+    <aside
+      id={id}
+      aria-label={label}
+      className={`panel-strip is-${panel.side} ${className}`.trim()}
+    >
       <PanelToggle panel={panel} controls={id} />
       {children}
     </aside>
@@ -118,7 +145,7 @@ function action(panel: Panel): string {
 
 /** Whether the panel under `key` was left collapsed; null when nothing this build can read was kept. */
 function kept(key: string): boolean | null {
-  if (unsaved.has(key)) return unsaved.get(key)!;
+  if (unsaved.has(key)) return must(unsaved.get(key));
   try {
     const saved: unknown = JSON.parse(sessionStorage.getItem(key) ?? "null");
     return typeof saved === "boolean" ? saved : null;

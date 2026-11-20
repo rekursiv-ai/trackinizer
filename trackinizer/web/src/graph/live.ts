@@ -14,7 +14,8 @@ import type { Batch, Failure, Later } from "../live/serial";
 export function graphQuery(limit: number) {
   return queryOptions({
     queryKey: ["graph", limit],
-    queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => getGraph(limit, { signal })),
+    queryFn: ({ queryKey, signal }) =>
+      prefetched(queryKey, () => getGraph(limit, { signal })),
   });
 }
 
@@ -67,7 +68,10 @@ export function useLiveGraph(limit: number): Failure | null {
     const live = new GraphLive(client, limit);
     // Its read may be the one main.tsx started before the stream opened.
     const readAt = takeReadAt(([scope, read]) => scope === "graph" && read === limit);
-    const registration = hub.register({ update: (batch) => live.update(batch), failing: setFailure }, { readAt });
+    const registration = hub.register(
+      { update: (batch) => live.update(batch), failing: setFailure },
+      { readAt },
+    );
     return () => {
       registration.dispose();
       setFailure(null);

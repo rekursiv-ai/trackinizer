@@ -20,22 +20,32 @@ reference:
   limits:
     max_request_tokens: 1_000_000
     max_response_tokens: 128_000
-    max_request_bytes: 33_554_432
+    max_request_bytes: 134_217_728
     max_image_edge_px: 2_576
     max_image_bytes: 7_500_000
     truncates_at_context: true
+  # Claude 5.5 and Fable/Mythos models reject ``thinking: disabled``; see the
+  # ``thinking_off`` profile for those that take it.
   thinking:
     effort: [low, medium, high, xhigh, max]
-    budget: [none, auto]
+    budget: [auto]
     output: [none, text, redacted]
 
 profiles:
+  # ``disabled`` is taken at any effort, but Opus 5 and Haiku 5.5 take it only
+  # at ``high`` or below (``thinking_off_max_effort``); above, it is a 400.
+  thinking_off:
+    thinking:
+      effort: [low, medium, high, xhigh, max]
+      budget: [none, auto]
+      output: [none, text, redacted]
+
   extended:
     approx_chars_per_token: 3.12
     limits:
       max_request_tokens: 1_000_000
       max_response_tokens: 128_000
-      max_request_bytes: 33_554_432
+      max_request_bytes: 134_217_728
       max_image_edge_px: 1_568
       max_image_bytes: 7_500_000
       truncates_at_context: true
@@ -50,7 +60,7 @@ profiles:
     limits:
       max_request_tokens: 200_000
       max_response_tokens: 64_000
-      max_request_bytes: 33_554_432
+      max_request_bytes: 134_217_728
       max_image_edge_px: 1_568
       max_image_bytes: 7_500_000
       truncates_at_context: true
@@ -66,7 +76,7 @@ profiles:
     limits:
       max_request_tokens: 200_000
       max_response_tokens: 64_000
-      max_request_bytes: 33_554_432
+      max_request_bytes: 134_217_728
       max_image_edge_px: 1_568
       max_image_bytes: 7_500_000
       truncates_at_context: true
@@ -78,7 +88,8 @@ profiles:
 models:
 - model_id: fable-5.2
   wire_model_id: claude-fable-5-2
-  knowledge_cutoff: June 2026
+  thinking_effort_default: medium
+  knowledge_cutoff: '2026-06'
   prices:
   - service_tier: auto
     request: 8.0
@@ -95,7 +106,7 @@ models:
 
 - model_id: fable-5.1
   wire_model_id: claude-fable-5-1
-  knowledge_cutoff: June 2026
+  knowledge_cutoff: '2026-06'
   prices:
   - service_tier: auto
     request: 10.0
@@ -106,7 +117,7 @@ models:
 
 - model_id: fable-5.0
   wire_model_id: claude-fable-5
-  knowledge_cutoff: January 2026
+  knowledge_cutoff: '2026-01'
   prices:
   - service_tier: auto
     request: 10.0
@@ -115,9 +126,26 @@ models:
     cache_write_1h: 20.0
     cache_read: 1.0
 
+- model_id: mythos-5.2
+  wire_model_id: claude-mythos-5-2
+  knowledge_cutoff: '2026-06'
+  prices:
+  - service_tier: auto
+    request: 8.0
+    response: 40.0
+    cache_write: 10.0
+    cache_write_1h: 16.0
+    cache_read: 0.2
+  - service_tier: priority
+    request: 16.0
+    response: 80.0
+    cache_write: 20.0
+    cache_write_1h: 32.0
+    cache_read: 0.4
+
 - model_id: mythos-5.1
   wire_model_id: claude-mythos-5-1
-  knowledge_cutoff: June 2026
+  knowledge_cutoff: '2026-06'
   prices:
   - service_tier: auto
     request: 10.0
@@ -128,7 +156,7 @@ models:
 
 - model_id: mythos-5.0
   wire_model_id: claude-mythos-5
-  knowledge_cutoff: January 2026
+  knowledge_cutoff: '2026-01'
   prices:
   - service_tier: auto
     request: 10.0
@@ -140,7 +168,7 @@ models:
 - model_id: opus-5.5
   wire_model_id: claude-opus-5-5
   thinking_effort_default: medium
-  knowledge_cutoff: June 2026
+  knowledge_cutoff: '2026-06'
   prices:
   - service_tier: auto
     request: 4.0
@@ -157,7 +185,9 @@ models:
 
 - model_id: opus-5.0
   wire_model_id: claude-opus-5
-  knowledge_cutoff: May 2026
+  profile: thinking_off
+  thinking_off_max_effort: high
+  knowledge_cutoff: '2026-05'
   prices:
   - service_tier: auto
     request: 5.0
@@ -174,7 +204,8 @@ models:
 
 - model_id: opus-4.8
   wire_model_id: claude-opus-4-8
-  knowledge_cutoff: January 2026
+  profile: thinking_off
+  knowledge_cutoff: '2026-01'
   prices:
   - service_tier: auto
     request: 5.0
@@ -191,8 +222,9 @@ models:
 
 - model_id: opus-4.7
   wire_model_id: claude-opus-4-7
+  profile: thinking_off
   thinking_effort_default: xhigh
-  knowledge_cutoff: January 2026
+  knowledge_cutoff: '2026-01'
   prices:
   - service_tier: auto
     request: 5.0
@@ -204,7 +236,7 @@ models:
 - model_id: opus-4.6
   wire_model_id: claude-opus-4-6
   profile: extended
-  knowledge_cutoff: May 2025
+  knowledge_cutoff: '2025-05'
   prices:
   - service_tier: auto
     request: 5.0
@@ -216,7 +248,7 @@ models:
 - model_id: opus-4.5
   wire_model_id: claude-opus-4-5
   profile: extended_200k
-  knowledge_cutoff: May 2025
+  knowledge_cutoff: '2025-05'
   prices:
   - service_tier: auto
     request: 5.0
@@ -228,7 +260,7 @@ models:
 - model_id: sonnet-5.5
   wire_model_id: claude-sonnet-5-5
   thinking_effort_default: medium
-  knowledge_cutoff: June 2026
+  knowledge_cutoff: '2026-06'
   prices:
   - service_tier: auto
     request: 2.0
@@ -246,7 +278,8 @@ models:
 
 - model_id: sonnet-5.0
   wire_model_id: claude-sonnet-5
-  knowledge_cutoff: January 2026
+  profile: thinking_off
+  knowledge_cutoff: '2026-01'
   prices:
   - service_tier: auto
     request: 2.0
@@ -258,7 +291,7 @@ models:
 - model_id: sonnet-4.6
   wire_model_id: claude-sonnet-4-6
   profile: extended
-  knowledge_cutoff: August 2025
+  knowledge_cutoff: '2025-08'
   prices:
   - service_tier: auto
     request: 3.0
@@ -270,7 +303,7 @@ models:
 - model_id: sonnet-4.5
   wire_model_id: claude-sonnet-4-5
   profile: fixed
-  knowledge_cutoff: January 2025
+  knowledge_cutoff: '2025-01'
   prices:
   - service_tier: auto
     request: 3.0
@@ -281,8 +314,10 @@ models:
 
 - model_id: haiku-5.5
   wire_model_id: claude-haiku-5-5
+  profile: thinking_off
+  thinking_off_max_effort: high
   thinking_effort_default: medium
-  knowledge_cutoff: June 2026
+  knowledge_cutoff: '2026-06'
   prices:
   - service_tier: auto
     request: 0.1
@@ -301,7 +336,7 @@ models:
 - model_id: haiku-4.5
   wire_model_id: claude-haiku-4-5
   profile: fixed
-  knowledge_cutoff: February 2025
+  knowledge_cutoff: '2025-02'
   prices:
   - service_tier: auto
     request: 1.0
@@ -317,10 +352,11 @@ providers:
        cache_ttl_sec, manage_context_server_side]
     cache_ttl_sec: [300.0, 3600.0]
     retries_internally: true
-    models:
+    models: &anthropic_models
       fable-5.2:
       fable-5.1:
       fable-5.0:
+      mythos-5.2:
       mythos-5.1:
       mythos-5.0:
       opus-5.5:
@@ -335,56 +371,19 @@ providers:
       sonnet-4.5:
       haiku-5.5:
       haiku-4.5:
-  # The ``claude`` a person runs, not sagent's anthropic-cli transport below: what
-  # Chat offers a claude chat (``chat_commands.py``) and what Trackinizer prices
-  # its sessions at (``session_usage.py``). Unfenced: trackinizer's export ships
-  # ``session_usage.py`` and this file, so it needs the section; sagent reads none.
-  claude-code:
-    sends: [thinking_effort, thinking_output]
-    manage_context_server_side: [true]
-    thinking:
-      output: [none, text]
-    models:
-      fable-5.2:
-      fable-5.1:
-      fable-5.0:
-      mythos-5.1:
-      mythos-5.0:
-      opus-5.5:
-      opus-5.0:
-      opus-4.8:
-      opus-4.7:
-      opus-4.6:
-      opus-4.5:
-      sonnet-5.5:
-      sonnet-5.0:
-      sonnet-4.6:
-      sonnet-4.5:
-      haiku-5.5:
-      haiku-4.5:
-  anthropic-cli:
-    sends: [thinking_effort, thinking_output]
+  # Claude Code on the subscription, as sagent's anthropic-cli runs it and as
+  # Trackinizer prices a person's sessions (``session_usage.py``).
+  anthropic-cli: &anthropic_cli
+    sends: [thinking_effort, thinking_budget, thinking_output, cache_ttl_sec]
     # ``claude`` holds the conversation; what it compacts or prunes is its own.
     manage_context_server_side: [true]
+    cache_ttl_sec: [300.0, 3600.0]
+    # A subscription bills a cache write as plain input, whatever its lifetime,
+    # so the hour costs no more than five minutes and outlives a long tool call;
+    # unasked, ``claude`` writes it too (2.1.309, 2026-11-16).
+    cache_ttl_sec_default: 3600.0
     # ``--thinking-display summarized`` shows the summary; ``claude`` has no
     # sealed-only display to match the API's redaction.
     thinking:
       output: [none, text]
-    models:
-      fable-5.2:
-      fable-5.1:
-      fable-5.0:
-      mythos-5.1:
-      mythos-5.0:
-      opus-5.5:
-      opus-5.0:
-      opus-4.8:
-      opus-4.7:
-      opus-4.6:
-      opus-4.5:
-      sonnet-5.5:
-      sonnet-5.0:
-      sonnet-4.6:
-      sonnet-4.5:
-      haiku-5.5:
-      haiku-4.5:
+    models: *anthropic_models

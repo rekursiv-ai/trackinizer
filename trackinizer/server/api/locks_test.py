@@ -176,7 +176,7 @@ def test_a_submit_names_the_rows_it_links_but_not_its_own_key() -> None:
     assert referenced_ids(issue) == {_A, _B}
 
 
-def test_a_batch_names_every_item_and_edge_row() -> None:
+def test_a_batch_names_every_item_and_edge_row_but_not_its_chat() -> None:
     batch = SubmitBatch.model_validate(
         {
             "items": [
@@ -188,6 +188,7 @@ def test_a_batch_names_every_item_and_edge_row() -> None:
                 },
             ],
             "edges": [{"from_index": 0, "to_id": str(_B), "edge_kind": "narrows"}],
+            "chat": str(_KEY),
         },
     )
     assert referenced_ids(batch) == {_A, _B}

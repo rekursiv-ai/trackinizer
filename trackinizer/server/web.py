@@ -13,8 +13,12 @@ Adds:
   page, which returns them here.
 - ``GET /static/*`` -- files from ``--static-dir``, to anyone.
 - ``GET /api/web/search`` -- cross-kind ILIKE search over title/description.
+- ``GET /api/web/search_inquiries`` -- inquiry texts and edge notes, by keyword and
+  by vector.
 - ``GET /api/web/recent_changes`` -- the most-recent ``change_log`` rows
   with their snapshots flattened to JSON.
+- ``GET /api/web/worked_on`` -- the records the reader changed last, for the
+  graph a new workspace opens on.
 - ``GET /api/web/lookup/{target_id}`` -- resolve a UUID to its kind.
 - ``GET /api/web/get/{target_id}`` -- one inquiry with edges + backlinks +
   recent changes attached, for the web app's detail view.
@@ -64,43 +68,42 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from treekle import from_plain, json_loads
-from treekle.absent import ABSENT
 
 from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import (
     get_assistant,
-    get_inbound,
     get_store,
     tag_row,
 )
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
-from trackinizer.server.api.session_access import session_reader
-from trackinizer.server.api.session_identity import request_principal
+from trackinizer.server.api.session_identity import (
+    request_principal,
+    session_reader,
+)
 from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import (
     AuthIdentity,
     current_user,
     require_role,
 )
-from trackinizer.server.config import Config, ConfigError
-from trackinizer.server.embedders import registry
 from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
-from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.graph_focus import read_neighbourhood
+from trackinizer.server.store.named import parse_named, read_named
+from trackinizer.server.store.search import (
+    InquirySearchHit,
+    SessionSearchHit,
+    search_inquiries,
+    search_sessions,
+)
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     CanvasAgents,
     FeedScope,
 )
-from trackinizer.server.store.session_search import (
-    SessionSearchHit,
-    search_session_records,
-)
 from trackinizer.server.values import vetted_sql
-from trackinizer.server.visuals.session_runs import live_run_states
-from trackinizer.types.change_log import Snapshot
+from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.json_types import UtcDatetime
 from trackinizer.wire.routes import MAX_LIST_LIMIT, inquiry_relation_fields
@@ -111,6 +114,8 @@ from trackinizer.wire.wire_sessions import (
     FeedHistogramResponse,
     FeedResponse,
     FeedWhose,
+    SearchMode,
+    WorkedOn,
 )
 
 
@@ -122,7 +127,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.server.store.core import Store
-    from trackinizer.types.embedder import QueryEmbedder
+    from trackinizer.server.store.search import VectorSearch
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
@@ -137,7 +142,6 @@ router = APIRouter()
 
 
 _SESSION_SEARCH_MAX_LIMIT: Final = 200
-_SESSION_SEARCH_MAPPER: Final = FootprintMapper().name
 
 
 # See ``_AppRoute``: shared caches must never store a /trax/ response.
@@ -247,34 +251,25 @@ async def web_search_sessions(
     q: str,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
-    semantic: bool = True,
+    mode: SearchMode = "fused",
     limit: int = 20,
-    model: str = "",
-    dim: int | None = None,
     whose: FeedWhose | None = None,
     hidden: bool = False,
 ) -> WebView:
-    """Hybrid session search: embeddings + scoped tsvector, RRF-merged.
+    """Hybrid session search: the deployment's vector arm + scoped tsvector, RRF-merged.
 
-    Runs the full-text arm always, and the semantic arm only when ``semantic``
-    is requested AND a session embedder is available. With no embedder the route
-    degrades to full-text-only rather than 500 -- a keyword search must never
-    trigger a model load -- and flags the degrade in the response
-    (``degraded: true``, ``semantic: false``). The query embedding uses the
-    embedder's query-side prefix; the corpus stayed prefix-free at ingest.
+    ``mode`` picks the arms: ``fused`` (the default) runs both, ``keyword`` the
+    full-text arm alone, ``vector`` the vector arm alone. The vector arm runs only
+    when the deployment has one whose model is loaded. Without it the route answers
+    with what is left rather than fail -- a search never loads a model -- and flags
+    the degrade in the response (``degraded: true``, ``semantic: false``).
 
     Args:
       request: FastAPI request object for middleware access.
       q: The search query. Full-text terms feed ``websearch_to_tsquery``.
       identity: Authenticated user, validated to have viewer role.
-      semantic: Request the embedding arm (default true); ignored when no
-        session embedder is available.
+      mode: The arms to run.
       limit: Maximum merged hits, 1-200.
-      model: Optional A/B override -- a bare slug or full ``slug@dim`` of an
-        embedder to query INSTEAD of the serving default (its rows must already
-        be swept). Unknown names are a 400. Empty uses the process default.
-      dim: Optional dim override paired with ``model`` (a Matryoshka model
-        accepts any dim in its range); must agree with any ``@dim`` in ``model``.
       whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a
         person searches their own, as the console opens on them, and the
         configured assistant every one it reads, since it holds none of the
@@ -295,19 +290,11 @@ async def web_search_sessions(
         )
     if not q.strip():
         raise HTTPException(status_code=400, detail="q must be non-empty")
-    embedder = _search_embedder(request, semantic=semantic, model=model, dim=dim)
-    query_vector = await embedder.embed_query(q) if embedder is not None else None
-    degraded = semantic and embedder is None
-    hits = await search_session_records(
+    hits, searched = await search_sessions(
         get_store(request).engine,
-        query_vector=query_vector,
-        query_text=q,
-        mapper=_SESSION_SEARCH_MAPPER,
-        model=embedder.name if embedder is not None else "",
-        # The cast dim comes from the SELECTED embedder (override or default), so
-        # the cosine arm hits that model's partial index. Unused when the arm is
-        # skipped; 1 is a valid placeholder the query never reaches.
-        dim=embedder.dim if embedder is not None else 1,
+        query=q,
+        vectors=_state(request).vector_search,
+        mode=mode,
         limit=limit,
         scope=feed_scope(
             request,
@@ -318,8 +305,60 @@ async def web_search_sessions(
     )
     return {
         "hits": [_session_hit_to_dict(hit) for hit in hits],
-        "semantic": query_vector is not None,
-        "degraded": degraded,
+        "semantic": searched,
+        "degraded": mode != "keyword" and not searched,
+    }
+
+
+@router.get("/search_inquiries")
+async def web_search_inquiries(
+    request: Request,
+    q: str,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    mode: SearchMode = "fused",
+    kind: Inquiry.InquiryKind | None = None,
+    limit: int = 20,
+) -> WebView:
+    """Hybrid inquiry search over inquiry texts and edge notes, RRF-merged.
+
+    ``mode`` picks the arms as on ``/search_sessions``, which degrades the same way.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      q: The search query. Keyword terms feed ``websearch_to_tsquery``.
+      identity: Authenticated user, validated to have viewer role.
+      mode: The arms to run; ``fused`` when unnamed.
+      kind: The one inquiry kind to search; unnamed, every kind.
+      limit: Maximum merged hits, 1-200.
+
+    Returns:
+      body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each hit
+        carries ``inquiry_id``, ``kind``, ``seq``, ``title``, ``field`` (``text``, or
+        ``edge:<edge_kind>:<to_id>`` for a note), ``score``, ``source`` and
+        ``snippet``. A hit the caller may not read, or a note with an end the
+        caller may not read, is not among them.
+
+    """
+    store = get_store(request)
+    try:
+        hits, searched = await search_inquiries(
+            store.engine,
+            query=q,
+            vectors=_state(request).vector_search,
+            policy=store.access_policy,
+            principal=await request_principal(request, identity),
+            sessions=session_reader(request, identity),
+            mode=mode,
+            kind=kind,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "hits": [_inquiry_hit_to_dict(hit) for hit in hits],
+        "semantic": searched,
+        "degraded": mode != "keyword" and not searched,
     }
 
 
@@ -359,6 +398,79 @@ async def web_recent_changes(
             *params,
         )
     return [_change_to_dict(r) for r in rows]
+
+
+MOST_FOCI: Final = 10
+"""The most ``focus`` values one ``/api/web/graph`` read takes."""
+
+
+_NOT_WORK: Final[tuple[Change.Kind, ...]] = (
+    "marginal_cost",
+    "dependency_changed",
+    "implicit_subs_opened",
+    "implicit_subs_closed",
+    "purged",
+    *Change.PROTECTED_KINDS,
+)
+"""Changes the server makes around a record, not work on it: cost roll-ups, a child's
+alert to its parents, subscription hooks, a purge and an admin's lock."""
+
+
+@router.get("/worked_on")
+async def web_worked_on(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    limit: int = 10,
+) -> list[WorkedOn]:
+    """Return what the reader worked on last: what its changes of 30 days touched.
+
+    A change counts when the reader made it, its agents' by its keys among them, and it
+    is work on the record (not one of :data:`_NOT_WORK`). An agent session's own
+    record is left out: its changes are the run's bookkeeping, and its work shows on the
+    records it changed. A workspace's Issue is left out too: each chat placed in it
+    changes it, and its neighbours are every session of the workspace. Only records the
+    reader may still read are listed.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
+      limit: Most records to return, 1-100.
+
+    Returns:
+      records: Each record once, the one changed last first, with its ``kind``
+        and ``seq``, so a caller can tell it from the same record named by number.
+
+    Raises:
+      HTTPException: 400 for a ``limit`` outside 1-100.
+
+    """
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
+    store = get_store(request)
+    params: list[object] = [limit, identity.email, list(_NOT_WORK)]
+    predicate = store.change_read_filter(
+        "c",
+        params=params,
+        principal=await request_principal(request, identity),
+    )
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            vetted_sql(
+                "SELECT c.subject_id AS id, i.kind, i.seq ",
+                _CHANGE_FROM,
+                " JOIN inquiries i ON i.id = c.subject_id",
+                f" WHERE {_CHANGE_PRINCIPAL} = $2",
+                # The window bounds the walk of the log for one who changed little.
+                " AND c.created > now() - interval '30 days'",
+                " AND c.subject_kind <> 'AgentSession' AND c.kind <> ALL($3::text[])",
+                " AND NOT coalesce(i.labels, '{}') @> ARRAY['workspace']::text[]",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+                " GROUP BY c.subject_id, i.kind, i.seq",
+                " ORDER BY max(c.created) DESC, c.subject_id LIMIT $1",
+            ),
+            *params,
+        )
+    return [WorkedOn.model_validate(dict(row)) for row in rows]
 
 
 @router.get("/lookup/{target_id}")
@@ -507,7 +619,7 @@ async def web_graph(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     limit: int | None = None,
-    focus: UUID | None = None,
+    focus: Annotated[list[str] | None, Query(max_length=MOST_FOCI)] = None,
     hops: int = 2,
 ) -> WebView:
     """Return the inquiry graph as typed nodes + directed edges, for the SPA.
@@ -518,10 +630,11 @@ async def web_graph(
     belief proves) stays in view; selection stops at ``limit``. Every edge joins
     two returned nodes.
 
-    With ``focus``, the nodes are instead the focus and the inquiries nearest it
+    With ``focus``, the nodes are instead the foci and the inquiries nearest them
     (:func:`read_neighbourhood`): all within one edge, in either direction, before
     any two away, and so on to ``hops``, newest first within a hop, until
-    ``limit``. Each node then carries ``hops``, its distance from the focus.
+    ``limit``; with several foci, each has a share of hop 1. Each node then
+    carries ``hops``, its distance from the nearest focus, 0 for a focus.
 
     Nodes are the light projection (id, kind, seq, title, status, created,
     belief judgement/confidence), ordered by ``created`` ascending so the replay
@@ -534,15 +647,19 @@ async def web_graph(
       identity: Authenticated user, validated to have viewer role.
       limit: Most nodes to return, neighbours included, at least 1; 1000, or 60
         with a ``focus``, when unset.
-      focus: The inquiry whose neighbourhood to return; unset returns the newest.
-      hops: With ``focus``, the most edges to walk from it, 1 to 3.
+      focus: The inquiries whose neighbourhood to return, at most 10, each a UUID
+        or ``Kind/seq``; one that names nothing the reader may read is left out.
+        Unset returns the newest.
+      hops: With ``focus``, the most edges to walk from the foci, 1 to 3.
 
     Returns:
       graph: Nodes and edges for replay visualization, ordered by created time.
 
     Raises:
-      HTTPException: 400 for a ``limit`` below 1 or ``hops`` outside 1 to 3; 404
-        when ``focus`` names no inquiry.
+      HTTPException: 400 for a ``limit`` below 1, ``hops`` outside 1 to 3, or a
+        ``focus`` value that is neither a UUID nor ``Kind/seq`` of a known kind;
+        404 when no ``focus`` names an inquiry the reader may read. More than
+        ``MOST_FOCI`` values are refused before this runs, with 422.
 
     """
     store = get_store(request)
@@ -555,10 +672,17 @@ async def web_graph(
         raise HTTPException(status_code=400, detail="limit must be at least 1")
     if hops < 1 or hops > 3:
         raise HTTPException(status_code=400, detail="hops must be in [1, 3]")
+    named = [parse_named(each) for each in focus or ()]
+    wanted = [each for each in named if each is not None]
+    if len(wanted) < len(named):
+        raise HTTPException(
+            status_code=400,
+            detail="focus must be record ids or Kind/seq",
+        )
     async with store.engine.acquire() as conn:
         distances: dict[UUID, int] = {}
         params: list[object] = [limit or 1000]
-        if focus is None:
+        if not wanted:
             recent_filter = inquiry_read_filter(
                 "inquiries.id",
                 policy=store.access_policy,
@@ -584,9 +708,20 @@ async def web_graph(
                 ")",
             )
         else:
+            # One query names the foci given by number; ids need none.
+            found = await read_named(
+                conn,
+                wanted=[each for each in wanted if not isinstance(each, UUID)],
+                policy=store.access_policy,
+                principal=principal,
+            )
             distances = await read_neighbourhood(
                 conn,
-                focus,
+                focus=[
+                    each if isinstance(each, UUID) else found[each].id
+                    for each in wanted
+                    if isinstance(each, UUID) or each in found
+                ],
                 hops=hops,
                 limit=limit or 60,
                 policy=store.access_policy,
@@ -899,9 +1034,7 @@ async def web_feed_facets(
 
     The counts are of the records ``/feed`` returns for the same window and
     filters, so the console can list agents, rooms and verbosity levels with
-    their sizes before it loads any of them. An agent whose run is polling says
-    in ``state`` what the run is doing, such as ``taken_over`` after someone opened
-    its CLI in a terminal, which the console offers to reattach.
+    their sizes before it loads any of them.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -917,27 +1050,10 @@ async def web_feed_facets(
     """
     _check_window(since, until)
     del identity
-    store = get_store(request)
-    facets = await store.read_feed_facets(since=since, until=until, scope=scope)
-    if not facets.actors:
-        return facets
-    inbound = get_inbound(request)
-    polled = [
-        actor.session_id
-        for actor in facets.actors
-        if actor.ended is None and inbound.has_poller(actor.session_id)
-    ]
-    if not polled:
-        return facets
-    async with store.engine.acquire() as conn:
-        states = await live_run_states(conn, inbound=inbound, session_ids=polled)
-    return facets.model_copy(
-        update={
-            "actors": [
-                actor.model_copy(update={"state": states.get(actor.session_id, "idle")})
-                for actor in facets.actors
-            ],
-        },
+    return await get_store(request).read_feed_facets(
+        since=since,
+        until=until,
+        scope=scope,
     )
 
 
@@ -1003,12 +1119,22 @@ async def web_feed_histogram(
 
 _SNAPSHOT_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(Snapshot))
 
-_CHANGE_SELECT: Final = (
-    "SELECT c.*, COALESCE(k_user.email, actor_user.email) AS principal "
+_CHANGE_FROM: Final = (
     "FROM change_log c "
     "LEFT JOIN api_keys k ON k.id = c.api_key_id "
     "LEFT JOIN users k_user ON k_user.id = k.user_id "
     "LEFT JOIN users actor_user ON actor_user.email = c.actor AND c.api_key_id IS NULL"
+)
+"""``change_log`` as ``c``, joined to whoever made each change."""
+
+_CHANGE_PRINCIPAL: Final = "COALESCE(k_user.email, actor_user.email)"
+"""The email of the person who made a change: its key's owner, or its actor's."""
+
+_CHANGE_SELECT: Final = vetted_sql(
+    "SELECT c.*, ",
+    _CHANGE_PRINCIPAL,
+    " AS principal ",
+    _CHANGE_FROM,
 )
 
 
@@ -1504,6 +1630,20 @@ def _session_hit_to_dict(hit: SessionSearchHit) -> WebView:
     }
 
 
+def _inquiry_hit_to_dict(hit: InquirySearchHit) -> WebView:
+    """Flatten one ``InquirySearchHit`` to JSON."""
+    return {
+        "inquiry_id": str(hit.inquiry_id),
+        "kind": hit.kind,
+        "seq": hit.seq,
+        "title": hit.title,
+        "field": hit.field,
+        "score": hit.score,
+        "source": hit.source,
+        "snippet": hit.snippet,
+    }
+
+
 # The one inquiry serializer, so ``/get`` and ``GET /api/inquiries/{id}`` agree field
 # for field, ``null`` for unset. The relation fields are dropped rather than served
 # empty: ``from_row`` reads no edges, and ``web_get`` sends them as ``edges`` /
@@ -1652,13 +1792,7 @@ def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:
 class _AppState(Protocol):
     store: Store
     engine: DatabaseEngine
-    # Populated lazily by ``_session_embedder``; ``config`` is set by the app
-    # lifespan (absent in the duck-typed test apps, hence the getattr reads).
-    config: object
-    session_embedder: QueryEmbedder | None
-    # A/B override embedders, cached per stored name by ``_override_embedder`` so
-    # repeated ``?model=`` queries reuse one loaded model.
-    session_embedder_overrides: dict[str, QueryEmbedder]
+    vector_search: VectorSearch | None
 
 
 class _AppLike(Protocol):
@@ -1703,81 +1837,6 @@ def _record_uuid(row: asyncpg.Record, key: str) -> UUID:
 def _isoformat(value: object) -> str:
     """ISO-format a datetime; fall back to ``str()`` for non-datetimes."""
     return value.isoformat() if isinstance(value, datetime) else str(value)
-
-
-# Built once per process from ``config.session_embedder`` and cached on
-# ``app.state`` -- a real embedder still loads its weights lazily on the first
-# ``embed_query``, so caching the instance is cheap and only the first semantic
-# search pays the model load. ``None`` (unset knob or no config) means the
-# semantic arm is unavailable and the route degrades.
-def _session_embedder(request: Request) -> QueryEmbedder | None:
-    """Return the process's default session-search embedder, or ``None``."""
-    state = _state(request)
-    cached = getattr(state, "session_embedder", ABSENT)
-    if cached is not ABSENT:
-        return cast("QueryEmbedder | None", cached)
-    # ``isinstance`` narrowing, not ``getattr(config, ...)``: the lifespan
-    # stores a real ``Config`` (``api/app.py``), so a typed read means a field
-    # rename breaks type-checking here instead of silently disabling the
-    # semantic arm. Duck-typed test apps carry no config and read as None.
-    config: object = getattr(state, "config", None)
-    name = config.session_embedder if isinstance(config, Config) else ""
-    dim = config.session_embedder_dim if isinstance(config, Config) else None
-    embedder = registry.build_cached_session_embedder(name, dim=dim)
-    state.session_embedder = embedder
-    return embedder
-
-
-# The A/B override: ``?model=`` (optionally ``?dim=``) selects a challenger
-# embedder distinct from the serving default, WITHOUT disturbing
-# ``state.session_embedder``. Instances are cached per ``(name, dim)`` on
-# ``state.session_embedder_overrides`` so repeated A/B queries reuse one model --
-# a real model loads ~8 GB of weights on first ``embed_query``, so rebuilding per
-# request would reload them every query. Two dims of one model are DISTINCT cache
-# entries (different truncated vectors, different stored identity). The cache is
-# bounded by the registry (a handful of keys), so no eviction is needed. An
-# unknown name/dim is a client error (400), not a degrade -- degrade is for a
-# configured model whose weights are absent, which the lazy-load path handles.
-def _override_embedder(
-    request: Request,
-    name: str,
-    dim: int | None,
-) -> QueryEmbedder | None:
-    """Return the locally cached A/B model; degrade if uncached, 400 if unknown."""
-    state = _state(request)
-    if not hasattr(state, "session_embedder_overrides"):
-        state.session_embedder_overrides = {}
-    overrides = state.session_embedder_overrides
-    try:
-        key = (
-            name if registry.is_weightless(name) else registry.resolved_name(name, dim)
-        )
-        cached = overrides.get(key)
-        if cached is not None:
-            return cached
-        embedder = registry.build_cached_session_embedder(name, dim=dim)
-    except ConfigError as err:
-        raise HTTPException(status_code=400, detail=str(err)) from err
-    if embedder is not None:
-        overrides[key] = embedder
-    return embedder
-
-
-def _search_embedder(
-    request: Request,
-    *,
-    semantic: bool,
-    model: str,
-    dim: int | None,
-) -> QueryEmbedder | None:
-    """Select the query embedder: the ``model``/``dim`` override, else the default."""
-    if dim is not None and not model:
-        raise HTTPException(status_code=400, detail="dim requires model")
-    if not semantic:
-        return None
-    if model:
-        return _override_embedder(request, model, dim)
-    return _session_embedder(request)
 
 
 def _searched_by_default(request: Request, identity: AuthIdentity) -> FeedWhose:

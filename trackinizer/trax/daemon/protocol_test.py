@@ -489,8 +489,8 @@ class TestSourceVersionCoverage:
         One the fingerprint misses can change under a running daemon, which
         then serves the old code under a matching version. Modules outside the
         package root are listed by hand, so this catches the next import that
-        lands outside the list: growing each imported file by a byte must
-        change the version.
+        lands outside the list: the fingerprint must stat each imported file,
+        since ``source_version`` digests the size of every file it stats.
         """
         server = "trackinizer.trax.daemon.server"
         probe = (
@@ -510,13 +510,12 @@ class TestSourceVersionCoverage:
             text=True,
         )
         imported = result.stdout.split()
-        before = daemon_source_version()
-        missed: list[str] = []
-        for path in imported:
-            with monkeypatch.context() as patch:
-                patch.setattr(os, "stat", partial(_grown_stat, os.stat, grown=path))
-                if daemon_source_version() == before:
-                    missed.append(path)
+        stated: list[str] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "stat", partial(_recorded_stat, os.stat, stated=stated))
+            daemon_source_version()
+        counted = {os.path.normpath(path) for path in stated}
+        missed = [path for path in imported if path not in counted]
 
         assert imported, "the probe found no first-party module"
         assert not missed, (

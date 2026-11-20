@@ -26,12 +26,10 @@ from trackinizer.server.config import (
     ConfigError,
     build_engine,
 )
-from trackinizer.server.embedders.registry import EMBEDDERS
 from trackinizer.server.route_iter import registered_paths
 from trackinizer.server.server import (
     _configure_logging,
     _parse_args,
-    _session_embedder_choices,
     _SuppressZeroTaskCancel,
     logger,
     main,
@@ -61,27 +59,6 @@ def restore_global_log_levels() -> Iterator[None]:
     yield
     root.setLevel(root_level)
     logger.setLevel(package_level)
-
-
-class TestSessionEmbedderChoices:
-    def test_choices_are_empty_then_stubs_then_identities_then_bare_slugs(
-        self,
-    ) -> None:
-        choices = _session_embedder_choices()
-        identities = sorted(EMBEDDERS)
-        slugs = sorted({identity.partition("@")[0] for identity in identities})
-        assert choices[:3] == ["", "stub", "stub-1024"]
-        assert choices[3 : 3 + len(identities)] == identities
-        assert choices[3 + len(identities) :] == slugs
-        assert all("@" in identity for identity in identities)
-        assert all("@" not in slug for slug in slugs)
-
-    def test_the_bare_slug_is_cut_at_the_first_at_sign(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(server, "EMBEDDERS", {"slug@1024@extra": object})
-        assert _session_embedder_choices()[-1] == "slug"
 
 
 class TestPureFunctions:
@@ -124,7 +101,6 @@ class TestPureFunctions:
         assert flags.engine == "pglite"
         assert flags.host == "127.0.0.1"
         assert flags.port == 8765
-        assert flags.embedder == "stub"
         assert remaining == []
 
     def test_session_ttl_env_typo_exits_cleanly(
@@ -493,7 +469,7 @@ class TestLogLevelReachesUvicorn:
 class TestMainAppliesEveryStartupInvariant:
     """One process serves everything, so ``main`` owns every startup step.
 
-    There is no worker fan-out: the inbound queue and the subscriber sweep are
+    There is no worker fan-out: the live session relay and the replay receipts are
     in-process state, so uvicorn is handed the configured app object rather
     than an import string it would re-import in forked children. Anything not
     applied here is applied nowhere.
@@ -555,6 +531,30 @@ class TestMainAppliesEveryStartupInvariant:
             main()
 
         assert "--workers" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--embedder", "stub"],
+            ["--session-embedder", "qwen3-embedding-0.6b@1024"],
+            ["--session-embedder-dim", "256"],
+            ["--session-embedders", "qwen3-embedding-4b@1024"],
+        ],
+    )
+    def test_rejects_an_embedder_flag_that_sets_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        argv: list[str],
+    ) -> None:
+        """The embedding addon names its model; no server flag does."""
+        monkeypatch.setattr(uvicorn, "run", _ignore_run)
+        monkeypatch.setattr("sys.argv", ["trackinizer", *argv])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert argv[0] in capsys.readouterr().err
 
     def test_applies_the_requested_log_level(
         self,

@@ -4,7 +4,7 @@ Rollouts live at
 ``$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-<ISO>-<uuid-v7>.jsonl``
 (``~/.codex`` when ``$CODEX_HOME`` is unset), append-only JSONL.
 
-Reading those lines is ``trackinizer.lib.agent.sessions.codex``'s job, not this
+Reading those lines is ``trackinizer.sagent.scripts.convert_session.codex``'s job, not this
 module's: one IR reader serves capture here AND the conversion/resume paths,
 so a dialect change is fixed once. What remains here is where the rollouts
 live and which of them belong to THIS run.
@@ -22,9 +22,13 @@ import re
 
 from treekle import PlainTree, from_plain, json_loads
 
-from trackinizer.lib.agent.sessions import codex
-from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.runs.adapters.custom_types import Subagent
+from trackinizer.sagent.scripts.convert_session import codex
+from trackinizer.sagent.scripts.convert_session.convert import (
+    open_transcript,
+    transcript_name,
+)
+from trackinizer.sagent.scripts.convert_session.tail import Tail
 
 
 if TYPE_CHECKING:
@@ -116,13 +120,13 @@ class CodexAdapter:
         would match inside it.
 
         Args:
-          path: A rollout file.
+          path: A rollout file, compressed (``.jsonl.zst``) or not.
 
         Returns:
           session_id: The uuid, or ``None`` when the name carries none.
 
         """
-        found = _ROLLOUT_NAME.fullmatch(path.stem)
+        found = _ROLLOUT_NAME.fullmatch(Path(transcript_name(path)).stem)
         if found is None:
             return None
         # Typeshed types a match group ``str | Any`` -- a group may be optional
@@ -159,14 +163,14 @@ class CodexAdapter:
         """Return the spawned thread whose rollout ``path`` is; ``None`` for any other.
 
         Args:
-          path: A rollout file.
+          path: A rollout file, compressed (``.jsonl.zst``) or not.
 
         Returns:
           result: The thread and the one that spawned it, by codex's ids, or ``None``.
 
         """
         try:
-            with path.open(encoding="utf-8", errors="replace") as handle:
+            with open_transcript(path, errors="replace") as handle:
                 opening = json_loads(handle.readline(), dict[str, PlainTree])
         except (OSError, ValueError):
             return None
@@ -181,7 +185,7 @@ class CodexAdapter:
         return Subagent(
             child=self.session_id_from_path(path)
             or _text(payload.get("id"))
-            or path.stem,
+            or Path(transcript_name(path)).stem,
             parent=parent,
             note=f"{name} ({where})" if name and where else name or where,
         )

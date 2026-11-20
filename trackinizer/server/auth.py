@@ -15,7 +15,10 @@ The pieces:
 * :func:`current_user` -- the FastAPI dependency. Bearer header wins;
   otherwise the signed session cookie. 401 on no/bad credential or
   disabled user; 409 when a browser page's ``X-Page-Account`` names another
-  account than its session's (:data:`PAGE_ACCOUNT_HEADER`).
+  account than its session's (:data:`PAGE_ACCOUNT_HEADER`), or its stream's
+  ``page_user`` another user id (:data:`PAGE_USER_PARAM`); 403 for a key a start
+  minted for an agent process on any route its process does not call
+  (``wire_process_keys.PROCESS_KEY_ROUTES``).
 * :func:`allowlist_match` -- matches an email against the allowlist for
   the OAuth callback; literal match wins over a ``*@domain`` wildcard.
 * :func:`bootstrap_admin` -- seeds the first admin when ``users`` is empty.
@@ -43,19 +46,23 @@ from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.api._origin import require_own_page_write
 from trackinizer.server.audience import key_audiences, person_audiences
 from trackinizer.server.notify import tx
+from trackinizer.server.route_iter import matched_route_path
 from trackinizer.server.session import read_session_cookie
+from trackinizer.server.values import vetted_sql
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
 from trackinizer.wire.wire_daemon import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
 )
 from trackinizer.wire.wire_job import BOX_CREDENTIAL_PREFIX
+from trackinizer.wire.wire_process_keys import PROCESS_KEY_ROUTES, WEBSOCKET
 from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from asyncpg import Record
     from starlette.requests import HTTPConnection
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
@@ -68,10 +75,15 @@ __all__ = [
     "BOOTSTRAP_ADMIN_ENV",
     "BOOTSTRAP_TOKEN_FILE_ENV",
     "PAGE_ACCOUNT_HEADER",
+    "PAGE_USER_PARAM",
+    "PROCESS_KEY_PREFIX",
+    "PROCESS_KEY_SESSION_SQL",
+    "PROCESS_KEY_SQL",
     "ROLE_ORDER",
     "TOKEN_PREFIX_LEN",
     "AudienceCeilingError",
     "AuthIdentity",
+    "ProcessKey",
     "Role",
     "RoleCeilingError",
     "UserObserver",
@@ -82,17 +94,23 @@ __all__ = [
     "current_human",
     "current_user",
     "effective_role",
+    "end_session",
     "extract_bearer",
     "generate_token",
     "hash_secret",
     "key_within_caller",
     "list_api_keys",
+    "live_process_keys",
     "lookup_user_by_id",
     "mint_open_into",
+    "process_key_minted",
+    "process_key_name",
     "publish_token_file",
     "request_user",
     "require_role",
     "revoke_api_key",
+    "revoke_host_process_keys",
+    "revoke_process_key",
     "seed_no_auth_user",
     "set_api_key_role",
     "stage_token_file",
@@ -116,6 +134,37 @@ TOKEN_PREFIX_LEN: Final[int] = 12
 
 PAGE_ACCOUNT_HEADER: Final[str] = "X-Page-Account"
 """The header a browser page sends with the email of the account it was read as."""
+
+PAGE_USER_PARAM: Final[str] = "page_user"
+"""The query parameter a browser page's stream sends with the id of the user it was read as.
+
+An ``EventSource`` cannot send a header, and an id keeps the email out of URLs and logs.
+"""
+
+PROCESS_KEY_PREFIX: Final = "agent process "
+"""How the name of every key minted for an agent process starts: its id follows, then
+the session it was started for (:func:`process_key_name`)."""
+
+_FOR_SESSION: Final = " for session "
+"""What stands between a process key's process and its session in its name."""
+
+# The host binding alone is no test: a device login binds the key it issues to the
+# host it logged in too (``device_routes``), named for its client, which holds no
+# space (``wire_device``), so never so. ``POST /api/me/tokens`` binds none to a
+# host, whatever it is named: only a start mints a key this is true of.
+PROCESS_KEY_SQL: Final = (
+    "(credential.host_id IS NOT NULL AND "
+    f"starts_with(credential.name, '{PROCESS_KEY_PREFIX}'))"
+)
+"""True of an ``api_keys`` row, read as ``credential``, that a start minted for an
+agent process: bound to the host the process runs on, and named for the process."""
+
+PROCESS_KEY_SESSION_SQL: Final = (
+    f"NULLIF(split_part(credential.name, '{_FOR_SESSION}', 2), '')"
+)
+"""The session an ``api_keys`` row, read as ``credential``, that :data:`PROCESS_KEY_SQL`
+is true of was minted for, as text, read from its name as :class:`ProcessKey` reads
+it; NULL for a key minted before keys named their session."""
 
 BOOTSTRAP_ADMIN_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_ADMIN"
 BOOTSTRAP_TOKEN_FILE_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.
@@ -200,6 +249,23 @@ _NO_AUTH_EMAIL: Final[str] = "no-auth@localhost"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ProcessKey:
+    """What a key a start minted for an agent process is for, read from its row.
+
+    Attributes:
+      process_id: The process it was minted for.
+      session_id: The session that process was started for; ``None`` for a key
+        minted before keys named their session, which acts for none.
+      host_id: The host the process runs on, which the key is bound to.
+
+    """
+
+    process_id: uuid.UUID
+    session_id: uuid.UUID | None
+    host_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AuthIdentity:
     """The authenticated principal for one request.
 
@@ -219,6 +285,9 @@ class AuthIdentity:
       hosted_domain: Google's ``hd`` claim from the principal's last login, which
         makes them a member of their email domain's organisation; ``None`` for
         none.
+      process: The process and session of a key a start minted for an agent
+        process (:data:`PROCESS_KEY_SQL`), which reaches only the routes that
+        process calls; ``None`` for any other credential.
 
     """
 
@@ -230,6 +299,7 @@ class AuthIdentity:
     open_audiences: frozenset[str] = frozenset({OPEN, PRIVATE})
     pinned_audience: str | None = None
     hosted_domain: str | None = None
+    process: ProcessKey | None = None
 
 
 def hash_secret(secret: str) -> str:
@@ -348,6 +418,12 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
     a cookie authenticates is guarded here, once, whatever its route. A bearer
     is never sent by a browser on its own, so it needs no such check.
 
+    A key a start minted for an agent process reaches only the routes that process
+    calls (``wire_process_keys.PROCESS_KEY_ROUTES``), and a route that names a
+    session only for the session its process was started for and the sessions its
+    agents spawned (:func:`process_reaches`): anything else is 403 here, before the
+    route's own code acts on it.
+
     ``request.app.state.store`` must hold the live :class:`Store` (it owns the
     engine and the ``last_used_at`` throttle). Raises 401 when no credential
     is present, or the credential is unknown, revoked, or owned by a disabled
@@ -394,19 +470,46 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
         )
         if identity is None:
             raise HTTPException(status_code=401, detail="invalid bearer token")
+        await _require_process_route(request, identity, store=store)
         return identity
-    session_user_id = _try_read_session_user_id(request)
-    if session_user_id is not None:
+    session = _try_read_session(request)
+    if session is not None:
         require_own_page_write(request)
         identity = await _resolve_session_identity(
             store.engine,
-            session_user_id,
+            *session,
             staff=staff,
         )
         if identity is not None:
             _refuse_another_page(request, identity)
             return identity
     raise HTTPException(status_code=401, detail="not authenticated")
+
+
+async def process_reaches(
+    store: _StoreLike,
+    *,
+    process: ProcessKey,
+    session_id: uuid.UUID,
+) -> bool:
+    """Return whether a process key acts for ``session_id``.
+
+    It acts for the session its process was started for, and each session an agent
+    of that session spawned, at any depth; a key that names no session, for none.
+
+    Args:
+      store: Reads the ``produced_by`` edges between sessions.
+      process: What the key was minted for.
+      session_id: The session a request names.
+
+    Returns:
+      reaches: Whether the key may act for it.
+
+    """
+    own = process.session_id
+    return own is not None and (
+        session_id == own or await store.is_spawned_below(session_id, root=own)
+    )
 
 
 def extract_bearer(request: HTTPConnection) -> str | None:
@@ -459,8 +562,7 @@ async def current_human(
 
     The routes that mint, re-tier or revoke API keys depend on it, so a leaked service
     key cannot make more keys or end its siblings: an admin manages a service account's
-    keys through ``/api/admin/service-accounts``. Missing or bad credentials still 401
-    first, through :func:`current_user`.
+    keys through ``/api/admin/service-accounts``.
 
     Args:
       identity: The principal :func:`current_user` resolved.
@@ -742,6 +844,130 @@ async def revoke_api_key(conn: Conn, *, key_id: uuid.UUID, user_id: uuid.UUID) -
     return result.endswith(" 1")
 
 
+def process_key_name(process_id: uuid.UUID, *, session_id: uuid.UUID) -> str:
+    """Return the name of the key minted for an agent process: its id, and its session's.
+
+    The key is found again by this name, so nothing has to remember its own id across
+    a server restart, and what it may act for is read from it on every request
+    (:class:`ProcessKey`).
+
+    Args:
+      process_id: The process.
+      session_id: The session it is started for.
+
+    Returns:
+      name: :data:`PROCESS_KEY_PREFIX`, the process's id, and its session's.
+
+    """
+    return f"{PROCESS_KEY_PREFIX}{process_id}{_FOR_SESSION}{session_id}"
+
+
+async def process_key_minted(conn: Conn, *, process_id: uuid.UUID) -> bool:
+    """Return whether a start minted a key for the process, live or revoked.
+
+    Args:
+      conn: Open database connection.
+      process_id: The process.
+
+    Returns:
+      minted: Whether one was; a process none was minted for is a person's own.
+
+    """
+    return (
+        await conn.fetchval(
+            vetted_sql(
+                "SELECT 1 FROM api_keys AS credential "
+                "WHERE starts_with(credential.name, $1) AND ",
+                PROCESS_KEY_SQL,
+            ),
+            _process_key_head(process_id),
+        )
+        is not None
+    )
+
+
+async def revoke_process_key(
+    conn: Conn,
+    *,
+    process_id: uuid.UUID,
+    host_id: uuid.UUID | None = None,
+) -> list[uuid.UUID]:
+    """Revoke the key minted for an agent process; a key nobody minted for it is kept.
+
+    Args:
+      conn: Open database connection.
+      process_id: The process whose key goes.
+      host_id: The host the key must be bound to, when a daemon reports the process
+        ended, so it reaches no other host's process; ``None`` for any.
+
+    Returns:
+      revoked: The id of each live key revoked, which the caller forgets from the
+        verified-bearer cache once the revoke commits; empty for none.
+
+    """
+    rows = await conn.fetch(
+        vetted_sql(
+            "UPDATE api_keys AS credential SET revoked_at = clock_timestamp() "
+            "WHERE starts_with(credential.name, $1) "
+            "AND credential.revoked_at IS NULL AND ",
+            PROCESS_KEY_SQL,
+            " AND ($2::uuid IS NULL OR credential.host_id = $2::uuid) "
+            "RETURNING credential.id",
+        ),
+        _process_key_head(process_id),
+        host_id,
+    )
+    return [cast(uuid.UUID, row["id"]) for row in rows]
+
+
+async def live_process_keys(conn: Conn) -> list[uuid.UUID]:
+    """Return the process of each live key minted for an agent process, by its id.
+
+    Args:
+      conn: Open database connection.
+
+    Returns:
+      process_ids: Each process a live key was minted for, read from its name.
+
+    """
+    rows = await conn.fetch(
+        vetted_sql(
+            "SELECT credential.name, credential.host_id FROM api_keys AS credential "
+            "WHERE credential.revoked_at IS NULL AND ",
+            PROCESS_KEY_SQL,
+        ),
+    )
+    return [_process_key(row).process_id for row in rows]
+
+
+async def revoke_host_process_keys(
+    conn: Conn,
+    *,
+    host_id: uuid.UUID,
+) -> list[uuid.UUID]:
+    """Revoke every key minted for an agent process bound to a host taken out of service.
+
+    Args:
+      conn: Open database connection.
+      host_id: The host.
+
+    Returns:
+      revoked: The id of each live key revoked, which the caller forgets from the
+        verified-bearer cache once the revoke commits.
+
+    """
+    rows = await conn.fetch(
+        vetted_sql(
+            "UPDATE api_keys AS credential SET revoked_at = clock_timestamp() "
+            "WHERE credential.host_id = $1 AND credential.revoked_at IS NULL AND ",
+            PROCESS_KEY_SQL,
+            " RETURNING credential.id",
+        ),
+        host_id,
+    )
+    return [cast(uuid.UUID, row["id"]) for row in rows]
+
+
 async def allowlist_match(conn: Conn, *, email: str) -> Role | None:
     """Return the role the allowlist grants ``email``, or ``None`` to deny.
 
@@ -796,6 +1022,7 @@ async def lookup_user_by_id(
     conn: Conn,
     *,
     user_id: uuid.UUID,
+    generation: int,
     staff: Sequence[str],
 ) -> AuthIdentity | None:
     """Resolve a ``users.id`` to an :class:`AuthIdentity` for session auth.
@@ -803,21 +1030,25 @@ async def lookup_user_by_id(
     Session requests have no ``api_keys`` row, so ``api_key_id`` is ``None``.
     A missing or disabled user returns ``None`` -- indistinguishable cases,
     so a stolen-cookie attacker learns nothing. A service account is one of them: only
-    a person has a browser session.
+    a person has a browser session. So is a cookie a logout ended: one signed at
+    another ``generation`` than the user's now (:func:`end_session`).
 
     Args:
       conn: Open database connection.
       user_id: User UUID to look up.
+      generation: The session generation the cookie was signed at.
       staff: The configured staff patterns, which decide whether the user holds
         ``staff``.
 
     Returns:
-      result: AuthIdentity if active; None if not found or disabled.
+      result: AuthIdentity if active; None if not found, disabled, or logged out.
 
     """
     row = await conn.fetchrow(
-        "SELECT id, email, role, status, hosted_domain FROM users WHERE id = $1",
+        "SELECT id, email, role, status, hosted_domain FROM users "
+        "WHERE id = $1 AND session_generation = $2",
         user_id,
+        generation,
     )
     # A browser session is a person's. A service account's row answers as an absent one,
     # so a cookie naming it opens nothing, whoever signed it.
@@ -842,6 +1073,31 @@ async def lookup_user_by_id(
         open_audiences=owner,
         hosted_domain=hosted_domain,
     )
+
+
+# A cookie is signed and stateless, so one alone cannot be revoked without a record of
+# each session; the user's generation ends them all. A cookie a logout already ended
+# matches no row, so a copy of it cannot end the person's later sessions.
+async def end_session(request: HTTPConnection) -> None:
+    """End every browser session of the session cookie's user, if the cookie is live.
+
+    Raises ``users.session_generation``, so :func:`lookup_user_by_id` refuses every
+    cookie signed before, on each route and socket. API keys are untouched.
+
+    Args:
+      request: The request carrying the session cookie; one with none changes nothing.
+
+    """
+    session = _try_read_session(request)
+    if session is None:
+        return
+    store = cast("_AppLike", request.app).state.store
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET session_generation = session_generation + 1 "
+            "WHERE id = $1 AND session_generation = $2",
+            *session,
+        )
 
 
 async def assert_account_active(engine: DatabaseEngine, account: str) -> None:
@@ -1043,52 +1299,148 @@ def publish_token_file(token_path: Path) -> None:
 # The session path is off when ``app.state.config`` is absent (tests that skip the
 # lifespan) or ``Config.session_secret`` is unset (OAuth not configured); bearer auth is
 # unaffected either way.
-def _try_read_session_user_id(request: HTTPConnection) -> uuid.UUID | None:
-    """Return the ``users.id`` from the signed session cookie, or ``None``."""
+def _try_read_session(request: HTTPConnection) -> tuple[uuid.UUID, int] | None:
+    """Return the ``users.id`` and generation of the signed session cookie, or ``None``."""
     config = _config(cast("_AppLike", request.app).state)
     if config is None or not config.session_secret:
         return None
-    raw = read_session_cookie(
+    cookie = read_session_cookie(
         request.cookies,
         secret=config.session_secret,
         max_age_seconds=config.session_max_age_seconds,
     )
-    if raw is None:
+    if cookie is None:
         return None
     try:
-        return uuid.UUID(raw)
+        return uuid.UUID(cookie.user_id), cookie.generation
     except ValueError:
         return None
 
 
 # One browser shares one session cookie across its tabs. A tab left open while another
 # tab signs in as someone else would otherwise show the first account and act as the
-# second: its ``X-Page-Account`` names whom it shows. A request without the header, a
-# WebSocket or another client's, is the session's own.
+# second: its ``X-Page-Account`` names whom it shows, and its streams' ``page_user``,
+# which cannot carry a header. A request with neither, a WebSocket or another client's,
+# is the session's own.
 def _refuse_another_page(request: HTTPConnection, identity: AuthIdentity) -> None:
     """Refuse a request from a page read as another account than the session's."""
     page = request.headers.get(PAGE_ACCOUNT_HEADER)
-    if page is None or page.casefold() == identity.email.casefold():
+    user = request.query_params.get(PAGE_USER_PARAM)
+    if page is not None and page.casefold() != identity.email.casefold():
+        shown = page
+    elif user is not None and user != str(identity.user_id):
+        shown = "another account"
+    else:
         return
     raise HTTPException(
         status_code=409,
         detail={
             "code": "other_account",
-            "message": f"Nothing was sent: this page was read as {page}, and you are "
+            "message": f"Nothing was sent: this page was read as {shown}, and you are "
             f"signed in as {identity.email} now. Reload it to see {identity.email}'s.",
         },
     )
 
 
+# A process key acts for its account in its process alone: a key or host credential it
+# made would outlive the process, and a line it sent, a stop or a revoke would reach
+# every session and host of the account. Refused where a bearer becomes an identity, so
+# a route nobody listed is refused too, before its own code runs; ``scope["route"]`` is
+# the route the router matched, the one each list entry names.
+async def _require_process_route(
+    connection: HTTPConnection,
+    identity: AuthIdentity,
+    *,
+    store: _StoreLike,
+) -> None:
+    """Refuse a process key on a route its process does not call, or outside its tree."""
+    process = identity.process
+    if process is None:
+        return
+    refused = HTTPException(
+        status_code=403,
+        detail="an agent process's key reaches only what its process calls, for its "
+        "own session and the sessions its agents spawned",
+    )
+    path = matched_route_path(connection)
+    if path is None:
+        raise refused
+    method = (
+        WEBSOCKET
+        if connection.scope["type"] == "websocket"
+        else cast(str, connection.scope["method"])
+    )
+    scope = PROCESS_KEY_ROUTES.get((method, path))
+    named = cast(
+        "str | None",
+        connection.path_params.get("session_id")
+        or connection.path_params.get("target_id"),
+    )
+    if (
+        process.session_id is not None
+        and scope is not None
+        and (
+            scope == "account"
+            or (
+                named is not None
+                and await _reaches_named(
+                    store,
+                    process=process,
+                    named=named,
+                    descendants_only=scope == "descendant",
+                    account=identity.email
+                    if "session_id" in connection.path_params
+                    else None,
+                )
+            )
+        )
+    ):
+        return
+    raise refused
+
+
+async def _reaches_named(
+    store: _StoreLike,
+    *,
+    process: ProcessKey,
+    named: str,
+    descendants_only: bool,
+    account: str | None,
+) -> bool:
+    """Return whether ``process`` reaches the named session for this route's scope."""
+    try:
+        session_id = uuid.UUID(named)
+    except ValueError:
+        return False
+    if descendants_only and session_id == process.session_id:
+        return False
+    if not await process_reaches(store, process=process, session_id=session_id):
+        return False
+    if not descendants_only or account is None:
+        return True
+    async with store.engine.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT account FROM inquiries WHERE id = $1 AND kind = 'AgentSession'",
+            session_id,
+        )
+    return row is not None and cast(str, row["account"]).lower() == account.lower()
+
+
 async def _resolve_session_identity(
     engine: DatabaseEngine,
     user_id: uuid.UUID,
+    generation: int,
     *,
     staff: Sequence[str],
 ) -> AuthIdentity | None:
     """Look up the ``users`` row for a session-cookie principal."""
     async with engine.acquire() as conn:
-        return await lookup_user_by_id(conn, user_id=user_id, staff=staff)
+        return await lookup_user_by_id(
+            conn,
+            user_id=user_id,
+            generation=generation,
+            staff=staff,
+        )
 
 
 # Returns ``None`` (a 401 at the route) when no live key matches. Disabled users also
@@ -1125,34 +1477,36 @@ async def _resolve_identity(
             duration_sec=time.perf_counter() - started,
         )
         return cached
-    query_sec = 0.0
-    verify_sec = 0.0
     prefix = secret[:TOKEN_PREFIX_LEN]
     async with store.engine.acquire() as conn:
         query_started = time.perf_counter()
         rows = await conn.fetch(
-            "SELECT k.id AS key_id, k.secret_hash, k.role AS key_role, "
-            "k.open_into, "
-            "u.id AS user_id, u.email, u.role AS user_role, u.status, u.hosted_domain "
-            "FROM api_keys k JOIN users u ON u.id = k.user_id "
-            "WHERE k.prefix = $1 AND k.revoked_at IS NULL",
+            vetted_sql(
+                "SELECT credential.id AS key_id, credential.secret_hash, "
+                "credential.role AS key_role, credential.open_into, credential.name, "
+                "credential.host_id, ",
+                PROCESS_KEY_SQL,
+                " AS process, u.id AS user_id, u.email, u.role AS user_role, "
+                "u.status, u.hosted_domain "
+                "FROM api_keys credential JOIN users u ON u.id = credential.user_id "
+                "WHERE credential.prefix = $1 AND credential.revoked_at IS NULL",
+            ),
             prefix,
         )
-        query_sec += time.perf_counter() - query_started
-        lookup_mode = "prefix" if rows else "miss"
+        query_sec = time.perf_counter() - query_started
         if not rows:
             verify_started = time.perf_counter()
             verify_secret(secret, _dummy_verify_hash())
-            verify_sec += time.perf_counter() - verify_started
             _log_auth_resolution(
                 request_id=request_id,
-                lookup_mode=lookup_mode,
+                lookup_mode="miss",
                 outcome="rejected",
                 query_sec=query_sec,
-                verify_sec=verify_sec,
+                verify_sec=time.perf_counter() - verify_started,
                 duration_sec=time.perf_counter() - started,
             )
             return None
+        verify_sec = 0.0
         for row in rows:
             verify_started = time.perf_counter()
             secret_hash = row["secret_hash"]
@@ -1194,11 +1548,12 @@ async def _resolve_identity(
                 open_audiences=audiences.opening,
                 pinned_audience=audiences.pinned,
                 hosted_domain=hosted_domain,
+                process=_process_key(row) if row["process"] is True else None,
             )
             store.remember_bearer_identity(secret, identity)
             _log_auth_resolution(
                 request_id=request_id,
-                lookup_mode=lookup_mode,
+                lookup_mode="prefix",
                 outcome="success",
                 query_sec=query_sec,
                 verify_sec=verify_sec,
@@ -1207,13 +1562,27 @@ async def _resolve_identity(
             return identity
     _log_auth_resolution(
         request_id=request_id,
-        lookup_mode=lookup_mode,
+        lookup_mode="prefix",
         outcome="rejected",
         query_sec=query_sec,
         verify_sec=verify_sec,
         duration_sec=time.perf_counter() - started,
     )
     return None
+
+
+def _process_key(row: Record) -> ProcessKey:
+    """Read what a process key's row says it is for: its name and the host it is bound to."""
+    process, _, session = (
+        cast("str", row["name"])
+        .removeprefix(PROCESS_KEY_PREFIX)
+        .partition(_FOR_SESSION)
+    )
+    return ProcessKey(
+        process_id=uuid.UUID(process),
+        session_id=uuid.UUID(session) if session else None,
+        host_id=cast(uuid.UUID, row["host_id"]),
+    )
 
 
 # Takes its own connection because the cache path never opens one -- that is the point
@@ -1314,6 +1683,13 @@ class _StoreLike(Protocol):
 
     def remember_bearer_identity(self, secret: str, identity: AuthIdentity) -> None: ...
 
+    async def is_spawned_below(
+        self,
+        session_id: uuid.UUID,
+        *,
+        root: uuid.UUID,
+    ) -> bool: ...
+
 
 # Starlette's ``State`` is a bag of dynamic attributes; this names the two the
 # lifespan installs. ``config`` is ABSENT (not None) in tests that skip the
@@ -1367,3 +1743,10 @@ def _bootstrap_token_path() -> Path:
         if override
         else data_dir() / "rekursiv-ai" / "trackinizer" / "bootstrap_token"
     )
+
+
+# A key minted before keys named their session holds the head whole, so it is still
+# found by its process; an id is of one length, so no other process's name starts so.
+def _process_key_head(process_id: uuid.UUID) -> str:
+    """Return how the name of the key minted for ``process_id`` starts."""
+    return f"{PROCESS_KEY_PREFIX}{process_id}"

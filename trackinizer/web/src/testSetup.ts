@@ -53,14 +53,19 @@ beforeAll(() => {
 if (!Reflect.has(getConfig().getElementError, PRINT_LATER)) {
   const { getElementError } = getConfig();
   const printLater = (message: string | null, container: Element): Error => {
-    if (Reflect.get(getConfig(), "_disableExpensiveErrorDiagnostics") !== true) return getElementError(message, container);
+    if (Reflect.get(getConfig(), "_disableExpensiveErrorDiagnostics") !== true)
+      return getElementError(message, container);
     const error = new Error();
     error.name = "TestingLibraryElementError";
     Object.defineProperty(error, "message", {
       configurable: true,
       get: () => {
         const { message: printed } = getElementError(message, container);
-        Object.defineProperty(error, "message", { configurable: true, writable: true, value: printed });
+        Object.defineProperty(error, "message", {
+          configurable: true,
+          writable: true,
+          value: printed,
+        });
         return printed;
       },
     });

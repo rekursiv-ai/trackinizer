@@ -124,14 +124,15 @@ def authorize(call: GatedCall) -> Verdict:
 
 
 def refused_line(call_id: str, reason: str) -> bytes:
-    """Return the line answering call ``call_id`` as an error saying ``reason``.
+    """Return the ``Result`` line that fails call ``call_id`` with ``reason``.
 
     Args:
       call_id: The id of the line refused.
       reason: What the agent is told.
 
     Returns:
-      line: A ``Result`` holding a ``ToolErrorResult``, newline included.
+      line: A ``Result`` whose record is a failed ``ToolResult`` with ``reason``
+        on ``stderr``, newline included.
 
     """
     return _dumped(
@@ -139,10 +140,10 @@ def refused_line(call_id: str, reason: str) -> bytes:
             "py/object": "Result",
             "id": call_id,
             "record": {
-                "py/object": "ToolErrorResult",
-                "content": reason,
+                "py/object": "ToolResult",
                 "call_id": "",
-                "is_error": True,
+                "state": "failed",
+                "stderr": [reason],
                 "extra": {},
             },
         },
@@ -324,13 +325,13 @@ class ResultIds:
         self._over = False
 
     def feed(self, payload: bytes) -> list[str]:
-        """Return the call ids of the ``Result`` lines ``payload`` completes.
+        """Return the ids of completed result lines.
 
         Args:
           payload: Bytes the host sent, cut anywhere.
 
         Returns:
-          call_ids: Each completed ``Result``'s ``id``, in order.
+          call_ids: Ids in wire order.
 
         """
         call_ids: list[str] = []
@@ -363,11 +364,9 @@ def _result_id(raw: bytes) -> str | None:
     except (ValueError, RecursionError):
         return None
     call_id = line.get("id")
-    return (
-        call_id
-        if line.get("py/object") == "Result" and isinstance(call_id, str)
-        else None
-    )
+    if line.get("py/object") == "Result" and isinstance(call_id, str):
+        return call_id
+    return None
 
 
 def _dumped(line: dict[str, object]) -> bytes:

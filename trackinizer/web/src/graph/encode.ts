@@ -42,7 +42,11 @@ export type NodeLook = {
   /** A ring just outside the disc: the focus, the selection or a search match. */
   readonly halo: string | null;
   /** Text under the disc, outlined in the background so edges never cross it: a root's title while grouped. */
-  readonly label: { readonly text: string; readonly color: string; readonly outline: string } | null;
+  readonly label: {
+    readonly text: string;
+    readonly color: string;
+    readonly outline: string;
+  } | null;
 };
 
 /** Where a node stands in what the view lights and finds. */
@@ -58,7 +62,11 @@ export type Standing = {
 };
 
 /** How one edge is drawn; its arrow takes its colour. */
-export type LinkLook = { readonly color: string; readonly width: number; readonly dash: number[] | null };
+export type LinkLook = {
+  readonly color: string;
+  readonly width: number;
+  readonly dash: number[] | null;
+};
 
 /** What a node's look depends on. */
 export type NodeShape = {
@@ -94,12 +102,18 @@ export function nodeLook(
   { dimmed = false, far = false, halo = null, label = null }: Standing = {},
 ): NodeLook {
   const fill = palette.kinds[shape.kind] ?? palette.fallback;
-  const retired = shape.status === "stopped" || shape.status === "abandoned" || shape.status === "invalid";
+  const retired =
+    shape.status === "stopped" ||
+    shape.status === "abandoned" ||
+    shape.status === "invalid";
   const belief = shape.kind === "Belief";
   const judgement = belief ? shape.judgement : undefined;
   const fade = far ? FAR_FADE : 1;
   const alpha = (dimmed ? DIMMED_ALPHA : retired ? RETIRED_ALPHA : 1) * fade;
-  const fillAlpha = dimmed || retired ? alpha : (0.35 + 0.65 * (belief ? (shape.confidence ?? 1) : 1)) * fade;
+  const fillAlpha =
+    dimmed || retired
+      ? alpha
+      : (0.35 + 0.65 * (belief ? (shape.confidence ?? 1) : 1)) * fade;
   const radius = Math.min(14, 4 + 2.2 * Math.sqrt(shape.degree));
   return {
     radius: shape.root ? Math.max(radius, 12) + 4 : radius,
@@ -107,11 +121,27 @@ export function nodeLook(
     fillAlpha: judgement === "disproven" ? 0 : fillAlpha,
     wash: judgement === "undecidable" ? palette.background : null,
     washAlpha: fillAlpha * 0.4,
-    ring: judgement === "disproven" ? fill : (palette.status[shape.status] ?? palette.fallback),
+    ring:
+      judgement === "disproven"
+        ? fill
+        : (palette.status[shape.status] ?? palette.fallback),
     ringAlpha: alpha,
-    dot: judgement === "proven" && !retired && !dimmed ? (palette.status.complete ?? palette.fallback) : null,
+    dot:
+      judgement === "proven" && !retired && !dimmed
+        ? (palette.status.complete ?? palette.fallback)
+        : null,
     halo: halo === "strong" ? palette.halo : halo === "match" ? palette.match : null,
-    label: label === null ? null : { text: label.length > LABEL_CHARS ? `${label.slice(0, LABEL_CHARS - 1)}…` : label, color: palette.halo, outline: palette.background },
+    label:
+      label === null
+        ? null
+        : {
+            text:
+              label.length > LABEL_CHARS
+                ? `${label.slice(0, LABEL_CHARS - 1)}…`
+                : label,
+            color: palette.halo,
+            outline: palette.background,
+          },
   };
 }
 
@@ -131,7 +161,11 @@ export function linkLook(
 ): LinkLook {
   const dash = link.kind === "favors" ? FAVORS_DASH : null;
   if (link.valence !== undefined) {
-    const color = dimmed ? palette.faint : link.valence < 0 ? palette.against : palette.support;
+    const color = dimmed
+      ? palette.faint
+      : link.valence < 0
+        ? palette.against
+        : palette.support;
     return { color, width: 0.75 + 3.5 * Math.abs(link.valence), dash };
   }
   const color = dimmed ? palette.faint : (palette.edges[link.kind] ?? palette.fallback);
@@ -147,13 +181,23 @@ export function linkLook(
  */
 export function readPalette(
   element: Element,
-  { kinds, edgeKinds, statuses }: { kinds: readonly string[]; edgeKinds: readonly string[]; statuses: readonly string[] },
+  {
+    kinds,
+    edgeKinds,
+    statuses,
+  }: {
+    kinds: readonly string[];
+    edgeKinds: readonly string[];
+    statuses: readonly string[];
+  },
 ): Palette {
   const style = getComputedStyle(element);
   const token = (name: string) => style.getPropertyValue(name).trim();
   const fallback = token("--g-fallback");
   const each = (names: readonly string[], prefix: string) =>
-    Object.fromEntries(names.map((name) => [name, token(`${prefix}${name}`) || fallback]));
+    Object.fromEntries(
+      names.map((name) => [name, token(`${prefix}${name}`) || fallback]),
+    );
   return {
     kinds: each(kinds, "--g-kind-"),
     edges: each(edgeKinds, "--g-edge-"),

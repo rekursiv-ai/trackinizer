@@ -4,18 +4,25 @@ import { expect, test, route } from "./fixtures";
 const heading = (page: Page) => page.getByRole("heading", { level: 1 });
 const hash = route;
 
-test("a deep link opens its view, and an old UI link lands on its v2 route", async ({ page }) => {
+test("a deep link opens its view, and an old UI link lands on its v2 route", async ({
+  page,
+}) => {
   await page.goto("/trax/list/Belief");
   await expect(heading(page)).toHaveText("Beliefs");
   const sidebar = page.getByRole("navigation", { name: "Sidebar" });
-  await expect(sidebar.getByRole("link", { name: "Beliefs" })).toHaveAttribute("aria-current", "page");
+  await expect(sidebar.getByRole("link", { name: "Beliefs" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
 
   await page.goto("/trax/recent");
   await expect(heading(page)).toHaveText("Activity");
   expect(hash(page)).toBe("#/activity");
 });
 
-test("a link to the app's old address, /app/, opens the same view under /trax/, at its path", async ({ page }) => {
+test("a link to the app's old address, /app/, opens the same view under /trax/, at its path", async ({
+  page,
+}) => {
   // The server sends /app/<path>?<query> to /trax/<path>?<query>, the browser
   // keeps the hash across a redirect whose Location has none, and the router moves
   // the old #/ route onto its path.
@@ -41,7 +48,9 @@ test("Back then Forward keeps the URL and the view in agreement", async ({ page 
   expect(hash(page)).toBe("#/list/Paper");
 });
 
-test("⌘K toggles the palette, and a search link opens the search page, not the palette", async ({ page }) => {
+test("⌘K toggles the palette, and a search link opens the search page, not the palette", async ({
+  page,
+}) => {
   await page.goto("/trax/list/Issue");
   await expect(heading(page)).toHaveText("Issues");
   const palette = page.getByRole("dialog", { name: "Command menu" });
@@ -53,21 +62,28 @@ test("⌘K toggles the palette, and a search link opens the search page, not the
 
   await page.goto("/trax/search/what%3F");
   await expect(heading(page)).toHaveText(/^Search: what\? \(\d+\)$/);
-  await expect(page.getByRole("searchbox", { name: "Search query" })).toHaveValue("what?");
+  await expect(page.getByRole("searchbox", { name: "Search query" })).toHaveValue(
+    "what?",
+  );
   await expect(palette).toBeHidden();
 });
 
-test("a closed drawer's links are out of the keyboard's reach on a phone, and in it once opened (WEB-07)", async ({ page }) => {
+test("a closed drawer's links are out of the keyboard's reach on a phone, and in it once opened (WEB-07)", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await page.goto("/trax/activity");
   await expect(heading(page)).toHaveText("Activity");
-  const inSidebar = () => page.evaluate(() => document.activeElement?.closest("nav.sidebar") !== null);
+  const inSidebar = () =>
+    page.evaluate(() => document.activeElement?.closest("nav.sidebar") !== null);
   for (let step = 0; step < 12; step++) {
     await page.keyboard.press("Tab");
     expect(await inSidebar(), `Tab ${step + 1}`).toBe(false);
   }
   await page.getByRole("button", { name: "Open navigation" }).first().click();
-  const issues = page.getByRole("navigation", { name: "Sidebar" }).getByRole("link", { name: "Issues" });
+  const issues = page
+    .getByRole("navigation", { name: "Sidebar" })
+    .getByRole("link", { name: "Issues" });
   await expect(issues).toBeVisible();
   await issues.focus();
   expect(await inSidebar()).toBe(true);
@@ -79,7 +95,16 @@ test("a bar that comes on its own, such as offline, moves none of the rows (the 
   request,
 }) => {
   const seeded = await request.post("/api/inquiries/batch", {
-    data: { items: [{ kind: "Issue", title: "Shell bar row", idempotency_key: "5e11ba70-0000-4000-8000-000000000001" }], edges: [] },
+    data: {
+      items: [
+        {
+          kind: "Issue",
+          title: "Shell bar row",
+          idempotency_key: "5e11ba70-0000-4000-8000-000000000001",
+        },
+      ],
+      edges: [],
+    },
   });
   expect(seeded.ok(), await seeded.text()).toBe(true);
   await page.goto("/trax/list/Issue");

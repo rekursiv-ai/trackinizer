@@ -1,16 +1,15 @@
-"""Routes a host's owner uses to see and stop what still reaches the server from it.
+"""Routes a host's owner uses to see and stop the agent processes that run on it.
 
-A run of a CLI reaches the server with its account's key, through its session's drain,
-not through the daemon: it stays live after the host stops, while the host
-reads offline. Each drain names the run's host (``inbound.PollerRun``), so
-the owner sees here the live sessions of their account that name it, and stops them. A
-stopped run's next drain is refused with 403 ``run_stopped``, on which every run ends.
-Disconnecting a host revokes its host, as the revoke route does, and stops every
-run that names it. Logging it out also revokes the owner's keys a device login made for
-it, so nothing on the computer acts as them until a person approves a login again.
-Where each session's run last said it ran is kept (``session_liveness``), so a host's
-past runs are listed too, each with its AgentSession's number and the chat it is a
-session of.
+An agent process reaches the server on its own socket, not through the daemon: it
+stays live after the daemon stops, while the host reads offline. The session relay
+holds each process with the host it runs on (``SessionRelay.processes``), so the owner
+sees here every process of the host that may still run, and stops one as its session's
+own stop does (``stop_process``). Disconnecting a host revokes it, as the revoke route
+does, which stops every process on it. Logging it out also revokes the owner's keys a
+device login made for it, so nothing on the computer acts as them until a person
+approves a login again. Where each session last said it ran is kept
+(``session_liveness``), so a host's past runs are listed too, each with its
+AgentSession's number and the chat it is a session of.
 """
 
 from __future__ import annotations
@@ -22,11 +21,12 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from treekle import from_plain
 
 from trackinizer.server.access_policy import inquiry_read_filter
-from trackinizer.server.api._deps import get_inbound, get_store, nudge_streams
+from trackinizer.server.api._deps import get_session_relay, get_store
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.daemon_routes import revoke_host
 from trackinizer.server.api.hosts_routes import HostName, refuse_reserved
 from trackinizer.server.api.session_identity import request_principal
+from trackinizer.server.api.session_relay_routes import stop_process
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import NotFoundError
@@ -43,7 +43,7 @@ from trackinizer.wire.wire_science_chat import chat_conversation_id
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.access_policy import AccessPolicy, Principal
@@ -70,24 +70,25 @@ async def list_host_runs_route(
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     past: Annotated[int, Query(ge=0, le=100)] = 20,
 ) -> HostRuns:
-    """List the caller's live sessions that name one of their hosts, and its past ones.
+    """List the agent processes on one of the caller's hosts, and its past runs.
 
     Args:
       name: The host's name.
-      request: Request carrying the database engine and the inbound queue.
+      request: Request carrying the database engine and the session relay.
       identity: The host's owner.
       past: The most past runs to list.
 
     Returns:
-      runs: Each live session, by CLI, then host name, then session; and ``past``, the
-        last ``past`` that are not live, most recently heard from first.
+      runs: Each agent process that may still run there, by session; and ``past``,
+        the last ``past`` of the owner's sessions that ran there and are not live,
+        most recently heard from first.
 
     Raises:
       NotFoundError: The caller owns no such host.
 
     """
-    owner = await _owner(request, identity, name=name)
-    live = live_sessions(request, host=name, owner=owner)
+    host_id, owner = await _host(request, identity, name=name)
+    live = live_sessions(request, host_id=host_id)
     shown = {run.session_id for run in live}
     before = await get_store(request).past_runs(
         host=name,
@@ -125,32 +126,30 @@ async def stop_host_run_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> Response:
-    """Stop one of the caller's live sessions on one of their hosts.
+    """Stop the agent process of a session on one of the caller's hosts.
 
-    Its lease ends now, and its next drain is refused, so the run ends within one
-    drain's hold. Its chat stays, and a new run may take it.
+    It is stopped as the session's own stop does: its socket closes, and its key is
+    revoked a minute later. Its session stays, and a new process may serve it.
 
     Args:
       name: The host's name.
-      session_id: The session the run drains.
-      request: Request carrying the database engine and the inbound queue.
+      session_id: The session the process serves.
+      request: Request carrying the database engine and the session relay.
       identity: The host's owner.
 
     Returns:
       empty: 204 with no body.
 
     Raises:
-      NotFoundError: The caller owns no such host, or no live session of theirs on it
-        drains that session.
+      NotFoundError: The caller owns no such host, or no process on it that may
+        still run serves that session.
 
     """
-    owner = await _owner(request, identity, name=name)
-    inbound = get_inbound(request)
-    if session_id not in inbound.runs_on(name, account=owner):
+    host_id, _ = await _host(request, identity, name=name)
+    running = get_session_relay(request).processes(host_id)
+    if session_id not in {process.session_id for process in running}:
         raise NotFoundError(f"no live session {session_id} on {name}")
-    inbound.stop_run(session_id)
-    # The run's chat lost its partner.
-    nudge_streams(request)
+    _ = await stop_process(request, session_id)
     return Response(status_code=204)
 
 
@@ -160,33 +159,28 @@ async def disconnect_host_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> HostRuns:
-    """Revoke a daemon and stop every live session of its owner that names it.
+    """Revoke a daemon, which stops every agent process on its host.
 
-    The host learns of it by a 410 on its next request, and its terminals and
-    commands are closed, as a revoke does. The host joins it again with the key the
-    computer holds, which this leaves untouched.
+    The host learns of it by a 410 on its next request, and its terminals, tool
+    connections and agent processes are ended, as a revoke does. The host joins it
+    again with the key the computer holds, which this leaves untouched.
 
     Args:
       name: The host's name.
-      request: Request carrying the database engine, the hubs and the inbound queue.
+      request: Request carrying the database engine and the relays.
       identity: Admin principal, or the host's owner.
 
     Returns:
-      runs: The runs it stopped.
+      runs: The agent processes it stopped, by session.
 
     Raises:
       NotFoundError: No such host.
       HTTPException: 403 when a writer names a host that is not theirs.
 
     """
-    owner = await revoke_host(request, name=name, identity=identity)
-    runs = [] if owner is None else live_sessions(request, host=name, owner=owner)
-    inbound = get_inbound(request)
-    for each in runs:
-        inbound.stop_run(each.session_id)
-    if runs:
-        nudge_streams(request)
-    return HostRuns(runs=runs)
+    return HostRuns(
+        runs=_runs(await revoke_host(request, name=name, identity=identity)),
+    )
 
 
 @router.post(HOST_LOGOUT_PATH, response_model=HostLogout)
@@ -203,17 +197,17 @@ async def logout_host_route(
 
     Args:
       name: The host's name.
-      request: Request carrying the database engine, the hubs and the inbound queue.
+      request: Request carrying the database engine and the relays.
       identity: The host's owner.
 
     Returns:
-      logout: The runs it stopped and how many keys it revoked.
+      logout: The agent processes it stopped and how many keys it revoked.
 
     Raises:
       NotFoundError: The caller owns no such host.
 
     """
-    owner = await _owner(request, identity, name=name)
+    _, owner = await _host(request, identity, name=name)
     stopped = await disconnect_host_route(name, request, identity)
     async with request_engine(request).acquire() as conn:
         keys = await conn.fetch(
@@ -231,31 +225,20 @@ async def logout_host_route(
     return HostLogout(runs=stopped.runs, keys=len(keys))
 
 
-def live_sessions(request: Request, *, host: str, owner: str) -> list[HostRun]:
-    """Return ``owner``'s live sessions that name ``host``, by CLI, host name, session.
+def live_sessions(request: Request, *, host_id: UUID) -> list[HostRun]:
+    """Return the agent processes that may still run on a host, by session.
 
     Args:
-      request: Request carrying the inbound queue.
-      host: The host's name.
-      owner: The host owner's email.
+      request: Request carrying the session relay.
+      host_id: The host.
 
     Returns:
-      runs: Each live session.
+      runs: Each process, as its session's run.
 
     """
-    runs = [
-        HostRun(
-            session_id=session_id,
-            cli=from_plain(where.cli, str),
-            run=where.run,
-            cwd=where.cwd,
-            state=where.state,
-        )
-        for session_id, where in get_inbound(request)
-        .runs_on(host, account=owner)
-        .items()
-    ]
-    return sorted(runs, key=lambda run: (run.cli, run.run or "", str(run.session_id)))
+    return _runs(
+        process.session_id for process in get_session_relay(request).processes(host_id)
+    )
 
 
 async def named_runs(
@@ -268,9 +251,10 @@ async def named_runs(
 ) -> list[HostRun]:
     """Name each run's AgentSession and the chat it is a session of, in ``runs``' order.
 
-    A run names its host on its own word, and drains with its owner's key, so only
-    a session of the owner's account that the caller may read is named; any other run
-    is returned as it came, naming no session and no chat.
+    A past run named its host on its own word, and a remote agent service runs the
+    processes of accounts other than its owner's, so only a session of the owner's
+    account that the caller may read is named; any other run is returned as it came,
+    naming no session and no chat.
 
     Args:
       conn: Database connection.
@@ -318,16 +302,24 @@ async def named_runs(
     ]
 
 
-async def _owner(request: Request, identity: AuthIdentity, *, name: str) -> str:
-    """Return the caller's email when they own the host; refuse anyone else."""
+async def _host(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    name: str,
+) -> tuple[UUID, str]:
+    """Return the id of the caller's host ``name`` and its owner; refuse anyone else."""
     refuse_reserved(name)
     async with request_engine(request).acquire() as conn:
-        owner = from_plain(
-            await conn.fetchval("SELECT owner FROM hosts WHERE name = $1", name),
-            str,
-            default=None,
-        )
+        row = await conn.fetchrow("SELECT id, owner FROM hosts WHERE name = $1", name)
+    owner = None if row is None else from_plain(row["owner"], str, default=None)
     # Another person's host reads as no host, as the confirm route has it.
-    if owner is None or owner.lower() != identity.email.lower():
+    if row is None or owner is None or owner.lower() != identity.email.lower():
         raise NotFoundError(f"no host {name} of yours")
-    return owner
+    return from_plain(row["id"], UUID), owner
+
+
+# Every process the relay holds is sagent's own agent.
+def _runs(session_ids: Iterable[UUID]) -> list[HostRun]:
+    """Return the run of each session's agent process, by session."""
+    return [HostRun(session_id=each, cli="sagent") for each in sorted(session_ids)]

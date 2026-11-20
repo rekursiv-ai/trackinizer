@@ -269,7 +269,6 @@ back to `inquiries(id)` and deleted with it:
 | `session_manifests` | one row per `part`: what the file was called, what it declared, and how much of it is live. |
 | `session_ciphertext` | `Thinking.encrypted`, split off so retention can drop it without touching what search indexes. |
 | `session_slash_commands` | commands the human typed into the TUI. Not records: never written to any session log, so they hold no `idx`. |
-| `inquiry_embeddings` | one vector per `(inquiry_id, model)` for semantic search. |
 
 Auth is three more: `users`, `api_keys` (scrypt-hashed, prefix-indexed),
 and `allowlist`.
@@ -422,7 +421,7 @@ trackinizer                        # pglite (default)
 trackinizer --engine pg --dsn ...  # against real Postgres
 trackinizer --no-auth              # single-user local mode: everyone is admin
 trackinizer --app-dir DIR          # the web app built in DIR at /trax/
-trackinizer --assistant ACTOR=EMAIL  # the shared Chat partner (or $TRACKINIZER_ASSISTANT)
+trackinizer --assistant ACTOR=EMAIL  # the service account that acts for an asker (or $TRACKINIZER_ASSISTANT)
 trackinizer --staff PATTERNS         # who is staff: user@host or *@domain (or $TRACKINIZER_STAFF)
 trackinizer --no-web               # without /api/web, /trax/ or the login page
 ```

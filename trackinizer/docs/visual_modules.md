@@ -85,18 +85,12 @@ type, record and params, switches to its tab. An old client's `placement`
 (`main`, `left`, `side`, `floating`) still validates and is mapped onto the
 panels (`server/private/canvas_old_clients.py`).
 
-## Chat with the assistant
+## Chat with the chat's agent
 
-Chat talks to the canvas's partner, which `CanvasState.partner` names on
-every read and the events stream pushes when it changes. It follows the canvas's
-`provider`: the server's shared assistant (`assistant`), or the owner's own
-The runner attached to the chat's session on one of their hosts. The
-header's provider card chooses it (`{"kind": "provider"}`), stars the default for
-new chats (the `chat_provider` preference), allows a newly connected host, and
-starts a run on a host that lists the CLI, in a folder the person names. A CLI's
-partner is `offline` while no such run drains the chat, and still names the session
-to attach a run to; a live one carries its `host`, `run_name` (for an
-attach) and `cwd`. A partner that is not `live` disables the composer.
+A canvas's chat is its session, answered by the session's agent process. Chat
+learns the process from the session's lines (`GET /api/sessions/{id}/lines`) and
+`GET .../process`, starts one with `PUT .../process`, and sends a line with
+`POST .../inputs`.
 
 A claude run's prompts reach Chat as cards: the run records a prompt with
 `extra.$interaction` (`permission`, `question`, `plan`, or `trust` for a folder the
@@ -120,9 +114,10 @@ canvas UUID and the visible visual identities to a typed inbound context.
 The browser also sends
 `page`, the `#/...` address it is on, and `trail`, the addresses before it,
 oldest first and at most 8; a malformed address, or a longer trail, returns
-422. The server resolves them: `#/lookup/<id>`, `#/inquiry/<id>`,
-`#/ref/<Kind>/<seq>` and `#/graph?focus=<ref>` name a record, and the context
-carries each as a page with its route and, when it exists, that record.
+422. The server resolves them: `#/lookup/<id>`, `#/inquiry/<id>` and
+`#/ref/<Kind>/<seq>` name a record, and the context carries each as a page with
+its route and, when it exists, that record. `#/graph`, its old `?focus=` or not,
+names none: the app draws the graph of what is relevant there.
 Any other address, or a record that does not exist, keeps its route and has
 no record. Each visible visual carries the record it shows the same way, so
 "this" means what the sender sees, and its `params` as the canvas holds them,

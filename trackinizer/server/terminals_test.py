@@ -26,6 +26,12 @@ from trackinizer.wire import wire_terminals
 
 _HOST = uuid.UUID(int=1)
 _CANVAS = uuid.UUID(int=2)
+_INSTANCE = uuid.UUID(int=40)
+"""The daemon instance that claims every terminal unless a test names another."""
+
+_SUCCESSOR = uuid.UUID(int=41)
+"""A newer daemon instance of the same host, as after its daemon restarts."""
+
 _START = 1_000.0
 """Where every test's clock starts, and so when its relay started."""
 
@@ -140,7 +146,6 @@ class _World:
         host_id: uuid.UUID = _HOST,
         canvas: uuid.UUID | None = None,
         surface: str | None = None,
-        attach: uuid.UUID | None = None,
     ) -> Terminal:
         return self.relay.open(
             Opening(
@@ -151,15 +156,50 @@ class _World:
                 cols=80,
                 canvas=canvas,
                 surface=surface,
-                command=None if attach is None else "claude",
-                attach=attach,
             ),
         )
 
+    async def claim(
+        self,
+        term: Terminal,
+        socket: _Socket,
+        *,
+        instance: uuid.UUID = _INSTANCE,
+        ready: bool = False,
+        resume: bool = False,
+    ) -> bool:
+        return await self.relay.daemon_connected(
+            term,
+            socket,
+            instance=instance,
+            ready=ready,
+            resume=resume,
+        )
+
+    async def resumed(
+        self,
+        term: Terminal,
+        *,
+        instance: uuid.UUID = _INSTANCE,
+    ) -> _Socket:
+        """Re-claim a started terminal and finish the handshake; return the socket."""
+        socket = _Socket()
+        assert await self.claim(
+            term,
+            socket,
+            instance=instance,
+            ready=True,
+            resume=True,
+        )
+        await self.relay.from_daemon(term, Frame.ACK, b"")
+        return socket
+
     async def live(self) -> tuple[Terminal, _Socket, _Socket]:
+        """Open a terminal its daemon takes from a wait and claims; attach a browser."""
         term = self.open()
         host, browser = _Socket(), _Socket()
-        assert await self.relay.daemon_connected(term, host)
+        assert await self.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0) is term
+        assert await self.claim(term, host)
         await self.relay.attach_browser(term, browser, offset=0)
         assert host.sent == [
             (Frame.ROUTE, wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 0)),
@@ -206,7 +246,9 @@ async def test_a_browser_reattaching_resumes_from_its_offset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_offset_past_the_ring_gets_the_whole_ring_after_a_notice() -> None:
+async def test_an_offset_past_the_ring_resumes_at_its_start_with_no_stream_bytes_added() -> (
+    None
+):
     world = _World()
     term, _, first = await world.live()
     term.ring = Ring(capacity=4)
@@ -216,28 +258,25 @@ async def test_an_offset_past_the_ring_gets_the_whole_ring_after_a_notice() -> N
     second = _Socket()
     await world.relay.attach_browser(term, second, offset=1)
 
-    assert second.sent == [
-        (Frame.OUTPUT, b"\r\n--- output lost ---\r\n"),
-        (Frame.ACK, (4).to_bytes(8)),
-        (Frame.OUTPUT, b"efgh"),
-    ]
+    # The ACK past the browser's offset is how it learns output was lost; a notice sent
+    # as OUTPUT would be counted as stream bytes.
+    assert second.sent == [(Frame.ACK, (4).to_bytes(8)), (Frame.OUTPUT, b"efgh")]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("limit", [0, 1, 2])
+@pytest.mark.parametrize("limit", [0, 1])
 async def test_a_browser_that_leaves_mid_replay_detaches_whichever_send_it_fails(
     limit: int,
 ) -> None:
     world = _World()
     term = world.open()
-    term.ring = Ring(capacity=3)
-    assert await world.relay.daemon_connected(term, _Socket())
+    assert await world.claim(term, _Socket())
     await world.relay.from_daemon(term, Frame.OUTPUT, b"abcdef")
     browser = _Socket(limit=limit)
 
     await world.relay.attach_browser(term, browser, offset=0)
 
-    assert (term.browser, term.detached_at is None) == (None, False)
+    assert term.browser is None
 
 
 @pytest.mark.asyncio
@@ -246,7 +285,7 @@ async def test_a_browser_that_leaves_while_output_queued_behind_the_replay_detac
 ):
     world = _World()
     term = world.open()
-    assert await world.relay.daemon_connected(term, _Socket())
+    assert await world.claim(term, _Socket())
     await world.relay.from_daemon(term, Frame.OUTPUT, b"ab")
     browser = _Socket(limit=2)
 
@@ -272,62 +311,22 @@ async def test_a_second_browser_takes_over_and_closes_the_first_with_4001() -> N
 
 
 @pytest.mark.asyncio
-async def test_a_browser_that_left_is_stopped_after_the_grace_and_not_before() -> None:
+@pytest.mark.parametrize("browser_left", [False, True])
+async def test_a_shell_with_its_daemon_lives_on_without_a_browser_input_or_end(
+    browser_left: bool,
+) -> None:
+    """No browser, no input, no output, and no age ends a terminal its daemon holds."""
     world = _World()
     term, host, browser = await world.live()
-    world.relay.detach_browser(term, browser)
+    if browser_left:
+        world.relay.detach_browser(term, browser)
 
-    world.clock.now += wire_terminals.DETACH_GRACE_SEC - 1
-    await world.relay.sweep()
-    assert not term.ended
+    for _ in range(3):
+        world.clock.now += wire_terminals.DAEMON_GRACE_SEC * 10
+        await world.relay.sweep()
 
-    world.clock.now += 1
-    await world.relay.sweep()
-    assert not term.ended
-    assert host.sent == []
-
-    world.clock.now += 1
-    await world.relay.sweep()
-    assert term.ended
-    assert (Frame.STOP, b"") in host.sent
-    assert host.closed == [wire_terminals.CLOSE_ENDED]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("seconds", "code"),
-    [
-        (wire_terminals.IDLE_SEC + 1, wire_terminals.CLOSE_IDLE),
-        (wire_terminals.LIFETIME_SEC + 1, wire_terminals.CLOSE_LIFETIME),
-    ],
-)
-async def test_idle_and_lifetime_close_the_terminal(seconds: int, code: int) -> None:
-    world = _World()
-    term, _, browser = await world.live()
-    world.clock.now += seconds
-    if code == wire_terminals.CLOSE_LIFETIME:
-        term.last_input_at = world.clock.now
-
-    await world.relay.sweep()
-
-    assert browser.closed == [code]
-
-
-@pytest.mark.asyncio
-async def test_input_resets_the_idle_clock() -> None:
-    world = _World()
-    term, _, browser = await world.live()
-    world.clock.now += wire_terminals.IDLE_SEC - 1
-    await world.relay.from_browser(term, Frame.INPUT, b"x")
-    world.clock.now += wire_terminals.IDLE_SEC - 1
-
-    await world.relay.sweep()
-
-    assert not term.ended
-    world.clock.now += 2
-    await world.relay.sweep()
-    assert browser.closed == [wire_terminals.CLOSE_IDLE]
-    assert world.relay.terminal(term.id) is None
+    assert world.relay.terminal(term.id) is term
+    assert (host.sent, host.closed, browser.closed) == ([], [], [])
 
 
 @pytest.mark.asyncio
@@ -348,9 +347,17 @@ async def test_opens_per_minute_are_limited_and_the_window_slides() -> None:
         await world.relay.end(term, code=wire_terminals.CLOSE_ENDED)
     with pytest.raises(TerminalLimitError):
         world.open(host_id=uuid.uuid4())
+    world.clock.now += 59.5
+    with pytest.raises(TerminalLimitError):
+        world.open(host_id=uuid.uuid4())
 
-    world.clock.now += 60
-    world.open(host_id=uuid.uuid4())
+    # A minute after them, to the second, every one of those opens has left the window.
+    world.clock.now += 0.5
+    for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER):
+        term = world.open(host_id=uuid.uuid4())
+        await world.relay.end(term, code=wire_terminals.CLOSE_ENDED)
+    with pytest.raises(TerminalLimitError):
+        world.open(host_id=uuid.uuid4())
 
 
 @pytest.mark.asyncio
@@ -382,24 +389,6 @@ async def test_a_terminal_told_to_stop_is_no_longer_listed_for_its_canvas() -> N
     assert host.sent == [(Frame.STOP, b"")]
     assert not closing.ended
     assert world.relay.live_in("a@x.y", canvas=_CANVAS) == [other]
-
-
-@pytest.mark.asyncio
-async def test_the_runs_attached_to_a_session_are_those_still_live_for_it() -> None:
-    world = _World()
-    chat, other = uuid.UUID(int=7), uuid.UUID(int=8)
-    run = world.open(attach=chat)
-    stopping = world.open(attach=chat)
-    ended = world.open(attach=chat)
-    world.open(attach=other)
-    world.open()
-
-    await world.relay.stop(stopping)
-    await world.relay.end(ended, code=wire_terminals.CLOSE_ENDED)
-
-    assert world.relay.attached_to(chat) == [run]
-    assert [t.attach for t in world.relay.attached_to(other)] == [other]
-    assert world.relay.attached_to(uuid.UUID(int=9)) == []
 
 
 @pytest.mark.asyncio
@@ -475,13 +464,187 @@ async def test_the_sweep_ends_a_terminal_whose_owner_or_credential_died() -> Non
 
 
 @pytest.mark.asyncio
-async def test_a_lost_host_ends_the_terminal_with_4004() -> None:
+async def test_a_lost_daemon_keeps_the_terminal_and_its_browser_and_buffers_input() -> (
+    None
+):
     world = _World()
     term, host, browser = await world.live()
 
-    await world.relay.daemon_lost(term, host)
+    world.relay.daemon_lost(term, host)
+    assert await world.relay.from_browser(term, Frame.RESIZE, encode_winsize(30, 90))
+    assert await world.relay.from_browser(term, Frame.INPUT, b"ls")
+    assert await world.relay.from_browser(term, Frame.INPUT, b"\n")
 
+    assert world.relay.terminal(term.id) is term
+    assert (term.daemon, term.daemon_lost_at) == (None, world.clock.now)
+    assert (term.browser, browser.closed, host.closed) == (browser, [], [])
+    assert host.sent == []
+    resumed = await world.resumed(term)
+    assert resumed.sent == [
+        (Frame.ACK, (0).to_bytes(8)),
+        (Frame.RESIZE, encode_winsize(30, 90)),
+        (Frame.INPUT, b"ls\n"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_resume_answers_the_ring_end_and_takes_over_a_stale_daemon_socket() -> (
+    None
+):
+    world = _World()
+    term, stale, browser = await world.live()
+    await world.relay.from_daemon(term, Frame.OUTPUT, b"abc")
+    fresh = _Socket()
+
+    assert await world.claim(
+        term,
+        fresh,
+        instance=_SUCCESSOR,
+        ready=True,
+        resume=True,
+    )
+    assert await world.relay.from_browser(term, Frame.INPUT, b"typed")
+    assert fresh.sent == [(Frame.ACK, (3).to_bytes(8))]
+    await world.relay.from_daemon(term, Frame.ACK, b"")
+    await world.relay.from_daemon(term, Frame.ACK, (10).to_bytes(8))
+    await world.relay.from_daemon(term, Frame.OUTPUT, b"xy")
+
+    assert stale.closed == [wire_terminals.CLOSE_TAKEN_OVER]
+    assert (term.daemon, term.instance, term.ended) == (fresh, _SUCCESSOR, False)
+    assert (term.starting, term.started) == (False, True)
+    assert fresh.sent == [(Frame.ACK, (3).to_bytes(8)), (Frame.INPUT, b"typed")]
+    assert browser.sent[-2:] == [(Frame.ACK, (10).to_bytes(8)), (Frame.OUTPUT, b"xy")]
+    assert term.ring.since(10) == (b"xy", 10, False)
+    # The stale socket's late departure releases nothing.
+    world.relay.daemon_lost(term, stale)
+    assert term.daemon is fresh
+
+
+@pytest.mark.asyncio
+async def test_only_a_started_terminal_is_resumed_and_only_a_new_one_first_claimed() -> (
+    None
+):
+    world = _World()
+    started, host, _ = await world.live()
+    world.relay.daemon_lost(started, host)
+    ended, _, _ = await world.live()
+    await world.relay.end(ended, code=wire_terminals.CLOSE_ENDED)
+    pending = world.open()
+    starting = world.open()
+    assert await world.claim(starting, _Socket(), ready=True)
+
+    for term in (pending, starting, ended):
+        assert not await world.claim(term, _Socket(), ready=True, resume=True)
+    assert not await world.claim(started, _Socket(), ready=True)
+    assert not await world.claim(started, _Socket())
+    assert started.daemon is None
+    assert pending.daemon is None
+
+
+@pytest.mark.asyncio
+async def test_a_resume_whose_acknowledgement_fails_leaves_the_terminal_to_reclaim() -> (
+    None
+):
+    world = _World()
+    term, host, _ = await world.live()
+    world.relay.daemon_lost(term, host)
+    world.clock.now += 5
+
+    assert not await world.claim(
+        term,
+        _Socket(gone=True),
+        ready=True,
+        resume=True,
+    )
+
+    assert (term.daemon, term.starting, term.daemon_lost_at) == (
+        None,
+        False,
+        world.clock.now,
+    )
+    assert await world.claim(term, _Socket(), ready=True, resume=True)
+    assert (term.starting, term.daemon_lost_at) == (True, None)
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_ends_a_terminal_whose_daemon_is_gone_past_its_grace() -> None:
+    world = _World()
+    term, host, browser = await world.live()
+    world.relay.daemon_lost(term, host)
+
+    world.clock.now += wire_terminals.DAEMON_GRACE_SEC
+    await world.relay.sweep()
+    assert world.relay.terminal(term.id) is term
+
+    world.clock.now += 1
+    await world.relay.sweep()
     assert browser.closed == [wire_terminals.CLOSE_DAEMON_LOST]
+    assert world.relay.terminal(term.id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waited_first", [False, True])
+async def test_a_newer_instance_that_waits_without_reclaiming_ends_the_terminal(
+    waited_first: bool,
+) -> None:
+    """The reclaim time runs from the later of the loss and the instance's first wait."""
+    world = _World()
+    term, host, browser = await world.live()
+    if waited_first:
+        assert await world.relay.wait(_HOST, instance=_SUCCESSOR, wait_sec=0) is None
+        world.clock.now += 100
+    world.relay.daemon_lost(term, host)
+    if not waited_first:
+        world.clock.now += 100
+        assert await world.relay.wait(_HOST, instance=_SUCCESSOR, wait_sec=0) is None
+    begun = world.clock.now
+    world.clock.now += 30
+    assert await world.relay.wait(_HOST, instance=_SUCCESSOR, wait_sec=0) is None
+
+    world.clock.now = begun + wire_terminals.RECLAIM_SEC
+    await world.relay.sweep()
+    assert world.relay.terminal(term.id) is term
+
+    world.clock.now += 1
+    await world.relay.sweep()
+    assert browser.closed == [wire_terminals.CLOSE_DAEMON_LOST]
+    assert world.relay.terminal(term.id) is None
+
+
+@pytest.mark.asyncio
+async def test_the_claiming_instance_waiting_again_keeps_its_terminal_to_the_grace() -> (
+    None
+):
+    world = _World()
+    term, host, _ = await world.live()
+    world.relay.daemon_lost(term, host)
+
+    world.clock.now += wire_terminals.RECLAIM_SEC + 1
+    assert await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0) is None
+    world.clock.now += wire_terminals.RECLAIM_SEC * 10
+    await world.relay.sweep()
+
+    assert world.relay.terminal(term.id) is term
+
+
+@pytest.mark.asyncio
+async def test_a_newer_instance_that_reclaims_keeps_the_terminal_as_its_own() -> None:
+    world = _World()
+    term, host, browser = await world.live()
+    world.relay.daemon_lost(term, host)
+    assert await world.relay.wait(_HOST, instance=_SUCCESSOR, wait_sec=0) is None
+    successor = await world.resumed(term, instance=_SUCCESSOR)
+
+    world.clock.now += wire_terminals.RECLAIM_SEC * 10
+    await world.relay.sweep()
+    assert world.relay.terminal(term.id) is term
+    # Lost again, it waits for the instance that now holds it, as for any other.
+    world.relay.daemon_lost(term, successor)
+    world.clock.now += wire_terminals.RECLAIM_SEC * 10
+    await world.relay.sweep()
+
+    assert world.relay.terminal(term.id) is term
+    assert browser.closed == []
 
 
 @pytest.mark.asyncio
@@ -500,8 +663,8 @@ async def test_a_second_host_claim_is_refused() -> None:
     world = _World()
     term = world.open()
 
-    assert await world.relay.daemon_connected(term, _Socket())
-    assert not await world.relay.daemon_connected(term, _Socket())
+    assert await world.claim(term, _Socket())
+    assert not await world.claim(term, _Socket())
 
 
 @pytest.mark.asyncio
@@ -510,17 +673,17 @@ async def test_an_unconfirmed_startup_releases_its_claim_without_losing_input() 
     term = world.open()
     await world.relay.from_browser(term, Frame.INPUT, b"continue\n")
     first, second = _Socket(), _Socket()
-    assert await world.relay.daemon_connected(term, first, ready=True)
+    assert await world.claim(term, first, ready=True)
     assert first.sent == [(Frame.ACK, b"")]
 
-    await world.relay.daemon_lost(term, first)
-    assert world.relay.terminal(term.id) is term
-    assert await world.relay.daemon_connected(term, second, ready=True)
+    world.relay.daemon_lost(term, first)
+    assert (world.relay.terminal(term.id), term.daemon_lost_at) == (term, None)
+    assert await world.claim(term, second, ready=True)
     await world.relay.from_daemon(term, Frame.ACK, b"")
 
     assert second.sent == [(Frame.ACK, b""), (Frame.INPUT, b"continue\n")]
-    await world.relay.daemon_lost(term, second)
-    assert term.ended
+    world.relay.daemon_lost(term, second)
+    assert (term.ended, term.daemon_lost_at) == (False, world.clock.now)
 
 
 @pytest.mark.asyncio
@@ -528,9 +691,9 @@ async def test_a_failed_startup_acknowledgement_leaves_the_terminal_retryable() 
     world = _World()
     term = world.open()
 
-    assert not await world.relay.daemon_connected(term, _Socket(gone=True), ready=True)
+    assert not await world.claim(term, _Socket(gone=True), ready=True)
     assert world.relay.terminal(term.id) is term
-    assert await world.relay.daemon_connected(term, _Socket(), ready=True)
+    assert await world.claim(term, _Socket(), ready=True)
 
 
 @pytest.mark.asyncio
@@ -541,11 +704,11 @@ async def test_a_retry_can_replace_a_claim_whose_acknowledgement_is_still_blocke
     term = world.open()
     first, second = _BlockedSocket(), _Socket()
     claiming = asyncio.create_task(
-        world.relay.daemon_connected(term, first, ready=True),
+        world.claim(term, first, ready=True),
     )
     try:
         await asyncio.wait_for(first.sending.wait(), 1)
-        accepted = await world.relay.daemon_connected(term, second, ready=True)
+        accepted = await world.claim(term, second, ready=True)
         first.release.set()
         await claiming
 
@@ -554,7 +717,7 @@ async def test_a_retry_can_replace_a_claim_whose_acknowledgement_is_still_blocke
         assert not term.ended
         assert first.closed == [wire_terminals.CLOSE_TAKEN_OVER]
         assert second.sent == [(Frame.ACK, b"")]
-        await world.relay.daemon_lost(term, first)
+        world.relay.daemon_lost(term, first)
         assert term.daemon is second
     finally:
         first.release.set()
@@ -568,7 +731,7 @@ async def test_typing_during_startup_cannot_overtake_the_buffered_input() -> Non
     await world.relay.from_browser(term, Frame.RESIZE, encode_winsize(24, 80))
     await world.relay.from_browser(term, Frame.INPUT, b"first\n")
     host = _BlockedSocket()
-    connecting = asyncio.create_task(world.relay.daemon_connected(term, host))
+    connecting = asyncio.create_task(world.claim(term, host))
     try:
         await asyncio.wait_for(host.sending.wait(), 1)
         typing = asyncio.create_task(
@@ -633,27 +796,31 @@ async def test_stop_ends_a_host_that_has_not_confirmed_startup() -> None:
     world = _World()
     term = world.open()
     host = _Socket()
-    assert await world.relay.daemon_connected(term, host, ready=True)
+    assert await world.claim(term, host, ready=True)
 
     await world.relay.stop(term)
 
     assert term.ended
     assert host.closed == [wire_terminals.CLOSE_ENDED]
-    assert not await world.relay.daemon_connected(term, _Socket(), ready=True)
+    assert not await world.claim(term, _Socket(), ready=True)
 
 
 @pytest.mark.asyncio
-async def test_a_browser_that_vanished_detaches_and_a_vanished_host_ends() -> None:
+async def test_a_vanished_browser_detaches_and_a_vanished_daemon_is_lost() -> None:
     world = _World()
     term, host, browser = await world.live()
     browser.gone = True
     await world.relay.from_daemon(term, Frame.OUTPUT, b"x")
     assert term.browser is None
-    assert term.detached_at == world.clock.now
 
     host.gone = True
     await world.relay.from_browser(term, Frame.INPUT, b"y")
-    assert term.ended
+    assert (term.ended, term.daemon, term.daemon_lost_at) == (
+        False,
+        None,
+        world.clock.now,
+    )
+    assert bytes(term.pre_input) == b"y"
 
 
 @pytest.mark.asyncio
@@ -687,7 +854,9 @@ async def test_a_wait_returns_an_open_at_once_and_marks_the_host_ready() -> None
     world = _World()
     assert not world.relay.ready(_HOST)
 
-    waiting = asyncio.create_task(world.relay.wait(_HOST, wait_sec=0.5))
+    waiting = asyncio.create_task(
+        world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0.5),
+    )
     try:
         await asyncio.sleep(0)
         assert world.relay.ready(_HOST)
@@ -708,18 +877,31 @@ async def test_a_wait_with_nothing_queued_returns_none_and_an_open_is_offered_on
     None
 ):
     world = _World()
-    assert await world.relay.wait(_HOST, wait_sec=0) is None
+    assert await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0) is None
 
     term = world.open()
-    assert await world.relay.wait(_HOST, wait_sec=0) is term
-    assert await world.relay.wait(_HOST, wait_sec=0) is None
+    assert await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0) is term
+    assert await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0) is None
 
 
 @pytest.mark.asyncio
 async def test_a_wait_with_no_open_times_out_at_its_deadline() -> None:
     world = _World()
 
-    assert await world.relay.wait(_HOST, wait_sec=0.01) is None
+    assert await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_a_wait_with_no_time_left_answers_without_holding_for_an_open() -> None:
+    world = _World()
+    waiting = asyncio.create_task(
+        world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0),
+    )
+    await asyncio.sleep(0)
+
+    # Answered in its first step: it never held, so it registered no waiter.
+    assert waiting.done()
+    assert await waiting is None
 
 
 @pytest.mark.asyncio
@@ -761,7 +943,7 @@ async def test_a_socket_that_raises_on_close_does_not_stop_the_terminal_ending()
     term, host, browser = await world.live()
     host.broken_close = True
 
-    await world.relay.daemon_lost(term, host)
+    await world.relay.end(term, code=wire_terminals.CLOSE_DAEMON_LOST)
 
     assert browser.closed == [wire_terminals.CLOSE_DAEMON_LOST]
     assert world.relay.terminal(term.id) is None
@@ -820,7 +1002,7 @@ async def test_a_reattach_while_output_flows_neither_repeats_nor_reorders() -> N
 async def test_a_blocked_replay_applies_backpressure_to_host_output() -> None:
     world = _World()
     term = world.open()
-    assert await world.relay.daemon_connected(term, _Socket())
+    assert await world.claim(term, _Socket())
     browser = _BlockedSocket()
     attaching = asyncio.create_task(world.relay.attach_browser(term, browser, offset=0))
     await browser.sending.wait()
@@ -843,7 +1025,7 @@ async def test_takeover_unblocks_the_old_replay_without_repeating_pending_output
 ):
     world = _World()
     term = world.open()
-    assert await world.relay.daemon_connected(term, _Socket())
+    assert await world.claim(term, _Socket())
     blocked = _BlockedSocket()
     attaching = asyncio.create_task(world.relay.attach_browser(term, blocked, offset=0))
     await blocked.sending.wait()
@@ -869,7 +1051,7 @@ async def test_output_held_behind_a_replay_is_dropped_when_the_terminal_ends() -
     world = _World()
     term = world.open()
     host = _Socket()
-    assert await world.relay.daemon_connected(term, host)
+    assert await world.claim(term, host)
     blocked = _BlockedSocket()
     attaching = asyncio.create_task(world.relay.attach_browser(term, blocked, offset=0))
     await blocked.sending.wait()
@@ -894,7 +1076,7 @@ async def test_a_host_send_that_fails_unexpectedly_spares_the_rest_of_a_sweep(
 ) -> None:
     world = _World()
     first = world.open(host_id=uuid.UUID(int=10))
-    assert await world.relay.daemon_connected(first, _FailingSocket())
+    assert await world.claim(first, _FailingSocket())
     second = world.open(host_id=uuid.UUID(int=11))
     world.dead.update({first.id, second.id})
 
@@ -944,7 +1126,7 @@ async def test_what_the_browser_sent_before_the_host_dialled_reaches_it_then() -
     )
     host = _Socket()
 
-    assert await world.relay.daemon_connected(term, host)
+    assert await world.claim(term, host)
 
     assert host.sent == [
         (Frame.RESIZE, encode_winsize(30, 90)),
@@ -997,7 +1179,7 @@ async def test_a_signal_with_no_host_or_no_browser_goes_nowhere() -> None:
     term = world.open()
     assert await world.relay.from_browser(term, Frame.SIGNAL, b"x")
     host = _Socket()
-    assert await world.relay.daemon_connected(term, host)
+    assert await world.claim(term, host)
 
     await world.relay.from_daemon(term, Frame.SIGNAL, b"y")
 
@@ -1037,22 +1219,25 @@ async def test_a_route_passes_to_the_host_and_a_malformed_one_is_refused() -> No
 
 
 @pytest.mark.asyncio
-async def test_a_keepalive_keeps_a_direct_terminal_from_idling_out() -> None:
+async def test_a_browsers_return_to_the_relay_asks_the_host_from_the_rings_end() -> (
+    None
+):
     world = _World()
     term, host, _ = await world.live()
-    world.clock.now += wire_terminals.IDLE_SEC + 10
+    await world.relay.from_daemon(term, Frame.OUTPUT, b"abc")
+    await world.relay.from_daemon(term, Frame.KEEPALIVE, _KEEPALIVE)
 
-    await world.relay.from_daemon(
-        term,
-        Frame.KEEPALIVE,
-        wire_terminals.encode_keepalive(1_000, output_idle_ms=0),
-    )
-    await world.relay.sweep()
+    # The browser reached 20 over the direct link; the ring, which saw none of it, ends
+    # at 3, and the host's replay from there keeps the ring whole.
+    back = wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 20)
+    assert await world.relay.from_browser(term, Frame.ROUTE, back)
+    await world.relay.from_daemon(term, Frame.ACK, (3).to_bytes(8))
+    await world.relay.from_daemon(term, Frame.OUTPUT, b"defg")
 
-    assert (term.ended, host.closed) == (False, [])
-    world.clock.now += wire_terminals.IDLE_SEC
-    await world.relay.sweep()
-    assert term.ended
+    assert host.sent == [
+        (Frame.ROUTE, wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 3)),
+    ]
+    assert term.ring.since(0) == (b"abcdefg", 0, False)
 
 
 @pytest.mark.asyncio
@@ -1106,18 +1291,17 @@ async def test_a_keepalive_from_an_older_host_dates_use_by_input_alone() -> None
     await world.relay.from_daemon(term, Frame.KEEPALIVE, (30_000).to_bytes(4))
 
     assert world.relay.idle_sec(term.host_id) == 30
-    assert term.last_input_at == world.clock.now - 30
 
 
 @pytest.mark.asyncio
 async def test_a_malformed_keepalive_changes_nothing() -> None:
     world = _World()
     term, _, _ = await world.live()
-    before = term.last_input_at
+    world.clock.now += 100
 
     await world.relay.from_daemon(term, Frame.KEEPALIVE, b"\x00")
 
-    assert (term.last_input_at, term.direct_until) == (before, 0.0)
+    assert (world.relay.idle_sec(term.host_id), term.direct_until) == (100, 0.0)
 
 
 @pytest.mark.asyncio
@@ -1133,7 +1317,39 @@ async def test_a_host_that_returns_to_the_relay_restarts_the_ring_where_it_resum
     await world.relay.from_daemon(term, Frame.OUTPUT, b"xy")
 
     assert browser.sent == [(Frame.ACK, (10).to_bytes(8)), (Frame.OUTPUT, b"xy")]
-    assert term.ring.since(10) == (b"xy", 10, False)
+    assert term.ring.since(0) == (b"xy", 10, True)
+
+
+@pytest.mark.asyncio
+async def test_a_tab_opened_again_and_again_replays_all_output_with_nothing_lost() -> (
+    None
+):
+    """Each return of a terminal tab attaches a new browser while output goes direct."""
+    world = _World()
+    term, host, browser = await world.live()
+    await world.relay.from_daemon(term, Frame.OUTPUT, b"$ ls\r\n")
+    for shown in (b"a\r\n", b"b\r\n"):
+        await world.relay.from_daemon(term, Frame.KEEPALIVE, _KEEPALIVE)
+        world.relay.detach_browser(term, browser)
+        browser = _Socket()
+        await world.relay.attach_browser(term, browser, offset=0)
+        # The host, asked back from the ring's end, replays what went direct.
+        end = term.ring.end
+        await world.relay.from_daemon(term, Frame.ACK, end.to_bytes(8))
+        await world.relay.from_daemon(term, Frame.OUTPUT, shown)
+
+    world.relay.detach_browser(term, browser)
+    last = _Socket()
+    await world.relay.attach_browser(term, last, offset=0)
+
+    assert last.sent == [
+        (Frame.ACK, (0).to_bytes(8)),
+        (Frame.OUTPUT, b"$ ls\r\na\r\nb\r\n"),
+    ]
+    assert host.sent[-1] == (
+        Frame.ROUTE,
+        wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 12),
+    )
 
 
 @pytest.mark.asyncio
@@ -1193,9 +1409,7 @@ async def test_a_signal_of_exactly_the_cap_passes_and_the_window_is_exactly_a_mi
 
 
 @pytest.mark.asyncio
-async def test_a_keepalive_dates_the_last_input_and_holds_the_direct_mark_for_three_periods() -> (
-    None
-):
+async def test_a_keepalive_holds_the_direct_mark_for_three_periods() -> None:
     world = _World()
     term, host, first = await world.live()
     await world.relay.from_daemon(
@@ -1205,7 +1419,6 @@ async def test_a_keepalive_dates_the_last_input_and_holds_the_direct_mark_for_th
     )
     world.relay.detach_browser(term, first)
 
-    assert term.last_input_at == world.clock.now - 2.5
     world.clock.now += 3 * wire_terminals.KEEPALIVE_SEC - 1
     await world.relay.attach_browser(term, _Socket(), offset=0)
     assert [kind for kind, _ in host.sent] == [Frame.ROUTE]
@@ -1232,74 +1445,7 @@ async def test_only_an_ack_of_eight_bytes_restarts_the_ring() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_run_open_hands_the_wait_its_cli_its_session_and_its_name() -> None:
-    world = _World()
-    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
-    opened = world.relay.open(
-        Opening(
-            user="a@x.y",
-            host_id=_HOST,
-            host="gx10",
-            rows=24,
-            cols=80,
-            command="claude",
-            attach=session_id,
-            run_name="chat-9f1c2e3a",
-        ),
-    )
-
-    offered = await world.relay.wait(_HOST, wait_sec=0)
-
-    assert offered is opened
-    assert offered is not None
-    assert (offered.command, offered.attach, offered.run_name) == (
-        "claude",
-        session_id,
-        "chat-9f1c2e3a",
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_run_open_without_a_name_is_named_by_its_session_or_its_terminal() -> (
-    None
-):
-    world = _World()
-    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
-    chat = world.relay.open(
-        Opening(
-            user="a@x.y",
-            host_id=_HOST,
-            host="gx10",
-            rows=24,
-            cols=80,
-            command="codex",
-            attach=session_id,
-        ),
-    )
-    run = world.relay.open(
-        Opening(
-            user="a@x.y",
-            host_id=_HOST,
-            host="gx10",
-            rows=24,
-            cols=80,
-            command="claude",
-        ),
-    )
-
-    assert chat.run_name == "chat-9f1c2e3a"
-    assert run.run_name == f"run-{run.id.hex[:8]}"
-
-
-@pytest.mark.asyncio
-async def test_a_login_shell_open_names_no_run() -> None:
-    term = _World().open()
-
-    assert (term.command, term.attach, term.run_name) == (None, None, None)
-
-
-@pytest.mark.asyncio
-async def test_a_run_open_hands_the_wait_the_folder_it_starts_in_as_named() -> None:
+async def test_an_open_hands_the_wait_the_folder_its_shell_starts_in() -> None:
     world = _World()
     opened = world.relay.open(
         Opening(
@@ -1308,12 +1454,11 @@ async def test_a_run_open_hands_the_wait_the_folder_it_starts_in_as_named() -> N
             host="gx10",
             rows=24,
             cols=80,
-            command="claude",
             cwd="~/project",
         ),
     )
 
-    offered = await world.relay.wait(_HOST, wait_sec=0)
+    offered = await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0)
 
     assert offered is opened
     assert offered is not None
@@ -1340,41 +1485,14 @@ async def test_a_pending_open_lives_through_its_exact_startup_deadline() -> None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("seconds", "code"),
-    [
-        (wire_terminals.IDLE_SEC, wire_terminals.CLOSE_IDLE),
-        (wire_terminals.LIFETIME_SEC, wire_terminals.CLOSE_LIFETIME),
-    ],
-)
-async def test_idle_and_lifetime_allow_the_exact_boundary(
-    seconds: int,
-    code: int,
-) -> None:
-    world = _World()
-    term, host, browser = await world.live()
-    world.clock.now += seconds
-    if code == wire_terminals.CLOSE_LIFETIME:
-        assert await world.relay.from_browser(term, Frame.INPUT, b"active")
-
-    await world.relay.sweep()
-    assert world.relay.terminal(term.id) is term
-    assert host.closed == browser.closed == []
-
-    world.clock.now += 1
-    await world.relay.sweep()
-    assert host.closed == browser.closed == [code]
-    assert world.relay.terminal(term.id) is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("now", [0.0, float(wire_terminals.LIFETIME_SEC)])
+@pytest.mark.parametrize("now", [0.0, float(wire_terminals.DAEMON_GRACE_SEC)])
 async def test_a_fresh_terminal_does_not_expire_at_a_different_clock_origin(
     now: float,
 ) -> None:
     world = _World()
     world.clock.now = now
     term, host, browser = await world.live()
+    world.relay.daemon_lost(term, host)
 
     await world.relay.sweep()
 
@@ -1389,8 +1507,8 @@ async def test_wait_skips_an_open_that_ended_before_it_was_offered() -> None:
     await world.relay.end(ended, code=wire_terminals.CLOSE_ENDED)
     live = world.open()
 
-    assert await world.relay.wait(_HOST, wait_sec=0) is live
-    assert await world.relay.wait(_HOST, wait_sec=0) is None
+    assert await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0) is live
+    assert await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0) is None
 
 
 @pytest.mark.asyncio
@@ -1406,7 +1524,7 @@ async def test_input_buffered_before_the_host_accepts_exactly_one_full_frame(
     assert await world.relay.from_browser(term, Frame.INPUT, suffix)
     host = _Socket()
 
-    assert await world.relay.daemon_connected(term, host)
+    assert await world.claim(term, host)
 
     assert host.sent == [(Frame.INPUT, prefix + suffix)]
 
@@ -1416,7 +1534,7 @@ async def test_browser_input_during_host_close_is_not_forwarded() -> None:
     world = _World()
     term = world.open()
     host, browser = _ClosingSocket(), _Socket()
-    assert await world.relay.daemon_connected(term, host)
+    assert await world.claim(term, host)
     await world.relay.attach_browser(term, browser, offset=0)
     host.sent.clear()
     ending = asyncio.create_task(world.relay.end(term, code=wire_terminals.CLOSE_ENDED))
@@ -1432,30 +1550,46 @@ async def test_browser_input_during_host_close_is_not_forwarded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_host_input_closes_the_browser_with_host_lost() -> None:
+async def test_failed_daemon_input_is_kept_for_the_daemon_that_resumes() -> None:
     world = _World()
     term, host, browser = await world.live()
     host.gone = True
 
     assert await world.relay.from_browser(term, Frame.INPUT, b"lost")
 
-    assert browser.closed == [wire_terminals.CLOSE_DAEMON_LOST]
-    assert world.relay.terminal(term.id) is None
+    assert (browser.closed, world.relay.terminal(term.id)) == ([], term)
+    resumed = await world.resumed(term)
+    assert resumed.sent[-1] == (Frame.INPUT, b"lost")
 
 
 @pytest.mark.asyncio
-async def test_a_host_without_a_first_browser_still_expires_after_the_grace() -> None:
+async def test_a_daemon_whose_flush_fails_is_lost_and_keeps_the_rest_buffered() -> None:
+    world = _World()
+    term = world.open()
+    await world.relay.from_browser(term, Frame.RESIZE, encode_winsize(10, 20))
+    await world.relay.from_browser(term, Frame.INPUT, b"ls\n")
+    host = _Socket(limit=1)
+
+    assert await world.claim(term, host)
+
+    assert host.sent == [(Frame.RESIZE, encode_winsize(10, 20))]
+    assert (term.daemon, term.daemon_lost_at) == (None, world.clock.now)
+    resumed = await world.resumed(term)
+    assert resumed.sent[1:] == [(Frame.INPUT, b"ls\n")]
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_no_browser_ever_attached_to_lives_with_its_daemon() -> None:
     world = _World()
     term = world.open()
     host = _Socket()
-    assert await world.relay.daemon_connected(term, host)
+    assert await world.claim(term, host)
 
-    world.clock.now += wire_terminals.DETACH_GRACE_SEC + 1
+    world.clock.now += wire_terminals.DAEMON_GRACE_SEC * 10
     await world.relay.sweep()
 
-    assert host.sent == [(Frame.STOP, b"")]
-    assert host.closed == [wire_terminals.CLOSE_ENDED]
-    assert world.relay.terminal(term.id) is None
+    assert (host.sent, host.closed) == ([], [])
+    assert world.relay.terminal(term.id) is term
 
 
 @pytest.mark.asyncio
@@ -1463,7 +1597,7 @@ async def test_output_during_startup_does_not_confirm_the_host() -> None:
     world = _World()
     term = world.open()
     host, browser = _Socket(), _Socket()
-    assert await world.relay.daemon_connected(term, host, ready=True)
+    assert await world.claim(term, host, ready=True)
     await world.relay.attach_browser(term, browser, offset=0)
 
     await world.relay.from_daemon(term, Frame.OUTPUT, b"early")
@@ -1522,11 +1656,9 @@ async def test_byte_rates_allow_the_cap_and_reset_at_exactly_one_second(
 
 
 @pytest.mark.asyncio
-async def test_a_run_keeps_its_opening_context_in_the_canvas_listing_and_host_offer() -> (
-    None
-):
+async def test_an_open_keeps_its_context_in_the_canvas_listing_and_host_offer() -> None:
     world = _World()
-    workspace, session = uuid.UUID(int=13), uuid.UUID(int=17)
+    workspace = uuid.UUID(int=13)
     opened = world.relay.open(
         Opening(
             user="context@x.y",
@@ -1538,9 +1670,6 @@ async def test_a_run_keeps_its_opening_context_in_the_canvas_listing_and_host_of
             workspace=workspace,
             requested_by="campaign-helper",
             surface="run-tile",
-            command="sagent",
-            attach=session,
-            run_name="campaign-context",
             cwd="~/context",
         ),
     )
@@ -1551,7 +1680,7 @@ async def test_a_run_keeps_its_opening_context_in_the_canvas_listing_and_host_of
         "worker-2",
         "run-tile",
     )
-    offered = await world.relay.wait(_HOST, wait_sec=0)
+    offered = await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0)
     assert offered is opened
     assert offered is not None
     assert (offered.user, offered.rows, offered.cols) == ("context@x.y", 37, 91)
@@ -1560,38 +1689,31 @@ async def test_a_run_keeps_its_opening_context_in_the_canvas_listing_and_host_of
         workspace,
         "campaign-helper",
     )
-    assert (offered.command, offered.attach, offered.run_name, offered.cwd) == (
-        "sagent",
-        session,
-        "campaign-context",
-        "~/context",
-    )
-    assert world.relay.attached_to(session) == [offered]
+    assert offered.cwd == "~/context"
 
 
 @pytest.mark.asyncio
-async def test_a_files_open_reaches_only_its_host_and_keeps_its_kind() -> None:
+async def test_an_open_reaches_only_its_host() -> None:
     world = _World()
     host = uuid.UUID(int=19)
     opened = world.relay.open(
         Opening(
-            user="files@x.y",
+            user="worker@x.y",
             host_id=host,
-            host="file-worker",
+            host="worker",
             rows=3,
             cols=5,
-            kind="files",
         ),
     )
 
-    assert await world.relay.wait(_HOST, wait_sec=0) is None
-    offered = await world.relay.wait(host, wait_sec=0)
+    assert await world.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0) is None
+    offered = await world.relay.wait(host, instance=_INSTANCE, wait_sec=0)
     assert offered is opened
     assert offered is not None
-    assert (offered.host, offered.kind) == ("file-worker", "files")
-    assert (offered.command, offered.attach, offered.run_name) == (None, None, None)
-    assert world.relay.live_in("files@x.y", canvas=_CANVAS) == []
-    assert await world.relay.wait(host, wait_sec=0) is None
+    assert offered.host == "worker"
+    assert offered.cwd is None
+    assert world.relay.live_in("worker@x.y", canvas=_CANVAS) == []
+    assert await world.relay.wait(host, instance=_INSTANCE, wait_sec=0) is None
 
 
 if __name__ == "__main__":

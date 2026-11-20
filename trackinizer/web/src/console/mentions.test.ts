@@ -3,7 +3,12 @@ import type { FeedActorFacet, FeedEvent } from "../api/sessions";
 import { addressed, type Context, type Mention, mentionAt, suggest } from "./mentions";
 
 /** `actor`'s session as the facets list it: heard from at `last` (10:MM), in `rooms`. */
-function agent(actor: string, last: string, rooms: string[] = [], ended: string | null = null): FeedActorFacet {
+function agent(
+  actor: string,
+  last: string,
+  rooms: string[] = [],
+  ended: string | null = null,
+): FeedActorFacet {
   return {
     actor,
     session_id: "00000000-0000-4000-8000-000000000001",
@@ -39,11 +44,31 @@ function everyone(agents: FeedActorFacet[], lines: FeedEvent[] = []): Context {
 test.each<[string, string, number, Mention | null]>([
   ["a lone @", "@", 1, { start: 0, end: 1, query: "", whole: true }],
   ["a name typed so far", "@ti", 3, { start: 0, end: 3, query: "ti", whole: true }],
-  ["the caret inside a name: the query stops at it, the name does not", "@ti", 2, { start: 0, end: 3, query: "t", whole: true }],
-  ["after leading space, which the line's parse trims", "  @ti", 5, { start: 2, end: 5, query: "ti", whole: true }],
-  ["an agent in a room", "@a:ops", 6, { start: 0, end: 6, query: "a:ops", whole: true }],
+  [
+    "the caret inside a name: the query stops at it, the name does not",
+    "@ti",
+    2,
+    { start: 0, end: 3, query: "t", whole: true },
+  ],
+  [
+    "after leading space, which the line's parse trims",
+    "  @ti",
+    5,
+    { start: 2, end: 5, query: "ti", whole: true },
+  ],
+  [
+    "an agent in a room",
+    "@a:ops",
+    6,
+    { start: 0, end: 6, query: "a:ops", whole: true },
+  ],
   ["the second of a list", "@a,@b", 5, { start: 3, end: 5, query: "b", whole: false }],
-  ["the first of a list, ending at its comma", "@a,@b hi", 2, { start: 0, end: 2, query: "a", whole: false }],
+  [
+    "the first of a list, ending at its comma",
+    "@a,@b hi",
+    2,
+    { start: 0, end: 2, query: "a", whole: false },
+  ],
   ["a list item with no @ yet", "@a,b", 4, null],
   ["a comma just typed", "@a,", 3, null],
   ["the caret before the @", "@ti", 0, null],
@@ -59,7 +84,13 @@ test.each<[string, Context, string, boolean, string[]]>([
   [
     "with nothing typed: the agents with lines in the feed, latest line first; then those in their rooms; then the rest by activity; @* last",
     everyone(
-      [agent("a", "01"), agent("b", "05", ["ops"]), agent("c", "10", ["ops"]), agent("d", "20", ["lab"]), agent("e", "30", [], "2026-10-03T10:31:00Z")],
+      [
+        agent("a", "01"),
+        agent("b", "05", ["ops"]),
+        agent("c", "10", ["ops"]),
+        agent("d", "20", ["lab"]),
+        agent("e", "30", [], "2026-10-03T10:31:00Z"),
+      ],
       [line("a", "01"), line("b", "05", ["ops"]), line("a", "02")],
     ),
     "",
@@ -73,10 +104,26 @@ test.each<[string, Context, string, boolean, string[]]>([
     true,
     ["alpha", "tiles-a"],
   ],
-  ["in any case", everyone([agent("Tiles-A", "01"), agent("web", "02")]), "tIL", true, ["Tiles-A"]],
+  [
+    "in any case",
+    everyone([agent("Tiles-A", "01"), agent("web", "02")]),
+    "tIL",
+    true,
+    ["Tiles-A"],
+  ],
   [
     "the agents the view picks first, those with lines by their latest, then those without; then their rooms' agents",
-    { agents: [agent("p", "30", ["ops"]), agent("q", "20"), agent("r", "01"), agent("s", "02", ["ops"])], lines: [line("r", "01")], shown: ["p", "q", "r"], rooms: [] },
+    {
+      agents: [
+        agent("p", "30", ["ops"]),
+        agent("q", "20"),
+        agent("r", "01"),
+        agent("s", "02", ["ops"]),
+      ],
+      lines: [line("r", "01")],
+      shown: ["p", "q", "r"],
+      rooms: [],
+    },
     "",
     true,
     ["r", "p", "q", "s"],
@@ -84,7 +131,12 @@ test.each<[string, Context, string, boolean, string[]]>([
   [
     "an agent in several rooms once per room, the rooms the view picks first, never bare; and only those rooms rank their agents",
     {
-      agents: [agent("x", "01", ["lab", "ops"]), agent("y", "02", ["ops"]), agent("z", "03", ["lab"]), agent("w", "04")],
+      agents: [
+        agent("x", "01", ["lab", "ops"]),
+        agent("y", "02", ["ops"]),
+        agent("z", "03", ["lab"]),
+        agent("w", "04"),
+      ],
       lines: [],
       shown: ["x", "y"],
       rooms: ["ops"],
@@ -93,7 +145,13 @@ test.each<[string, Context, string, boolean, string[]]>([
     true,
     ["y", "x:ops", "x:lab", "w", "z"],
   ],
-  ["a room typed after the colon", everyone([agent("x", "01", ["ops", "lab"])]), "x:o", true, ["x:ops"]],
+  [
+    "a room typed after the colon",
+    everyone([agent("x", "01", ["ops", "lab"])]),
+    "x:o",
+    true,
+    ["x:ops"],
+  ],
   [
     "an agent the facets have not listed, from its lines",
     everyone([agent("a", "01")], [line("new", "09", ["ops", "lab"])]),
@@ -101,14 +159,41 @@ test.each<[string, Context, string, boolean, string[]]>([
     true,
     ["new:lab", "new:ops", "a"],
   ],
-  ["ties by name", everyone([agent("b", "01"), agent("a", "01")]), "", true, ["a", "b"]],
-  ["no @* in a list", everyone([agent("a", "01"), agent("b", "02")], [line("a", "01"), line("b", "02")]), "", false, ["b", "a"]],
-  ["no @* for one agent shown", everyone([agent("a", "01"), agent("b", "02")], [line("a", "01")]), "", true, ["a", "b"]],
-  ["@* for a typed *", everyone([agent("a", "01")], [line("a", "01"), line("b", "02")]), "*", true, ["*"]],
+  [
+    "ties by name",
+    everyone([agent("b", "01"), agent("a", "01")]),
+    "",
+    true,
+    ["a", "b"],
+  ],
+  [
+    "no @* in a list",
+    everyone([agent("a", "01"), agent("b", "02")], [line("a", "01"), line("b", "02")]),
+    "",
+    false,
+    ["b", "a"],
+  ],
+  [
+    "no @* for one agent shown",
+    everyone([agent("a", "01"), agent("b", "02")], [line("a", "01")]),
+    "",
+    true,
+    ["a", "b"],
+  ],
+  [
+    "@* for a typed *",
+    everyone([agent("a", "01")], [line("a", "01"), line("b", "02")]),
+    "*",
+    true,
+    ["*"],
+  ],
   ["nothing that matches", everyone([agent("a", "01")]), "zz", true, []],
   [
     "eight agents at most, then @*",
-    everyone("abcdefghij".split("").map((name, k) => agent(name, `0${k}`)), [line("a", "00"), line("b", "01")]),
+    everyone(
+      "abcdefghij".split("").map((name, k) => agent(name, `0${k}`)),
+      [line("a", "00"), line("b", "01")],
+    ),
     "",
     true,
     ["b", "a", "j", "i", "h", "g", "f", "e", "*"],
@@ -121,9 +206,19 @@ test.each<[string, string, string, string]>([
   ["an empty box, with a space to type the message after", "", "tiles-a", "@tiles-a "],
   ["a box of spaces", "  ", "tiles-a", "@tiles-a "],
   ["a message with no address, before it", "stop now", "tiles-a", "@tiles-a stop now"],
-  ["an address, added to its list", "@tiles-b stop", "tiles-a:ops", "@tiles-b,@tiles-a:ops stop"],
+  [
+    "an address, added to its list",
+    "@tiles-b stop",
+    "tiles-a:ops",
+    "@tiles-b,@tiles-a:ops stop",
+  ],
   ["an address alone, added to its list", "@tiles-b ", "tiles-a", "@tiles-b,@tiles-a "],
-  ["an address that has it, as it is", "@tiles-b,@tiles-a stop", "tiles-a", "@tiles-b,@tiles-a stop"],
+  [
+    "an address that has it, as it is",
+    "@tiles-b,@tiles-a stop",
+    "tiles-a",
+    "@tiles-b,@tiles-a stop",
+  ],
 ])("addressed: %s", (_, line, name, text) => {
   expect(addressed(line, name)).toBe(text);
 });

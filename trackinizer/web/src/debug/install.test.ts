@@ -33,7 +33,9 @@ test("debug is on with ?debug=1 or the localStorage switch, and off otherwise", 
     return seen;
   };
   expect(on(() => {})).toBe(false);
-  expect(on(() => history.replaceState(null, "", "/trax/?debug=1#/list/Issue"))).toBe(true);
+  expect(on(() => history.replaceState(null, "", "/trax/?debug=1#/list/Issue"))).toBe(
+    true,
+  );
   expect(on(() => localStorage.setItem("trackinizer.v2.debug", "1"))).toBe(true);
   expect(on(() => localStorage.setItem("trackinizer.v2.debug", "0"))).toBe(false);
 });
@@ -41,9 +43,22 @@ test("debug is on with ?debug=1 or the localStorage switch, and off otherwise", 
 test("an uncaught error and an unhandled rejection are logged as errors", () => {
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
   install();
-  dispatchEvent(new ErrorEvent("error", { error: new TypeError("x is undefined"), message: "x is undefined" }));
-  dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: new RangeError("too deep") }));
-  expect(recentEvents().slice(-2).map(({ level, event, fields }) => [level, event, fields.error, fields.message])).toEqual([
+  dispatchEvent(
+    new ErrorEvent("error", {
+      error: new TypeError("x is undefined"),
+      message: "x is undefined",
+    }),
+  );
+  dispatchEvent(
+    Object.assign(new Event("unhandledrejection"), {
+      reason: new RangeError("too deep"),
+    }),
+  );
+  expect(
+    recentEvents()
+      .slice(-2)
+      .map(({ level, event, fields }) => [level, event, fields.error, fields.message]),
+  ).toEqual([
     ["error", "uncaught", "TypeError", "x is undefined"],
     ["error", "unhandled_rejection", "RangeError", "too deep"],
   ]);
@@ -53,7 +68,11 @@ test("an uncaught error and an unhandled rejection are logged as errors", () => 
 test("the devtools console can dump the ring and the details", () => {
   install();
   log("warn", "dumped", { n: 7 });
-  const dump = (window as unknown as { trackinizer: { events: () => unknown[]; details: () => string } }).trackinizer;
+  const dump = (
+    window as unknown as {
+      trackinizer: { events: () => unknown[]; details: () => string };
+    }
+  ).trackinizer;
   expect(dump.events().at(-1)).toMatchObject({ event: "dumped", fields: { n: 7 } });
   expect(dump.details()).toContain("warn dumped n=7");
   // Details the clipboard refused are the ones the console gives.
@@ -63,10 +82,16 @@ test("the devtools console can dump the ring and the details", () => {
 
 test("a render crash is logged once, with the component stack", () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
-  logRenderError(new TypeError("kinds.find is not a function"), { componentStack: "\n    at RouterProvider" });
+  logRenderError(new TypeError("kinds.find is not a function"), {
+    componentStack: "\n    at RouterProvider",
+  });
   expect(recentEvents().at(-1)).toMatchObject({
     level: "error",
     event: "render.crash",
-    fields: { error: "TypeError", message: "kinds.find is not a function", component_stack: "\n    at RouterProvider" },
+    fields: {
+      error: "TypeError",
+      message: "kinds.find is not a function",
+      component_stack: "\n    at RouterProvider",
+    },
   });
 });

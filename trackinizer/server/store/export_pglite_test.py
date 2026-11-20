@@ -21,7 +21,6 @@ from trackinizer.server.access_policy import Principal
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.store.export import _SCOPE_COLUMNS
-from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stdout
 from trackinizer.wire.audience import AUDIENCES
@@ -58,7 +57,6 @@ _LEFT_OUT: Final = frozenset(
         "gpu_issuances",
         "gpu_jobs",
         "gpu_owners",
-        "inquiry_embeddings",
         "host_credentials",
         "host_enrollments",
         "host_jobs",
@@ -67,9 +65,6 @@ _LEFT_OUT: Final = frozenset(
         "science_chat_tombstones",
         "session_bodies",
         "session_ciphertext",
-        "session_embeddings",
-        "session_index_cursor",
-        "session_index_state",
         "session_liveness",
         "users",
         "variables",
@@ -142,13 +137,15 @@ async def _seed(store: Store) -> dict[str, UUID]:
                 record=Stdout(text="hello\n"),
             ),
         ],
-        slash_commands=[
-            SlashCommandRow(
-                timestamp=datetime(2026, 9, 19, tzinfo=UTC),
-                command="compact",
-            ),
-        ],
     )
+    # No route writes a typed command any more; the table's old rows still export.
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO session_slash_commands (session_id, seq, timestamp, command) "
+            "VALUES ($1, 0, $2, 'compact')",
+            session,
+            datetime(2026, 9, 19, tzinfo=UTC),
+        )
     return {"broad": broad, "narrow": narrow, "run": run, "session": session}
 
 

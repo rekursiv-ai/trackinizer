@@ -214,6 +214,11 @@ type Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 type NodeName = Annotated[str, StringConstraints(pattern=NODE_PATTERN)]
 
 
+def _no_campaign(campaign: str) -> bool:
+    """Return whether a submit names no campaign."""
+    return not campaign
+
+
 class SubmitBody(BaseModel):
     """What a dev box asks for: a job on one node, and a key to reach it."""
 
@@ -241,6 +246,15 @@ class SubmitBody(BaseModel):
 
     node: NodeName | None = None
     """Require this node; ``None`` lets the broker choose."""
+
+    campaign: str = Field(
+        default="",
+        pattern=r"^(?:Issue#[1-9][0-9]*)?$",
+        exclude_if=_no_campaign,
+    )
+    """The campaign's brief, ``Issue#7``, which must be the caller's own: the job is
+    charged under ``campaign/Issue#7``; empty for no campaign's, and then left off
+    the wire, as a server older than the field refuses it."""
 
     @field_validator("argv")
     @classmethod
@@ -283,6 +297,9 @@ class JobView(BaseModel):
 
     upload_serial: int | None
     """The serial of the upload certificate, once the job is placed."""
+
+    campaign: str = ""
+    """The campaign's brief it is charged to, ``Issue#7``; empty for none."""
 
     @computed_field
     @property

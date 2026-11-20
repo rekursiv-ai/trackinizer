@@ -18,7 +18,12 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.sagent.session.types import BashResult, ToolCall, UserMessage
+from trackinizer.sagent.session.types import (
+    BashResult,
+    ToolCall,
+    ToolResult,
+    UserMessage,
+)
 from trackinizer.types.edges import EDGE_POLICIES, kind_group_members
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.web.scripts import seed_screenshots
@@ -409,11 +414,12 @@ def test_shell_records_pair_the_command_with_its_timestamped_output() -> None:
             name="Bash",
             arguments={"command": "measure retrieval --window 16"},
         ),
-        BashResult(
+        ToolResult(
             timestamp=seed_screenshots._when("11:22:36"),
             call_id="retrieval-run",
-            stdout="matched: 12\n",
-            exit_code=0,
+            state="done",
+            stdout=("matched: 12\n",),
+            result=BashResult(exit_code=0),
         ),
     )
 

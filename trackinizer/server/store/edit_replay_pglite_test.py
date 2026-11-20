@@ -77,8 +77,8 @@ async def _submit_task(store: Store) -> uuid.UUID:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_title_drifted_retry_preserves_title_and_embedding(store: Store) -> None:
-    """A replay returns before a drifted title or embedding is written."""
+async def test_title_drifted_retry_preserves_title(store: Store) -> None:
+    """A replay returns before a drifted title is written."""
     task = await _submit_task(store)
     key = uuid.uuid4()
     set_client_change_id(key)
@@ -88,12 +88,6 @@ async def test_title_drifted_retry_preserves_title_and_embedding(store: Store) -
         )
     finally:
         set_client_change_id(None)
-    async with store.engine.acquire() as conn:
-        first_vec = await conn.fetchval(
-            "SELECT embedding::text FROM inquiry_embeddings "
-            "WHERE inquiry_id = $1 AND model = 'stub'",
-            task,
-        )
 
     set_client_change_id(key)
     try:
@@ -104,15 +98,6 @@ async def test_title_drifted_retry_preserves_title_and_embedding(store: Store) -
     row = await store.get_inquiry(task)
     assert row is not None
     assert row.title == "Task: first title"
-    async with store.engine.acquire() as conn:
-        assert (
-            await conn.fetchval(
-                "SELECT embedding::text FROM inquiry_embeddings "
-                "WHERE inquiry_id = $1 AND model = 'stub'",
-                task,
-            )
-            == first_vec
-        )
 
 
 @pytest.mark.db_pglite

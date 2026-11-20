@@ -424,10 +424,9 @@ the same cascade but never auto-flips it -- an author reviews and sets
 unmet (non-terminal) `requires` prerequisites.
 
 SSE (`/api/change_log/stream`, `/api/web/subscribe`) streams mutated-inquiry
-ids over Postgres `LISTEN/NOTIFY` (or PGlite's in-process bus). Subscribers
-with a live agent run's session receive change envelopes pushed into their
-stdin ([`design_subscriber.md`](design_subscriber.md)); offline agents catch
-up via the `change_log` filtered by `subscribers_snapshot`.
+ids over Postgres `LISTEN/NOTIFY` (or PGlite's in-process bus). A subscriber
+catches up via the `change_log` filtered by `subscribers_snapshot`; no change is
+pushed into a live session.
 
 ## Auth
 
@@ -478,8 +477,8 @@ Single store: Postgres + pgvector, with PGlite as the default in-process
 substrate for prototyping. Same SQL and schema; only DSN acquisition and
 pub/sub differ.
 
-- `vector(384)` embeddings in `inquiry_embeddings` keyed by
-  `(inquiry_id, model)`, so multiple embedders coexist per inquiry.
+- `halfvec` embeddings in the embedding add-on's `embedding.vectors`, one
+  partial HNSW index per settings key.
 - `LISTEN/NOTIFY` for subscription fan-out.
 - Recursive CTEs for decomposition rollups and blocker checks.
 - No separate vector DB, search engine, or graph DB.

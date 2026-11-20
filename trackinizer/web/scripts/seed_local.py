@@ -36,6 +36,7 @@ from trackinizer.sagent.session.types import (
     BashResult,
     Thinking,
     ToolCall,
+    ToolResult,
     TurnContext,
     UserMessage,
 )
@@ -226,7 +227,12 @@ def _seed_transcript(client: Client) -> None:
         UserMessage(content="What does **Issue#1** ask for?"),
         Thinking(content="Reading the seeded root first."),
         ToolCall(call_id="c1", name="Bash", arguments={"command": "trax issue 1"}),
-        BashResult(call_id="c1", stdout="Issue#1 [active]\n", exit_code=0),
+        ToolResult(
+            call_id="c1",
+            state="done",
+            stdout=("Issue#1 [active]\n",),
+            result=BashResult(exit_code=0),
+        ),
         AssistantMessage(content="It is the seeded root; see `Issue#1`."),
     )
     records = [

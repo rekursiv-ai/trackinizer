@@ -6,7 +6,6 @@ from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, cast, override
-from unittest.mock import patch
 
 import inspect
 import locale
@@ -647,6 +646,41 @@ def test_isolated_base_directories_exist() -> None:
         assert helper().stat().st_mode & 0o777 == 0o700
 
 
+def test_home_is_the_isolated_roots_too(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """A vendor's fixed path under ``~`` (``~/.claude``) is not the operator's either."""
+    home = Path("~").expanduser()
+    assert home.is_relative_to(tmp_path_factory.getbasetemp())
+    assert home.is_dir()
+    assert home.stat().st_mode & 0o777 == 0o700
+
+
+def test_toolchain_homes_stay_the_operators(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """``cargo`` is a rustup proxy; under a tmp ``~`` it finds no toolchain."""
+    for variable in ("RUSTUP_HOME", "CARGO_HOME"):
+        toolchain = Path(os.environ[variable])
+        assert toolchain.is_absolute()
+        assert not toolchain.is_relative_to(tmp_path_factory.getbasetemp())
+
+
+def test_an_operators_own_toolchain_home_is_kept(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUSTUP_HOME", str(tmp_path / "rustup"))
+    monkeypatch.delenv("CARGO_HOME")
+
+    _allocate(request, tmp_path_factory, monkeypatch)
+
+    assert os.environ["RUSTUP_HOME"] == str(tmp_path / "rustup")
+    assert Path(os.environ["CARGO_HOME"]).name == ".cargo"
+
+
 def test_configure_declares_the_exported_opt_out_marker(
     pytestconfig: pytest.Config,
 ) -> None:
@@ -697,12 +731,20 @@ def test_isolation_does_not_scan_prior_test_directories(
 ) -> None:
     # Allocation alone: deleting the previous test's root walks only that root.
     del request.config.stash[resources._LAST_ROOT]
-    with patch("os.scandir", wraps=os.scandir) as scandir:
+    scanned: list[object] = []
+    real = os.scandir
+
+    def scandir(path: str) -> Iterator[os.DirEntry[str]]:
+        scanned.append(path)
+        return real(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "scandir", scandir)
         root = _allocate(request, tmp_path_factory, monkeypatch)
 
     assert isinstance(root, Path)
     assert root.is_dir()
-    scandir.assert_not_called()
+    assert scanned == []
 
 
 def test_isolation_does_not_grow_pytests_numbered_directory_parent(
@@ -770,6 +812,7 @@ def test_real_user_dirs_marker_restores_the_operators_directories(
         assert not resolved.is_relative_to(tmp_path_factory.getbasetemp()), (
             f"{helper.__name__} still resolved into a pytest tmp root"
         )
+    assert not Path("~").expanduser().is_relative_to(tmp_path_factory.getbasetemp())
 
 
 def test_opting_out_allocates_no_root_and_repoints_nothing(

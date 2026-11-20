@@ -8,8 +8,10 @@ import { META, row } from "../detail/testing";
 import { currentRoute } from "../router/addressBar";
 import { RouterProvider } from "../router/router";
 import { SearchView } from ".";
+import { must } from "../must";
 
-const BUDGET = "query exceeded the time budget; narrow the filters or add more specific terms";
+const BUDGET =
+  "query exceeded the time budget; narrow the filters or add more specific terms";
 
 beforeEach(() => {
   history.replaceState(null, "", "#/search/retry");
@@ -22,7 +24,9 @@ afterEach(() => {
 
 function show(q: string) {
   render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
       <MetaContext value={META}>
         <RouterProvider kinds={META.kinds}>
           <SearchView q={q} />
@@ -36,7 +40,9 @@ function show(q: string) {
 function rows(): string[][] {
   return within(screen.getByRole("table"))
     .getAllByRole("row")
-    .map((tableRow) => [...tableRow.querySelectorAll("th, td")].map((cell) => cell.textContent ?? ""));
+    .map((tableRow) =>
+      [...tableRow.querySelectorAll("th, td")].map((cell) => cell.textContent ?? ""),
+    );
 }
 
 test("an empty query asks nothing and says to enter one above", () => {
@@ -53,20 +59,38 @@ test("a query is one request across every kind, 50 at most, asking only the keys
   show("retry jitter");
   await screen.findByText("No matches");
   expect(sent.map((request) => request.path)).toEqual(["/api/web/search"]);
-  const query = new URLSearchParams(sent[0]!.query);
-  expect([query.get("q"), query.get("kind"), query.get("limit")]).toEqual(["retry jitter", null, "50"]);
-  expect(query.getAll("fields")).toEqual(["id", "kind", "seq", "title", "status", "judgement"]);
+  const query = new URLSearchParams(must(sent[0]).query);
+  expect([query.get("q"), query.get("kind"), query.get("limit")]).toEqual([
+    "retry jitter",
+    null,
+    "50",
+  ]);
+  expect(query.getAll("fields")).toEqual([
+    "id",
+    "kind",
+    "seq",
+    "title",
+    "status",
+    "judgement",
+  ]);
 });
 
 test("the matches show in a Ref, Status and Title table, with their count", async () => {
   stubFetch(() =>
     Response.json([
       row("Issue", 7, { title: "Retry jitter" }),
-      row("Belief", 9, { title: "Retries help", status: "complete", judgement: "proven" }),
+      row("Belief", 9, {
+        title: "Retries help",
+        status: "complete",
+        judgement: "proven",
+      }),
     ]),
   );
   show("retry");
-  expect((await screen.findByRole("heading", { level: 1, name: "Search: retry (2)" })).textContent).toBe("Search: retry (2)");
+  expect(
+    (await screen.findByRole("heading", { level: 1, name: "Search: retry (2)" }))
+      .textContent,
+  ).toBe("Search: retry (2)");
   expect(rows()).toEqual([
     ["Ref", "Status", "Title"],
     ["Issue#7", "Active", "Retry jitter"],
@@ -74,30 +98,39 @@ test("the matches show in a Ref, Status and Title table, with their count", asyn
   ]);
   const ref = within(screen.getByRole("table")).getByRole("link", { name: "Issue#7" });
   expect(ref.getAttribute("href")).toBe("/trax/ref/Issue/7");
-  expect(within(screen.getAllByRole("row")[2]!).getAllByRole("img").map((img) => img.getAttribute("aria-label"))).toEqual([
-    "Proven",
-    "Complete",
-  ]);
+  expect(
+    within(must(screen.getAllByRole("row")[2]))
+      .getAllByRole("img")
+      .map((img) => img.getAttribute("aria-label")),
+  ).toEqual(["Proven", "Complete"]);
 });
 
 test("no matches says so", async () => {
   stubFetch(() => Response.json([]));
   show("zebra");
   expect(await screen.findByText("No matches")).toBeTruthy();
-  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Search: zebra (0)");
+  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+    "Search: zebra (0)",
+  );
   expect(screen.queryByRole("table")).toBeNull();
 });
 
 test("the server's message shows, the time budget's included, and Retry searches again", async () => {
   let refuse = true;
   const sent = stubFetch(() =>
-    refuse ? Response.json({ detail: BUDGET }, { status: 400 }) : Response.json([row("Issue", 7, { title: "Retry jitter" })]),
+    refuse
+      ? Response.json({ detail: BUDGET }, { status: 400 })
+      : Response.json([row("Issue", 7, { title: "Retry jitter" })]),
   );
   show("retry");
-  expect((await screen.findByRole("alert")).textContent).toMatch(new RegExp(`^${BUDGET}Retry`));
+  expect((await screen.findByRole("alert")).textContent).toMatch(
+    new RegExp(`^${BUDGET}Retry`),
+  );
   refuse = false;
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-  expect(await screen.findByRole("heading", { level: 1, name: "Search: retry (1)" })).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Search: retry (1)" }),
+  ).toBeTruthy();
   expect(sent).toHaveLength(2);
 });
 

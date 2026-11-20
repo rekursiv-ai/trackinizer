@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
@@ -11,8 +18,16 @@ import { currentRoute } from "../router/addressBar";
 function boot(role: string) {
   return stubFetch((request) => {
     const path = new URL(request.url).pathname;
-    if (path === "/api/meta/enums") return Response.json({ inquiry_kind_all: ["Issue"], status: ["active"] });
-    if (path === "/api/me/profile") return Response.json({ user_id: "u1", email: "ada@example.com", name: "Ada", role, last_login: null });
+    if (path === "/api/meta/enums")
+      return Response.json({ inquiry_kind_all: ["Issue"], status: ["active"] });
+    if (path === "/api/me/profile")
+      return Response.json({
+        user_id: "u1",
+        email: "ada@example.com",
+        name: "Ada",
+        role,
+        last_login: null,
+      });
     if (path === "/api/admin/users") return Response.json({ users: [] });
     if (path === "/api/admin/allowlist") return Response.json({ entries: [] });
     if (path === "/api/me/tokens") return Response.json({ tokens: [] });
@@ -24,7 +39,9 @@ function boot(role: string) {
 async function commandTitles(user: ReturnType<typeof userEvent.setup>) {
   await user.keyboard("{Control>}k{/Control}");
   const palette = await screen.findByRole("dialog", { name: "Command menu" });
-  fireEvent.change(within(palette).getByRole("combobox", { name: "Command" }), { target: { value: "Go to" } });
+  fireEvent.change(within(palette).getByRole("combobox", { name: "Command" }), {
+    target: { value: "Go to" },
+  });
   const titles = within(palette)
     .getAllByRole("option")
     .map((option) => option.textContent);
@@ -54,7 +71,9 @@ test("a non-admin has Your settings but no Admin entry or command", async () => 
   render(<App assign={vi.fn()} />);
   await screen.findByLabelText("Signed in");
   const sidebar = within(screen.getByRole("navigation", { name: "Sidebar" }));
-  expect(sidebar.getByRole("link", { name: "Your settings" }).getAttribute("href")).toBe("/trax/settings");
+  expect(
+    sidebar.getByRole("link", { name: "Your settings" }).getAttribute("href"),
+  ).toBe("/trax/settings");
   expect(sidebar.queryByRole("link", { name: "Admin" })).toBeNull();
   const titles = await commandTitles(user);
   expect(titles).toContain("Go to Your settings");
@@ -79,9 +98,16 @@ test("an admin demoted since boot opens Admin: it waits for the profile it refet
     const path = new URL(request.url).pathname;
     if (path === "/api/me/profile") {
       if (role !== "admin") await held;
-      return Response.json({ user_id: "u1", email: "ada@example.com", name: "Ada", role, last_login: null });
+      return Response.json({
+        user_id: "u1",
+        email: "ada@example.com",
+        name: "Ada",
+        role,
+        last_login: null,
+      });
     }
-    if (path === "/api/meta/enums") return Response.json({ inquiry_kind_all: ["Issue"], status: ["active"] });
+    if (path === "/api/meta/enums")
+      return Response.json({ inquiry_kind_all: ["Issue"], status: ["active"] });
     return Response.json(path === "/api/inquiries" ? [] : { users: [], entries: [] });
   });
   render(<App assign={vi.fn()} />);
@@ -90,7 +116,11 @@ test("an admin demoted since boot opens Admin: it waits for the profile it refet
   history.pushState(null, "", "#/admin");
   dispatchEvent(new HashChangeEvent("hashchange"));
   await screen.findByRole("heading", { level: 1, name: "Admin" });
-  await waitFor(() => expect(sent.filter((request) => request.path === "/api/me/profile")).toHaveLength(2));
+  await waitFor(() =>
+    expect(sent.filter((request) => request.path === "/api/me/profile")).toHaveLength(
+      2,
+    ),
+  );
   expect(screen.queryByRole("region", { name: "Users" })).toBeNull();
   release();
   expect(await screen.findByRole("heading", { name: "Admins only" })).toBeTruthy();
@@ -113,7 +143,9 @@ test("an admin has the Admin entry, and the link opens users and the allowlist",
   const sidebar = within(screen.getByRole("navigation", { name: "Sidebar" }));
   await user.click(sidebar.getByRole("link", { name: "Admin" }));
   await waitFor(() => expect(currentRoute()).toBe("#/admin"));
-  expect(sidebar.getByRole("link", { name: "Admin" }).getAttribute("aria-current")).toBe("page");
+  expect(
+    sidebar.getByRole("link", { name: "Admin" }).getAttribute("aria-current"),
+  ).toBe("page");
   expect(await screen.findByRole("region", { name: "Users" })).toBeTruthy();
   expect(screen.getByRole("region", { name: "Allowlist" })).toBeTruthy();
 });

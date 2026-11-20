@@ -4,8 +4,13 @@ import { expect, failedResource, test, streamOpened } from "./fixtures";
 // Purge from the detail's ⋯ menu against the e2e server. The row is this
 // test's own, so no other spec file's rows are touched.
 
-async function createIssue(request: APIRequestContext, fields: object): Promise<string> {
-  const response = await request.post("/api/inquiries/issue", { data: { ...fields, idempotency_key: crypto.randomUUID() } });
+async function createIssue(
+  request: APIRequestContext,
+  fields: object,
+): Promise<string> {
+  const response = await request.post("/api/inquiries/issue", {
+    data: { ...fields, idempotency_key: crypto.randomUUID() },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   return (await response.json()).id;
 }
@@ -24,7 +29,11 @@ test("an owned row: Purge clears its owner by compare-and-set, then purges with 
   allowErrors,
 }) => {
   const label = `d5-purge-${crypto.randomUUID().slice(0, 8)}`;
-  const id = await createIssue(request, { title: "D5 purge me", owner: "e2e-owner", labels: [label] });
+  const id = await createIssue(request, {
+    title: "D5 purge me",
+    owner: "e2e-owner",
+    labels: [label],
+  });
   // The other tab's detail reads the purged row again, and the server answers 404.
   allowErrors(failedResource(`/api/web/get/${id}`, 404));
   // Another tab has the detail open: the stream tells it the row is gone.
@@ -56,25 +65,37 @@ test("an owned row: Purge clears its owner by compare-and-set, then purges with 
 
   await expect(page.getByRole("heading", { name: "Deleted or purged" })).toBeVisible();
   await expect(page.getByText(/^Purged Issue#\d+$/)).toBeVisible();
-  expect(writes.map((write) => `${write.method()} ${new URL(write.url()).pathname.replace(id, "{id}")}`)).toEqual([
-    "PUT /api/inquiries/{id}/owner",
-    "DELETE /api/inquiries/{id}",
-  ]);
+  expect(
+    writes.map(
+      (write) =>
+        `${write.method()} ${new URL(write.url()).pathname.replace(id, "{id}")}`,
+    ),
+  ).toEqual(["PUT /api/inquiries/{id}/owner", "DELETE /api/inquiries/{id}"]);
   expect(writes.map((write) => write.postDataJSON())).toEqual([
     { value: null, mode: "cas", expected: "e2e-owner", reason: "D5 e2e: a test row" },
     { reason: "D5 e2e: a test row" },
   ]);
   expect((await request.get(`/api/inquiries/${id}`)).status()).toBe(404);
-  const purged = await (await request.get(`/api/change_log?subject_id=${id}&kind=purged`)).json();
-  expect(purged.map((change: { reason: string }) => change.reason)).toEqual(["D5 e2e: a test row"]);
+  const purged = await (
+    await request.get(`/api/change_log?subject_id=${id}&kind=purged`)
+  ).json();
+  expect(purged.map((change: { reason: string }) => change.reason)).toEqual([
+    "D5 e2e: a test row",
+  ]);
 
   await expect(other.getByRole("heading", { name: "Deleted or purged" })).toBeVisible();
   await page.locator("a.crumb-btn").click();
-  await expect(page.getByTitle("The same query from the CLI")).toContainText(`labels is ${label}`);
+  await expect(page.getByTitle("The same query from the CLI")).toContainText(
+    `labels is ${label}`,
+  );
   await expect(page.getByRole("heading", { name: "Nothing here" })).toBeVisible();
 });
 
-test("a purge whose answer is lost after it landed is read back and reported purged, not a 404 (K1)", async ({ page, request, allowErrors }) => {
+test("a purge whose answer is lost after it landed is read back and reported purged, not a 404 (K1)", async ({
+  page,
+  request,
+  allowErrors,
+}) => {
   const id = await createIssue(request, { title: "K1 purge, answer lost" });
   // The purge's answer, which the route drops once the server has applied it,
   // and the reads of the purged row that follow, which the server answers 404.
@@ -87,7 +108,9 @@ test("a purge whose answer is lost after it landed is read back and reported pur
     await route.abort();
   });
   await openLive(page, `#/lookup/${id}`);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("K1 purge, answer lost");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "K1 purge, answer lost",
+  );
   const purges: Request[] = [];
   page.on("request", (sent) => {
     if (sent.method() === "DELETE") purges.push(sent);

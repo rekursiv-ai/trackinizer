@@ -26,7 +26,8 @@ export class Batcher {
   /** Collect `id`; start the window if none is open. */
   add(id: string): void {
     this.#ids.add(id);
-    if (this.#timer === null && !this.#held) this.#timer = setTimeout(() => this.#flush(this.take()), this.#windowMs);
+    if (this.#timer === null && !this.#held)
+      this.#timer = setTimeout(() => this.#flush(this.take()), this.#windowMs);
   }
 
   /** Stop flushing; keep collecting. */

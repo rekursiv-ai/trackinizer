@@ -54,11 +54,6 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         ("POST", "/api/sessions/start"),
         ("POST", "/api/sessions/{session_id}/audience"),
         ("POST", "/api/sessions/{session_id}/end"),
-        ("POST", "/api/sessions/{session_id}/inbound"),
-        ("GET", "/api/sessions/{session_id}/inbound"),
-        # A run's word on what it is doing, kept on its lease in memory: it reads and
-        # writes no record, and is held to the rules of the session's drain.
-        ("POST", "/api/sessions/{session_id}/run-state"),
         # A live session, relayed in memory: its lines take the records' read test;
         # an input, and starting or stopping the process, take the test of who may
         # send the session an input. Declared ahead of the relay: each answers 501

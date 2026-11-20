@@ -20,6 +20,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
+from trackinizer.server.preferences import assistant_settings_schema
 
 
 if TYPE_CHECKING:
@@ -576,12 +577,16 @@ class TestProfile:
             "app_bar": "top",
             "app_bar_width": 220,
             "app_bar_folded": False,
+            "app_bar_pinned": True,
+            "font": "system",
+            "interface_text_size": 14,
+            "chat_text_size": 13,
+            "canvas_text_size": 14,
+            "display_text_sizes": {},
             "highlight_mentions": True,
             "terminal_font_size": "13px",
             "terminal_tab_chords": False,
-            "terminal_placement": "bottom",
             "home": "graph",
-            "chat_provider": "assistant",
             "assistant_prompt": "sagent",
             "cli_folder": "",
             "chat_view": {
@@ -720,6 +725,17 @@ class TestProfileRoute:
 
 
 class TestPreferences:
+    def test_an_agent_is_told_the_settings_its_own_tool_may_change(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+
+        r = client.get("/api/me/preferences/agent")
+
+        assert r.status_code == 200, r.text
+        assert r.json() == assistant_settings_schema()
+
     def test_sets_and_resets_keys_in_one_statement(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -765,12 +781,16 @@ class TestPreferences:
             "app_bar": "top",
             "app_bar_width": 220,
             "app_bar_folded": False,
+            "app_bar_pinned": True,
+            "font": "system",
+            "interface_text_size": 14,
+            "chat_text_size": 13,
+            "canvas_text_size": 14,
+            "display_text_sizes": {},
             "highlight_mentions": True,
             "terminal_font_size": "13px",
             "terminal_tab_chords": False,
-            "terminal_placement": "bottom",
             "home": "graph",
-            "chat_provider": "assistant",
             "assistant_prompt": "sagent",
             "cli_folder": "",
             "chat_view": {
@@ -793,7 +813,13 @@ class TestPreferences:
         )
         assert call.args[1:] == (
             {"theme": "light"},
-            ["chat_side", "chat_style", "chat_tool_calls"],
+            [
+                "chat_side",
+                "chat_style",
+                "chat_tool_calls",
+                "chat_provider",
+                "terminal_placement",
+            ],
             uuid.UUID("11111111-1111-1111-1111-111111111111"),
         )
 
@@ -808,7 +834,13 @@ class TestPreferences:
         assert r.status_code == 200, r.text
         assert engine.conn.fetchrow.call_args.args[1:3] == (
             {"read": read},
-            ["lens", "chat_style", "chat_tool_calls"],
+            [
+                "lens",
+                "chat_style",
+                "chat_tool_calls",
+                "chat_provider",
+                "terminal_placement",
+            ],
         )
 
     @pytest.mark.parametrize(

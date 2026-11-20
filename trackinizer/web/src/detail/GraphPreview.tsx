@@ -11,6 +11,7 @@ import { routeHref } from "../router/addressBar";
 import { useRouter } from "../router/router";
 import { detailQueries, NEIGHBOURHOOD_LIMIT } from "./queries";
 import { radialLayout } from "./radial";
+import { must } from "../must";
 
 /**
  * The graph preview at the top of the rail: what lies within two hops of the
@@ -24,7 +25,9 @@ import { radialLayout } from "./radial";
  */
 export function GraphPreview({ detail }: { detail: Detail }) {
   const { route } = useRouter();
-  const related = [detail.edges, detail.backlinks].some((byEdge) => Object.values(byEdge).some((peers) => peers.length > 0));
+  const related = [detail.edges, detail.backlinks].some((byEdge) =>
+    Object.values(byEdge).some((peers) => peers.length > 0),
+  );
   if (route.name === "graph" || !related) return null;
   return <Preview row={detail.self} />;
 }
@@ -38,22 +41,37 @@ function Preview({ row }: { row: DetailRow }) {
   // Read and drawn after the rest of the page, in a background render React can
   // interrupt, as Activity is: the detail's first paint never waits for it.
   const shown = useDeferredValue(true, false);
-  const query = useQuery({ ...detailQueries.neighbourhood(row.id, HOPS), enabled: shown });
+  const query = useQuery({
+    ...detailQueries.neighbourhood(row.id, HOPS),
+    enabled: shown,
+  });
   const graph = shown ? query.data : undefined;
   const name = `${row.kind}#${row.seq}`;
-  const href = routeHref({ name: "graph", focus: { ref: { kind: row.kind, seq: row.seq }, hops: HOPS } });
+  const href = routeHref({
+    name: "graph",
+    focus: { ref: { kind: row.kind, seq: row.seq }, hops: HOPS },
+  });
   return (
     <div className="rail-graph">
-      <a className="rail-graph-link" href={href} aria-label={`Open in graph: ${name}, ${HOPS} hops`}>
+      <a
+        className="rail-graph-link"
+        href={href}
+        aria-label={`Open in graph: ${name}, ${HOPS} hops`}
+      >
         <svg viewBox={`0 0 ${SIZE.width} ${SIZE.height}`} aria-hidden="true">
           {graph ? <Drawing graph={graph} focus={row.id} palette={palette} /> : null}
         </svg>
-        <span className="rail-graph-caption">{graph ? countText(graph.nodes.length) : "Loading the graph…"}</span>
+        <span className="rail-graph-caption">
+          {graph ? countText(graph.nodes.length) : "Loading the graph…"}
+        </span>
       </a>
       {query.isError ? (
         <p className="rail-graph-error" role="alert">
           Could not load the graph: {query.error.message}
-          <CopyDetails message={`Could not load the graph around ${name}: ${query.error.message}`} error={query.error} />
+          <CopyDetails
+            message={`Could not load the graph around ${name}: ${query.error.message}`}
+            error={query.error}
+          />
         </p>
       ) : null}
     </div>
@@ -65,17 +83,33 @@ function Preview({ row }: { row: DetailRow }) {
  * look the graph's model gives it, lit by its hops so two hops out fades, the
  * focus haloed; sizes scaled down to the preview's.
  */
-function Drawing({ graph, focus, palette }: { graph: FocusGraph; focus: string; palette: Palette }) {
+function Drawing({
+  graph,
+  focus,
+  palette,
+}: {
+  graph: FocusGraph;
+  focus: string;
+  palette: Palette;
+}) {
   const { nodes, links, placed } = useMemo(() => {
     const model = new GraphModel(palette);
     model.apply(graph);
-    model.show(palette, { ...PLAIN_LENS, lit: new Map(graph.nodes.map((row) => [row.id, row.hops])), strong: new Set([focus]) });
-    return { nodes: model.nodes, links: model.links, placed: radialLayout(graph, SIZE) };
+    model.show(palette, {
+      ...PLAIN_LENS,
+      lit: new Map(graph.nodes.map((row) => [row.id, row.hops])),
+      strong: new Set([focus]),
+    });
+    return {
+      nodes: model.nodes,
+      links: model.links,
+      placed: radialLayout(graph, SIZE),
+    };
   }, [graph, focus, palette]);
   return (
     <>
       {links.map(({ from, to, kind, look }) => {
-        const [start, end] = [placed.get(from)!, placed.get(to)!];
+        const [start, end] = [must(placed.get(from)), must(placed.get(to))];
         return (
           <line
             key={`${from} ${to} ${kind}`}
@@ -90,12 +124,22 @@ function Drawing({ graph, focus, palette }: { graph: FocusGraph; focus: string; 
         );
       })}
       {nodes.map(({ id, kind, seq, title, look }) => {
-        const { x, y } = placed.get(id)!;
+        const { x, y } = must(placed.get(id));
         const radius = look.radius * SCALE;
         return (
           <g key={id} data-id={id}>
             <title>{`${kind}#${seq} · ${title || "(untitled)"}`}</title>
-            {look.halo ? <circle className="halo" cx={x} cy={y} r={radius + HALO_GAP_PX} fill="none" stroke={look.halo} strokeWidth={1.5} /> : null}
+            {look.halo ? (
+              <circle
+                className="halo"
+                cx={x}
+                cy={y}
+                r={radius + HALO_GAP_PX}
+                fill="none"
+                stroke={look.halo}
+                strokeWidth={1.5}
+              />
+            ) : null}
             <circle
               className="disc"
               cx={x}
@@ -108,8 +152,18 @@ function Drawing({ graph, focus, palette }: { graph: FocusGraph; focus: string; 
               strokeWidth={RING_PX}
             />
             {/* The canvas washes the whole disc, then strokes the ring over it; inset by half the ring, the same. */}
-            {look.wash ? <circle cx={x} cy={y} r={radius - RING_PX / 2} fill={look.wash} fillOpacity={look.washAlpha} /> : null}
-            {look.dot ? <circle cx={x} cy={y} r={radius * 0.4} fill={look.dot} /> : null}
+            {look.wash ? (
+              <circle
+                cx={x}
+                cy={y}
+                r={radius - RING_PX / 2}
+                fill={look.wash}
+                fillOpacity={look.washAlpha}
+              />
+            ) : null}
+            {look.dot ? (
+              <circle cx={x} cy={y} r={radius * 0.4} fill={look.dot} />
+            ) : null}
           </g>
         );
       })}

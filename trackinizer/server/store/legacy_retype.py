@@ -46,6 +46,7 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolResult,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -203,14 +204,19 @@ def retype(
                 ),
             )
         case "legacy/ToolResult":
+            content = from_plain(payload.get("content"), str, default="")
             return Retyped(
                 records=(
-                    UncategorizedToolResult(
+                    ToolResult(
                         context_id=record.context_id,
                         timestamp=timestamp,
                         call_id=from_plain(payload.get("call_id"), str, default=""),
-                        content=from_plain(payload.get("content"), str, default=""),
-                        attachments=_attachments(payload),
+                        state="done",
+                        stdout=(
+                            *((content,) if content else ()),
+                            *_attachments(payload),
+                        ),
+                        result=UncategorizedToolResult(),
                         # Only receipt fields the provider actually set: the
                         # old union's defaults (False, "") are noise a reader
                         # would mistake for provenance.

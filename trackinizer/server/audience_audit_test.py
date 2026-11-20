@@ -53,9 +53,11 @@ _TABLES: Final = (
     "session_records",
     "session_manifests",
     "session_slash_commands",
-    "session_embeddings",
     "session_ciphertext",
     "session_bodies",
+    # The embedding addon's vectors of transcripts: their nearest units say what a
+    # hidden session holds.
+    r"embedding\.vectors",
 )
 
 _TABLE_NAME: Final = re.compile("|".join(_TABLES))
@@ -82,6 +84,7 @@ _CUT: Final = re.compile(r"^(?:@|(?:async[ \t]+)?def\b|class\b)", re.MULTILINE)
 # The store methods that read or write a session's content for any id they are given.
 _CONTENT_METHODS: Final = frozenset(
     {
+        "append_session_part",
         "append_session_records",
         "read_recent_session_turns",
         "read_session_manifests",
@@ -111,8 +114,9 @@ _ENFORCED_AGGREGATES: Final = frozenset(
         ("server/store/session_feed.py", "_SessionFeedMixin.read_feed_facets"),
         ("server/store/session_feed.py", "_SessionFeedMixin.read_feed_histogram"),
         ("server/store/session_feed.py", "_count_buckets"),
-        ("server/store/session_search.py", "_fts_arm"),
-        ("server/store/session_search.py", "_semantic_arm"),
+        ("server/store/search.py", "_fts_arm"),
+        ("server/store/search.py", "_semantic_arm"),
+        ("addons/embedding/search.py", "_sql"),
         # The SQL-lowered form of a record filter: an EXISTS over the records of
         # ``inquiries.id``, which would let a viewer probe a hidden transcript were
         # ``list_kind`` not to keep hidden sessions out of the rows it meets.
@@ -120,7 +124,7 @@ _ENFORCED_AGGREGATES: Final = frozenset(
         # A writer whose commit pings every live stream. The ping names the
         # session's audience, so a stream holds it back from a viewer who does not
         # read it; ``untagged_notifiers`` fails a writer that pings without one.
-        ("server/store/session_ir.py", "_SessionIRMixin.append_session_records"),
+        ("server/store/session_ir.py", "_SessionIRMixin.append_session_part"),
     },
 )
 

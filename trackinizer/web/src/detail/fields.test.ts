@@ -19,7 +19,9 @@ test("an Issue's fields come from the schema, in the detail's order and places",
     ["marginal_cost_resource_usd", "details"],
     ["app", "json"],
   ]);
-  expect(fields.find((field) => field.name === "priority")?.route?.path).toBe("/api/issue/{target_id}/priority");
+  expect(fields.find((field) => field.name === "priority")?.route?.path).toBe(
+    "/api/issue/{target_id}/priority",
+  );
 });
 
 test("values come from the row: unset in any spelling is undefined, costs from their nesting", () => {
@@ -33,19 +35,25 @@ test("values come from the row: unset in any spelling is undefined, costs from t
     META.fieldOwners,
   );
   const value = (name: string) => fields.find((field) => field.name === name)?.value;
-  expect([value("owner"), value("labels"), value("validation"), value("priority")]).toEqual([
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-  ]);
-  expect([value("marginal_cost_agent_usd"), value("marginal_cost_resource_usd")]).toEqual([1.25, 0]);
+  expect([
+    value("owner"),
+    value("labels"),
+    value("validation"),
+    value("priority"),
+  ]).toEqual([undefined, undefined, undefined, undefined]);
+  expect([
+    value("marginal_cost_agent_usd"),
+    value("marginal_cost_resource_usd"),
+  ]).toEqual([1.25, 0]);
   expect([undefined, null, "", []].every(isUnset)).toBe(true);
   expect([0, false, "x", ["x"]].some(isUnset)).toBe(false);
 });
 
 test("read-only fields join: the kind's routeless schema fields and any the row carries", () => {
-  const fields = kindFields(row("AgentSession", 1, { ended: "2026-09-24T10:00:00+00:00", novel: "x" }), META.fieldOwners);
+  const fields = kindFields(
+    row("AgentSession", 1, { ended: "2026-09-24T10:00:00+00:00", novel: "x" }),
+    META.fieldOwners,
+  );
   const byName = new Map(fields.map((field) => [field.name, field]));
   expect(byName.get("opened_by_api_key_id")?.route).toBeUndefined();
   expect(byName.get("ended")?.value).toBe("2026-09-24T10:00:00+00:00");
@@ -54,7 +62,10 @@ test("read-only fields join: the kind's routeless schema fields and any the row 
 });
 
 test("an object-valued field the detail never named is shown as JSON", () => {
-  const fields = kindFields(row("Artifact", 1, { settings: { a: 1 } }), META.fieldOwners);
+  const fields = kindFields(
+    row("Artifact", 1, { settings: { a: 1 } }),
+    META.fieldOwners,
+  );
   expect(fields.find((field) => field.name === "settings")?.look.place).toBe("json");
 });
 

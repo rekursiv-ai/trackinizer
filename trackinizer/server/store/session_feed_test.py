@@ -26,6 +26,8 @@ from trackinizer.conftest import make_store
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     Attachment,
+    BashResult,
+    ToolResult,
     UserMessage,
 )
 from trackinizer.server.audience import SessionReader
@@ -37,7 +39,7 @@ from trackinizer.server.store.session_feed import (
     FeedScope,
     _room_facets,
 )
-from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.types.session_records import SessionRecordRow, stored_payload
 from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.wire_sessions import (
     FeedActorFacet,
@@ -336,6 +338,61 @@ def test_each_field_of_a_scope_binds_one_array_in_the_order_the_sql_tests_it() -
         "e.kind = ANY($4::text[])",
     ]
     assert params == [["a"], ["r"], ["c"], ["k", "l"]]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_tool_call_row_keeps_its_stored_kind_and_has_a_current_payload(
+    integ_store: Store,
+) -> None:
+    """A legacy row and a current one have the same ``kind`` and the same payload."""
+    session = await _session(integ_store, "a")
+    current = stored_payload(
+        ToolResult(
+            call_id="d",
+            state="done",
+            stdout=("ok",),
+            result=BashResult(exit_code=0),
+        ),
+    )
+    legacy = (
+        '{"py/object": "BashResult", "call_id": "d", "stdout": "ok", "exit_code": 0}'
+    )
+    await _records(
+        integ_store,
+        session,
+        [
+            ("BashResult", _T0, legacy),
+            ("BashResult", _T0, json.dumps(mutable(current))),
+            ("UncategorizedToolResult", _T0, '{"$body": "offloaded"}'),
+            ("UserMessage", _T0, _HUMAN),
+        ],
+    )
+
+    events = await integ_store.read_feed(
+        scope=replace(_ALL_SESSIONS, kinds=("BashResult", "UncategorizedToolResult")),
+    )
+    pending_or_cancelled = await integ_store.read_feed(
+        scope=replace(_ALL_SESSIONS, kinds=("ToolResult",)),
+    )
+    facets = await integ_store.read_feed_facets(
+        since=None,
+        until=None,
+        scope=_ALL_SESSIONS,
+    )
+
+    assert [(event.kind, event.message) for event in events] == [
+        ("BashResult", current),
+        ("BashResult", current),
+        ("UncategorizedToolResult", {"$body": "offloaded"}),
+    ]
+    # Only a pending or cancelled call is stored under ``ToolResult``; none is here.
+    assert pending_or_cancelled == []
+    assert facets.kinds == [
+        FeedKindFacet(kind="BashResult", count=2),
+        FeedKindFacet(kind="UncategorizedToolResult", count=1),
+        FeedKindFacet(kind="UserMessage", count=1),
+    ]
 
 
 def test_a_canvas_scope_names_sessions_with_one_clause_after_the_fields() -> None:

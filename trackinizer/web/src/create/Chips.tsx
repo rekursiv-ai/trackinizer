@@ -7,8 +7,17 @@ import { Menu, type MenuOption } from "../lists/Menu";
 import { actorName } from "../people/people";
 import { PeoplePicker } from "../people/Picker";
 import { useBrowserState } from "../state/store";
-import { Avatar, capitalize, JudgementGlyph, LabelDot, PriorityGlyph, priorityName, StatusGlyph } from "../ui/glyphs";
+import {
+  Avatar,
+  capitalize,
+  JudgementGlyph,
+  LabelDot,
+  PriorityGlyph,
+  priorityName,
+  StatusGlyph,
+} from "../ui/glyphs";
 import { Icon } from "../ui/icons";
+import { must } from "../must";
 
 /**
  * The draft's chips under its text, as in the mock: judgement, status, priority,
@@ -32,16 +41,30 @@ export function Chips({
   const [{ people }] = useBrowserState();
 
   /** A chip that sets one value, or none through its `unset` option. */
-  const one = (field: string, name: string, values: readonly string[], look: (value: string) => Look, unset?: Look & { label: string }) => {
+  const one = (
+    field: string,
+    name: string,
+    values: readonly string[],
+    look: (value: string) => Look,
+    unset?: Look & { label: string },
+  ) => {
     const value = typeof chips[field] === "string" ? (chips[field] as string) : null;
-    const shown = value === null ? unset! : look(value);
-    const options: MenuOption[] = [...new Set([...values, ...(value === null ? [] : [value])])].map((option) => ({
+    const shown = value === null ? must(unset) : look(value);
+    const options: MenuOption[] = [
+      ...new Set([...values, ...(value === null ? [] : [value])]),
+    ].map((option) => ({
       value: option,
       label: look(option).text,
       ...look(option),
       checked: option === value,
     }));
-    if (unset) options.push({ value: CLEAR, label: unset.label, icon: unset.icon, checked: value === null });
+    if (unset)
+      options.push({
+        value: CLEAR,
+        label: unset.label,
+        icon: unset.icon,
+        checked: value === null,
+      });
     return (
       <Menu
         key={field}
@@ -53,7 +76,14 @@ export function Chips({
     );
   };
   /** A chip that ticks several values, each a toggle. */
-  const many = (field: string, name: string, values: readonly string[], look: (values: readonly string[]) => Look, icon?: (value: string) => Partial<Look>, create?: (typed: string) => string) => {
+  const many = (
+    field: string,
+    name: string,
+    values: readonly string[],
+    look: (values: readonly string[]) => Look,
+    icon?: (value: string) => Partial<Look>,
+    create?: (typed: string) => string,
+  ) => {
     const shown = asList(chips[field]);
     return (
       <Menu
@@ -61,22 +91,50 @@ export function Chips({
         label={`${name}…`}
         multi
         trigger={chip(field, name, look(shown), disabled)}
-        options={[...new Set([...values, ...shown])].map((value) => ({ value, label: value, ...icon?.(value), checked: shown.includes(value) }))}
-        onPick={(value) => onChange(field, shown.includes(value) ? shown.filter((item) => item !== value) : [...shown, value])}
+        options={[...new Set([...values, ...shown])].map((value) => ({
+          value,
+          label: value,
+          ...icon?.(value),
+          checked: shown.includes(value),
+        }))}
+        onPick={(value) =>
+          onChange(
+            field,
+            shown.includes(value)
+              ? shown.filter((item) => item !== value)
+              : [...shown, value],
+          )
+        }
         create={create}
       />
     );
   };
 
   const priority = typeof chips.priority === "number" ? chips.priority : null;
-  const shownPriority = { icon: <PriorityGlyph priority={priority} />, text: priorityName(priority) };
+  const shownPriority = {
+    icon: <PriorityGlyph priority={priority} />,
+    text: priorityName(priority),
+  };
   const pieces: { readonly [field: string]: () => ReactElement } = {
     judgement: () =>
-      one("judgement", "Judgement", enums.judgement ?? [], (value) => ({ icon: <JudgementGlyph judgement={value} />, text: capitalize(value) }), {
-        label: "No judgement",
-        text: "No judgement",
-      }),
-    status: () => one("status", "Status", enums.status ?? [], (value) => ({ icon: <StatusGlyph status={value} />, text: capitalize(value) })),
+      one(
+        "judgement",
+        "Judgement",
+        enums.judgement ?? [],
+        (value) => ({
+          icon: <JudgementGlyph judgement={value} />,
+          text: capitalize(value),
+        }),
+        {
+          label: "No judgement",
+          text: "No judgement",
+        },
+      ),
+    status: () =>
+      one("status", "Status", enums.status ?? [], (value) => ({
+        icon: <StatusGlyph status={value} />,
+        text: capitalize(value),
+      })),
     priority: () => (
       <PriorityPicker
         key="priority"
@@ -85,12 +143,17 @@ export function Chips({
         trigger={chip(
           "priority",
           "Priority",
-          priority === null || priority % 10 === 0 ? shownPriority : { ...shownPriority, text: `${shownPriority.text} (${priority})` },
+          priority === null || priority % 10 === 0
+            ? shownPriority
+            : { ...shownPriority, text: `${shownPriority.text} (${priority})` },
           disabled,
         )}
       />
     ),
-    issue_kind: () => many("issue_kind", "Type", enums.issue_kind ?? [], (types) => ({ text: types.length ? types.join(", ") : "No type" })),
+    issue_kind: () =>
+      many("issue_kind", "Type", enums.issue_kind ?? [], (types) => ({
+        text: types.length ? types.join(", ") : "No type",
+      })),
     // The people picker offers me, loaded people and those added by hand; a chip names them by name.
     owner: () => {
       const owner = typeof chips.owner === "string" ? chips.owner : null;
@@ -103,7 +166,10 @@ export function Chips({
             "Owner",
             owner === null
               ? { icon: <Icon name="user" size={13} />, text: "No owner" }
-              : { icon: <Avatar actor={owner} size={16} />, text: actorName(owner, people) },
+              : {
+                  icon: <Avatar actor={owner} size={16} />,
+                  text: actorName(owner, people),
+                },
             disabled,
           )}
           current={owner === null ? [] : [owner]}
@@ -124,15 +190,25 @@ export function Chips({
             "Subscribers",
             actors.length
               ? {
-                  icon: <Avatar actor={actors[0]!} size={16} />,
-                  text: actors.length === 1 ? actorName(actors[0]!, people) : `${actors.length} subscribers`,
+                  icon: <Avatar actor={must(actors[0])} size={16} />,
+                  text:
+                    actors.length === 1
+                      ? actorName(must(actors[0]), people)
+                      : `${actors.length} subscribers`,
                 }
               : { icon: <Icon name="bell" size={13} />, text: "No subscribers" },
             disabled,
           )}
           current={actors}
           checked={(actor) => actor !== null && actors.includes(actor)}
-          onPick={(actor) => onChange("subscribers", actors.includes(actor!) ? actors.filter((item) => item !== actor) : [...actors, actor!])}
+          onPick={(actor) =>
+            onChange(
+              "subscribers",
+              actors.includes(must(actor))
+                ? actors.filter((item) => item !== actor)
+                : [...actors, must(actor)],
+            )
+          }
         />
       );
     },
@@ -141,12 +217,19 @@ export function Chips({
         "labels",
         "Labels",
         loadedValues(queryClient, "labels"),
-        (labels) => (labels.length ? { icon: <LabelDot label={labels[0]!} />, text: labels.join(", ") } : { icon: <Icon name="tag" size={13} />, text: "No labels" }),
+        (labels) =>
+          labels.length
+            ? { icon: <LabelDot label={must(labels[0])} />, text: labels.join(", ") }
+            : { icon: <Icon name="tag" size={13} />, text: "No labels" },
         (label) => ({ icon: <LabelDot label={label} /> }),
         (typed) => `Create label “${typed}”`,
       ),
   };
-  return <div className="cr-chips">{Object.keys(chips).map((field) => pieces[field]?.())}</div>;
+  return (
+    <div className="cr-chips">
+      {Object.keys(chips).map((field) => pieces[field]?.())}
+    </div>
+  );
 }
 
 /** How a chip or a menu option shows a value: an icon and its text. */
@@ -156,7 +239,12 @@ type Look = { readonly icon?: ReactNode; readonly text: string };
  * A chip: the button that opens its field's picker. Its name says the field and
  * the value, `Status: Active`, since the value alone does not say which chip it is.
  */
-function chip(field: string, name: string, { icon, text }: Look, disabled: boolean): ReactElement {
+function chip(
+  field: string,
+  name: string,
+  { icon, text }: Look,
+  disabled: boolean,
+): ReactElement {
   return (
     <button
       type="button"

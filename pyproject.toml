@@ -4,7 +4,6 @@
 
 [project]
 name = "trackinizer"
-version = "0.1.13"
 description = "Centralized agent database for Inquiries (Issues + Artifacts)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -59,10 +58,10 @@ dependencies = [
     "bashlex>=0.18",
     # lazy imports
     "wrapt>=2.5.2",
-    # the model catalog: `wire/chat_commands.py` reads its roles, and
-    # `sagent/providers/table.py` loads them from YAML.
+    # the model catalog: `sagent/providers/table.py` loads it from YAML.
     "pyyaml>=6.0.3",
 ]
+dynamic = ["version"]
 
 [project.scripts]
 trackinizer = "trackinizer.server.entry:main"
@@ -94,15 +93,16 @@ test = [
     # Bundles libpq, so pytest-postgresql's autoloaded plugin imports everywhere.
     "psycopg[binary]>=3.3.6",
     "pytest-postgresql>=9.1.1",
-    # The server's tests import its packages; CI syncs groups, never extras.
-    "trackinizer[server]",
+    # The server's and the embedding add-on's tests import their packages; CI
+    # syncs groups, never extras.
+    "trackinizer[embedding]",
     # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
     "hatchling>=1.33.0",
 ]
 typecheck = [
     "basedpyright>=1.40.2",
     "pyrefly>=1.4.0",
-    "ty>=0.0.101",
+    "ty>=0.0.104",
     "rekursiv-ai-typings>=0.1.11",
     "hatchling>=1.33.0",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
 ]
@@ -172,18 +172,20 @@ server = [
     # session-body compression (the read path decompresses zstd blobs). The
     # stdlib `compression.zstd` is 3.14-only; the package validates on 3.12.
     "zstandard>=0.25.0",
-    # Semantic session search (TRACKINIZER_SESSION_EMBEDDER=<model>@<dim>, e.g.
-    # qwen3-embedding-0.6b@1024): the embedders run in-process transformers + torch,
-    # and the startup weight-presence check reads the HF cache. Every server
-    # install carries the model path -- semantic search is a first-class feature.
-    # The imports are still deferred at runtime (TYPE_CHECKING + wrapt
-    # lazy_import for torch/transformers, a function-local import for
-    # huggingface_hub) so `import trackinizer` costs nothing until something embeds.
-    #
+]
+# Semantic search: `pip install 'trackinizer[embedding]'` adds the model stack the
+# embedding add-on's models run in-process (transformers + torch, and the HF cache
+# for their weights). A server without it starts and searches by keyword; the
+# imports are deferred (TYPE_CHECKING + wrapt lazy_import for torch/transformers, a
+# function-local import for huggingface_hub), and the test in
+# `light_install_test.py` fails if the server or the add-on starts to need them at
+# import time.
+embedding = [
+    "trackinizer[server]",
     # torch: floor matches the version the monorepo pins and tests
     # (`torch==2.11.0`). The specifier here is deliberately index-free, so the
     # PUBLISHED wheel metadata carries a bare `torch>=2.11.0`: an end-user
-    # `pip install 'trackinizer[server]'` on linux resolves torch from PyPI = the
+    # `pip install 'trackinizer[embedding]'` on linux resolves torch from PyPI = the
     # CUDA build, and GPU backfill (`torch.compile`) works out of the box. The CPU
     # wheel is pinned ONLY for OUR lock/CI resolution, in `[tool.uv.sources]`
     # below (uv-only, stripped from the built wheel), so `uv sync --frozen` in
@@ -198,10 +200,6 @@ server = [
     # snapshot cache layout. Unfloored in the monorepo; a conservative floor
     # guaranteeing both across the current cache era.
     "huggingface-hub>=2.4.0",
-    # peft: the jina-embeddings-v5 models load task adapters as PEFT modules
-    # (their trust_remote_code `encode` requires it). Floor matches the monorepo
-    # (`peft>=0.21.0`); only the jina embedders reach it, lazily.
-    "peft>=0.21.2",
 ]
 
 [project.urls]
@@ -213,7 +211,7 @@ Issues = "https://github.com/rekursiv-ai/trackinizer/issues"
 Changelog = "https://github.com/rekursiv-ai/trackinizer/releases"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -230,12 +228,11 @@ exclude = [
     # Test support no shipped module imports.
     "trackinizer/inquiry_readers_test_support.py",
     "trackinizer/lib/testing/**",
-    "trackinizer/lib/agent/sessions/testdata/**",
+    "trackinizer/sagent/scripts/convert_session/testdata/**",
     "trackinizer/lib/posix/testing.py",
     "trackinizer/lib/postgres/testing.py",
     "trackinizer/server/api/session_test_support.py",
-    "trackinizer/server/asks_test_support.py",
-    "trackinizer/server/embedders/qwen_fakes.py",
+    "trackinizer/addons/embedding/fakes.py",
 ]
 artifacts = ["trackinizer/web/dist/**", "trackinizer/py.typed"]
 
@@ -261,6 +258,9 @@ artifacts = ["trackinizer/web/dist/**"]
 
 [tool.hatch.build.targets.sdist.hooks.custom]
 path = "trackinizer/web/hatch_build.py"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]
@@ -326,7 +326,7 @@ markers = [
 # `-p no:py_pglite`: its auto-loaded plugin marks any test whose PATH contains
 # "benchmark"/"performance"/"integration", and the filter above then silently
 # deselected 82 unit tests. PGlite fixtures come from a conftest-registered plugin.
-addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=0 --durations-min=0.100 --dist=worksteal -p no:py_pglite"
+addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=0 --durations-min=0.250 --dist=worksteal -p no:py_pglite"
 timeout = 60
 # "error" = treat all warnings as errors (same as -Werror).
 # Using filterwarnings instead of addopts so we can add exceptions.
@@ -655,8 +655,9 @@ extend-safe-fixes = [
 #   - configgle Fig/Makes/Maker: resolves Config fields and owner __init__ hints.
 #   - dataclasses.dataclass: codec.from_plain, cli_override, and
 #     tool_spec.coerce_kwargs call get_type_hints on any dataclass. This pins
-#     every dataclass field type eager; a heavy one (torch.Tensor) that the
-#     house `annotation-import` rule then flags takes an inline house-ignore.
+#     every bare name in a dataclass field type eager. A heavy type stays lazy
+#     spelled through a lazy module, `torch.Tensor` with `torch = lazy_import(...)`;
+#     the house `lazy-dataclass-field` rule rejects a bare-name proxy there.
 #   - MCPServer.tool, APIRouter.*: build schemas from handler signatures.
 #
 # With these set, TC004 flags an import that IS needed at runtime but sits
@@ -830,7 +831,6 @@ project-excludes = [
     "**/third_party/",
     "typings/",
     "**/.export/typings/",
-    "website/rekursiv-ai.github.io/_site/",
 ]
 search-path = ["typings"]
 # Pinned beside the config: an interpreter found through a symlinked home splits

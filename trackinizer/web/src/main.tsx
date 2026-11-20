@@ -6,6 +6,7 @@ import { openEarlyStream } from "./live/earlyStream";
 import { currentRoute, followLinks } from "./router/addressBar";
 import { chunk, reloadOnChunkError } from "./router/lazy";
 import { installTheme } from "./theme";
+import { must } from "./must";
 
 installDebug();
 installTheme();
@@ -28,7 +29,10 @@ Promise.all([chunk(import("react-dom/client")), chunk(import("./start"))])
     await preloadView(currentRoute());
     // A render error goes to the log, once, in place of React's own console line;
     // the app's crash screen (in App) shows it.
-    createRoot(document.getElementById("root")!, { onCaughtError: logRenderError, onUncaughtError: logRenderError }).render(
+    createRoot(must(document.getElementById("root")), {
+      onCaughtError: logRenderError,
+      onUncaughtError: logRenderError,
+    }).render(
       <StrictMode>
         <App />
       </StrictMode>,
@@ -37,6 +41,7 @@ Promise.all([chunk(import("react-dom/client")), chunk(import("./start"))])
   .catch((error: unknown) => {
     // Without React there is no crash screen: say so rather than leave the page
     // blank. Thrown on, the error is logged as unhandled (installDebug).
-    document.getElementById("root")!.textContent = `${APP.name} could not load: ${String(error)}. Reload to try again.`;
+    must(document.getElementById("root")).textContent =
+      `${APP.name} could not load: ${String(error)}. Reload to try again.`;
     throw error;
   });

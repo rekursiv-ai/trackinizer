@@ -35,25 +35,6 @@ conflicts = [[
 ]]
 
 [[package]]
-name = "accelerate"
-version = "1.15.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "huggingface-hub" },
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "psutil" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/b5/1d3ed029ac71d3f2961346829a268da923698e9fd63f218f78841f216bfd/accelerate-1.15.0.tar.gz", hash = "sha256:5654f8c5eaa0d4fa68b33e287a97765da6849bf6d51dcac874e73fbbddfb6134", size = 422615, upload-time = "2026-09-09T13:04:49.078Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/4c/34f0450479d01195027260da68d8a3880683f1640c3ca5adf64acb3185f1/accelerate-1.15.0-py3-none-any.whl", hash = "sha256:97eacca0b73e45cb867dbf8c5d5d4dc32219544300e0c8992c7334dc2ef33cec", size = 394295, upload-time = "2026-09-09T13:04:47.331Z" },
-]
-
-[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -187,8 +168,8 @@ wheels = [
 
 [[package]]
 name = "codedoctor"
-version = "0.1.5"
-source = { git = "https://github.com/rekursiv-ai/codedoctor?branch=main#35354cdcd1e7963c6d8d18055e05bfb13ced3bcc" }
+version = "0.1.10.dev1+gfbf8c6584"
+source = { git = "https://github.com/rekursiv-ai/codedoctor?branch=main#fbf8c6584d1a951806d28e3fa1fe811fa6243105" }
 dependencies = [
     { name = "pyyaml" },
     { name = "rignore" },
@@ -226,15 +207,15 @@ wheels = [
 
 [[package]]
 name = "configgle"
-version = "1.4.6"
+version = "1.4.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "treekle" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/1d/b6c07c1c39d35441dd9dcb62ce5b89f29fe4c0bffa9a5d45c3753561bcc5/configgle-1.4.6.tar.gz", hash = "sha256:d66bf20c14e5cedf210def16ee30320016df08fd60eb465dba25eda6a217374e", size = 312524, upload-time = "2026-10-29T06:31:28.723Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/36/df/748476dffe526e1a4f0d4029a1ca07823a840706ea63441b60b827131566/configgle-1.4.7.tar.gz", hash = "sha256:0e914cc0cdbeee20e34c1141472875d92708b952ec2aba5abf3557a9fb1aa9bf", size = 386732, upload-time = "2026-11-19T18:59:41.323Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/06/bf/29b076548aa76ff8ebe3ad43a42a83d5dbaf8d0582293c08477f6eb01365/configgle-1.4.6-py3-none-any.whl", hash = "sha256:9f5333cd10934481d27f2ba6e3b0cf60faeeb43739905c7004697cadbb20b2b4", size = 85931, upload-time = "2026-10-29T06:31:26.983Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/f4/7483bc7718b5847ebec74ce372c04ce6b1964ab0722c8a5ccf661400a4fd/configgle-1.4.7-py3-none-any.whl", hash = "sha256:6bb9259f2df12a106e045295ae4bc06a1b5277fb52f536e8321f84bf9f7ca59c", size = 91677, upload-time = "2026-11-19T18:59:39.771Z" },
 ]
 
 [[package]]
@@ -1110,28 +1091,6 @@ wheels = [
 ]
 
 [[package]]
-name = "peft"
-version = "0.21.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "accelerate" },
-    { name = "huggingface-hub" },
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "psutil" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
-    { name = "tqdm" },
-    { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/80/af/2e08abf1cd3b8792a02f5116808f2398c2f77ecdff801ced2ce16007a6f9/peft-0.21.2.tar.gz", hash = "sha256:b803ccfb3f3f316004d850284306687833a2235ea278fb56abc856203456142e", size = 983614, upload-time = "2026-10-01T10:26:36.129Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/0b/59441cdbfdd342ed03c08af90a2fe16173f0cd48ab219f523b39ca059a79/peft-0.21.2-py3-none-any.whl", hash = "sha256:106ab6077ff72c54d21577f9af5970e34bac7582cb14209f7b2b511e322a4eae", size = 835427, upload-time = "2026-10-01T10:26:34.085Z" },
-]
-
-[[package]]
 name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1772,8 +1731,8 @@ wheels = [
 
 [[package]]
 name = "rekursiv-ai-typings"
-version = "0.1.18"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#7fdc051da2407b315b5d255a953fc36223690451" }
+version = "0.1.22.dev2+g72970735d"
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#72970735d23f05c7fdcd650dbfc88a0c1de9da5b" }
 
 [[package]]
 name = "rich"
@@ -2308,7 +2267,6 @@ wheels = [
 
 [[package]]
 name = "trackinizer"
-version = "0.1.13"
 source = { editable = "." }
 default-groups = ["cuda", "dev"]
 dependencies = [
@@ -2327,48 +2285,47 @@ dependencies = [
 
 [package.optional-dependencies]
 cpu = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-11-trackinizer-cpu') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-11-trackinizer-cpu') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and extra == 'extra-11-trackinizer-cpu' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux' and extra == 'extra-11-trackinizer-cpu' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
     { name = "torchao" },
     { name = "torchvision" },
 ]
 cu126 = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
     { name = "torchao" },
     { name = "torchvision" },
 ]
 cu128 = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
     { name = "torchao" },
     { name = "torchvision" },
 ]
 cu130 = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
     { name = "torchao" },
     { name = "torchvision" },
 ]
 cu132 = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
     { name = "torchao" },
     { name = "torchvision" },
 ]
 cu134 = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' or extra == 'extra-11-trackinizer-cu132') and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' or extra == 'extra-11-trackinizer-cu132') and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
     { name = "torchao" },
     { name = "torchvision" },
 ]
-server = [
+embedding = [
     { name = "asyncpg" },
     { name = "configgle" },
     { name = "fastapi" },
     { name = "huggingface-hub" },
     { name = "itsdangerous" },
-    { name = "peft" },
     { name = "py-pglite", extra = ["asyncpg", "extensions"] },
     { name = "starlette" },
     { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
@@ -2377,11 +2334,21 @@ server = [
     { name = "uvicorn" },
     { name = "zstandard" },
 ]
+server = [
+    { name = "asyncpg" },
+    { name = "configgle" },
+    { name = "fastapi" },
+    { name = "itsdangerous" },
+    { name = "py-pglite", extra = ["asyncpg", "extensions"] },
+    { name = "starlette" },
+    { name = "uvicorn" },
+    { name = "zstandard" },
+]
 
 [package.dev-dependencies]
 cuda = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra != 'extra-11-trackinizer-cpu' and extra != 'extra-11-trackinizer-cu126' and extra != 'extra-11-trackinizer-cu128' and extra != 'extra-11-trackinizer-cu130' and extra != 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra != 'extra-11-trackinizer-cpu' and extra != 'extra-11-trackinizer-cu126' and extra != 'extra-11-trackinizer-cu128' and extra != 'extra-11-trackinizer-cu130' and extra != 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu126') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cpu' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cpu' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu128') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu126' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu126' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu130') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu128' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu128' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu132') or (extra == 'extra-11-trackinizer-cu130' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu130' and extra == 'group-11-trackinizer-cuda') or (extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134') or (extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda')" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and extra != 'extra-11-trackinizer-cpu' and extra != 'extra-11-trackinizer-cu126' and extra != 'extra-11-trackinizer-cu128' and extra != 'extra-11-trackinizer-cu130' and extra != 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux' and extra != 'extra-11-trackinizer-cpu' and extra != 'extra-11-trackinizer-cu126' and extra != 'extra-11-trackinizer-cu128' and extra != 'extra-11-trackinizer-cu130' and extra != 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cpu' and (extra == 'extra-11-trackinizer-cu126' or extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu126' and (extra == 'extra-11-trackinizer-cu128' or extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu128' and (extra == 'extra-11-trackinizer-cu130' or extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu130' and (extra == 'extra-11-trackinizer-cu132' or extra == 'extra-11-trackinizer-cu134' or extra == 'group-11-trackinizer-cuda') or extra == 'extra-11-trackinizer-cu132' and extra == 'extra-11-trackinizer-cu134' or extra == 'extra-11-trackinizer-cu134' and extra == 'group-11-trackinizer-cuda'" },
     { name = "torchao" },
     { name = "torchvision" },
 ]
@@ -2410,7 +2377,7 @@ dev = [
     { name = "ruamel-yaml" },
     { name = "ruff" },
     { name = "tqdm" },
-    { name = "trackinizer", extra = ["server"] },
+    { name = "trackinizer", extra = ["embedding"] },
     { name = "ty" },
 ]
 lint = [
@@ -2436,7 +2403,7 @@ pre-commit = [
     { name = "rekursiv-ai-typings" },
     { name = "ruamel-yaml" },
     { name = "ruff" },
-    { name = "trackinizer", extra = ["server"] },
+    { name = "trackinizer", extra = ["embedding"] },
     { name = "ty" },
 ]
 test = [
@@ -2450,7 +2417,7 @@ test = [
     { name = "pytest-postgresql" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
-    { name = "trackinizer", extra = ["server"] },
+    { name = "trackinizer", extra = ["embedding"] },
 ]
 typecheck = [
     { name = "basedpyright" },
@@ -2462,19 +2429,24 @@ typecheck = [
 
 [package.metadata]
 requires-dist = [
+    { name = "asyncpg", marker = "extra == 'embedding'", specifier = ">=0.32.0" },
     { name = "asyncpg", marker = "extra == 'server'", specifier = ">=0.32.0" },
     { name = "bashlex", specifier = ">=0.18" },
+    { name = "configgle", marker = "extra == 'embedding'", specifier = ">=1.4.4" },
     { name = "configgle", marker = "extra == 'server'", specifier = ">=1.4.4" },
+    { name = "fastapi", marker = "extra == 'embedding'", specifier = ">=0.162.0" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.162.0" },
     { name = "httpx2", specifier = ">=2.16.0" },
-    { name = "huggingface-hub", marker = "extra == 'server'", specifier = ">=2.4.0" },
+    { name = "huggingface-hub", marker = "extra == 'embedding'", specifier = ">=2.4.0" },
+    { name = "itsdangerous", marker = "extra == 'embedding'", specifier = ">=2.2.0" },
     { name = "itsdangerous", marker = "extra == 'server'", specifier = ">=2.2.0" },
     { name = "lark", specifier = ">=1.3.1" },
-    { name = "peft", marker = "extra == 'server'", specifier = ">=0.21.2" },
+    { name = "py-pglite", extras = ["asyncpg", "extensions"], marker = "extra == 'embedding'", specifier = ">=0.5.3" },
     { name = "py-pglite", extras = ["asyncpg", "extensions"], marker = "extra == 'server'", specifier = ">=0.5.3" },
     { name = "pydantic", specifier = ">=2.14.2" },
     { name = "pydantic-core", specifier = ">=2.50.2" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "starlette", marker = "extra == 'embedding'", specifier = ">=1.10.0" },
     { name = "starlette", marker = "extra == 'server'", specifier = ">=1.10.0" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cpu'", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cu126'", index = "https://download.pytorch.org/whl/cpu" },
@@ -2482,14 +2454,14 @@ requires-dist = [
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cu130'", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cu132'", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cu134'", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torch", marker = "sys_platform == 'linux' and extra == 'server'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'embedding'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cpu'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu126'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu128'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu130'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu132'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu134'" },
-    { name = "torch", marker = "sys_platform != 'linux' and extra == 'server'", specifier = ">=2.11.0" },
+    { name = "torch", marker = "sys_platform != 'linux' and extra == 'embedding'", specifier = ">=2.11.0" },
     { name = "torchao", marker = "extra == 'cpu'" },
     { name = "torchao", marker = "extra == 'cu126'" },
     { name = "torchao", marker = "extra == 'cu128'" },
@@ -2502,16 +2474,18 @@ requires-dist = [
     { name = "torchvision", marker = "extra == 'cu130'" },
     { name = "torchvision", marker = "extra == 'cu132'" },
     { name = "torchvision", marker = "extra == 'cu134'" },
-    { name = "transformers", marker = "extra == 'server'", specifier = ">=5.22.1" },
+    { name = "transformers", marker = "extra == 'embedding'", specifier = ">=5.22.1" },
     { name = "treekle", specifier = ">=0.4.1" },
     { name = "typing-extensions", specifier = ">=4.16.0" },
+    { name = "uvicorn", marker = "extra == 'embedding'", specifier = ">=0.54.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.54.0" },
     { name = "watchdog", marker = "sys_platform == 'darwin'", specifier = ">=7.0.0" },
     { name = "websockets", specifier = ">=17.4" },
     { name = "wrapt", specifier = ">=2.5.2" },
+    { name = "zstandard", marker = "extra == 'embedding'", specifier = ">=0.25.0" },
     { name = "zstandard", marker = "extra == 'server'", specifier = ">=0.25.0" },
 ]
-provides-extras = ["cpu", "cu126", "cu128", "cu130", "cu132", "cu134", "server"]
+provides-extras = ["cpu", "cu126", "cu128", "cu130", "cu132", "cu134", "embedding", "server"]
 
 [package.metadata.requires-dev]
 cuda = [
@@ -2545,8 +2519,8 @@ dev = [
     { name = "ruamel-yaml", specifier = ">=0.18.6" },
     { name = "ruff", specifier = ">=0.17.3" },
     { name = "tqdm", specifier = ">=4.70.1" },
-    { name = "trackinizer", extras = ["server"] },
-    { name = "ty", specifier = ">=0.0.101" },
+    { name = "trackinizer", extras = ["embedding"] },
+    { name = "ty", specifier = ">=0.0.104" },
 ]
 lint = [
     { name = "codespell", specifier = ">=2.4.3" },
@@ -2571,8 +2545,8 @@ pre-commit = [
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
     { name = "ruamel-yaml", specifier = ">=0.18.6" },
     { name = "ruff", specifier = ">=0.17.3" },
-    { name = "trackinizer", extras = ["server"] },
-    { name = "ty", specifier = ">=0.0.101" },
+    { name = "trackinizer", extras = ["embedding"] },
+    { name = "ty", specifier = ">=0.0.104" },
 ]
 test = [
     { name = "hatchling", specifier = ">=1.33.0" },
@@ -2585,14 +2559,14 @@ test = [
     { name = "pytest-postgresql", specifier = ">=9.1.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "trackinizer", extras = ["server"] },
+    { name = "trackinizer", extras = ["embedding"] },
 ]
 typecheck = [
     { name = "basedpyright", specifier = ">=1.40.2" },
     { name = "hatchling", specifier = ">=1.33.0" },
     { name = "pyrefly", specifier = ">=1.4.0" },
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
-    { name = "ty", specifier = ">=0.0.101" },
+    { name = "ty", specifier = ">=0.0.104" },
 ]
 
 [[package]]
@@ -2626,23 +2600,23 @@ wheels = [
 
 [[package]]
 name = "treekle"
-version = "0.4.4"
+version = "0.4.7"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/bb/44/90e352f20518cd9097a689a6357d72baab4707cd4551bfb9cff15db0e457/treekle-0.4.4.tar.gz", hash = "sha256:8c22d546a94f8515905643b81fe5a87cd5c2a126d81f97bb41c9e51a170ae682", size = 382386, upload-time = "2026-11-06T19:09:38.422Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/b3/4154e76af27dd08d771d1bd549fd4124751276413b50d4f9371c4ffd74f0/treekle-0.4.7.tar.gz", hash = "sha256:b6e26a1f532d5a69d9fedecee804306fbf90e3b9c990e2192c56571e737fa19e", size = 382407, upload-time = "2026-11-19T18:36:11.465Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/57/ee/efb9d475a2b89a1ec88fb37339ee7eb62d6d42b9a5b9d55c557b4eda12bb/treekle-0.4.4-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:3120384c39678a2705767de4d0d1c9dff159156f89c9b704c025ac00b77dd7b9", size = 1094289, upload-time = "2026-11-06T19:09:14.374Z" },
-    { url = "https://files.pythonhosted.org/packages/39/79/9243cd5701c5d32d3b11983e0f708d3ef1ff6c2cad4e038fdc5cda0091f6/treekle-0.4.4-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:6ebc39df6e02b28d5530bdfc3532abbd561b37cde8a00dbfd96e15110b1884bc", size = 1027772, upload-time = "2026-11-06T19:09:16.08Z" },
-    { url = "https://files.pythonhosted.org/packages/b3/31/510b3b388a99f8403373f10302b3956cb07ef98ab2261dcbd5154ac10f64/treekle-0.4.4-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:f8674221b736b673deeb5d1939b59b26ab262ad0a51884ab9aa729525d337c78", size = 1037447, upload-time = "2026-11-06T19:09:17.616Z" },
-    { url = "https://files.pythonhosted.org/packages/9f/17/203d8221f0c1846f314de07ed261de6dd426fabdbd02a8fda0b39630d46d/treekle-0.4.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1892133b0af16e6fbb7986f9378f429f9451d62f6692df46ef93d147981dcb47", size = 1091878, upload-time = "2026-11-06T19:09:19.188Z" },
-    { url = "https://files.pythonhosted.org/packages/06/a8/bc817836090f0faeb943f70e4861f0503000c5fc8fbb85de7d904a7e853b/treekle-0.4.4-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:3f79c47ee2802a1e13e15f89f5a5e25c8e11c663fc79999a9e602c7e298a1682", size = 1092412, upload-time = "2026-11-06T19:09:22.566Z" },
-    { url = "https://files.pythonhosted.org/packages/df/d3/0168139b04e21faf9b825337d0c2ad0dbf92e9c4dc98c1f17af02274536c/treekle-0.4.4-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:097ae02f6a46309d9443fda41fb0eb59fa9a459649aa5f01c9c012b97bfd3474", size = 1024885, upload-time = "2026-11-06T19:09:23.89Z" },
-    { url = "https://files.pythonhosted.org/packages/36/ab/7b389edd5dd02ef6fb0f806fc0070880532228c664ba06753587d8c07acd/treekle-0.4.4-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:dad3edfcef20c91733849264b03edd6cada0af95e9c79d1cc5fd850c1fde6cbc", size = 1034726, upload-time = "2026-11-06T19:09:25.357Z" },
-    { url = "https://files.pythonhosted.org/packages/c5/56/d930d68bbb03088c3e6ea109c4ba46b2c3983ab5ef0303af714e343c0af6/treekle-0.4.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:78c5d4cb0c399c4d35ee6a07f5e7139e83d0c8e54f71cf5df94b20510baa552f", size = 1091599, upload-time = "2026-11-06T19:09:26.75Z" },
-    { url = "https://files.pythonhosted.org/packages/8c/9d/4ef13055431a11fa122bd29f4c7c7cb3e323eec67b2b3065c6e644a350ec/treekle-0.4.4-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:2b5e8c625e7f44e6bcd19d2138261fc99ec211180b0b425b6a3bd97d1460b7eb", size = 850627, upload-time = "2026-11-06T19:09:29.856Z" },
-    { url = "https://files.pythonhosted.org/packages/c5/dd/e653053988d037e85ce7924e3c9c43144e7e7e33d3262d7883ab1e1bc275/treekle-0.4.4-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:ec7adda4abb1538f4abc3ee7e9124b9d8853c567a8ba79e5413d271bfeed8c83", size = 807815, upload-time = "2026-11-06T19:09:31.352Z" },
-    { url = "https://files.pythonhosted.org/packages/92/3d/105927ba5739e654f43a8251e21046072f179f9f8a009208b895bed8c54d/treekle-0.4.4-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d10eda15c10a18d45fb58c6a5bf70d89261f17ace46cfcee32ef83988191827e", size = 822172, upload-time = "2026-11-06T19:09:32.796Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/56/0125a941b8f52d35db8a660eef8b1cd59c1fe53d6c8f30cc0da6d9d23a48/treekle-0.4.4-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:00ea21cc30d0b1e2b9e3d373c55b84380cc06628784e68c499d19d39fc809dda", size = 856646, upload-time = "2026-11-06T19:09:34.298Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/c2/5eb8c6814736f93415153d6c35c80d1f27f308172a7e5253a4692853d00a/treekle-0.4.4-py3-none-any.whl", hash = "sha256:66d8e7a7dced055722b7f63060d79fbe01b74f1565378fa662a83fdb6ee319e0", size = 72801, upload-time = "2026-11-06T19:09:37.232Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/1c/9881136820b76a6ac7a6a8751ba13c3a9e8b89c281dc6359a8b364f3c96c/treekle-0.4.7-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:76b6ac328a3849baa5ab3155c1e841addd8a13b970a1d0e58ee48bffbde88ced", size = 1096926, upload-time = "2026-11-19T18:35:48.313Z" },
+    { url = "https://files.pythonhosted.org/packages/67/36/689ef0d5022111d13c82b7e438d980494b21a181593d468c64510ca7ae6d/treekle-0.4.7-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:e0f83991949d335705730ddff3ed6f4a81b453e1d8d0afb12e1a9da7deda2b63", size = 1030031, upload-time = "2026-11-19T18:35:49.798Z" },
+    { url = "https://files.pythonhosted.org/packages/82/18/e070ac137fab9edac102ebd3348596e2ea5226acc5c851185614c3578aa6/treekle-0.4.7-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0df0258a8cfa7d88325978c71663d5a929f96abc86aa8e2d69c7a96cd912349b", size = 1042361, upload-time = "2026-11-19T18:35:51.362Z" },
+    { url = "https://files.pythonhosted.org/packages/94/f7/55540df1d57323e379095d12fd636388c557616b84a20adfc84b0773ab78/treekle-0.4.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:8cc2acf89e2638348100c4f562b9b64054b2695dca8e47e9ad50caff0de1bde9", size = 1095898, upload-time = "2026-11-19T18:35:52.856Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/b4/29258356fe71947c42fe960dfa5ceb0fa0325fa48d4707abff55ea9218cf/treekle-0.4.7-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:bfc0dad7169385cfef2d806ae9f3a7c1f58927e0085c83b13bc9527c342e6408", size = 1094913, upload-time = "2026-11-19T18:35:55.916Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/8c/0b126716e4a0140f79de22cbd5301110952e94cebe840ebf32aaa13603a3/treekle-0.4.7-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:0da85ed5e652e9332ddb90de7705c163405ea6c0e6df3c4ce88e1b55d33f8f4b", size = 1026792, upload-time = "2026-11-19T18:35:57.589Z" },
+    { url = "https://files.pythonhosted.org/packages/48/fe/64a0bc0b90ca9b9f3d1dbf119d53d9d4f8d1190d385cb21c2c7bb6a8c97d/treekle-0.4.7-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c33af613c8cba5d42dfa3771d6298fb93bf17b408e6cea8bb0573832e2efdf74", size = 1040147, upload-time = "2026-11-19T18:35:59.399Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/a3/a786014594b0d10211eecb3f13e5ad9ef4af8ccfbbffeadc5adfd31ffa1a/treekle-0.4.7-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:356294947ee72263ffe53738282002c1b9d215adc77e3c06f8ac8024138cf6e0", size = 1095852, upload-time = "2026-11-19T18:36:00.968Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/e3/17929a6137d90fdc77eb8465714003639dacf4052fb145c48abd3937e111/treekle-0.4.7-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:927c765b10a63a8ac6a21e32ec15e00e507affc413dd5a2b0625651797acc844", size = 853036, upload-time = "2026-11-19T18:36:03.662Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/f7/f8af96d5557272d5811dc37dcbd56d9f413ae5dc8ab1ad710f337d54e5fc/treekle-0.4.7-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:d44b02e5b86246b09be8de4b25259fedf45d20015cfb52c6666eac439ad8a975", size = 810448, upload-time = "2026-11-19T18:36:04.93Z" },
+    { url = "https://files.pythonhosted.org/packages/39/3c/241b70888f3a45bbfd822ef48bc6dd4e40bb1198297b405789dc98b63c7d/treekle-0.4.7-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:6496611b2af392088a276e6f0039142f44f197d765cea016eee73e34b97e8765", size = 825462, upload-time = "2026-11-19T18:36:06.193Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/a0/68339a94c56c813140e422a2c6b85e0ccdc247f5a278574343d1c8155313/treekle-0.4.7-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:dee0830e2f594e2d44259418eb545c68073c1b47e9a979bec9348423b507774c", size = 860350, upload-time = "2026-11-19T18:36:07.577Z" },
+    { url = "https://files.pythonhosted.org/packages/91/cc/90589dd878e3148e1e101431cc16b802a86abaf81d6619517aee98e355cb/treekle-0.4.7-py3-none-any.whl", hash = "sha256:48374871c8fc600c807e96f7fb4b538a4822d50f9c50aa3759c2c92673f78804", size = 75367, upload-time = "2026-11-19T18:36:10.168Z" },
 ]
 
 [[package]]
@@ -2665,24 +2639,24 @@ wheels = [
 
 [[package]]
 name = "ty"
-version = "0.0.101"
+version = "0.0.104"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/34/6c/22c0680e71f529e084ee2e308a51f04317298248ee699f4914c02129c351/ty-0.0.101.tar.gz", hash = "sha256:dbb43374b49fe30ea49e244da63aa90098dff1257a49ae4351b44881ccef724f", size = 8244347, upload-time = "2026-11-11T13:53:32.912Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/23/e7e960c518df4fe79c38154469f500ebc54631c1e8724a44c28ea052b7ef/ty-0.0.104.tar.gz", hash = "sha256:8aa1330e722a5a56336d8d1938d8897cb5dfc0841fffd8ed0627fdea177a9bdb", size = 8295902, upload-time = "2026-11-13T20:52:59.529Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/4a/48276817a1bcae8edf31f22f5a51d463c7bcfb1f17fc7a8878e02f5ea849/ty-0.0.101-py3-none-linux_armv6l.whl", hash = "sha256:99e535e2ba9993326900cd54e09eb7fe579c6a4490779f707f60ce89eaa8558d", size = 14907490, upload-time = "2026-11-11T13:52:41.694Z" },
-    { url = "https://files.pythonhosted.org/packages/e9/a4/513d5af6fa5844ec7ec0730e3beec84e49ebbc543eea83eab64bf7814df8/ty-0.0.101-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:940441c9a8bb46f669ad49de4f20d0856ab6e114db414a2ae4c9962c27d1f46b", size = 14470530, upload-time = "2026-11-11T13:52:45.151Z" },
-    { url = "https://files.pythonhosted.org/packages/78/17/6e7f23c486ff6c0d4bb6f4823e878b42faa1bd4e09462c75e4479cdd94ce/ty-0.0.101-py3-none-macosx_11_0_arm64.whl", hash = "sha256:e185325fbd4dd9cabdc504c685f04f59b24f37dec96b2d9e8a8afab5731e1ea1", size = 13482054, upload-time = "2026-11-11T13:52:48.087Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/f7/c41c973902ea173513c4ccf084fb156397b0de0dfe95af12a5967b3eaed0/ty-0.0.101-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:88857d3cb6c9446c41dbb74ee58147e7fae5ce19de206f7dab73ffc0ce6849f9", size = 14304038, upload-time = "2026-11-11T13:52:50.753Z" },
-    { url = "https://files.pythonhosted.org/packages/4b/c4/d6bdaad6d256367e92185d9e28bafc469dfc595c5dc5852a2d2e3c2625ab/ty-0.0.101-py3-none-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:844a92056b2afb21668cdc286c970b6871fdaefef5d12083d61f48c5caf3b366", size = 14629387, upload-time = "2026-11-11T13:52:53.993Z" },
-    { url = "https://files.pythonhosted.org/packages/cb/f1/fbb05204d7cb7e0151c8faca7b6058be8acceda0196ef825a23ae0b79752/ty-0.0.101-py3-none-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:a2d2655478e29f3572f3584e8444103d8ce2e52727d83a09d8014dd6c1c26693", size = 15558957, upload-time = "2026-11-11T13:52:56.869Z" },
-    { url = "https://files.pythonhosted.org/packages/41/54/e8b13336641d7f18821db236ff2e0e3dc370976670f1779f722026695e5b/ty-0.0.101-py3-none-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:c1552789274c2b1cceb9f86a6dcf9e8ac25814f8aa6462da74e4299b8bfdfd77", size = 16030421, upload-time = "2026-11-11T13:52:59.787Z" },
-    { url = "https://files.pythonhosted.org/packages/17/89/dd4902272c06b93335310e61378ba0a2eba940d16284dc9217413e0f69b2/ty-0.0.101-py3-none-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:4834aa2254f4a87c895a43bb7ca1f6eb9ee5317045cb63bcf2dd3999957ea122", size = 15881514, upload-time = "2026-11-11T13:53:02.763Z" },
-    { url = "https://files.pythonhosted.org/packages/0d/ff/647ce788ceccacf2da38126115cf0ba505093aeadc0bc7a09da4f120cfb7/ty-0.0.101-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e6d912d5593a6abc953b135c7d73d58dbeefb898d7306337ce16bbd88b01a616", size = 16832271, upload-time = "2026-11-11T13:53:06.036Z" },
-    { url = "https://files.pythonhosted.org/packages/a6/c2/e899c07e74b4ee97920b2ae895d5d4cd36240bfed4303679efa101852845/ty-0.0.101-py3-none-manylinux_2_31_riscv64.whl", hash = "sha256:29106ca9d0f1f39fb2e24dc34305ef1ea5929776244cffcb708f339c4dfb455a", size = 15455661, upload-time = "2026-11-11T13:53:09.257Z" },
-    { url = "https://files.pythonhosted.org/packages/1f/5f/4c3ce22d7689d953925f0142c7217c6bfbf79f4d76d374266707d573d929/ty-0.0.101-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:08adc9f3ecb64673f5eaa9c851cde4a97965bc87bca10ed1151dcdacdfd327f5", size = 14304954, upload-time = "2026-11-11T13:53:12.261Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/39/daf6a33ddae667946314bb41a62405f717b28da7922b4006012b3de9025f/ty-0.0.101-py3-none-musllinux_1_2_armv7l.whl", hash = "sha256:b519339e54e3b1f6660905f5cc13b14faadac98a4106c2625b1e28486cd2cf75", size = 14641933, upload-time = "2026-11-11T13:53:14.947Z" },
-    { url = "https://files.pythonhosted.org/packages/b8/3a/0c1cfa12972916dbd4dc5f8dcbf3f4f8f888586c2f725edad0c90c990e61/ty-0.0.101-py3-none-musllinux_1_2_i686.whl", hash = "sha256:502cab1f8c8b8c822dc8e858b9c309402834975185cdc5107df1e05e1ce85ff0", size = 14946745, upload-time = "2026-11-11T13:53:17.978Z" },
-    { url = "https://files.pythonhosted.org/packages/43/2c/a7377d6c7a866e75d0e9a7821e37e12b4bbb9c4c17f6f6a0a9eb69d8866d/ty-0.0.101-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:02e2aec3bdb7051882ee1514a78f0161f4d51a53b6263c7d6a818ae5dc85a79e", size = 15382120, upload-time = "2026-11-11T13:53:21.289Z" },
+    { url = "https://files.pythonhosted.org/packages/63/d0/b5371389f07c4da7cea80f306775001abfc1b1a11a13ac23338ad4b8e6d7/ty-0.0.104-py3-none-linux_armv6l.whl", hash = "sha256:c82f457daeaaa72147da117e9f17b9e9698ce2bf8ff9af956bce78fa18b58fa9", size = 14972660, upload-time = "2026-11-13T20:52:17.984Z" },
+    { url = "https://files.pythonhosted.org/packages/db/61/2b8c8fa58bfd59ccb31b430e2798515fd9f6f7e19139f804a1bd4ecc18ff/ty-0.0.104-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:d83988dd0ace56c133417a976b798844c4c3f6b9e28b2856e5026432a6d907ee", size = 14555253, upload-time = "2026-11-13T20:52:20.658Z" },
+    { url = "https://files.pythonhosted.org/packages/20/df/7b3865d367b83cce6411857f8769e05bd625034adc16d8dabf3f22ee58ad/ty-0.0.104-py3-none-macosx_11_0_arm64.whl", hash = "sha256:bab34539aedf4fb5dfcc9724874bce05fc79cb85cb783b1084e8615d4e6d6755", size = 13956073, upload-time = "2026-11-13T20:52:22.853Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/9e/195afd5f9472fe09655b22b14c70db9920332ff7c975359232e21947d9c6/ty-0.0.104-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6e2b7a31a117b45e88827b86746ef04760274c6813c9455a1d8fb456ac660476", size = 14844026, upload-time = "2026-11-13T20:52:24.995Z" },
+    { url = "https://files.pythonhosted.org/packages/52/6f/8a544bedcbbcee26139d57a78b48cfa83c10c5af46e23fed062a60004101/ty-0.0.104-py3-none-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:507e9ec0a638edd30f9962b3bf0f9e668324fee32bc727b0f1affdd205e9a9f0", size = 14717811, upload-time = "2026-11-13T20:52:29.027Z" },
+    { url = "https://files.pythonhosted.org/packages/11/e4/dd373da855b1475f5f20e6708c4374edaa1e1179c10b16eef96fd5cae97d/ty-0.0.104-py3-none-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:23775b9664f49a7c4294034a4343195475747c3f5a0e8275a6af2160197375c5", size = 15651255, upload-time = "2026-11-13T20:52:31.361Z" },
+    { url = "https://files.pythonhosted.org/packages/55/7a/1b7060b71e1ae50c12f5dfe112968e2bc0503b6436200d7236aa9c82c751/ty-0.0.104-py3-none-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:890c61fdbe8ba9dfe05de56c9db3dd86fb0f97545791a95435ba49bde4d5ac84", size = 16137148, upload-time = "2026-11-13T20:52:35.02Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/a1/02ca201bcd2add8a9287a209f461bf37bdc73c7ece48d066a3533ea7a46e/ty-0.0.104-py3-none-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:3afca137041c7299fdeab9beb001d309575464562b82fb36a3bc1a13a396df11", size = 16014926, upload-time = "2026-11-13T20:52:37.216Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/55/ac634ca578d3a3b39a293aab14c9c9334009c179c79564e59af7ea61ca12/ty-0.0.104-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:57b142b2e1a7396e0775df67469ec89f0e519d0a842787ffb8a2f5276f61c12e", size = 17568960, upload-time = "2026-11-13T20:52:39.513Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/ca/ee071674f7b7cb92d5ad9f432f64aecf656141389485577d765930fb8881/ty-0.0.104-py3-none-manylinux_2_31_riscv64.whl", hash = "sha256:620eb2a03e3de7c448ed5fb2fcab8fce21fd28ead2612d0c83b94aa6fe685af7", size = 15561031, upload-time = "2026-11-13T20:52:42.06Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/f8/1aa534b8d58d23aa90efac61082e80b26d1665a80e3b42d3850480e82c39/ty-0.0.104-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:082468bace6f213feef97fa19aec53228c09d2b551bf169ed01c120502a40fa7", size = 14387309, upload-time = "2026-11-13T20:52:44.343Z" },
+    { url = "https://files.pythonhosted.org/packages/54/b6/e2a4bb6ff58afe23274a2d8b1957a7a16420279ef1320fd8e37f762a67f1/ty-0.0.104-py3-none-musllinux_1_2_armv7l.whl", hash = "sha256:7a77761dd89991170497f20fc5ab89add0bae7652dad750857d1e2c25598a7f3", size = 14712180, upload-time = "2026-11-13T20:52:46.434Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/94/922825e4878d29250a260d9f9970e3177eaebbb38c3572d80fd53859a81a/ty-0.0.104-py3-none-musllinux_1_2_i686.whl", hash = "sha256:9512c6a16525e417eebec8f97947ff8244589170cfbde58c4471424c749d17ae", size = 15037678, upload-time = "2026-11-13T20:52:48.556Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/1f/32908495b7f92c8d601179c4a08a168392f55c5e3d37b394fad243aefecc/ty-0.0.104-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:344ab49886b3495a0093bb35d61b1f1b49764b27360fa43ff6b6da3820bcc180", size = 15446992, upload-time = "2026-11-13T20:52:50.656Z" },
 ]
 
 [[package]]

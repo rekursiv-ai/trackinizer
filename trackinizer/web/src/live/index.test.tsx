@@ -1,5 +1,12 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { type ReactNode, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ActivityView } from "../activity";
@@ -17,16 +24,35 @@ import { RouterProvider } from "../router/router";
 import { PausedBar } from "../ui/bars";
 import { ToastProvider } from "../ui/toast";
 import { LiveProvider, useLiveDetail } from ".";
-import { answerRows, change, FakeEventSource, issue, listParams, serveChanges, serveRows, uuid } from "./testing";
+import {
+  answerRows,
+  change,
+  FakeEventSource,
+  issue,
+  listParams,
+  serveChanges,
+  serveRows,
+  uuid,
+} from "./testing";
+import { must } from "../must";
 
 const KINDS = ["Issue"];
 const META: Meta = {
-  enums: { inquiry_kind_all: KINDS, status: ["active", "complete", "abandoned", "invalid"] },
+  enums: {
+    inquiry_kind_all: KINDS,
+    status: ["active", "complete", "abandoned", "invalid"],
+  },
   fieldOwners: { priority: "issue" },
   edges: {},
   kinds: KINDS,
 };
-const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null };
+const PROFILE: Profile = {
+  user_id: "u1",
+  email: "ada@example.com",
+  name: "Ada",
+  role: "writer",
+  last_login: null,
+};
 
 let server: InquiryRow[];
 let sent: Sent[];
@@ -43,9 +69,16 @@ beforeEach(() => {
   sent = serveRows(
     () => server,
     (request) => {
-      const row = server.find((r) => new URL(request.url).pathname === `/api/web/get/${r.id}`);
+      const row = server.find(
+        (r) => new URL(request.url).pathname === `/api/web/get/${r.id}`,
+      );
       if (!row) return Response.json({ detail: "not found" }, { status: 404 });
-      return Response.json({ self: { ...row, description: null }, edges: {}, backlinks: {}, changes: [] });
+      return Response.json({
+        self: { ...row, description: null },
+        edges: {},
+        backlinks: {},
+        changes: [],
+      });
     },
   );
 });
@@ -88,7 +121,11 @@ function DraftEditor({ id }: { id: string }) {
   return (
     <section aria-label="Editor">
       <p data-testid="editing">{detail.data?.self.title}</p>
-      <textarea aria-label="Draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
+      <textarea
+        aria-label="Draft"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+      />
     </section>
   );
 }
@@ -96,9 +133,11 @@ function DraftEditor({ id }: { id: string }) {
 /** `waitFor`, checking every 2 ms rather than every 50. */
 const until = <T,>(check: () => T) => waitFor(check, { interval: 2 });
 
-const rowElement = (seq: number) => document.querySelector<HTMLElement>(`[data-row="${uuid(seq)}"]`);
-const rowTitle = (seq: number) => rowElement(seq)?.querySelector(".row-title")?.textContent;
-const scroller = () => document.querySelector<HTMLElement>(".scroll")!;
+const rowElement = (seq: number) =>
+  document.querySelector<HTMLElement>(`[data-row="${uuid(seq)}"]`);
+const rowTitle = (seq: number) =>
+  rowElement(seq)?.querySelector(".row-title")?.textContent;
+const scroller = () => must(document.querySelector<HTMLElement>(".scroll"));
 
 /** The stream delivers `seqs`' ids, and the one-second window closes. */
 async function stream(...seqs: number[]) {
@@ -122,7 +161,12 @@ test("a batch updates a row in place; an open draft, the focus and the scroll po
   const beforeOpen = sent.length;
   FakeEventSource.last.open();
   await until(() => expect(sent.length).toBe(beforeOpen + 2));
-  expect(sent.slice(beforeOpen).map((s) => s.path).toSorted()).toEqual(["/api/inquiries", `/api/web/get/${uuid(5)}`]);
+  expect(
+    sent
+      .slice(beforeOpen)
+      .map((s) => s.path)
+      .toSorted(),
+  ).toEqual(["/api/inquiries", `/api/web/get/${uuid(5)}`]);
   const row = rowElement(5);
   scroller().scrollTop = 120;
   const draft = screen.getByLabelText<HTMLTextAreaElement>("Draft");
@@ -134,8 +178,14 @@ test("a batch updates a row in place; an open draft, the focus and the scroll po
   await stream(5);
 
   await until(() => expect(rowTitle(5)).toBe("Renamed by someone else"));
-  await until(() => expect(document.querySelector(".d-title")?.textContent).toBe("Renamed by someone else"));
-  await until(() => expect(screen.getByTestId("editing").textContent).toBe("Renamed by someone else"));
+  await until(() =>
+    expect(document.querySelector(".d-title")?.textContent).toBe(
+      "Renamed by someone else",
+    ),
+  );
+  await until(() =>
+    expect(screen.getByTestId("editing").textContent).toBe("Renamed by someone else"),
+  );
   expect(rowElement(5)).toBe(row);
   expect(draft.value).toBe("Half-written reply");
   expect(document.activeElement).toBe(draft);
@@ -143,15 +193,24 @@ test("a batch updates a row in place; an open draft, the focus and the scroll po
   // One list request for just that row, and one detail read for the detail and
   // the editor, which share it.
   const requests = sent.slice(before);
-  expect(requests.filter((s) => s.path === "/api/inquiries").map((s) => listParams(s).seqRanges)).toEqual([["5..5"]]);
+  expect(
+    requests
+      .filter((s) => s.path === "/api/inquiries")
+      .map((s) => listParams(s).seqRanges),
+  ).toEqual([["5..5"]]);
   expect(requests.filter((s) => s.path.startsWith("/api/web/get/"))).toHaveLength(1);
 });
 
 test("a live change never moves a row to another group; the fresh grouping waits for the user", async () => {
-  server = [issue(1, { priority: 20 }), issue(2, { priority: 20 }), issue(3, { priority: 30 })];
+  server = [
+    issue(1, { priority: 20 }),
+    issue(2, { priority: 20 }),
+    issue(3, { priority: 30 }),
+  ];
   show(<ListView kind="Issue" />);
   await until(() => expect(rowTitle(1)).toBe("Issue 1"));
-  const group = (seq: number) => rowElement(seq)?.closest("section")?.getAttribute("aria-label");
+  const group = (seq: number) =>
+    rowElement(seq)?.closest("section")?.getAttribute("aria-label");
   expect(group(1)).toBe("P2 Medium");
   server[0] = issue(1, { priority: 0, title: "Now urgent" });
   await stream(1);
@@ -163,10 +222,13 @@ test("a tab the user picks lays the rows out afresh, even when it holds the same
   server = [issue(1, { priority: 20 }), issue(2, { priority: 20 })];
   show(<ListView kind="Issue" />);
   await until(() => expect(rowTitle(1)).toBe("Issue 1"));
-  const group = (seq: number) => rowElement(seq)?.closest("section")?.getAttribute("aria-label");
+  const group = (seq: number) =>
+    rowElement(seq)?.closest("section")?.getAttribute("aria-label");
   // Visit All once, so its pages are cached and show at once when picked again.
   fireEvent.click(screen.getByRole("button", { name: "All" }));
-  await until(() => expect(sent.filter((s) => s.path === "/api/inquiries")).toHaveLength(2));
+  await until(() =>
+    expect(sent.filter((s) => s.path === "/api/inquiries")).toHaveLength(2),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Active" }));
   await until(() => expect(rowTitle(1)).toBe("Issue 1"));
   server[0] = issue(1, { priority: 0, title: "Now urgent" });
@@ -204,7 +266,9 @@ test("the pill brings the user to the new row when it joins further down, as in 
   const scrolledTo = vi.spyOn(Element.prototype, "scrollIntoView");
   fireEvent.click(pill);
   expect(rowTitle(4)).toBe("No priority yet");
-  expect(rowElement(4)?.closest("section")?.getAttribute("aria-label")).toBe("No priority");
+  expect(rowElement(4)?.closest("section")?.getAttribute("aria-label")).toBe(
+    "No priority",
+  );
   expect(scrolledTo.mock.contexts).toEqual([rowElement(4)]);
 });
 
@@ -227,7 +291,9 @@ test("a row that stops matching stays, dimmed", async () => {
   await until(() => expect(rowTitle(2)).toBe("Issue 2"));
   server[1] = issue(2, { status: "complete" });
   await stream(2);
-  await until(() => expect(document.querySelector(".scroll style")?.textContent).toContain(uuid(2)));
+  await until(() =>
+    expect(document.querySelector(".scroll style")?.textContent).toContain(uuid(2)),
+  );
   expect(rowTitle(2)).toBe("Issue 2");
 });
 
@@ -249,14 +315,20 @@ test("the paused bar shows once the stream has been down 10 s; the reconnect hid
   await act(() => vi.advanceTimersByTimeAsync(9_999));
   expect(screen.queryByRole("status")).toBeNull();
   await act(() => vi.advanceTimersByTimeAsync(1));
-  expect(screen.getByRole("status").textContent).toBe("Live updates paused. Reconnecting…");
+  expect(screen.getByRole("status").textContent).toBe(
+    "Live updates paused. Reconnecting…",
+  );
   vi.setTimerTickMode("interval", 2);
   const before = sent.length;
   server[0] = issue(1, { title: "Changed while down" });
   act(() => FakeEventSource.last.open());
   expect(screen.queryByRole("status")).toBeNull();
   await until(() => expect(rowTitle(1)).toBe("Changed while down"));
-  expect(sent.slice(before).map((s) => listParams(s))[0]).toMatchObject({ seqRanges: [], limit: 1_000, offset: 0 });
+  expect(sent.slice(before).map((s) => listParams(s))[0]).toMatchObject({
+    seqRanges: [],
+    limit: 1_000,
+    offset: 0,
+  });
 });
 
 test("a change from the stream joins the top of Activity, and lines already shown keep their lookups", async () => {
@@ -264,24 +336,43 @@ test("a change from the stream joins the top of Activity, and lines already show
   const changes: LoggedChange[] = Array.from({ length: 20 }, (_, n) => change(n + 1));
   sent = serveChanges(
     () => changes,
-    (request) => answerRows(server, request) ?? Response.json({ detail: "not found" }, { status: 404 }),
+    (request) =>
+      answerRows(server, request) ??
+      Response.json({ detail: "not found" }, { status: 404 }),
   );
   show(<ActivityView />);
   await until(() => expect(document.querySelectorAll(".feed-row")).toHaveLength(20));
-  await until(() => expect(document.querySelector(".feed-row .feed-title")?.textContent).toBe(" Issue 20"));
+  await until(() =>
+    expect(document.querySelector(".feed-row .feed-title")?.textContent).toBe(
+      " Issue 20",
+    ),
+  );
   FakeEventSource.last.open();
   const lookups = () => sent.filter((s) => s.path === "/api/inquiries").length;
   const before = lookups();
   // A change to a row the feed already names, then one about a new row.
-  changes.push(change(21, { kind: "status", subject_id: uuid(3), old: { status: "active" }, new: { status: "complete" } }));
+  changes.push(
+    change(21, {
+      kind: "status",
+      subject_id: uuid(3),
+      old: { status: "active" },
+      new: { status: "complete" },
+    }),
+  );
   await stream(3);
   await until(() => expect(document.querySelectorAll(".feed-row")).toHaveLength(21));
-  expect(document.querySelector(".feed-row .tl-body")?.textContent).toContain("changed status from active to complete");
+  expect(document.querySelector(".feed-row .tl-body")?.textContent).toContain(
+    "changed status from active to complete",
+  );
   expect(lookups()).toBe(before);
   await act(() => vi.advanceTimersByTimeAsync(2_000));
   changes.push(change(22));
   await stream(22);
-  await until(() => expect(document.querySelector(".feed-row .feed-title")?.textContent).toBe(" Issue 22"));
+  await until(() =>
+    expect(document.querySelector(".feed-row .feed-title")?.textContent).toBe(
+      " Issue 22",
+    ),
+  );
   expect(lookups()).toBe(before + 1);
 });
 
@@ -326,20 +417,27 @@ test("a stream that never opens counts as down: the paused bar shows after 10 s 
   await act(() => vi.advanceTimersByTimeAsync(9_999));
   expect(screen.queryByRole("status")).toBeNull();
   await act(() => vi.advanceTimersByTimeAsync(1));
-  expect(screen.getByRole("status").textContent).toBe("Live updates paused. Reconnecting…");
+  expect(screen.getByRole("status").textContent).toBe(
+    "Live updates paused. Reconnecting…",
+  );
   vi.setTimerTickMode("interval", 2);
 });
 
 /** Rest the pointer where the elements `under` picks are, as `:hover` reports it; jsdom has no pointer. */
 function hover(under: (element: Element) => boolean) {
   const matches = Element.prototype.matches;
-  vi.spyOn(Element.prototype, "matches").mockImplementation(function (this: Element, selector: string) {
+  vi.spyOn(Element.prototype, "matches").mockImplementation(function (
+    this: Element,
+    selector: string,
+  ) {
     return selector === ":hover" ? under(this) : matches.call(this, selector);
   });
 }
 
 test("at the top of an idle list, a new row waits behind the pill while the pointer rests on its rows (CR-LIVE-R4-A3)", async () => {
-  hover((element) => element.classList.contains("scroll") || element.tagName === "SECTION");
+  hover(
+    (element) => element.classList.contains("scroll") || element.tagName === "SECTION",
+  );
   server = [issue(1)];
   show(<ListView kind="Issue" />);
   await until(() => expect(rowTitle(1)).toBe("Issue 1"));
@@ -396,7 +494,8 @@ test("live updates that keep failing say so with Retry, after the first try and 
   stubFetch((request) =>
     failing && new URL(request.url).searchParams.has("seq_range")
       ? Response.json({ detail: "database unavailable" }, { status: 503 })
-      : (answerRows(server, request) ?? Response.json({ detail: "not found" }, { status: 404 })),
+      : (answerRows(server, request) ??
+        Response.json({ detail: "not found" }, { status: 404 })),
   );
   show(<ListView kind="Issue" />);
   await until(() => expect(rowTitle(1)).toBe("Issue 1"));
@@ -405,7 +504,11 @@ test("live updates that keep failing say so with Retry, after the first try and 
   await act(() => vi.advanceTimersByTimeAsync(1_000));
   expect(screen.queryByRole("status")).toBeNull();
   await act(() => vi.advanceTimersByTimeAsync(3_000));
-  await until(() => expect(screen.getByRole("status").textContent).toBe("Live updates failed: database unavailableRetry"));
+  await until(() =>
+    expect(screen.getByRole("status").textContent).toBe(
+      "Live updates failed: database unavailableRetry",
+    ),
+  );
   failing = false;
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   await until(() => expect(rowTitle(1)).toBe("Renamed"));
@@ -416,12 +519,16 @@ test("Activity's live updates that keep failing say so with Retry (CR-R3-B4)", a
   let failing = true;
   sent = serveChanges(
     () => [change(1)],
-    (request) => answerRows([issue(1)], request) ?? Response.json({ detail: "not found" }, { status: 404 }),
+    (request) =>
+      answerRows([issue(1)], request) ??
+      Response.json({ detail: "not found" }, { status: 404 }),
   );
   const answer = globalThis.fetch;
   vi.stubGlobal("fetch", (request: Request) =>
     failing && new URL(request.url).searchParams.has("since")
-      ? Promise.resolve(Response.json({ detail: "database unavailable" }, { status: 503 }))
+      ? Promise.resolve(
+          Response.json({ detail: "database unavailable" }, { status: 503 }),
+        )
       : answer(request),
   );
   show(<ActivityView />);
@@ -429,7 +536,11 @@ test("Activity's live updates that keep failing say so with Retry (CR-R3-B4)", a
   await stream(1);
   // It asks at 1, 3 and 6 s: the first retry, due at 2 s, waits out the 2 s between asks.
   await act(() => vi.advanceTimersByTimeAsync(5_000));
-  await until(() => expect(screen.getByRole("status").textContent).toBe("Live updates failed: database unavailableRetry"));
+  await until(() =>
+    expect(screen.getByRole("status").textContent).toBe(
+      "Live updates failed: database unavailableRetry",
+    ),
+  );
   failing = false;
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   // The retry asks as soon as the 2 s between asks allow.

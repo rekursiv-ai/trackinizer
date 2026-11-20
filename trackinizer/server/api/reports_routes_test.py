@@ -739,6 +739,8 @@ async def test_report_content_returns_exact_revision_or_not_found(
     app = FastAPI()
     app.state.store = store
     request = Request({"type": "http", "app": app})
+    principal = Principal(email=TEST_USER_EMAIL, role="viewer")
+    request.state.access_principal = principal
     revision = _unit_revision()
     read = AsyncMock(return_value=revision if found else None)
     monkeypatch.setattr(reports_routes, "read_artifact_content", read)
@@ -762,7 +764,7 @@ async def test_report_content_returns_exact_revision_or_not_found(
             404,
             "Artifact content not found.",
         )
-    read.assert_awaited_once_with(store, revision.artifact_id)
+    read.assert_awaited_once_with(store, revision.artifact_id, principal=principal)
 
 
 @pytest.mark.asyncio
@@ -775,6 +777,8 @@ async def test_report_html_refuses_non_html_and_serves_sandboxed_capture(
     app = FastAPI()
     app.state.store = store
     request = Request({"type": "http", "app": app})
+    principal = Principal(email=TEST_USER_EMAIL, role="viewer")
+    request.state.access_principal = principal
     revision = _unit_revision()
     if kind == "structured":
         revision = revision.model_copy(update={"format": "structured", "html": None})
@@ -803,7 +807,7 @@ async def test_report_html_refuses_non_html_and_serves_sandboxed_capture(
             404,
             "HTML Artifact not found.",
         )
-    read.assert_awaited_once_with(store, revision.artifact_id)
+    read.assert_awaited_once_with(store, revision.artifact_id, principal=principal)
 
 
 def _unit_revision() -> ArtifactContentRevision:

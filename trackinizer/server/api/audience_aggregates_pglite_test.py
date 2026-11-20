@@ -18,6 +18,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
+import asyncio
+
 from fastapi import FastAPI
 from treekle import from_plain, json_loads
 
@@ -25,15 +27,17 @@ import httpx2
 import pytest
 import pytest_asyncio
 
+from trackinizer.addons.embedding.fakes import HashEmbedder, vector_store
+from trackinizer.addons.embedding.search import Nearest
 from trackinizer.server import web
 from trackinizer.server.api import export_routes, query
 from trackinizer.server.api.conftest import TEST_USER_EMAIL, make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Assistant, ChatOrgs, Config
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.audience_aggregates_pglite_test import (
     ASSISTANT_EMAIL,
     CANARY,
+    SETTINGS,
     STARTER_EMAIL,
     Pair,
     index,
@@ -48,6 +52,8 @@ from trackinizer.wire.wire_sessions import campaign_asker_label
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
+
+    from trackinizer.lib.postgres import PGliteEngine
 
 
 pytestmark = [pytest.mark.db_pglite, pytest.mark.asyncio(loop_scope="session")]
@@ -104,6 +110,12 @@ class _Served:
 
 
 @pytest_asyncio.fixture(loop_scope="session")
+async def store(pglite_engine: PGliteEngine) -> Store:
+    """Return a store on the shared PGlite engine, with the addon's vector table."""
+    return await vector_store(pglite_engine)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
 async def served(store: Store) -> AsyncIterator[_Served]:
     """Serve the feed, search, record-filter and export routes over three sessions."""
     # The histogram counts a week back at most, so the sessions write within it. The
@@ -113,11 +125,17 @@ async def served(store: Store) -> AsyncIterator[_Served]:
     chat_at = pair.origin
     chat = await seed_chat(store, at=chat_at)
     await index(store)
+    loaded = asyncio.Event()
+    loaded.set()
     app = FastAPI()
     app.state.store = store
     app.state.engine = store.engine
     app.state.config = _config("domain")
-    app.state.inbound = InboundQueue()
+    app.state.vector_search = Nearest(
+        model=HashEmbedder(dim=1_024),
+        settings=SETTINGS,
+        loaded=loaded,
+    )
     web.attach(app)
     app.include_router(query.router)
     app.include_router(export_routes.router)
@@ -157,12 +175,12 @@ _ROUTES: Final[dict[str, _Route]] = {
     "facets": ("/api/web/feed/facets", [], _whole),
     "full text": (
         "/api/web/search_sessions",
-        [("q", "transcript"), ("semantic", "false"), ("whose", "everyone")],
+        [("q", "transcript"), ("mode", "keyword"), ("whose", "everyone")],
         _whole,
     ),
     "semantic": (
         "/api/web/search_sessions",
-        [("q", _STAFF_TEXT), ("semantic", "true"), ("whose", "everyone")],
+        [("q", _STAFF_TEXT), ("mode", "fused"), ("whose", "everyone")],
         _whole,
     ),
     "record filter": (
@@ -226,7 +244,7 @@ async def test_the_histogram_counts_for_the_audiences_of_its_caller(
 
 async def test_the_assistant_finds_no_chat_by_searching(served: _Served) -> None:
     """It searches on a user's behalf, so a chat it could find would be any user's."""
-    params = [("q", "transcript"), ("semantic", "false")]
+    params = [("q", "transcript"), ("mode", "keyword")]
     served.as_reader(_BOTH, email=ASSISTANT_EMAIL)
 
     by_domain = (await served.get("/api/web/search_sessions", params)).text
@@ -384,7 +402,6 @@ async def test_whose_campaigns_reads_a_lead_labelled_with_the_slug_in_no_room_of
 def _config(orgs: ChatOrgs) -> Config:
     """Return the server's configuration, the assistant Scout's, chats as ``orgs``."""
     return Config(
-        session_embedder="stub-1024",
         assistant=Assistant(actor="scout", email=ASSISTANT_EMAIL),
         chat_orgs=orgs,
     )

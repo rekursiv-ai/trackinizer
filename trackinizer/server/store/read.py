@@ -1,6 +1,6 @@
 """:class:`_ReadMixin` -- read-only inquiry, cost, and change queries.
 
-A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`,
+A pure leaf: :meth:`get_inquiry`, :meth:`inquiry_id`, :meth:`list_kind`,
 :meth:`narrows_ancestors`, :meth:`next_issue`, :meth:`inquiry_cost`,
 :meth:`proves_belief`, :meth:`what_changed_for_me`, :meth:`get_change`, and
 :meth:`list_changes` all read through ``self.engine`` and call no other mixin.
@@ -195,6 +195,42 @@ class _ReadMixin(_StoreShared):
             {target_id: inbound},
         )
 
+    async def inquiry_id(
+        self,
+        kind: Inquiry.InquiryKind,
+        seq: int,
+        *,
+        principal: Principal | None = None,
+    ) -> UUID | None:
+        """Return the id of the inquiry its short reference ``kind#seq`` names.
+
+        Args:
+          kind: Its kind, such as ``AgentSession``.
+          seq: Its number within the kind, from 1.
+          principal: Request reader; None for trusted internal reads.
+
+        Returns:
+          inquiry_id: Its id; ``None`` for no such inquiry, or one ``principal`` may
+            not read.
+
+        """
+        params: list[object] = [kind, seq]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        async with self.engine.acquire() as conn:
+            row = await conn.fetchrow(
+                vetted_sql(
+                    "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2",
+                    "" if predicate == "TRUE" else f" AND ({predicate})",
+                ),
+                *params,
+            )
+        return None if row is None else cast(UUID, row["id"])
+
     async def list_kind(
         self,
         kind: str,
@@ -261,15 +297,14 @@ class _ReadMixin(_StoreShared):
         """
         params: list[object] = [kind]
         clauses = ["kind = $1"]
-        if principal is not None:
-            predicate = self.access_policy.read_filter(
-                "inquiry",
-                "inquiries",
-                params=params,
-                principal=principal,
-            )
-            if predicate != "TRUE":
-                clauses.append(f"({predicate})")
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        if predicate != "TRUE":
+            clauses.append(f"({predicate})")
         if status is not None:
             params.append(status)
             clauses.append(f"status = ${len(params)}")
@@ -784,7 +819,7 @@ class _ReadMixin(_StoreShared):
         # comparison with a min-UUID sentinel on page one mirrors the
         # next-page semantics exactly minus the tie.
         cursor_id = after_id if after_id is not None else UUID(int=0)
-        # pragma: no mutate start -- SQL is judged by a database: locks_pglite_test.
+        # pragma: no mutate[case-insensitive] start
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
                 vetted_sql(

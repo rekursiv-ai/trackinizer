@@ -1,10 +1,12 @@
 """A bare ``pip install trackinizer`` carries the client side only.
 
 ``trax``, the client, the wire models and the types need no server package.
-FastAPI, asyncpg, torch and the rest of the ``server`` extra install only with
-``trackinizer[server]``. These tests keep that true: every client-side module
-imports with the extra's packages unimportable, and the ``trackinizer`` command
-explains a missing extra instead of printing a traceback.
+FastAPI, asyncpg and the rest of the ``server`` extra install only with
+``trackinizer[server]``, and the embedding add-on's model stack (torch,
+transformers) only with ``trackinizer[embedding]``. These tests keep that true:
+every client-side module imports with the server extra's packages unimportable,
+the server and the add-on import with the embedding extra's, and the
+``trackinizer`` command explains a missing extra instead of printing a traceback.
 """
 
 from __future__ import annotations
@@ -47,8 +49,12 @@ _ROOT: Final = _CWD.parents[_BASE.count(".")]
 
 _CLIENT_PACKAGES: Final = ("client", "trax", "types", "wire")
 
-# Only ``server/`` imports the embedder protocol, and it names torch.
-_SERVER_ONLY_MODULES: Final = frozenset({"types.embedder"})
+# Test support the wheel leaves out (``.export/pyproject.delta.toml``), so no
+# install imports it; it imports torch at module scope.
+_TEST_SUPPORT_MODULES: Final = frozenset({"addons.embedding.fakes"})
+
+# The modules a server imports at start, before any add-on's own.
+_SERVER_ENTRY_MODULES: Final = ("server.server", "server.api.app", "server.web")
 
 # The monorepo imports configgle as a sibling package under another name. The
 # export rewrites that name to the published one, which repeats the first entry.
@@ -112,13 +118,42 @@ def test_client_side_modules_import_without_server_only_packages() -> None:
     extra. One module that imports FastAPI, asyncpg or torch at import time
     would make a bare ``pip install trackinizer`` fail on ``trax``.
     """
-    modules = _client_side_modules()
+    modules = _package_modules(*_CLIENT_PACKAGES)
     assert {f"{_BASE}.{name}" for name in ("trax.cli", "client.client")} <= set(modules)
 
-    failures = _import_failures(modules, root=_ROOT)
+    failures = _import_failures(modules, root=_ROOT, blocked=_blocked_names())
 
     assert not failures, (
         "client-side modules need a server-only package:\n"
+        + "\n".join(
+            f"{module}: {reason}" for module, reason in sorted(failures.items())
+        )
+    )
+
+
+@pytest.mark.cli_python_subprocess
+def test_server_and_embedding_addon_import_without_the_embedding_extra() -> None:
+    """The server and the embedding add-on import without the ``embedding`` extra.
+
+    A ``trackinizer[server]`` install must start a server, and the add-on's modules
+    must import there too, deferring the model stack to the first embed. One module
+    that imports torch at import time would make every server need the model stack.
+    """
+    modules = [
+        *(f"{_BASE}.{name}" for name in _SERVER_ENTRY_MODULES),
+        *_package_modules("addons/embedding"),
+    ]
+    assert f"{_BASE}.addons.embedding.model" in modules
+
+    failures = _import_failures(
+        modules,
+        root=_ROOT,
+        blocked=_extra_packages("embedding"),
+    )
+
+    assert not failures, (
+        "the server or the embedding add-on needs a package of the embedding extra "
+        "at import time:\n"
         + "\n".join(
             f"{module}: {reason}" for module, reason in sorted(failures.items())
         )
@@ -134,7 +169,11 @@ def test_import_probe_reports_a_module_that_needs_a_server_only_package(
     (tmp_path / "lazy.py").write_text("def embed():\n    import torch\n")
     (tmp_path / "plain.py").write_text("import json\n")
 
-    failures = _import_failures(["leaky", "lazy", "plain"], root=tmp_path)
+    failures = _import_failures(
+        ["leaky", "lazy", "plain"],
+        root=tmp_path,
+        blocked=frozenset({"torch"}),
+    )
 
     assert failures == {"leaky": "ModuleNotFoundError: No module named 'torch'"}
 
@@ -145,7 +184,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         metafunc.definition.originalname
         == "test_client_side_modules_never_name_a_server_only_package"
     ):
-        metafunc.parametrize("client_module", _client_side_modules())
+        metafunc.parametrize("client_module", _package_modules(*_CLIENT_PACKAGES))
 
 
 def test_client_side_modules_never_name_a_server_only_package(
@@ -163,7 +202,7 @@ def test_client_side_modules_never_name_a_server_only_package(
         [client_module],
         root=_ROOT,
         blocked=_blocked_names(),
-        skip=frozenset(f"{_BASE}.{name}" for name in _SERVER_ONLY_MODULES),
+        skip=frozenset(),
     )
 
     assert not reached, "the client side needs a server-only package:\n" + "\n".join(
@@ -296,7 +335,7 @@ def test_static_scan_resolves_new_modules_on_every_invocation(tmp_path: Path) ->
 
 def test_missing_extra_guard_names_every_package_of_the_server_extra() -> None:
     """``entry.SERVER_ONLY`` is the ``server`` extra, by import name."""
-    assert _server_only_packages() == entry.SERVER_ONLY
+    assert _extra_packages("server") == entry.SERVER_ONLY
 
 
 @pytest.mark.cli_python_subprocess
@@ -322,10 +361,10 @@ def test_server_command_explains_a_missing_extra() -> None:
     assert not result.stdout
 
 
-def _client_side_modules() -> list[str]:
-    """Return the dotted name of every module of the client side, tests excluded."""
+def _package_modules(*packages: str) -> list[str]:
+    """Return the dotted name of every module under ``packages``, tests excluded."""
     modules: list[str] = []
-    for package in _CLIENT_PACKAGES:
+    for package in packages:
         for path in sorted((_CWD / package).rglob("*.py")):
             relative = path.relative_to(_CWD).with_suffix("")
             name = ".".join(
@@ -334,7 +373,7 @@ def _client_side_modules() -> list[str]:
             if (
                 relative.name in {"conftest", "__main__"}
                 or relative.name.endswith("_test")
-                or name in _SERVER_ONLY_MODULES
+                or name in _TEST_SUPPORT_MODULES
                 # A script beside the package, not a module of it.
                 or not all(
                     (_CWD.joinpath(*relative.parts[:depth]) / "__init__.py").is_file()
@@ -348,7 +387,7 @@ def _client_side_modules() -> list[str]:
 
 def _blocked_names() -> frozenset[str]:
     """Return the dotted names a bare install cannot import."""
-    return frozenset({*_server_only_packages(), *_CONFIGGLE})
+    return frozenset({*_extra_packages("server"), *_CONFIGGLE})
 
 
 # Reads source, so an import anywhere in a module counts: at module scope, in a
@@ -484,9 +523,13 @@ def _is_type_checking(test: ast.expr) -> bool:
     )
 
 
-def _import_failures(modules: list[str], *, root: Path) -> dict[str, str]:
-    """Import ``modules`` in a child interpreter that cannot import the server extra."""
-    blocked = [*_server_only_packages(), *_CONFIGGLE]
+def _import_failures(
+    modules: list[str],
+    *,
+    root: Path,
+    blocked: frozenset[str],
+) -> dict[str, str]:
+    """Import ``modules`` in a child interpreter that cannot import ``blocked``."""
     result = subprocess.run(  # noqa: S603 -- argv is this interpreter and a fixed probe.
         [
             sys.executable,
@@ -505,8 +548,8 @@ def _import_failures(modules: list[str], *, root: Path) -> dict[str, str]:
     return json_loads(result.stdout, dict[str, str])
 
 
-def _server_only_packages() -> frozenset[str]:
-    """Return the import name of each requirement of the ``server`` extra."""
+def _extra_packages(extra: str) -> frozenset[str]:
+    """Return the import name of each requirement of ``extra``, less trackinizer's own."""
     # The monorepo keeps the extra in the export's pyproject delta; the exported
     # package has the rendered pyproject.toml at its root instead.
     for candidate in (
@@ -520,10 +563,13 @@ def _server_only_packages() -> frozenset[str]:
             )["project"]
             # The delta also holds operations on the base's extras, as ``!name = true``.
             extras = from_plain(project["optional-dependencies"], dict[str, object])
-            return frozenset(
+            # An extra that names another, ``trackinizer[server]``, installs that one's
+            # packages too; they are not this extra's own.
+            names = (
                 canonicalize_name(Requirement(requirement).name).replace("-", "_")
-                for requirement in from_plain(extras["server"], list[str])
+                for requirement in from_plain(extras[extra], list[str])
             )
+            return frozenset(name for name in names if name != "trackinizer")
     raise FileNotFoundError("no pyproject.toml or pyproject.delta.toml found")
 
 

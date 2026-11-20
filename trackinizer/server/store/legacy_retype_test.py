@@ -24,8 +24,8 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolResult,
     UncategorizedRecord,
-    UncategorizedToolResult,
     UserMessage,
 )
 from trackinizer.server.store import legacy_retype
@@ -33,6 +33,7 @@ from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,
     retype,
 )
+from trackinizer.types.session_records import record_kind
 
 
 STAMP = "2026-01-02T03:04:05+00:00"
@@ -247,9 +248,11 @@ class TestToolResult:
         )
         assert len(out.records) == 1
         record = out.records[0]
-        assert isinstance(record, UncategorizedToolResult)
+        assert isinstance(record, ToolResult)
+        assert record_kind(record) == "UncategorizedToolResult"
         assert record.call_id == "call_9"
-        assert record.content == "exit 1: ModuleNotFoundError"
+        assert record.stdout == ("exit 1: ModuleNotFoundError",)
+        assert record.text() == "exit 1: ModuleNotFoundError"
         assert record.extra.get("is_error") is True
 
     def test_diff_fields_survive_in_extra(self) -> None:
@@ -266,7 +269,7 @@ class TestToolResult:
             ),
         )
         record = out.records[0]
-        assert isinstance(record, UncategorizedToolResult)
+        assert isinstance(record, ToolResult)
         assert record.extra.get("diff") == "-a\n+b"
         assert record.extra.get("diff_file_path") == "f.py"
         assert record.extra.get("summary") == "edited f.py"
@@ -279,7 +282,7 @@ class TestToolResult:
             ),
         )
         record = out.records[0]
-        assert isinstance(record, UncategorizedToolResult)
+        assert isinstance(record, ToolResult)
         # Old union defaults (False, "") are noise, not provenance.
         assert "is_error" not in record.extra
         assert "diff" not in record.extra

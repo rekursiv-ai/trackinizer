@@ -225,6 +225,26 @@ class SubmitBase(_CostFields):
             raise ValueError("modified must not precede created")
         return self
 
+    # A body ignores a key it does not declare, so without this a client's
+    # ``filed_from_chat`` would be dropped in silence and its sender would believe
+    # the row filed.
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_filed_from_chat(cls, data: object) -> object:
+        """Refuse ``filed_from_chat``, which the server stamps from a filing's chat."""
+        if _names_filed_from_chat(data):
+            raise ValueError(
+                "filed_from_chat is set by the server from the chat a filing names",
+            )
+        return data
+
+
+# Kept out of the validator: inlined there, the ``dict`` test narrows the ``data`` it
+# hands back to a partly unknown type, which basedpyright refuses.
+def _names_filed_from_chat(data: object) -> bool:
+    """Return whether a raw submit body names ``filed_from_chat``."""
+    return isinstance(data, dict) and "filed_from_chat" in data
+
 
 # Shared by every list-of-string submit field so the "no blank entries" rule lives in
 # one place.

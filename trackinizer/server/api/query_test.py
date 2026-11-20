@@ -48,10 +48,10 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.auth import AuthIdentity, Role, current_user
+from trackinizer.server.auth import AuthIdentity, ProcessKey, Role, current_user
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change, Snapshot
-from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
+from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry, Issue
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
@@ -79,6 +79,49 @@ def _query_app() -> Iterator[None]:
 
 
 class TestRoutes:
+    @pytest.mark.parametrize(
+        ("kind", "account", "status"),
+        [
+            ("AgentSession", TEST_USER_EMAIL, 200),
+            ("AgentSession", TEST_USER_EMAIL.upper(), 200),
+            ("AgentSession", "foreign@example.com", 403),
+            ("Issue", TEST_USER_EMAIL, 403),
+            ("missing", TEST_USER_EMAIL, 403),
+        ],
+    )
+    def test_process_reads_only_session_rows_of_its_account(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+        account: str,
+        status: int,
+    ) -> None:
+        client, store, _ = route_client
+        session = replace(conftest.live_session(), account=account)
+        row = (
+            session
+            if kind == "AgentSession"
+            else Issue(id=session.id, account=account)
+            if kind == "Issue"
+            else None
+        )
+        monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=row))
+        install_identity(
+            replace(
+                make_test_identity(),
+                process=ProcessKey(
+                    process_id=uuid.UUID(int=2),
+                    session_id=uuid.UUID(int=3),
+                    host_id=uuid.UUID(int=4),
+                ),
+            ),
+        )
+
+        answer = client.get(f"/api/inquiries/{session.id}")
+
+        assert answer.status_code == status, answer.text
+
     def test_purge_route(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -1310,9 +1353,9 @@ def test_fields_keep_the_named_values_through_the_real_store(
             },
         ]
     sql, *params = engine.conn.fetch.call_args_list[3].args
-    assert (
-        sql
-        == "SELECT * FROM inquiries WHERE kind = $1 AND ((seq >= $2 AND seq <= $3)) ORDER BY created DESC, id DESC LIMIT $4 OFFSET $5"
+    assert sql == (
+        "SELECT * FROM inquiries WHERE kind = $1 AND ((seq >= $2 AND seq <= $3)) "
+        "ORDER BY created DESC, id DESC LIMIT $4 OFFSET $5"
     )
     assert params == [kind, 1, 1, 50, 0]
 
@@ -1449,7 +1492,8 @@ def test_brief_changes_drop_unset_keys_and_cut_text_through_the_real_store(
     } == {str(child), str(parent)}
     assert engine.conn.fetch.call_args_list[0].args == (
         (
-            "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+            "SELECT * FROM change_log "
+            "WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
             "ORDER BY created DESC, id DESC LIMIT $1"
         ),
         200,
@@ -1495,23 +1539,14 @@ def test_change_log_takes_several_kinds_before_its_limit_through_the_real_store(
     assert [
         row["kind"] for row in json_loads(one.content, list[dict[str, object]])
     ] == ["status"]
+    by_kind = (
+        "SELECT * FROM change_log "
+        "WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+        "AND kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2"
+    )
     assert [call.args for call in engine.conn.fetch.call_args_list] == [
-        (
-            (
-                "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
-                "AND kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2"
-            ),
-            ["status", "title"],
-            2,
-        ),
-        (
-            (
-                "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
-                "AND kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2"
-            ),
-            ["status"],
-            200,
-        ),
+        (by_kind, ["status", "title"], 2),
+        (by_kind, ["status"], 200),
     ]
 
 
@@ -1533,19 +1568,19 @@ def test_change_log_takes_several_kinds_before_its_limit_through_the_real_store(
         (
             "is",
             "parent-id",
-            "EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $2)",
+            "EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $VALUE)",
             ["Issue", "parent-id", 50, 0],
         ),
         (
             "ne",
             "parent-id",
-            "NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $2)",
+            "NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $VALUE)",
             ["Issue", "parent-id", 50, 0],
         ),
         (
             "is",
             "not-an-id",
-            "EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $2)",
+            "EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $VALUE)",
             ["Issue", "not-an-id", 50, 0],
         ),
     ],
@@ -1570,7 +1605,7 @@ def test_narrows_filters_lower_at_the_real_store_sql_boundary(
     engine.conn.fetch.assert_awaited_once_with(
         vetted_sql(
             "SELECT * FROM inquiries WHERE kind = $1 AND ",
-            predicate,
+            predicate.replace("$VALUE", "$2"),
             " ORDER BY created DESC, id DESC LIMIT $",
             str(count - 1),
             " OFFSET $",
@@ -1655,22 +1690,33 @@ def test_ancestors_materialize_real_store_rows_and_bind_exact_recursive_bounds(
             ],
         },
     ]
-    recursive = (
+    bound: list[object] = []
+    readable = ""
+    recursive = vetted_sql(
         "WITH RECURSIVE up(child, parent, depth) AS ("
         "    SELECT e.from_id, e.to_id, 1 FROM edges e "
-        "    WHERE e.edge_kind = 'narrows' AND e.from_id = ANY($1::uuid[]) "
+        "    WHERE e.edge_kind = 'narrows' AND e.from_id = ANY($1::uuid[])",
+        readable,
+        " "
         "    UNION "
         "    SELECT e.from_id, e.to_id, up.depth + 1 FROM edges e "
         "    JOIN up ON e.from_id = up.parent "
-        "    WHERE e.edge_kind = 'narrows' AND up.depth < $2"
+        "    WHERE e.edge_kind = 'narrows' AND up.depth < $2",
+        readable,
         "), kept AS ("
         "    SELECT parent FROM up GROUP BY parent "
         "    ORDER BY min(depth), parent LIMIT $3"
         ") SELECT DISTINCT up.child, t.id, t.kind, t.seq, t.title, t.status "
         "FROM up JOIN kept ON kept.parent = up.parent "
-        "JOIN inquiries t ON t.id = up.parent"
+        "JOIN inquiries t ON t.id = up.parent",
     )
-    assert engine.conn.fetch.call_args_list[1].args == (recursive, [target], 8, 200)
+    assert engine.conn.fetch.call_args_list[1].args == (
+        recursive,
+        [target],
+        8,
+        200,
+        *bound,
+    )
     plain = client.get("/api/inquiries", params=[("kind", "Issue"), ("fields", "id")])
     assert plain.status_code == 200
     assert json_loads(plain.content, list[dict[str, object]]) == [{"id": str(target)}]

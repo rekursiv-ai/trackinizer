@@ -5,10 +5,8 @@ tool-result and file bodies are ~90% of ``session_records``' content but are
 read only by replay, so they move off the hot row into the zstd sidecar and
 the hot row keeps a searchable head.
 
-Which kinds offload is the :data:`HEAVY_KINDS` policy here -- deliberately
-the same set the :class:`~trackinizer.server.semantic_mapper_footprint.
-FootprintMapper` heads plus the never-indexed body kinds, because "body is
-cold" and "only the head is searchable" are one decision, not two.
+Which kinds offload is the :data:`HEAVY_KINDS` policy here: tool output and
+file bodies, which search reads only by their head.
 
 The hot row after offload:
 
@@ -64,9 +62,7 @@ HEAVY_KINDS: Final = frozenset(
 these bodies)."""
 
 HEAD_TEXT_CHARS: Final = 2_000
-"""Head kept hot for search/feed, matching ``FootprintMapper``'s
-``HEAD_CHARS`` -- the two constants agree by test, not by import, so the
-mapper stays policy-swappable without dragging storage behavior with it."""
+"""Head kept hot for search and the feed."""
 
 STUB_PAYLOAD: Final = '{"$body":"offloaded"}'
 """The hot ``payload`` after offload, verbatim JSON text. Fixed-string so

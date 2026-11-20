@@ -28,13 +28,22 @@ export type StreamsView = {
  * nothing, when `rows` is. `toggled` is the list's stored keys, among them those
  * of the streams shown whole.
  */
-export function useStreams(rows: readonly InquiryRow[] | null, toggled: readonly string[]): StreamsView | null {
-  const { ancestry, pending, error, retry } = useAncestry(rows && rows.map((row) => row.id));
+export function useStreams(
+  rows: readonly InquiryRow[] | null,
+  toggled: readonly string[],
+): StreamsView | null {
+  const { ancestry, pending, error, retry } = useAncestry(
+    rows && rows.map((row) => row.id),
+  );
   if (!rows) return null;
   const streams = buildStreams(rows, ancestry);
   const whole = new Set(toggled);
   // A row under two roots shows in both streams, and is one row to move to or select.
-  const shown = new Map(streams.flatMap((stream) => shownRows(stream, whole).map(({ row }) => [row.id, row] as const)));
+  const shown = new Map(
+    streams.flatMap((stream) =>
+      shownRows(stream, whole).map(({ row }) => [row.id, row] as const),
+    ),
+  );
   const order = [...shown.values()];
   return { streams, whole, order, rows: order, pending, error, retry };
 }
@@ -58,13 +67,18 @@ export function StreamsRows({
   onToggle: (key: string) => void;
   selection: Selection;
 }) {
-  if (view.error && view.streams.length === 0) return <ReadFailure error={view.error} retry={view.retry} />;
+  if (view.error && view.streams.length === 0)
+    return <ReadFailure error={view.error} retry={view.retry} />;
   if (view.pending) return <p className="list-loading">Loading…</p>;
   return view.streams.map((stream) => {
     const shown = shownRows(stream, view.whole);
     const hidden = stream.rows.length - shown.length;
     return (
-      <section key={streamKey(stream)} className="s-stream" aria-label={stream.root?.title ?? "No parent"}>
+      <section
+        key={streamKey(stream)}
+        className="s-stream"
+        aria-label={stream.root?.title ?? "No parent"}
+      >
         <StreamHead stream={stream} now={now} />
         {shown.map(({ row, parent, alsoUnder }) => (
           <Row
@@ -79,13 +93,19 @@ export function StreamsRows({
             context={parent?.title}
             note={
               alsoUnder.length > 0 ? (
-                <span className="s-also">also under {alsoUnder.map(({ seq }) => `#${seq}`).join(", ")}</span>
+                <span className="s-also">
+                  also under {alsoUnder.map(({ seq }) => `#${seq}`).join(", ")}
+                </span>
               ) : null
             }
           />
         ))}
         {hidden > 0 && (
-          <button type="button" className="s-more" onClick={() => onToggle(streamKey(stream))}>
+          <button
+            type="button"
+            className="s-more"
+            onClick={() => onToggle(streamKey(stream))}
+          >
             {hidden} more in this stream
           </button>
         )}
@@ -95,18 +115,30 @@ export function StreamsRows({
 }
 
 /** A stream's header: its root goal, the page's count of rows under it, active and done, and its newest row's age. */
-function StreamHead({ stream: { root, rows, active, done, newest }, now }: { stream: Stream; now: number }) {
+function StreamHead({
+  stream: { root, rows, active, done, newest },
+  now,
+}: {
+  stream: Stream;
+  now: number;
+}) {
   const part = (count: number) => `${(100 * count) / rows.length}%`;
   return (
     <div className="s-head">
       {root && <StatusGlyph status={root.status} />}
       <span className="s-title">
-        {root ? <a href={routeHref({ name: "ref", kind: root.kind, seq: root.seq })}>{root.title}</a> : "No parent"}
+        {root ? (
+          <a href={routeHref({ name: "ref", kind: root.kind, seq: root.seq })}>
+            {root.title}
+          </a>
+        ) : (
+          "No parent"
+        )}
       </span>
       {root && <span className="s-ref">#{root.seq}</span>}
       <span className="s-counts">
-        {rows.length === 1 ? "1 issue" : `${rows.length} issues`} · {active} active · {done} done · newest{" "}
-        {shortAge(newest, now)}
+        {rows.length === 1 ? "1 issue" : `${rows.length} issues`} · {active} active ·{" "}
+        {done} done · newest {shortAge(newest, now)}
       </span>
       <span className="s-bar" aria-hidden="true">
         <i className="s-active" style={{ width: part(active) }} />

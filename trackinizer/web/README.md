@@ -115,7 +115,7 @@ and `<function>.<case>.json` for another case (`getGraphFocus`'s is
 | `artifacts` | `getArtifactContentRevision` | `GET /api/artifacts/{id}/content` |
 | `sessions` | `listSessionParts` | `GET /api/sessions/{id}/parts` |
 | | `readSessionRecords` | `GET /api/sessions/{id}/records?part=&after_idx=&limit=&plaintext_only=true` |
-| | `sendSessionMessage` | `POST /api/sessions/{id}/inbound` (header `Idempotency-Key`) |
+| | `sendMessage` | `POST /api/sessions/{id}/inputs` |
 | | `readFeed` | `GET /api/web/feed?tail=&conversation=&after_created=&after_session=&after_part=&after_seq=&before_created=&before_session=&before_part=&before_seq=&since=&until=&limit=&actor=&room=&cli=&kind=&whose=&hidden=` (each filter repeated per value) |
 | | `readFeedFacets` | `GET /api/web/feed/facets?since=&until=&actor=&room=&cli=&kind=&whose=&hidden=` |
 | | `sendRoutedMessage` | `POST /api/messages` (header `Idempotency-Key`) |

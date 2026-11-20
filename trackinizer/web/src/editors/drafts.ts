@@ -19,9 +19,14 @@ export type Draft = { readonly text: string; readonly base: unknown };
  * `useDraftKeeper`) comes back open on the next load of this field, in any
  * browser; setting it to null, as a send or a discard does, forgets it there.
  */
-export function useDraft(id: string, field: string): [Draft | null, (draft: Draft | null) => void] {
+export function useDraft(
+  id: string,
+  field: string,
+): [Draft | null, (draft: Draft | null) => void] {
   const key = draftKey(id, field);
-  const [draft, setDraft] = useState<Draft | null>(() => preferences().drafts[key] ?? null);
+  const [draft, setDraft] = useState<Draft | null>(
+    () => preferences().drafts[key] ?? null,
+  );
   const set = useCallback(
     (next: Draft | null) => {
       setDraft(next);
@@ -54,12 +59,24 @@ function draftKey(id: string, field: string): string {
 }
 
 /** The change that puts `draft` at `key` of the kept drafts, or forgets `key` for null; none when they already are so. */
-function keepDraft(now: Preferences, key: string, draft: Draft | null): Partial<Preferences> {
+function keepDraft(
+  now: Preferences,
+  key: string,
+  draft: Draft | null,
+): Partial<Preferences> {
   const kept = now.drafts[key];
   if (draft === null) {
-    return kept === undefined ? {} : { drafts: Object.fromEntries(Object.entries(now.drafts).filter(([other]) => other !== key)) };
+    return kept === undefined
+      ? {}
+      : {
+          drafts: Object.fromEntries(
+            Object.entries(now.drafts).filter(([other]) => other !== key),
+          ),
+        };
   }
   // JSON has no undefined: an unset base is kept as null, which `sameValue` reads as unset too.
   const wire = { text: draft.text, base: draft.base ?? null };
-  return kept !== undefined && sameJson(kept, wire) ? {} : { drafts: { ...now.drafts, [key]: wire } };
+  return kept !== undefined && sameJson(kept, wire)
+    ? {}
+    : { drafts: { ...now.drafts, [key]: wire } };
 }

@@ -8,7 +8,18 @@ import { CommandRegistry } from "../commands/registry";
 import { stubLayout } from "../editors/testing";
 import { currentRoute } from "../router/addressBar";
 import { openedAt } from "./queries";
-import { change, detail, META, PROFILE, peer, renderDetail, row, serveDetails, uuid } from "./testing";
+import {
+  change,
+  detail,
+  META,
+  PROFILE,
+  peer,
+  renderDetail,
+  row,
+  serveDetails,
+  uuid,
+} from "./testing";
+import { must } from "../must";
 
 beforeEach(() => {
   history.replaceState(null, "", "#/ref/Issue/1");
@@ -24,7 +35,9 @@ afterEach(() => {
 /** The properties panel's value for the field labelled `label`. */
 function prop(label: string): HTMLElement {
   // By its label: a query by role works out the style of the whole detail first.
-  const term = within(screen.getByLabelText("Properties", { selector: "aside" })).getByText(label, {
+  const term = within(
+    screen.getByLabelText("Properties", { selector: "aside" }),
+  ).getByText(label, {
     selector: "dt",
   });
   return term.nextElementSibling as HTMLElement;
@@ -32,14 +45,18 @@ function prop(label: string): HTMLElement {
 
 /** The relation group labelled `label`. Role queries are slow on a hub's rows, so this walks the DOM. */
 function group(label: string) {
-  const heading = [...document.querySelectorAll(".rel-group-h span")].find((span) => span.textContent === label);
-  return within(heading!.closest<HTMLElement>('[role="group"]')!);
+  const heading = [...document.querySelectorAll(".rel-group-h span")].find(
+    (span) => span.textContent === label,
+  );
+  return within(must(must(heading).closest<HTMLElement>('[role="group"]')));
 }
 
 /** The links in the relation group labelled `label`. */
 function groupLinks(label: string): HTMLAnchorElement[] {
-  const heading = [...document.querySelectorAll(".rel-group-h span")].find((span) => span.textContent === label);
-  return [...heading!.closest('[role="group"]')!.querySelectorAll("a")];
+  const heading = [...document.querySelectorAll(".rel-group-h span")].find(
+    (span) => span.textContent === label,
+  );
+  return [...must(must(heading).closest('[role="group"]')).querySelectorAll("a")];
 }
 
 /** The rail section `name` ("Parents", "Children"). */
@@ -50,7 +67,7 @@ function section(name: string): HTMLElement {
 /** The peers in rail section `name`, each as its link's text and the names of the edges joining it. */
 function rail(name: string): [string | null, (string | null)[]][] {
   return [...section(name).querySelectorAll(".rail-peer")].map((item) => [
-    item.querySelector(".rail-link")!.textContent,
+    must(item.querySelector(".rail-link")).textContent,
     [...item.querySelectorAll(".edge-name")].map((edge) => edge.textContent),
   ]);
 }
@@ -59,44 +76,79 @@ test("an Issue's properties open folded, under a summary that unfolds them; othe
   serveDetails([detail(row("Issue", 1)), detail(row("Belief", 2))]);
   renderDetail({ kind: "Issue", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
-  const fold = screen.getByLabelText("Properties", { selector: "aside" }).querySelector("details")!;
+  const fold = must(
+    screen.getByLabelText("Properties", { selector: "aside" }).querySelector("details"),
+  );
   expect(fold.open).toBe(false);
-  await userEvent.click(within(fold).getByText("Properties and details", { selector: "summary" }));
+  await userEvent.click(
+    within(fold).getByText("Properties and details", { selector: "summary" }),
+  );
   expect(fold.open).toBe(true);
   cleanup();
   renderDetail({ kind: "Belief", seq: 2 });
   await screen.findByRole("heading", { level: 1 });
-  expect(screen.getByLabelText("Properties", { selector: "aside" }).querySelector("details")!.open).toBe(true);
+  expect(
+    must(
+      screen
+        .getByLabelText("Properties", { selector: "aside" })
+        .querySelector("details"),
+    ).open,
+  ).toBe(true);
 });
 
 test("a Kind#seq link resolves its id, then shows the inquiry", async () => {
-  const root = row("Issue", 1, { description: "See Belief#2 and [the plan](https://example.com/p)." });
+  const root = row("Issue", 1, {
+    description: "See Belief#2 and [the plan](https://example.com/p).",
+  });
   const sent = serveDetails([detail(root)]);
   renderDetail({ kind: "Issue", seq: 1 });
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Issue number 1");
-  expect(sent.map((request) => request.path)).toEqual(["/api/inquiries/Issue/1", `/api/web/get/${root.id}`]);
-  const description = screen.getByText(/See/).closest("p")!;
-  expect(within(description).getByRole("link", { name: "Belief#2" }).getAttribute("href")).toBe("/trax/ref/Belief/2");
-  expect(within(description).getByRole("link", { name: "the plan" }).getAttribute("href")).toBe("https://example.com/p");
+  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+    "Issue number 1",
+  );
+  expect(sent.map((request) => request.path)).toEqual([
+    "/api/inquiries/Issue/1",
+    `/api/web/get/${root.id}`,
+  ]);
+  const description = must(screen.getByText(/See/).closest("p"));
+  expect(
+    within(description).getByRole("link", { name: "Belief#2" }).getAttribute("href"),
+  ).toBe("/trax/ref/Belief/2");
+  expect(
+    within(description).getByRole("link", { name: "the plan" }).getAttribute("href"),
+  ).toBe("https://example.com/p");
 });
 
 test("a Kind#seq link to a row a list holds opens with one read, the detail, by the row's id (SP6)", async () => {
   const held = row("Issue", 7);
   const sent = serveDetails([detail(held)]);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(["inquiries", "list", [], "Issue", 50, 0, null], [row("Issue", 6), held]);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  queryClient.setQueryData(
+    ["inquiries", "list", [], "Issue", 50, 0, null],
+    [row("Issue", 6), held],
+  );
   renderDetail({ kind: "Issue", seq: 7 }, queryClient);
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Issue number 7");
+  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+    "Issue number 7",
+  );
   expect(sent.map((request) => request.path)).toEqual([`/api/web/get/${held.id}`]);
 });
 
 test("a Kind#seq link to a relation an open detail shows opens by the relation's id (SP6)", async () => {
   const child = row("Issue", 8);
   const sent = serveDetails([detail(child)]);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(["detail", uuid(1)], detail(row("Issue", 1), { backlinks: { narrows: [peer("Issue", 8)] } }));
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  queryClient.setQueryData(
+    ["detail", uuid(1)],
+    detail(row("Issue", 1), { backlinks: { narrows: [peer("Issue", 8)] } }),
+  );
   renderDetail({ kind: "Issue", seq: 8 }, queryClient);
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Issue number 8");
+  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+    "Issue number 8",
+  );
   expect(sent.map((request) => request.path)).toEqual([`/api/web/get/${child.id}`]);
 });
 
@@ -104,8 +156,12 @@ test("a lookup link reads the inquiry by id in one request", async () => {
   const belief = row("Belief", 5);
   const sent = serveDetails([detail(belief)]);
   renderDetail({ id: belief.id });
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Belief number 5");
-  expect(screen.getByRole("link", { name: "Beliefs" }).getAttribute("href")).toBe("/trax/list/Belief");
+  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+    "Belief number 5",
+  );
+  expect(screen.getByRole("link", { name: "Beliefs" }).getAttribute("href")).toBe(
+    "/trax/list/Belief",
+  );
   expect(sent.map((request) => request.path)).toContain(`/api/web/get/${belief.id}`);
   expect(sent.map((request) => request.path)).not.toContain("/api/inquiries/Belief/5");
 });
@@ -113,7 +169,9 @@ test("a lookup link reads the inquiry by id in one request", async () => {
 test("a detail draws its page in a render after the one its inquiry lands in, which shows the frame", async () => {
   const belief = row("Belief", 5);
   serveDetails([detail(belief)]);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   // Each commit: whether the inquiry had landed, and whether the page showed.
   const commits: string[] = [];
   const onCommit = () => {
@@ -123,7 +181,11 @@ test("a detail draws its page in a render after the one its inquiry lands in, wh
   };
   renderDetail({ id: belief.id }, queryClient, { onCommit });
   await screen.findByRole("heading", { level: 1, name: "Belief number 5" });
-  expect(commits).toEqual(["landed false, page false", "landed true, page false", "landed true, page true"]);
+  expect(commits).toEqual([
+    "landed false, page false",
+    "landed true, page false",
+    "landed true, page true",
+  ]);
 });
 
 test("an Artifact lookup link shows its published content", async () => {
@@ -131,20 +193,28 @@ test("an Artifact lookup link shows its published content", async () => {
   stubFetch((request) => {
     const path = new URL(request.url).pathname;
     if (path === `/api/web/get/${artifact.id}`) return Response.json(detail(artifact));
-    if (path === `/api/artifacts/${artifact.id}/content`) return Response.json({
-      revision: 1,
-      artifact_id: artifact.id,
-      issue_id: row("Issue", 1).id,
-      title: "ARC3 atlas",
-      summary: "Measured directions",
-      author: "ada@example.com",
-      created_at: "2026-09-30T10:00:00Z",
-      scope: "team",
-      format: "structured",
-      html: null,
-      citations: [],
-      sections: [{ title: "Representation", summary: "Two matched results", details: "Methods", findings: [] }],
-    });
+    if (path === `/api/artifacts/${artifact.id}/content`)
+      return Response.json({
+        revision: 1,
+        artifact_id: artifact.id,
+        issue_id: row("Issue", 1).id,
+        title: "ARC3 atlas",
+        summary: "Measured directions",
+        author: "ada@example.com",
+        created_at: "2026-09-30T10:00:00Z",
+        scope: "team",
+        format: "structured",
+        html: null,
+        citations: [],
+        sections: [
+          {
+            title: "Representation",
+            summary: "Two matched results",
+            details: "Methods",
+            findings: [],
+          },
+        ],
+      });
     return Response.json({ detail: "not found" }, { status: 404 });
   });
   renderDetail({ id: artifact.id });
@@ -155,8 +225,9 @@ test("an Artifact lookup link shows its published content", async () => {
 
   expect(await screen.findByRole("heading", { name: "ARC3 atlas" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Representation" })).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Link to this Artifact" }).getAttribute("href"))
-    .toBe(`/trax/lookup/${artifact.id}`);
+  expect(
+    screen.getByRole("link", { name: "Link to this Artifact" }).getAttribute("href"),
+  ).toBe(`/trax/lookup/${artifact.id}`);
 });
 
 test("an ordinary Artifact keeps its detail page when no content is published", async () => {
@@ -164,24 +235,38 @@ test("an ordinary Artifact keeps its detail page when no content is published", 
   serveDetails([detail(artifact)]);
   renderDetail({ id: artifact.id });
 
-  expect(await screen.findByRole("heading", { name: "Artifact number 8" })).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", { name: "Artifact number 8" }),
+  ).toBeTruthy();
   await waitFor(() => expect(screen.queryByText("Loading Artifact…")).toBeNull());
   expect(screen.queryByText(/Could not load this Artifact revision/)).toBeNull();
 });
 
-test("a hub's 64 children show once each, by both edges, ten first and then all", { tags: ["manual"] }, async () => {
+test("a hub's 64 children show once each, by both edges, ten first and then all", {
+  tags: ["manual"],
+}, async () => {
   const children = Array.from({ length: 64 }, (_, k) => peer("Issue", k + 2));
-  serveDetails([detail(row("Issue", 1), { backlinks: { narrows: children, produced_by: children } })]);
+  serveDetails([
+    detail(row("Issue", 1), {
+      backlinks: { narrows: children, produced_by: children },
+    }),
+  ]);
   renderDetail({ kind: "Issue", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
   expect(rail("Children")).toHaveLength(10);
-  await userEvent.click(within(section("Children")).getByRole("button", { name: "Show all 64" }));
+  await userEvent.click(
+    within(section("Children")).getByRole("button", { name: "Show all 64" }),
+  );
   await waitFor(() => expect(rail("Children")).toHaveLength(64));
-  expect(rail("Children").every(([, edges]) => edges.join() === "narrowed_by,produces")).toBe(true);
+  expect(
+    rail("Children").every(([, edges]) => edges.join() === "narrowed_by,produces"),
+  ).toBe(true);
   expect(screen.queryByRole("region", { name: /Other relations/ })).toBeNull();
 });
 
-test("a group over 100 shows 100 rows, then all on Show all", { tags: ["manual"] }, async () => {
+test("a group over 100 shows 100 rows, then all on Show all", {
+  tags: ["manual"],
+}, async () => {
   const evidence = Array.from({ length: 150 }, (_, k) => peer("Paper", k + 2));
   serveDetails([detail(row("Belief", 1), { backlinks: { proves: evidence } })]);
   renderDetail({ kind: "Belief", seq: 1 });
@@ -200,29 +285,46 @@ describe("every field of the kind shows, set or not", () => {
     const owner = kind.toLowerCase();
     const names = new Set([
       ...Object.keys(editableFields(kind)),
-      ...Object.keys(META.fieldOwners).filter((name) => META.fieldOwners[name] === owner),
+      ...Object.keys(META.fieldOwners).filter(
+        (name) => META.fieldOwners[name] === owner,
+      ),
       ...Object.keys(bare),
     ]);
     // Shown as the title, the header's dates and the Details identity rows, and
     // the cost axes' nesting, whose two fields are schema names above.
-    for (const shownElsewhere of ["title", "id", "kind", "seq", "created", "modified", "marginal_cost"]) {
+    for (const shownElsewhere of [
+      "title",
+      "id",
+      "kind",
+      "seq",
+      "created",
+      "modified",
+      "marginal_cost",
+    ]) {
       names.delete(shownElsewhere);
     }
-    const missing = [...names].filter((name) => !view.container.querySelector(`[data-field="${name}"]`));
+    const missing = [...names].filter(
+      (name) => !view.container.querySelector(`[data-field="${name}"]`),
+    );
     expect(missing).toEqual([]);
   });
 });
 
 test("a long description renders a part at a time, then whole", async () => {
-  const notes = Array.from({ length: 15 }, (_, k) => `## Note ${k + 1}\n\n${"Measured the list route again. ".repeat(33)}`);
+  const notes = Array.from(
+    { length: 15 },
+    (_, k) => `## Note ${k + 1}\n\n${"Measured the list route again. ".repeat(33)}`,
+  );
   serveDetails([detail(row("Issue", 1, { description: notes.join("\n\n") }))]);
   renderDetail({ kind: "Issue", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
-  const description = document.querySelector<HTMLElement>('[data-field="description"]')!;
-  await waitFor(() => expect(description.querySelectorAll(".md-part")).toHaveLength(3));
-  expect([...description.querySelectorAll("h4")].map((heading) => heading.textContent)).toEqual(
-    notes.map((_, k) => `Note ${k + 1}`),
+  const description = must(
+    document.querySelector<HTMLElement>('[data-field="description"]'),
   );
+  await waitFor(() => expect(description.querySelectorAll(".md-part")).toHaveLength(3));
+  expect(
+    [...description.querySelectorAll("h4")].map((heading) => heading.textContent),
+  ).toEqual(notes.map((_, k) => `Note ${k + 1}`));
 });
 
 test("unset fields say so, including the plan's No priority and No type", async () => {
@@ -234,7 +336,9 @@ test("unset fields say so, including the plan's No priority and No type", async 
   expect(prop("Owner").textContent).toBe("—");
   expect(prop("Labels").textContent).toBe("—");
   expect(prop("Agent cost").textContent).toBe("None recorded");
-  expect(screen.getByRole("region", { name: "Done when" }).textContent).toBe("Done whenNot set");
+  expect(screen.getByRole("region", { name: "Done when" }).textContent).toBe(
+    "Done whenNot set",
+  );
   expect(screen.getByText("No description.")).toBeTruthy();
 });
 
@@ -267,22 +371,29 @@ test("set fields show their values, with safe outside links", async () => {
   expect(prop("Authors").textContent).toBe("Ada LovelaceAlan Turing");
   expect(prop("Published").textContent).toBe("Jan 5, 2024");
   const open = within(prop("Source")).getByRole("link", { name: "Open Source" });
-  expect(open.getAttribute("href")).toBe('https://arxiv.org/abs/2401.1" onmouseover="window.__injected=1');
+  expect(open.getAttribute("href")).toBe(
+    'https://arxiv.org/abs/2401.1" onmouseover="window.__injected=1',
+  );
   // COLD-12: text stays text; no element gains a handler.
   expect(view.container.querySelectorAll("[onmouseover]")).toHaveLength(0);
-  expect(within(screen.getByRole("region", { name: "Abstract" })).getByText("layouts").tagName).toBe("STRONG");
+  expect(
+    within(screen.getByRole("region", { name: "Abstract" })).getByText("layouts")
+      .tagName,
+  ).toBe("STRONG");
 });
 
 test("a byline that names one author twice shows both, each its own row (R2-X2)", async () => {
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
-  serveDetails([detail(row("Paper", 1, { authors: ["Ada Lovelace", "Ada Lovelace", "Alan Turing"] }))]);
+  serveDetails([
+    detail(
+      row("Paper", 1, { authors: ["Ada Lovelace", "Ada Lovelace", "Alan Turing"] }),
+    ),
+  ]);
   renderDetail({ kind: "Paper", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
-  expect([...prop("Authors").querySelectorAll(".kind-tag")].map((tag) => tag.textContent)).toEqual([
-    "Ada Lovelace",
-    "Ada Lovelace",
-    "Alan Turing",
-  ]);
+  expect(
+    [...prop("Authors").querySelectorAll(".kind-tag")].map((tag) => tag.textContent),
+  ).toEqual(["Ada Lovelace", "Ada Lovelace", "Alan Turing"]);
   expect(error.mock.calls.flat().join(" ")).not.toMatch(/same key/);
   error.mockRestore();
 });
@@ -294,11 +405,17 @@ test("the rail lists each parent and child once, with its title, status and ever
   serveDetails([
     detail(row("Issue", 937, { description: "The plan." }), {
       edges: {
-        narrows: [peer("Issue", 760, pickup), peer("Issue", 4, { title: "Second parent" })],
+        narrows: [
+          peer("Issue", 760, pickup),
+          peer("Issue", 4, { title: "Second parent" }),
+        ],
         produced_by: [peer("Issue", 760, pickup)],
       },
       backlinks: {
-        produced_by: [peer("AgentSession", 632, { title: "The session" }), peer("Experiment", 589, { title: "spc001" })],
+        produced_by: [
+          peer("AgentSession", 632, { title: "The session" }),
+          peer("Experiment", 589, { title: "spc001" }),
+        ],
       },
     }),
   ]);
@@ -312,22 +429,35 @@ test("the rail lists each parent and child once, with its title, status and ever
     ["The session AgentSession#632", ["produces"]],
     ["spc001 Experiment#589", ["produces"]],
   ]);
-  const pickupLink = within(section("Parents")).getByRole("link", { name: /ARC3 pickup/ });
+  const pickupLink = within(section("Parents")).getByRole("link", {
+    name: /ARC3 pickup/,
+  });
   expect(pickupLink.getAttribute("href")).toBe("/trax/ref/Issue/760");
   expect(within(pickupLink).getByRole("img", { name: "Complete" })).toBeTruthy();
   // The rail is the one place for these edges: no other list repeats them, and
   // the eyebrow names the kind, not the parents.
   expect(screen.queryByRole("region", { name: /Other relations/ })).toBeNull();
-  expect(within(document.querySelector<HTMLElement>(".eyebrow")!).queryAllByRole("link")).toEqual([]);
+  expect(
+    within(must(document.querySelector<HTMLElement>(".eyebrow"))).queryAllByRole(
+      "link",
+    ),
+  ).toEqual([]);
 });
 
 test("the header and text fields, then the rail and properties, then config, other relations and activity", async () => {
   // One column when narrow, in this order: the rail stacks under the text, not between the title and it.
   serveDetails([
-    detail(row("Experiment", 1, { description: "The plan.", outcome: "It held.", config: { lr: 1 } }), {
-      edges: { produced_by: [peer("Issue", 2)] },
-      backlinks: { proves: [peer("Paper", 3)] },
-    }),
+    detail(
+      row("Experiment", 1, {
+        description: "The plan.",
+        outcome: "It held.",
+        config: { lr: 1 },
+      }),
+      {
+        edges: { produced_by: [peer("Issue", 2)] },
+        backlinks: { proves: [peer("Paper", 3)] },
+      },
+    ),
   ]);
   renderDetail({ kind: "Experiment", seq: 1 });
   const order = [
@@ -337,25 +467,41 @@ test("the header and text fields, then the rail and properties, then config, oth
     section("Parents"),
     section("Children"),
     screen.getByRole("complementary", { name: "Properties" }),
-    document.querySelector<HTMLElement>('[data-field="config"]')!,
+    must(document.querySelector<HTMLElement>('[data-field="config"]')),
     screen.getByRole("region", { name: /^Other relations/ }),
     await screen.findByRole("heading", { name: /^Activity/ }),
   ];
-  const follows = order.slice(1).map((next, k) => Boolean(order[k]!.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING));
+  const follows = order
+    .slice(1)
+    .map((next, k) =>
+      Boolean(
+        must(order[k]).compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    );
   expect(follows).toEqual(order.slice(1).map(() => true));
 });
 
 test("the rail's button in the top bar, or ], collapses the rail and expands it again", async () => {
-  serveDetails([detail(row("Issue", 1), { backlinks: { narrows: [peer("Issue", 2)] } })]);
+  serveDetails([
+    detail(row("Issue", 1), { backlinks: { narrows: [peer("Issue", 2)] } }),
+  ]);
   renderDetail({ kind: "Issue", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
   // Found once: a query by role names every button on the page, some 10 ms a call.
   // The button stays the same element as it collapses and expands the rail.
-  const toggle = screen.getByRole("button", { name: /parents, children and properties$/ });
+  const toggle = screen.getByRole("button", {
+    name: /parents, children and properties$/,
+  });
   expect(toggle.closest(".detail-top")).not.toBeNull();
-  expect(document.getElementById(toggle.getAttribute("aria-controls")!)!.contains(section("Children"))).toBe(true);
+  expect(
+    must(document.getElementById(must(toggle.getAttribute("aria-controls")))).contains(
+      section("Children"),
+    ),
+  ).toBe(true);
   await userEvent.click(toggle);
-  expect(toggle.getAttribute("aria-label")).toBe("Expand parents, children and properties");
+  expect(toggle.getAttribute("aria-label")).toBe(
+    "Expand parents, children and properties",
+  );
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   expect(screen.queryByRole("region", { name: "Children" })).toBeNull();
   expect(screen.queryByRole("complementary", { name: "Properties" })).toBeNull();
@@ -371,7 +517,9 @@ describe("Show in graph links to the graph focused on the inquiry, two hops out"
     serveDetails([detail(row(kind, seq))]);
     renderDetail({ kind, seq });
     await screen.findByRole("heading", { level: 1 });
-    expect(screen.getByRole("link", { name: "Show in graph" }).getAttribute("href")).toBe(`/trax/graph?focus=${kind}/${seq}&hops=2`);
+    expect(
+      screen.getByRole("link", { name: "Show in graph" }).getAttribute("href"),
+    ).toBe(`/trax/graph?focus=${kind}/${seq}&hops=2`);
   });
 });
 
@@ -380,9 +528,11 @@ test("Show in graph is a palette command under the inquiry's Kind#seq, with no k
   serveDetails([detail(row("Belief", 4))]);
   renderDetail({ kind: "Belief", seq: 4 }, undefined, { commands });
   await screen.findByRole("heading", { level: 1 });
-  const show = commands.getCommands().find((command) => command.title === "Show in graph");
+  const show = commands
+    .getCommands()
+    .find((command) => command.title === "Show in graph");
   expect([show?.section, show?.keys]).toEqual(["Belief#4", undefined]);
-  act(() => show!.run());
+  act(() => must(show).run());
   expect(currentRoute()).toBe("#/graph?focus=Belief/4&hops=2");
 });
 
@@ -394,14 +544,18 @@ test("Peek beside a list offers Show in graph; Peek in the graph, where it would
   renderDetail({ kind: "Issue", seq: 1 }, undefined, { commands: listed });
   await screen.findByRole("heading", { level: 1 });
   expect(screen.getByRole("link", { name: "Show in graph" })).toBeTruthy();
-  expect(listed.getCommands().map((command) => command.title)).toContain("Show in graph");
+  expect(listed.getCommands().map((command) => command.title)).toContain(
+    "Show in graph",
+  );
   cleanup();
   history.replaceState(null, "", "#/graph");
   const graphed = new CommandRegistry();
   renderDetail({ kind: "Issue", seq: 1 }, undefined, { commands: graphed });
   await screen.findByRole("heading", { level: 1 });
   expect(screen.queryByRole("link", { name: "Show in graph" })).toBeNull();
-  expect(graphed.getCommands().map((command) => command.title)).not.toContain("Show in graph");
+  expect(graphed.getCommands().map((command) => command.title)).not.toContain(
+    "Show in graph",
+  );
 });
 
 test("with no relations, each section says so and nothing else lists relations", async () => {
@@ -418,11 +572,17 @@ test("a section shows its first ten peers, then all on Show all", async () => {
   serveDetails([detail(row("Issue", 1), { backlinks: { narrows: children } })]);
   renderDetail({ kind: "Issue", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
-  expect(within(section("Children")).getByText("12", { selector: ".count" })).toBeTruthy();
+  expect(
+    within(section("Children")).getByText("12", { selector: ".count" }),
+  ).toBeTruthy();
   expect(rail("Children")).toHaveLength(10);
-  await userEvent.click(within(section("Children")).getByRole("button", { name: "Show all 12" }));
+  await userEvent.click(
+    within(section("Children")).getByRole("button", { name: "Show all 12" }),
+  );
   await waitFor(() => expect(rail("Children")).toHaveLength(12));
-  expect(within(section("Children")).queryByRole("button", { name: /Show all/ })).toBeNull();
+  expect(
+    within(section("Children")).queryByRole("button", { name: /Show all/ }),
+  ).toBeNull();
 });
 
 test("+ add in each section opens the Add relation picker; a viewer has none", async () => {
@@ -432,12 +592,16 @@ test("+ add in each section opens the Add relation picker; a viewer has none", a
   await screen.findByRole("heading", { level: 1 });
   const add = within(section("Children")).getByRole("button", { name: "Add child" });
   expect(add.textContent).toBe("+ add");
-  expect(within(section("Parents")).getByRole("button", { name: "Add parent" })).toBeTruthy();
+  expect(
+    within(section("Parents")).getByRole("button", { name: "Add parent" }),
+  ).toBeTruthy();
   await userEvent.click(add);
   expect(await screen.findByRole("dialog", { name: "Add relation" })).toBeTruthy();
   cleanup();
   serveDetails([detail(row("Issue", 1))]);
-  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role: "viewer" } });
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, {
+    profile: { ...PROFILE, role: "viewer" },
+  });
   await screen.findByRole("heading", { level: 1 });
   expect(within(section("Parents")).queryByRole("button")).toBeNull();
   expect(within(section("Children")).queryByRole("button")).toBeNull();
@@ -446,16 +610,21 @@ test("+ add in each section opens the Add relation picker; a viewer has none", a
 test("other relations hold only the edge kinds the rail does not show", async () => {
   serveDetails([
     detail(row("Belief", 1), {
-      backlinks: { proves: [peer("Paper", 3)], favors: [peer("Issue", 7)], produced_by: [peer("Issue", 8)] },
+      backlinks: {
+        proves: [peer("Paper", 3)],
+        favors: [peer("Issue", 7)],
+        produced_by: [peer("Issue", 8)],
+      },
     }),
   ]);
   renderDetail({ kind: "Belief", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
   const other = screen.getByRole("region", { name: "Other relations 2" });
-  expect([...other.querySelectorAll(".rel-group-h span:not(.count)")].map((label) => label.textContent)).toEqual([
-    "Proved by",
-    "Favored by",
-  ]);
+  expect(
+    [...other.querySelectorAll(".rel-group-h span:not(.count)")].map(
+      (label) => label.textContent,
+    ),
+  ).toEqual(["Proved by", "Favored by"]);
   expect(rail("Children")).toEqual([["Issue number 8 Issue#8", ["produces"]]]);
 });
 
@@ -468,35 +637,55 @@ test("a child's priority glyph is its edge priority under this parent (COLD-17)"
   ]);
   renderDetail({ kind: "Issue", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
-  const [edged, plain] = section("Children").querySelectorAll<HTMLElement>(".rail-edges");
-  expect(within(edged!).getByRole("img", { name: "P0 Critical" })).toBeTruthy();
-  expect(within(plain!).queryByRole("img", { name: /^P\d|No priority/ })).toBeNull();
+  const [edged, plain] =
+    section("Children").querySelectorAll<HTMLElement>(".rail-edges");
+  expect(within(must(edged)).getByRole("img", { name: "P0 Critical" })).toBeTruthy();
+  expect(
+    within(must(plain)).queryByRole("img", { name: /^P\d|No priority/ }),
+  ).toBeNull();
   // On a parent the edge priority is this Issue's own under it: a tag, not the parent's glyph.
-  const parent = section("Parents").querySelector<HTMLElement>(".rail-peer")!;
+  const parent = must(section("Parents").querySelector<HTMLElement>(".rail-peer"));
   expect(within(parent).queryByRole("img", { name: /^P\d/ })).toBeNull();
   expect(within(parent).getByText("p30")).toBeTruthy();
   expect(within(prop("Priority")).getByRole("img", { name: "P1 High" })).toBeTruthy();
 });
 
 test("cost names its scope, keeps sub-cent values, and reads none recorded at zero", async () => {
-  serveDetails([detail(row("Issue", 1, { marginal_cost: { agent_usd: 0.0042, resource_usd: 0 } })), detail(row("Belief", 2))]);
+  serveDetails([
+    detail(row("Issue", 1, { marginal_cost: { agent_usd: 0.0042, resource_usd: 0 } })),
+    detail(row("Belief", 2)),
+  ]);
   renderDetail({ kind: "Issue", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
-  expect(document.querySelector(".d-cost")!.textContent).toBe("Cost of this issue $0.0042");
+  expect(must(document.querySelector(".d-cost")).textContent).toBe(
+    "Cost of this issue $0.0042",
+  );
   expect(prop("Agent cost").textContent).toBe("$0.0042");
   expect(prop("Resource cost").textContent).toBe("None recorded");
   cleanup();
   renderDetail({ kind: "Belief", seq: 2 });
   await screen.findByRole("heading", { level: 1 });
-  expect(document.querySelector(".d-cost")!.textContent).toBe("Cost of this belief none recorded");
+  expect(must(document.querySelector(".d-cost")).textContent).toBe(
+    "Cost of this belief none recorded",
+  );
 });
 
 test("invalid status and undecidable judgement render as themselves (COLD-14)", async () => {
-  const belief = row("Belief", 2, { status: "invalid", judgement: "undecidable", confidence: 0.4 });
+  const belief = row("Belief", 2, {
+    status: "invalid",
+    judgement: "undecidable",
+    confidence: 0.4,
+  });
   serveDetails([
     detail(belief, {
       backlinks: {
-        proves: [peer("Belief", 6, { status: "invalid", judgement: "undecidable", valence: -0.5 })],
+        proves: [
+          peer("Belief", 6, {
+            status: "invalid",
+            judgement: "undecidable",
+            valence: -0.5,
+          }),
+        ],
         favors: [peer("Issue", 7, { status: "invalid" })],
       },
     }),
@@ -507,18 +696,24 @@ test("invalid status and undecidable judgement render as themselves (COLD-14)", 
   expect(within(prop("Status")).getByRole("img", { name: "Invalid" })).toBeTruthy();
   expect(prop("Judgement").textContent).toBe("Undecidable");
   const cited = group("Proved by").getByRole("link");
-  expect(within(cited).getAllByRole("img").map((img) => img.getAttribute("aria-label"))).toEqual([
-    "Undecidable",
-    "Invalid",
-  ]);
-  expect(within(group("Favored by").getByRole("link")).getAllByRole("img").map((img) => img.getAttribute("aria-label"))).toEqual(
-    ["Invalid"],
-  );
+  expect(
+    within(cited)
+      .getAllByRole("img")
+      .map((img) => img.getAttribute("aria-label")),
+  ).toEqual(["Undecidable", "Invalid"]);
+  expect(
+    within(group("Favored by").getByRole("link"))
+      .getAllByRole("img")
+      .map((img) => img.getAttribute("aria-label")),
+  ).toEqual(["Invalid"]);
 });
 
 test("evidence confidence shows beside the author's, under its own name", async () => {
   const belief = row("Belief", 2, { judgement: "proven", confidence: 0.9 });
-  const sent = serveDetails([detail(belief, { backlinks: { proves: [peer("Paper", 3, { valence: 0.8 })] } })], 0.69);
+  const sent = serveDetails(
+    [detail(belief, { backlinks: { proves: [peer("Paper", 3, { valence: 0.8 })] } })],
+    0.69,
+  );
   renderDetail({ kind: "Belief", seq: 2 });
   await screen.findByRole("heading", { level: 1 });
   expect(prop("Author conf.").textContent).toBe("0.90");
@@ -527,7 +722,9 @@ test("evidence confidence shows beside the author's, under its own name", async 
     .getAllByRole("term")
     .map((term) => term.textContent);
   expect(terms.indexOf("Evidence")).toBe(terms.indexOf("Author conf.") + 1);
-  expect(sent.map((request) => request.path)).toContain(`/api/inquiries/${belief.id}/confidence`);
+  expect(sent.map((request) => request.path)).toContain(
+    `/api/inquiries/${belief.id}/confidence`,
+  );
 });
 
 test("with no proves edge in, evidence confidence is the neutral value and says so", async () => {
@@ -543,24 +740,38 @@ test("evidence confidence that fails says why with Retry, first read or refresh,
   stubFetch((request) => {
     const path = new URL(request.url).pathname;
     if (path === `/api/web/get/${belief.id}`) return Response.json(detail(belief));
-    return refuse ? Response.json({ detail: "statement timeout" }, { status: 500 }) : Response.json({ confidence: 0.69 });
+    return refuse
+      ? Response.json({ detail: "statement timeout" }, { status: 500 })
+      : Response.json({ confidence: 0.69 });
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   renderDetail({ id: belief.id }, queryClient);
-  await waitFor(() => expect(prop("Evidence").textContent).toBe("statement timeoutRetry"));
+  await waitFor(() =>
+    expect(prop("Evidence").textContent).toBe("statement timeoutRetry"),
+  );
   refuse = false;
-  await userEvent.click(within(prop("Evidence")).getByRole("button", { name: "Retry" }));
+  await userEvent.click(
+    within(prop("Evidence")).getByRole("button", { name: "Retry" }),
+  );
   await waitFor(() => expect(prop("Evidence").textContent).toBe("0.69no proves yet"));
   refuse = true;
   await act(() => queryClient.refetchQueries({ queryKey: ["confidence", belief.id] }));
-  await waitFor(() => expect(within(prop("Evidence")).getByRole("alert").textContent).toBe("Could not refresh: statement timeoutRetry"));
+  await waitFor(() =>
+    expect(within(prop("Evidence")).getByRole("alert").textContent).toBe(
+      "Could not refresh: statement timeoutRetry",
+    ),
+  );
   expect(prop("Evidence").textContent).toMatch(/^0\.69/);
 });
 
 test("opening a detail marks it opened, for the palette's recent list (WEB-09)", async () => {
   const belief = row("Belief", 5);
   serveDetails([detail(belief)]);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   expect(openedAt(queryClient, belief.id)).toBe(0);
   renderDetail({ id: belief.id }, queryClient);
   await screen.findByRole("heading", { level: 1 });
@@ -589,8 +800,15 @@ test("activity reads oldest first, names fields and relations, and folds alerts 
       new: { issue_priority: 10 },
       reason: "Blocks Belief#4.",
     }),
-    change(self, 3, { kind: "labels", old: { labels: ["a"] }, new: { labels: ["a", "b"] } }),
-    change(self, 4, { kind: "edge_added", new: { peer_id: child.id, peer_kind: "Issue", peer_edge_kind: "narrows" } }),
+    change(self, 3, {
+      kind: "labels",
+      old: { labels: ["a"] },
+      new: { labels: ["a", "b"] },
+    }),
+    change(self, 4, {
+      kind: "edge_added",
+      new: { peer_id: child.id, peer_kind: "Issue", peer_edge_kind: "narrows" },
+    }),
     change(self, 5, {
       kind: "dependency_changed",
       actor: "librarian",
@@ -599,7 +817,11 @@ test("activity reads oldest first, names fields and relations, and folds alerts 
     change(self, 6, {
       kind: "dependency_changed",
       actor: "librarian",
-      new: { peer_id: "5f3a9c1e-0000-4000-8000-000000000099", peer_kind: "Issue", peer_edge_kind: "narrows" },
+      new: {
+        peer_id: "5f3a9c1e-0000-4000-8000-000000000099",
+        peer_kind: "Issue",
+        peer_edge_kind: "narrows",
+      },
     }),
   ].reverse();
   serveDetails([detail(self, { backlinks: { narrows: [child] }, changes })]);
@@ -607,7 +829,8 @@ test("activity reads oldest first, names fields and relations, and folds alerts 
   // Activity renders after the rest of the page, in a deferred render.
   await screen.findByRole("heading", { name: /^Activity/ });
   const lines = [...document.querySelectorAll(".timeline > li")].map(
-    (item) => (item.querySelector("summary") ?? item.querySelector(".tl-body"))!.textContent,
+    (item) =>
+      must(item.querySelector("summary") ?? item.querySelector(".tl-body")).textContent,
   );
   expect(lines).toEqual([
     "ada@example.com created this · 9m ago",
@@ -616,9 +839,16 @@ test("activity reads oldest first, names fields and relations, and folds alerts 
     "ada@example.com added relation Narrowed by Issue#2 · 6m ago",
     "librarian 2 upstream changes · 4m ago",
   ]);
-  expect(screen.getByRole("link", { name: "Belief#4" }).getAttribute("href")).toBe("/trax/ref/Belief/4");
-  const alerts = document.querySelector(".timeline details")!;
-  expect([...alerts.querySelectorAll("a")].map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+  expect(screen.getByRole("link", { name: "Belief#4" }).getAttribute("href")).toBe(
+    "/trax/ref/Belief/4",
+  );
+  const alerts = must(document.querySelector(".timeline details"));
+  expect(
+    [...alerts.querySelectorAll("a")].map((link) => [
+      link.textContent,
+      link.getAttribute("href"),
+    ]),
+  ).toEqual([
     ["Issue#2", "/trax/ref/Issue/2"],
     ["Issue 5f3a9c1e", "/trax/lookup/5f3a9c1e-0000-4000-8000-000000000099"],
   ]);
@@ -628,14 +858,22 @@ test("a missing inquiry says it was deleted or purged", async () => {
   serveDetails([]);
   renderDetail({ kind: "Issue", seq: 404 });
   expect(await screen.findByText("Deleted or purged")).toBeTruthy();
-  expect(screen.getByText(/is not in Trackinizer/).textContent).toBe("Issue#404 is not in Trackinizer.");
+  expect(screen.getByText(/is not in Trackinizer/).textContent).toBe(
+    "Issue#404 is not in Trackinizer.",
+  );
 });
 
 test("an open inquiry purged meanwhile says so on its next read", async () => {
   const self = row("Issue", 1);
   let purged = false;
-  stubFetch(() => (purged ? Response.json({ detail: "not found" }, { status: 404 }) : Response.json(detail(self))));
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  stubFetch(() =>
+    purged
+      ? Response.json({ detail: "not found" }, { status: 404 })
+      : Response.json(detail(self)),
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   renderDetail({ id: self.id }, queryClient);
   await screen.findByRole("heading", { level: 1 });
   purged = true;
@@ -647,13 +885,21 @@ test("an open inquiry purged meanwhile says so on its next read", async () => {
 test("a refetch that fails keeps the loaded inquiry, marked stale, with Retry", async () => {
   const self = row("Issue", 1);
   let failing = false;
-  stubFetch(() => (failing ? Response.json({ detail: "statement timeout" }, { status: 400 }) : Response.json(detail(self))));
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  stubFetch(() =>
+    failing
+      ? Response.json({ detail: "statement timeout" }, { status: 400 })
+      : Response.json(detail(self)),
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   renderDetail({ id: self.id }, queryClient);
   await screen.findByRole("heading", { level: 1 });
   failing = true;
   await act(() => queryClient.refetchQueries());
-  expect((await screen.findByRole("status")).textContent).toBe("Could not refresh Issue#1: statement timeoutRetry");
+  expect((await screen.findByRole("status")).textContent).toBe(
+    "Could not refresh Issue#1: statement timeoutRetry",
+  );
   expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Issue number 1");
   failing = false;
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -674,7 +920,9 @@ test("a failed read shows the server's message, and Retry loads it", async () =>
   expect((await screen.findByRole("alert")).textContent).toBe("statement timeout");
   refuse = false;
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Issue number 1");
+  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+    "Issue number 1",
+  );
 });
 
 test("Purge shows in the danger style in the inquiry's ⋯ menu", async () => {
@@ -683,8 +931,12 @@ test("Purge shows in the danger style in the inquiry's ⋯ menu", async () => {
   renderDetail({ kind: "Issue", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
   await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
-  expect(screen.getByRole("option", { name: "Purge…" }).classList.contains("danger")).toBe(true);
-  expect(screen.getByRole("option", { name: /^Add relation…/ }).classList.contains("danger")).toBe(false);
+  expect(
+    screen.getByRole("option", { name: "Purge…" }).classList.contains("danger"),
+  ).toBe(true);
+  expect(
+    screen.getByRole("option", { name: /^Add relation…/ }).classList.contains("danger"),
+  ).toBe(false);
 });
 
 async function openActions(account: string, role: "writer" | "admin" = "writer") {
@@ -742,13 +994,17 @@ test("only an admin's ⋯ menu offers Lock, which locks the inquiry and reads it
   expect(screen.queryByRole("option", { name: "Lock" })).toBeNull();
   cleanup();
 
-  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role: "admin" } });
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, {
+    profile: { ...PROFILE, role: "admin" },
+  });
   await screen.findByRole("heading", { level: 1 });
   await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
   await userEvent.click(screen.getByRole("option", { name: "Lock" }));
   await waitFor(() => expect(document.querySelector(".d-lock")).not.toBeNull());
   const writes = sent.filter((request) => request.method === "PUT");
-  expect(writes.map((request) => [request.path, request.body])).toEqual([[`/api/admin/inquiries/${target.id}/lock`, { locked: true }]]);
+  expect(writes.map((request) => [request.path, request.body])).toEqual([
+    [`/api/admin/inquiries/${target.id}/lock`, { locked: true }],
+  ]);
 });
 
 test("a locked inquiry offers a writer no edit, add or purge, and an admin all of them", async () => {
@@ -762,9 +1018,13 @@ test("a locked inquiry offers a writer no edit, add or purge, and an admin all o
   cleanup();
 
   serveDetails([detail(row("Issue", 1), { locked: true })]);
-  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role: "admin" } });
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, {
+    profile: { ...PROFILE, role: "admin" },
+  });
   await screen.findByRole("heading", { level: 1 });
-  expect(within(section("Children")).getByRole("button", { name: "Add child" })).toBeTruthy();
+  expect(
+    within(section("Children")).getByRole("button", { name: "Add child" }),
+  ).toBeTruthy();
   expect(screen.getByRole("button", { name: "Issue#1 actions" })).toBeTruthy();
 });
 
@@ -774,14 +1034,19 @@ test("a refused lock says why in a toast", async () => {
   stubFetch((request) => {
     const { pathname } = new URL(request.url);
     if (pathname === "/api/inquiries/Issue/1") return Response.json(target);
-    if (pathname === `/api/admin/inquiries/${target.id}/lock`) return Response.json({ detail: "inquiry not found" }, { status: 404 });
+    if (pathname === `/api/admin/inquiries/${target.id}/lock`)
+      return Response.json({ detail: "inquiry not found" }, { status: 404 });
     return Response.json(detail(target));
   });
-  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role: "admin" } });
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, {
+    profile: { ...PROFILE, role: "admin" },
+  });
   await screen.findByRole("heading", { level: 1 });
   await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
   await userEvent.click(screen.getByRole("option", { name: "Lock" }));
-  expect((await screen.findByText(/Could not lock Issue#1/)).textContent).toContain("inquiry not found");
+  expect((await screen.findByText(/Could not lock Issue#1/)).textContent).toContain(
+    "inquiry not found",
+  );
 });
 
 test("Esc goes back to the kind's list", async () => {

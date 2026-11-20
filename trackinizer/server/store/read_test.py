@@ -20,7 +20,10 @@ from trackinizer.conftest import (
 )
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.access_policy import DefaultPolicy, Principal
-from trackinizer.server.audience import SessionReader, hidden_exists_sql
+from trackinizer.server.audience import (
+    SessionReader,
+    hidden_exists_sql,
+)
 from trackinizer.server.store import read
 from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.types.belief_confidence import fold_confidence
@@ -666,7 +669,39 @@ class TestPolicyGatedReads:
 
         assert await store.list_kind("Issue", principal=_READER) == []
 
-        assert "(inquiries.granted)" in _last_sql(conn.fetch)
+        assert "readable_inquiry.id = inquiries.id AND (readable_inquiry.granted))" in (
+            _last_sql(conn.fetch)
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_short_reference_names_a_row_the_reader_may_read_alone(
+        self,
+    ) -> None:
+        store, conn = _restricted()
+        store.access_policy = _Binding()
+        found = new_uuid()
+        conn.fetchrow.side_effect = [None, {"id": found}, {"id": found}]
+
+        unseen = await store.inquiry_id("AgentSession", 412, principal=_READER)
+        seen = await store.inquiry_id("AgentSession", 412, principal=_READER)
+        sql, binds = _last_sql(conn.fetchrow), _last_binds(conn.fetchrow)
+        store.access_policy = DefaultPolicy()
+        trusted = await store.inquiry_id("Issue", 7)
+
+        bound = ["AgentSession", 412, _READER.email]
+        gate = "readable_inquiry.owner = $3"
+        assert (unseen, seen, trusted) == (None, found, found)
+        head = (
+            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2 AND (EXISTS "
+            "(SELECT 1 FROM inquiries readable_inquiry WHERE readable_inquiry.id = "
+            "inquiries.id AND ("
+        )
+        assert (sql[: len(head)], sql[len(head) :]) == (head, gate + ")))")
+        assert binds == tuple(bound)
+        assert _last_sql(conn.fetchrow) == (
+            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2"
+        )
+        assert _last_binds(conn.fetchrow) == ("Issue", 7)
 
     @pytest.mark.asyncio
     async def test_history_is_gated_by_its_subject_and_each_present_peer(self) -> None:
@@ -687,7 +722,8 @@ class TestPolicyGatedReads:
         )
         listed = _last_sql(conn.fetch)
         assert "(created" not in listed
-        assert "actor = $1" in listed
+        gated: list[object] = []
+        assert f"actor = ${3 * len(gated) + 1}" in listed
 
 
 class _Binding(DefaultPolicy):
@@ -716,23 +752,23 @@ class TestProtectedHistory:
         store, _engine = make_store()
         store.access_policy = _Binding()
         params: list[object] = []
+        step = 1
 
         predicate = store.change_read_filter("c", params=params, principal=_READER)
 
-        assert params == [_READER.email] * 3
+        assert params[::step] == [_READER.email] * 3
         assert predicate.startswith("c.kind NOT IN ('locked', 'unlocked') AND (EXISTS")
-        assert [f"readable_inquiry.owner = ${n}" in predicate for n in (1, 2, 3)] == [
-            True,
-            True,
-            True,
-        ]
+        assert [
+            f"readable_inquiry.owner = ${n}" in predicate
+            for n in (1, 1 + step, 1 + 2 * step)
+        ] == [True, True, True]
 
     def test_only_an_admin_reads_a_protected_kind(self) -> None:
         store, _engine = make_store()
         admin = Principal(email="root@example.com", role="admin")
 
-        assert store.change_read_filter("c", params=[], principal=admin) == "TRUE"
         assert store.change_read_filter("c", params=[], principal=None) == "TRUE"
+        assert store.change_read_filter("c", params=[], principal=admin) == "TRUE"
         assert (
             store.change_read_filter("c", params=[], principal=_READER)
             == "c.kind NOT IN ('locked', 'unlocked')"

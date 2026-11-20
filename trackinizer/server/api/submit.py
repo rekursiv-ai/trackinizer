@@ -94,7 +94,9 @@ async def submit_batch_route(
     response is ``{"ids": [...]}`` with the server-minted ids in input
     order. A failure propagates as the same HTTP error a single submit of
     that item would raise (e.g. 409 on a conflict, 422 on bad input). One
-    item carrying ``modified`` from a non-admin 403s the batch.
+    item carrying ``modified`` from a non-admin 403s the batch. A batch naming a
+    science ``chat`` is filed from it, which only the assistant does: every item
+    is then read as the chat is.
 
     Args:
       req: SubmitBatch payload with items and edges to create atomically.

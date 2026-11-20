@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Self, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import hashlib
 import json
@@ -20,7 +20,7 @@ import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
 from trackinizer.lib.postgres.substrate import Conn
-from trackinizer.server.access_policy import DefaultPolicy
+from trackinizer.server.access_policy import DefaultPolicy, Principal
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
@@ -262,6 +262,34 @@ async def test_read_artifact_content_returns_the_stored_revision_or_none() -> No
     assert sql == _READ
     assert params == [artifact_id]
     assert await read_artifact_content(store, uuid.uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_a_reader_reads_only_the_content_of_an_artifact_they_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store's policy gates the content as it gates the Artifact's row."""
+    store, engine = make_store()
+    store.access_policy = DefaultPolicy()
+    monkeypatch.setattr(DefaultPolicy, "read_filter", Mock(return_value="FALSE"))
+    artifact_id = uuid.uuid4()
+    queue_field_rows(engine.conn, None)
+
+    found = await read_artifact_content(
+        store,
+        artifact_id,
+        principal=Principal(email="wes@example.com", role="writer"),
+    )
+
+    assert found is None
+    assert engine.conn.fetchrow.call_args is not None
+    sql, *params = engine.conn.fetchrow.call_args.args
+    assert from_plain(sql, str).startswith(_READ)
+    assert from_plain(sql, str).removeprefix(_READ) == (
+        " AND (EXISTS (SELECT 1 FROM inquiries readable_inquiry "
+        "WHERE readable_inquiry.id = revisions.artifact_id AND (FALSE)))"
+    )
+    assert params == [artifact_id]
 
 
 def test_an_evidence_citation_names_its_claim_and_edge_together() -> None:

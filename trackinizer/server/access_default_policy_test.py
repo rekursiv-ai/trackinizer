@@ -49,8 +49,6 @@ from trackinizer.server.auth import (
     bootstrap_admin,
     seed_no_auth_user,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ConflictError
 from trackinizer.wire.bodies import SubmitIssue
@@ -521,12 +519,11 @@ async def _serve(
     policy: AccessPolicy,
 ) -> AsyncIterator[_Client]:
     """Serve the app over a fresh store asking ``policy``, with everyone seeded."""
-    store = Store(engine, embed=StubEmbedder(), access_policy=policy)
+    store = Store(engine, access_policy=policy)
     await _seed_people(store)
     for name, value in (
         ("engine", engine),
         ("store", store),
-        ("inbound", InboundQueue()),
     ):
         patch_state(monkeypatch, name, value)
     transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)

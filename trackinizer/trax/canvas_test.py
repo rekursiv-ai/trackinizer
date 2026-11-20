@@ -2,24 +2,69 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+import base64
 import re
 import uuid
 
-from treekle import from_plain
+from treekle import PlainTree, from_plain
 
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli
-from trackinizer.trax.canvas import canvas_from_env
+from trackinizer.trax.canvas import (
+    canvas_from_env,
+    canvas_lines,
+    chat_lines,
+    mark_operation,
+    show_operation,
+)
+from trackinizer.wire.wire_capture import CaptureImage
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+
+_PICTURES = {"image/png": b"\x89PNG\r\n\x1a\nfake", "image/jpeg": b"\xff\xd8\xfffake"}
+_BOX_1 = uuid.UUID("b1b1b1b1-0000-0000-0000-000000000000")
+_BOX_2 = uuid.UUID("b2b2b2b2-0000-0000-0000-000000000000")
+_TILE = uuid.UUID("71717171-0000-0000-0000-000000000000")
+
+_WORKSPACES: list[dict[str, PlainTree]] = [
+    {"id": "w1", "seq": 1, "title": "Scratch", "scratch": True, "hidden": False},
+    {"id": "w2", "seq": 12, "title": "Paper review", "scratch": False, "hidden": True},
+    {"id": "w3", "seq": 13, "title": "Empty", "scratch": False, "hidden": False},
+]
+"""The account's workspaces, in the bar's order: its default, a hidden one, an empty one."""
+
+_CANVASES: list[dict[str, PlainTree]] = [
+    {"id": "c1", "name": "loose", "workspace_id": None, "session": {"seq": 412}},
+    {
+        "id": "c2",
+        "name": "Draft",
+        "workspace_id": "w2",
+        "session": None,
+        "hidden": True,
+    },
+    {"id": "c3", "name": "Figures", "workspace_id": "w2", "session": {"seq": 7}},
+    {"id": "c4", "name": "Notes", "workspace_id": "w1"},
+]
+"""The account's canvases: one in no workspace, a closed one, one with no chat."""
+
+_ALL_CHATS: list[str] = [
+    "Issue#1 Scratch (default)",
+    "  loose  canvas c1  AgentSession#412",
+    "  Notes  canvas c4  no chat",
+    "Issue#12 Paper review (hidden)",
+    "  Draft  canvas c2  no chat (closed)",
+    "  Figures  canvas c3  AgentSession#7",
+    "Issue#13 Empty",
+]
 
 _CATALOG: dict[str, object] = {
     "default_visual": "trax.browse",
@@ -50,8 +95,32 @@ class _CanvasClient:
         self.reads: list[str] = []
         self.visuals: list[object] = []
         self.focused: str | None = None
+        self.page: str | None = None
+        self.name: str | None = None
         self.unlabeled = uuid.uuid4()
         self.canvas = uuid.uuid4()
+        self.captures = 0
+        self.mime = "image/png"
+        self.not_captured = ["trax.terminal", "trax.artifact"]
+        self.boxes = [
+            {"id": str(_BOX_1), "author": "person"},
+            {"id": str(_BOX_2), "author": "agent"},
+        ]
+        self.renames: list[str] = []
+        self.listed: list[str] = []
+
+    def list_canvases(self) -> list[dict[str, PlainTree]]:
+        self.listed.append("canvases")
+        return _CANVASES
+
+    def list_workspaces(self) -> list[dict[str, PlainTree]]:
+        self.listed.append("workspaces")
+        return _WORKSPACES
+
+    def rename_canvas(self, canvas_id: uuid.UUID, *, name: str) -> dict[str, PlainTree]:
+        self._at(canvas_id)
+        self.renames.append(name)
+        return {"name": name}
 
     def get(self, path: str) -> dict[str, object]:
         self.reads.append(path)
@@ -132,12 +201,37 @@ class _CanvasClient:
             "preferences": {"theme": "light", "highlight_mentions": False},
         }
 
+    def capture_canvas(self, canvas_id: uuid.UUID) -> CaptureImage:
+        self._at(canvas_id)
+        self.captures += 1
+        return CaptureImage.model_validate(
+            {
+                "width": 640,
+                "height": 400,
+                "mime": self.mime,
+                "data": base64.b64encode(_PICTURES[self.mime]).decode(),
+                "not_captured": self.not_captured,
+                "boxes": self.boxes,
+                "tiles": [
+                    {
+                        "id": str(_TILE),
+                        "left": 0,
+                        "top": 0.05,
+                        "right": 0.5,
+                        "bottom": 1,
+                    },
+                ],
+            },
+        )
+
     def _state(self, revision: int, *, visuals: list[object]) -> dict[str, object]:
         return {
             "id": str(self.canvas),
             "revision": revision,
             "visuals": visuals,
             "focused_instance": self.focused,
+            "page": self.page,
+            "name": self.name,
         }
 
     def _at(self, canvas_id: uuid.UUID) -> None:
@@ -324,7 +418,16 @@ def test_canvas_show_without_params_does_not_read_the_catalog() -> None:
         (["show", "x.demo", "--param", "count=many"], "needs an integer"),
         (["show", "x.demo", "--param", "flag=yes"], "needs true or false"),
         (["show", "nothing.here", "--param", "a=b"], "not a visual in the catalog"),
-        (["hide", str(uuid.uuid4()), "--param", "label=a"], "only with show"),
+        (
+            ["hide", str(uuid.uuid4()), "--param", "label=a"],
+            "^--param is accepted only with show$",
+        ),
+        (
+            ["show", "trax.subgraph", "--record", "x"],
+            "^record is not a valid UUID: 'x'$",
+        ),
+        (["hide", "x"], "^instance is not a valid UUID: 'x'$"),
+        (["place", "x", "left"], "^instance is not a valid UUID: 'x'$"),
         (["--param", "label=a"], "does not accept operation arguments"),
     ],
 )
@@ -361,7 +464,7 @@ def test_canvas_navigate_moves_the_page_without_an_operation() -> None:
 def test_canvas_navigate_takes_exactly_one_route(arguments: list[str]) -> None:
     client = _CanvasClient()
 
-    with pytest.raises(ClientError, match="navigate requires one route"):
+    with pytest.raises(ClientError, match=r"^navigate requires one route$"):
         _canvas(client, *arguments)
 
     assert client.navigations == []
@@ -569,6 +672,31 @@ def test_canvas_mark_draws_a_box_from_two_corners_and_names_its_records() -> Non
     }
 
 
+def test_an_agent_tools_box_names_its_tile_or_the_window_as_the_command_never_does() -> (
+    None
+):
+    """The command and an agent's tool build their boxes and shows here alike."""
+    record = uuid.uuid4()
+    corners = [(0.1, 0.2), (0.4, 0.5)]
+    points = [{"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.5}]
+
+    on_tile = mark_operation(corners, records=[], tile=_TILE)
+    over_window = mark_operation(corners, window=True)
+    shown = show_operation("trax.files", record_id=record, params={"changed": False})
+
+    assert on_tile == {
+        "kind": "mark",
+        "mark": {"points": points, "covers": {"records": []}, "tile": str(_TILE)},
+    }
+    assert over_window == {"kind": "mark", "mark": {"points": points, "window": True}}
+    assert shown == {
+        "kind": "show",
+        "visual_type": "trax.files",
+        "record_id": str(record),
+        "params": {"changed": False},
+    }
+
+
 def test_canvas_mark_remove_and_clear_send_their_operations() -> None:
     first, second = _CanvasClient(), _CanvasClient()
     mark_id = uuid.uuid4()
@@ -628,6 +756,108 @@ def test_canvas_mark_refuses_a_malformed_command(
         _canvas(client, *arguments)
 
     assert client.operations == []
+
+
+def test_canvas_capture_saves_the_picture_to_the_path_and_says_what_is_on_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    path = tmp_path / "seen.png"
+
+    _canvas(client, "capture", str(path))
+
+    assert path.read_bytes() == _PICTURES["image/png"]
+    assert capsys.readouterr().out.splitlines() == [
+        f"capture {path} 640x400 image/png",
+        f"  boxes: {_BOX_1} by person, {_BOX_2} by agent",
+        "  not captured: trax.terminal, trax.artifact",
+        f"  visual {_TILE} at 0.000,0.050 0.500,1.000",
+    ]
+    assert client.operations == []
+
+
+@pytest.mark.parametrize("existed", [False, True])
+def test_canvas_capture_saves_to_a_path_only_its_owner_may_read(
+    existed: bool,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "seen.png"
+    if existed:
+        _ = path.write_bytes(b"old")
+        path.chmod(0o644)
+
+    _canvas(_CanvasClient(), "capture", str(path))
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_bytes() == _PICTURES["image/png"]
+
+
+def test_canvas_capture_says_none_for_no_boxes_and_nothing_left_blank(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    client.boxes = []
+    client.not_captured = []
+
+    _canvas(client, "capture", str(tmp_path / "seen.png"))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1:3] == ["  boxes: none", "  not captured: none"]
+
+
+@pytest.mark.parametrize(
+    ("mime", "suffix"),
+    [("image/png", ".png"), ("image/jpeg", ".jpg")],
+)
+def test_canvas_capture_with_no_path_saves_a_new_file_named_for_its_kind(
+    mime: str,
+    suffix: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr("tempfile.tempdir", None)
+    client = _CanvasClient()
+    client.mime = mime
+
+    _canvas(client, "capture")
+    _canvas(client, "capture")
+
+    first, second = (
+        Path(line.split()[1])
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("capture ")
+    )
+    assert first != second
+    for path in (first, second):
+        assert path.parent == tmp_path
+        assert path.name.startswith("canvas-")
+        assert path.suffix == suffix
+        assert path.read_bytes() == _PICTURES[mime]
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["capture", "a.png", "b.png"],
+        ["capture", "--record", str(uuid.uuid4())],
+        ["capture", "--placement", "main"],
+        ["capture", "--param", "a=b"],
+        ["capture", "--page", "#/graph"],
+    ],
+)
+def test_canvas_capture_takes_at_most_a_path(arguments: list[str]) -> None:
+    client = _CanvasClient()
+    refusal = "capture takes at most one PATH and no other argument"
+
+    with pytest.raises(ClientError, match=f"^{re.escape(refusal)}$"):
+        _canvas(client, *arguments)
+
+    assert client.captures == 0
 
 
 def test_a_malformed_placed_canvas_names_no_canvas() -> None:
@@ -692,6 +922,71 @@ def test_canvas_prints_each_visual_with_its_placement_and_record(
     ]
 
 
+def test_canvas_prints_the_page_it_is_on_after_its_revision(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    client.page = "#/lookup/c5286865-67b6-4bd8-ab51-e06e10c326c5"
+
+    _canvas(client)
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"canvas {client.canvas} revision 8 focused none",
+        "  page #/lookup/c5286865-67b6-4bd8-ab51-e06e10c326c5",
+        "  (no visuals)",
+    ]
+
+
+def test_canvas_prints_its_name_before_its_page(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    client.page = "#/pulls"
+    client.name = "unnamed-canvas#3"
+
+    _canvas(client)
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"canvas {client.canvas} revision 8 focused none",
+        "  name unnamed-canvas#3",
+        "  page #/pulls",
+        "  (no visuals)",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("state", "printed"),
+    [
+        (
+            dict[str, object](),
+            ["canvas unknown revision 0 focused none", "  (no visuals)"],
+        ),
+        (
+            dict[str, object](visuals=[dict[str, object]()]),
+            ["canvas unknown revision 0 focused none", "  unknown unknown main"],
+        ),
+    ],
+    ids=["no-field", "a-visual-with-no-field"],
+)
+def test_canvas_prints_a_field_its_state_leaves_out_as_unknown(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    state: dict[str, object],
+    printed: list[str],
+) -> None:
+    client = _CanvasClient()
+
+    def read_canvas(canvas_id: uuid.UUID) -> dict[str, object]:
+        assert canvas_id == client.canvas
+        return state
+
+    monkeypatch.setattr(client, "read_canvas", read_canvas)
+
+    _canvas(client)
+
+    assert capsys.readouterr().out.splitlines() == printed
+
+
 def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_own(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -707,6 +1002,159 @@ def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_o
         ),
         "  box m2 by jp over the window on no page covers: nothing",
     ]
+
+
+def test_a_canvas_with_no_labels_names_a_box_s_rows_by_id_and_no_covers_as_nothing() -> (
+    None
+):
+    row = uuid.UUID(int=5)
+
+    lines = canvas_lines(
+        {
+            "id": "c",
+            "marks": [
+                {"id": "m1", "author": "agent", "covers": {"records": [str(row)]}},
+                {"id": "m2", "author": "jp"},
+            ],
+        },
+    )
+
+    assert lines == [
+        "canvas c revision 0 focused none",
+        "  (no visuals)",
+        f"  box m1 by agent on no page covers: {row}",
+        "  box m2 by jp on no page covers: nothing",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("query", "lines"),
+    [
+        ("", _ALL_CHATS),
+        # A workspace whose title holds it keeps every chat in it.
+        ("PAPER", _ALL_CHATS[3:6]),
+        # Of the others, only the chats whose name holds it.
+        ("notes", [_ALL_CHATS[0], _ALL_CHATS[2]]),
+        ("o", _ALL_CHATS[:3]),
+        ("zzz", ["no workspace or chat matches 'zzz'"]),
+    ],
+    ids=["all", "by-workspace", "by-chat", "chats-in-default", "none"],
+)
+def test_chats_are_said_by_workspace_and_kept_by_its_title_or_their_name(
+    query: str,
+    lines: list[str],
+) -> None:
+    assert chat_lines(_CANVASES, _WORKSPACES, query=query) == lines
+
+
+def test_a_chat_in_no_workspace_is_said_nowhere_when_the_account_has_no_default() -> (
+    None
+):
+    ungrouped = [canvas for canvas in _CANVASES if canvas["workspace_id"] is None]
+
+    assert chat_lines(ungrouped, _WORKSPACES[1:], query="") == [
+        "Issue#12 Paper review (hidden)",
+        "Issue#13 Empty",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "query"),
+    [([], ""), (["Paper", "review"], "Paper review"), (["notes"], "notes")],
+    ids=["all", "two-words", "one-word"],
+)
+def test_canvas_list_prints_the_chats_its_query_keeps_on_any_canvas(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    query: str,
+) -> None:
+    """``list`` is no canvas's action: a run placed on one still lists them all."""
+    client = _CanvasClient()
+    monkeypatch.setenv("TRAX_CANVAS", str(client.canvas))
+
+    _bare(client, "list", *arguments)
+
+    assert capsys.readouterr().out.splitlines() == chat_lines(
+        _CANVASES,
+        _WORKSPACES,
+        query=query,
+    )
+    assert client.listed == ["canvases", "workspaces"]
+    assert client.reads == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--record", str(uuid.uuid4())],
+        ["--placement", "main"],
+        ["--param", "a=b"],
+        ["--page", "#/graph"],
+    ],
+    ids=["record", "placement", "param", "page"],
+)
+def test_canvas_list_takes_no_option(arguments: list[str]) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(
+        ClientError,
+        match=r"^list takes at most a QUERY and no option$",
+    ):
+        _bare(client, "list", "review", *arguments)
+
+    assert client.listed == []
+
+
+def test_canvas_rename_names_the_canvas_with_the_words_after_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+
+    _canvas(client, "rename", "paper", "review ")
+
+    assert client.renames == ["paper review"]
+    assert (
+        capsys.readouterr().out == f"canvas {client.canvas} renamed to paper review\n"
+    )
+    assert client.operations == []
+
+
+def test_canvas_rename_with_no_id_renames_the_canvas_the_session_was_placed_on(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    monkeypatch.setenv("TRAX_CANVAS", str(client.canvas))
+
+    _bare(client, "rename", "notes")
+
+    assert client.renames == ["notes"]
+    assert capsys.readouterr().out == f"canvas {client.canvas} renamed to notes\n"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["rename"],
+        ["rename", " "],
+        ["rename", "notes", "--record", str(uuid.uuid4())],
+        ["rename", "notes", "--placement", "main"],
+        ["rename", "notes", "--param", "a=b"],
+        ["rename", "notes", "--page", "#/graph"],
+    ],
+    ids=["no-name", "blank", "record", "placement", "param", "page"],
+)
+def test_canvas_rename_takes_one_name_and_nothing_else(arguments: list[str]) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(
+        ClientError,
+        match=r"^rename takes one NAME and no other argument$",
+    ):
+        _canvas(client, *arguments)
+
+    assert client.renames == []
 
 
 if __name__ == "__main__":

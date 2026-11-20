@@ -29,7 +29,6 @@ from trackinizer.server.api.conftest import (
     waited_on_locks,
 )
 from trackinizer.server.auth import create_api_key
-from trackinizer.server.inbound import InboundQueue
 
 
 if TYPE_CHECKING:
@@ -67,7 +66,6 @@ async def served(integ_store: Store) -> AsyncIterator[httpx2.AsyncClient]:
         )
     app.state.engine = integ_store.engine
     app.state.store = integ_store
-    app.state.inbound = InboundQueue()
     install_identity(make_test_identity(role="admin", api_key_id=None))
     transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)
     try:
@@ -78,7 +76,7 @@ async def served(integ_store: Store) -> AsyncIterator[httpx2.AsyncClient]:
             yield http
     finally:
         clear_identity_override()
-        del app.state.engine, app.state.store, app.state.inbound
+        del app.state.engine, app.state.store
 
 
 @pytest.mark.parametrize("other", ["disable", "delete"])

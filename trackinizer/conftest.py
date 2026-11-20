@@ -82,8 +82,6 @@ from trackinizer.mock_test_support import MockConnection
 from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api.addons_routes import attach_deployment
 from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
@@ -462,7 +460,7 @@ class RecordingPolicy:
 def make_store(conn: MockConnection | None = None) -> tuple[Store, FakeEngine]:
     """Construct a ``Store`` bound to a fresh ``FakeEngine``."""
     engine = FakeEngine(conn)
-    store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+    store = Store(cast(DatabaseEngine, engine))
     return store, engine
 
 
@@ -554,7 +552,6 @@ class Hosted:
                 **self._built,
                 "engine": engine,
                 "store": store,
-                "inbound": InboundQueue(),
                 **state,
             },
         )
@@ -613,7 +610,7 @@ async def integ_engine(
 async def integ_store(integ_engine: postgres.PostgresEngine) -> Store:
     """Return a ``Store`` on the shared Postgres database, freshly bootstrapped."""
     await restore(integ_engine)
-    return Store(integ_engine, embed=StubEmbedder())
+    return Store(integ_engine)
 
 
 @pytest.fixture(scope="session")
@@ -636,7 +633,7 @@ async def pglite_db(pglite_engine: PGliteEngine) -> PGliteEngine:
 @pytest.fixture
 def store(pglite_db: PGliteEngine) -> Store:
     """Return a ``Store`` on ``pglite_db``."""
-    return Store(pglite_db, embed=StubEmbedder())
+    return Store(pglite_db)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -756,7 +753,7 @@ async def bootstrapped(
     The operator's bootstrap settings are blanked for it, so no admin is seeded.
     """
     with without_operator_bootstrap():
-        await Store(engine, embed=StubEmbedder()).bootstrap(addon_migrations=migrations)
+        await Store(engine).bootstrap(addon_migrations=migrations)
     return dict[str, str]()
 
 
@@ -1131,7 +1128,7 @@ async def _copy(
     for table in tables:
         filled = await conn.fetchval(
             vetted_sql(
-                "SELECT EXISTS (SELECT 1 FROM ",  # pragma: no mutate -- SQL ignores keyword case.
+                "SELECT EXISTS (SELECT 1 FROM ",  # pragma: no mutate[case-insensitive]
                 _name(table),
                 ")",  # pragma: no mutate -- a word after the table only aliases it.
             ),
@@ -1142,15 +1139,15 @@ async def _copy(
         target = _name((_COPIES, copy))
         await conn.execute(
             vetted_sql(
-                "DROP TABLE IF EXISTS ",  # pragma: no mutate -- SQL ignores keyword case.
+                "DROP TABLE IF EXISTS ",  # pragma: no mutate[case-insensitive]
                 target,
             ),
         )
         await conn.execute(
             vetted_sql(
-                "CREATE TABLE ",  # pragma: no mutate -- SQL ignores keyword case.
+                "CREATE TABLE ",  # pragma: no mutate[case-insensitive]
                 target,
-                " AS SELECT * FROM ",  # pragma: no mutate -- SQL ignores keyword case.
+                " AS SELECT * FROM ",  # pragma: no mutate[case-insensitive]
                 _name(table),
             ),
         )
@@ -1168,19 +1165,19 @@ async def _copy(
         # never read, whose position is its start, which ``setval`` must be told.
         last = await conn.fetchval(
             vetted_sql(
-                "SELECT last_value FROM ",  # pragma: no mutate -- SQL ignores keyword case.
+                "SELECT last_value FROM ",  # pragma: no mutate[case-insensitive]
                 sequence,
             ),
         )
         called = await conn.fetchval(
             vetted_sql(
-                "SELECT is_called FROM ",  # pragma: no mutate -- SQL ignores keyword case.
+                "SELECT is_called FROM ",  # pragma: no mutate[case-insensitive]
                 sequence,
             ),
         )
         script.append(
             vetted_sql(
-                "SELECT setval('",  # pragma: no mutate -- SQL ignores keyword case.
+                "SELECT setval('",  # pragma: no mutate[case-insensitive]
                 sequence.replace("'", "''"),
                 "', ",
                 str(cast(int, last)),
@@ -1190,7 +1187,7 @@ async def _copy(
             ),
         )
     present = await conn.fetch(
-        "SELECT nspname FROM pg_namespace WHERE nspname = ANY($1::text[])",  # pragma: no mutate -- SQL ignores keyword case.
+        "SELECT nspname FROM pg_namespace WHERE nspname = ANY($1::text[])",  # pragma: no mutate[case-insensitive]
         list(schemas),
     )
     return _Baseline(
@@ -1225,9 +1222,9 @@ async def _drop(conn: Conn, schema: str) -> None:
     """Drop ``schema`` and everything in it, if it is there."""
     await conn.execute(
         vetted_sql(
-            "DROP SCHEMA IF EXISTS ",  # pragma: no mutate -- SQL ignores keyword case.
+            "DROP SCHEMA IF EXISTS ",  # pragma: no mutate[case-insensitive]
             _quoted(schema),
-            " CASCADE",  # pragma: no mutate -- SQL ignores keyword case.
+            " CASCADE",  # pragma: no mutate[case-insensitive]
         ),
     )
 

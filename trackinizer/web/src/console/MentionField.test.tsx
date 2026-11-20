@@ -5,10 +5,18 @@ import type { FeedActorFacet, FeedEvent } from "../api/sessions";
 import { Composer } from "../composer/Composer";
 import type { Context } from "./mentions";
 import { MentionField } from "./MentionField";
+import { must } from "../must";
 
 beforeEach(() => {
   // jsdom has no ResizeObserver, which the open list uses.
-  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
 });
 
 afterEach(() => {
@@ -18,21 +26,47 @@ afterEach(() => {
 
 /** `actor`'s session, heard from at 10:MM, in no room. */
 function agent(actor: string, last: string): FeedActorFacet {
-  return { actor, session_id: "00000000-0000-4000-8000-000000000001", cli: null, rooms: [], count: 1, conversation: 1, last: `2026-10-03T10:${last}:00Z`, ended: null };
+  return {
+    actor,
+    session_id: "00000000-0000-4000-8000-000000000001",
+    cli: null,
+    rooms: [],
+    count: 1,
+    conversation: 1,
+    last: `2026-10-03T10:${last}:00Z`,
+    ended: null,
+  };
 }
 
 /** A line of `actor`'s, written at 10:MM. */
 function line(actor: string, created: string): FeedEvent {
   const at = `2026-10-03T10:${created}:00Z`;
-  return { session_id: "00000000-0000-4000-8000-000000000002", actor, rooms: [], part: 0, seq: 0, kind: "AssistantMessage", created: at, message: {}, text: "" };
+  return {
+    session_id: "00000000-0000-4000-8000-000000000002",
+    actor,
+    rooms: [],
+    part: 0,
+    seq: 0,
+    kind: "AssistantMessage",
+    created: at,
+    message: {},
+    text: "",
+  };
 }
 
 /** Two agents, `b` heard from last, both with lines in the feed: `@` offers b, a, then every agent shown. */
-const CONTEXT: Context = { agents: [agent("a", "01"), agent("b", "05")], lines: [line("a", "01"), line("b", "05")], shown: [], rooms: [] };
+const CONTEXT: Context = {
+  agents: [agent("a", "01"), agent("b", "05")],
+  lines: [line("a", "01"), line("b", "05")],
+  shown: [],
+  rooms: [],
+};
 
 /** The console's box over `CONTEXT`, focused, sending through a mock; nothing it sends is refused. */
 function show() {
-  const send = vi.fn<(text: string, key: string) => Promise<string>>().mockResolvedValue("Sent");
+  const send = vi
+    .fn<(text: string, key: string) => Promise<string>>()
+    .mockResolvedValue("Sent");
   render(
     <QueryClientProvider client={new QueryClient()}>
       <Composer
@@ -41,13 +75,19 @@ function show() {
         enabled
         placeholder="@agent message"
         failure={(error) => error.message}
-        field={(props, edit) => <MentionField field={props} edit={edit} context={CONTEXT} />}
+        field={(props, edit) => (
+          <MentionField field={props} edit={edit} context={CONTEXT} />
+        )}
       />
     </QueryClientProvider>,
   );
   const box = screen.getByLabelText<HTMLTextAreaElement>("Message");
   box.focus();
-  return { send, box, type: (text: string) => fireEvent.change(box, { target: { value: text } }) };
+  return {
+    send,
+    box,
+    type: (text: string) => fireEvent.change(box, { target: { value: text } }),
+  };
 }
 
 /** Each option's target, in order; none while the list is closed. */
@@ -65,14 +105,18 @@ test("@ lists the agents by rank, and the box is a combobox naming the active op
   expect(box.getAttribute("aria-expanded")).toBe("true");
   expect(box.getAttribute("aria-controls")).toBe(list.id);
   const [first] = screen.getAllByRole("option");
-  expect(box.getAttribute("aria-activedescendant")).toBe(first!.id);
-  expect(first!.getAttribute("aria-selected")).toBe("true");
+  expect(box.getAttribute("aria-activedescendant")).toBe(must(first).id);
+  expect(must(first).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("option", { name: /every agent shown/ }).title).toBe("@*");
   type("@A");
   expect(offered()).toEqual(["@a"]);
   type("@a hi");
   expect(offered()).toEqual([]);
-  expect(["role", "aria-expanded", "aria-controls", "aria-activedescendant"].map((name) => box.getAttribute(name))).toEqual([null, null, null, null]);
+  expect(
+    ["role", "aria-expanded", "aria-controls", "aria-activedescendant"].map((name) =>
+      box.getAttribute(name),
+    ),
+  ).toEqual([null, null, null, null]);
 });
 
 test("the arrows move, wrapping, and Enter takes the active one without sending; then Enter sends", async () => {
@@ -82,7 +126,9 @@ test("the arrows move, wrapping, and Enter takes the active one without sending;
   expect(screen.getByRole("option", { selected: true }).title).toBe("@*");
   fireEvent.keyDown(box, { key: "ArrowDown" });
   fireEvent.keyDown(box, { key: "ArrowDown" });
-  expect(box.getAttribute("aria-activedescendant")).toBe(screen.getByRole("option", { selected: true }).id);
+  expect(box.getAttribute("aria-activedescendant")).toBe(
+    screen.getByRole("option", { selected: true }).id,
+  );
   expect(screen.getByRole("option", { selected: true }).title).toBe("@a");
   fireEvent.keyDown(box, { key: "Enter" });
   expect(box.value).toBe("@a ");

@@ -20,7 +20,6 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store
 from trackinizer.wire.bodies import SubmitIssue
@@ -50,7 +49,7 @@ async def wide_store(pg_dsn: str, integ_store: Store) -> AsyncIterator[Store]:
         listen_channel=NOTIFY_CHANNEL,
         max_size=_WIDE_POOL_SIZE,
     ) as engine:
-        yield Store(engine, embed=StubEmbedder())
+        yield Store(engine)
 
 
 async def _submit_issue(store: Store, title: str) -> UUID:

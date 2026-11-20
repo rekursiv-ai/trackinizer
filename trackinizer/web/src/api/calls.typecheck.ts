@@ -5,7 +5,13 @@
 import { client } from "./client";
 import { keyed } from "./idempotency";
 import { removeEdge } from "./edges";
-import { clearField, createInquiry, listInquiries, purgeInquiry, setField } from "./inquiries";
+import {
+  clearField,
+  createInquiry,
+  listInquiries,
+  purgeInquiry,
+  setField,
+} from "./inquiries";
 
 export async function rejected(id: string): Promise<void> {
   const target = { params: { path: { target_id: id } } };
@@ -14,22 +20,37 @@ export async function rejected(id: string): Promise<void> {
   await client.GET("/api/inquiries/{target_id}/nonexistent", target);
   // POST to a route that only takes PUT.
   // @ts-expect-error
-  await client.POST("/api/inquiries/{target_id}/status", { ...target, body: { value: "complete" } });
+  await client.POST("/api/inquiries/{target_id}/status", {
+    ...target,
+    body: { value: "complete" },
+  });
   // PATCH on a field that is not a list.
   // @ts-expect-error
-  await client.PATCH("/api/inquiries/{target_id}/title", { ...target, body: { op: "add", value: "x" } });
+  await client.PATCH("/api/inquiries/{target_id}/title", {
+    ...target,
+    body: { op: "add", value: "x" },
+  });
   // A status outside the Status enum.
-  // @ts-expect-error
-  await client.PUT("/api/inquiries/{target_id}/status", { ...target, body: { value: "done" } });
+  await client.PUT("/api/inquiries/{target_id}/status", {
+    ...target,
+    // @ts-expect-error
+    body: { value: "done" },
+  });
   // A list operation other than add or sub.
-  // @ts-expect-error
-  await client.PATCH("/api/inquiries/{target_id}/labels", { ...target, body: { op: "set", value: "x" } });
+  await client.PATCH("/api/inquiries/{target_id}/labels", {
+    ...target,
+    // @ts-expect-error
+    body: { op: "set", value: "x" },
+  });
   // A kind that does not exist, in a list query.
   // @ts-expect-error
   await client.GET("/api/inquiries", { params: { query: { kind: ["Ticket"] } } });
   // A number where the title takes a string.
-  // @ts-expect-error
-  await client.PUT("/api/inquiries/{target_id}/title", { ...target, body: { value: 3 } });
+  await client.PUT("/api/inquiries/{target_id}/title", {
+    ...target,
+    // @ts-expect-error
+    body: { value: 3 },
+  });
   // DELETE without its body; the server answers 422.
   // @ts-expect-error
   await client.DELETE("/api/inquiries/{target_id}/description", target);
@@ -40,8 +61,12 @@ export async function rejected(id: string): Promise<void> {
   // @ts-expect-error
   await setField("/api/belief/{target_id}/judgement", id, keyed({ value: "maybe" }));
   // an actor, which the server must stamp itself,
-  // @ts-expect-error
-  await setField("/api/inquiries/{target_id}/title", id, keyed({ value: "x", actor: "me" }));
+  await setField(
+    "/api/inquiries/{target_id}/title",
+    id,
+    // @ts-expect-error
+    keyed({ value: "x", actor: "me" }),
+  );
   // clearing a field that cannot be cleared,
   // @ts-expect-error
   await clearField("/api/inquiries/{target_id}/title", id, keyed({}));
@@ -77,13 +102,31 @@ export async function rejected(id: string): Promise<void> {
 export async function accepted(id: string): Promise<void> {
   const target = { params: { path: { target_id: id } } };
   await client.GET("/api/inquiries/{target_id}/confidence", target);
-  await client.PUT("/api/inquiries/{target_id}/status", { ...target, body: { value: "complete" } });
-  await client.PATCH("/api/inquiries/{target_id}/labels", { ...target, body: { op: "add", value: "x" } });
-  await client.PUT("/api/inquiries/{target_id}/status", { ...target, body: { value: "active" } });
-  await client.PATCH("/api/inquiries/{target_id}/labels", { ...target, body: { op: "sub", value: "x" } });
+  await client.PUT("/api/inquiries/{target_id}/status", {
+    ...target,
+    body: { value: "complete" },
+  });
+  await client.PATCH("/api/inquiries/{target_id}/labels", {
+    ...target,
+    body: { op: "add", value: "x" },
+  });
+  await client.PUT("/api/inquiries/{target_id}/status", {
+    ...target,
+    body: { value: "active" },
+  });
+  await client.PATCH("/api/inquiries/{target_id}/labels", {
+    ...target,
+    body: { op: "sub", value: "x" },
+  });
   await client.GET("/api/inquiries", { params: { query: { kind: ["Issue"] } } });
-  await client.PUT("/api/inquiries/{target_id}/title", { ...target, body: { value: "3" } });
-  await client.DELETE("/api/inquiries/{target_id}/description", { ...target, body: {} });
+  await client.PUT("/api/inquiries/{target_id}/title", {
+    ...target,
+    body: { value: "3" },
+  });
+  await client.DELETE("/api/inquiries/{target_id}/description", {
+    ...target,
+    body: {},
+  });
   await client.GET("/api/web/get/{target_id}", target);
   await setField("/api/belief/{target_id}/judgement", id, keyed({ value: "proven" }));
   await setField("/api/inquiries/{target_id}/title", id, keyed({ value: "x" }));

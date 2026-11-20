@@ -21,7 +21,9 @@ const ROUTE_CHANGE = "trackinizer:routechange";
  */
 export function currentRoute(): string {
   if (location.hash.startsWith("#/")) return location.hash;
-  const path = location.pathname.startsWith(APP_BASE) ? location.pathname.slice(APP_BASE.length) : "";
+  const path = location.pathname.startsWith(APP_BASE)
+    ? location.pathname.slice(APP_BASE.length)
+    : "";
   return path || location.search ? `#/${path}${location.search}` : "";
 }
 
@@ -40,7 +42,10 @@ export function routeHref(route: Route): string {
  * instead of adding one. A move to the route already shown adds nothing, as
  * setting the same hash did.
  */
-export function goTo(route: string, { replace = false }: { replace?: boolean } = {}): void {
+export function goTo(
+  route: string,
+  { replace = false }: { replace?: boolean } = {},
+): void {
   if (!replace && route === currentRoute()) return;
   const url = routeUrl(route);
   if (replace) history.replaceState(history.state, "", url);
@@ -53,9 +58,11 @@ export function goTo(route: string, { replace = false }: { replace?: boolean } =
  * and an old `#/...` link followed. Returns the function that stops it.
  */
 export function onRouteChange(onChange: () => void): () => void {
-  for (const type of [ROUTE_CHANGE, "popstate", "hashchange"]) addEventListener(type, onChange);
+  for (const type of [ROUTE_CHANGE, "popstate", "hashchange"])
+    addEventListener(type, onChange);
   return () => {
-    for (const type of [ROUTE_CHANGE, "popstate", "hashchange"]) removeEventListener(type, onChange);
+    for (const type of [ROUTE_CHANGE, "popstate", "hashchange"])
+      removeEventListener(type, onChange);
   };
 }
 
@@ -67,14 +74,22 @@ export function onRouteChange(onChange: () => void): () => void {
  * after the app's path or the old UI's `/`. Files of the build (`/trax/assets/...`),
  * `/api/...`, other hosts and other paths are not.
  */
-export function routeOf(href: string, page: Pick<Location, "href"> = location): string | null {
+export function routeOf(
+  href: string,
+  page: Pick<Location, "href"> = location,
+): string | null {
   try {
     const own = new URL(page.href);
     const url = new URL(href, own);
     if (url.origin !== own.origin) return null;
     const under = url.pathname.startsWith(APP_BASE);
-    if (url.hash.startsWith("#/") && (under || url.pathname === own.pathname || url.pathname === "/")) return url.hash;
-    if (!under || url.hash || url.pathname.startsWith(`${APP_BASE}assets/`)) return null;
+    if (
+      url.hash.startsWith("#/") &&
+      (under || url.pathname === own.pathname || url.pathname === "/")
+    )
+      return url.hash;
+    if (!under || url.hash || url.pathname.startsWith(`${APP_BASE}assets/`))
+      return null;
     return `#/${url.pathname.slice(APP_BASE.length)}${url.search}`;
   } catch {
     return null;
@@ -89,9 +104,23 @@ export function routeOf(href: string, page: Pick<Location, "href"> = location): 
  */
 export function followLinks(): () => void {
   const follow = (event: MouseEvent) => {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
-    if (!(link instanceof HTMLAnchorElement) || (link.target && link.target !== "_self") || link.hasAttribute("download")) return;
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return;
+    const link =
+      event.target instanceof Element ? event.target.closest("a[href]") : null;
+    if (
+      !(link instanceof HTMLAnchorElement) ||
+      (link.target && link.target !== "_self") ||
+      link.hasAttribute("download")
+    )
+      return;
     const route = routeOf(link.href);
     if (route === null) return;
     event.preventDefault();

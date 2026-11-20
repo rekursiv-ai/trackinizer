@@ -74,7 +74,16 @@ export default defineConfig({
         },
       },
       ...(process.env.TRACKINIZER_WEB_MANUAL_TESTS === "1"
-        ? [{ extends: true, test: { name: "build", environment: "node", include: ["src/build.test.ts"] } }]
+        ? [
+            {
+              extends: true,
+              test: {
+                name: "build",
+                environment: "node",
+                include: ["src/build.test.ts"],
+              },
+            },
+          ]
         : []),
     ],
   },
@@ -87,13 +96,20 @@ function appIdentity(): Plugin {
     name: "trackinizer-app-identity",
     transformIndexHtml: (html) => fillName(html, identity),
     configureServer(server) {
-      server.middlewares.use(`${APP_BASE}manifest.webmanifest`, (_request, response) => {
-        response.setHeader("Content-Type", "application/manifest+json");
-        response.end(manifest);
-      });
+      server.middlewares.use(
+        `${APP_BASE}manifest.webmanifest`,
+        (_request, response) => {
+          response.setHeader("Content-Type", "application/manifest+json");
+          response.end(manifest);
+        },
+      );
     },
     generateBundle() {
-      this.emitFile({ type: "asset", fileName: "manifest.webmanifest", source: manifest });
+      this.emitFile({
+        type: "asset",
+        fileName: "manifest.webmanifest",
+        source: manifest,
+      });
     },
   };
 }
@@ -138,8 +154,15 @@ function preloadFirstLoad(): Plugin {
       order: "post",
       handler(_html, { bundle, chunk: entry }) {
         if (!bundle || !entry) return;
-        const chunks = new Map(Object.values(bundle).flatMap((file) => (file.type === "chunk" ? [[file.fileName, file]] : [])));
-        const reached = (roots: readonly string[], into = new Set<string>()): Set<string> => {
+        const chunks = new Map(
+          Object.values(bundle).flatMap((file) =>
+            file.type === "chunk" ? [[file.fileName, file]] : [],
+          ),
+        );
+        const reached = (
+          roots: readonly string[],
+          into = new Set<string>(),
+        ): Set<string> => {
           for (const file of roots) {
             if (into.has(file)) continue;
             into.add(file);
@@ -151,7 +174,11 @@ function preloadFirstLoad(): Plugin {
         const preloaded = reached([entry.fileName]);
         return [...reached(entry.dynamicImports)]
           .filter((file) => !preloaded.has(file))
-          .map((file) => ({ tag: "link", attrs: { rel: "modulepreload", crossorigin: true, href: `${base}${file}` }, injectTo: "head" }));
+          .map((file) => ({
+            tag: "link",
+            attrs: { rel: "modulepreload", crossorigin: true, href: `${base}${file}` },
+            injectTo: "head",
+          }));
       },
     },
   };

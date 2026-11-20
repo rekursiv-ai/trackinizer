@@ -17,8 +17,20 @@ export type ListHandlers = {
  */
 export function listCommands(handlers: ListHandlers): Command[] {
   return [
-    { id: "list.next", title: "Next row", keys: ["j", "ArrowDown"], repeat: true, run: handlers.next },
-    { id: "list.previous", title: "Previous row", keys: ["k", "ArrowUp"], repeat: true, run: handlers.previous },
+    {
+      id: "list.next",
+      title: "Next row",
+      keys: ["j", "ArrowDown"],
+      repeat: true,
+      run: handlers.next,
+    },
+    {
+      id: "list.previous",
+      title: "Previous row",
+      keys: ["k", "ArrowUp"],
+      repeat: true,
+      run: handlers.previous,
+    },
     { id: "list.open", title: "Open row", keys: ["Enter", "o"], run: handlers.open },
     { id: "list.close", title: "Close", keys: ["Escape"], run: handlers.close },
     { id: "list.peek", title: "Peek", keys: ["Space"], run: handlers.peek },

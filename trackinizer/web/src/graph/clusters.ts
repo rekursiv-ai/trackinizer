@@ -1,8 +1,11 @@
+import { must } from "../must";
 /** A node as the layout moves it: d3 gives each its place and speed. */
 export type Body = { x?: number; y?: number; vx?: number; vy?: number };
 
 /** A d3 force: it runs once a tick at the layout's heat, `alpha`, over the nodes `initialize` gave it. */
-export type Force<Node> = ((alpha: number) => void) & { initialize: (nodes: Node[]) => void };
+export type Force<Node> = ((alpha: number) => void) & {
+  initialize: (nodes: Node[]) => void;
+};
 
 /**
  * A force that gathers the nodes into one island per group, for force-graph's
@@ -24,16 +27,22 @@ export type Force<Node> = ((alpha: number) => void) & { initialize: (nodes: Node
  * nearest their own group's middle, against 32% without this force, and 7 of
  * 561 pairs of such groups overlap, against 72. It costs about 0.1 ms a tick.
  */
-export function clusterForce<Node extends Body>(groupOf: (node: Node) => string | undefined): Force<Node> {
+export function clusterForce<Node extends Body>(
+  groupOf: (node: Node) => string | undefined,
+): Force<Node> {
   let groups: Node[][] = [];
   const force = (alpha: number) => {
     const discs = groups.map(discOf);
-    eachNearPair(discs, (i, j) => pushApart(discs[i]!, discs[j]!, (i + j) * GOLDEN_ANGLE));
+    eachNearPair(discs, (i, j) =>
+      pushApart(must(discs[i]), must(discs[j]), (i + j) * GOLDEN_ANGLE),
+    );
     for (const [index, members] of groups.entries()) {
-      const disc = discs[index]!;
+      const disc = must(discs[index]);
       for (const node of members) {
-        node.vx = (node.vx ?? 0) + ((disc.x - (node.x ?? 0)) * PULL + disc.shiftX) * alpha;
-        node.vy = (node.vy ?? 0) + ((disc.y - (node.y ?? 0)) * PULL + disc.shiftY) * alpha;
+        node.vx =
+          (node.vx ?? 0) + ((disc.x - (node.x ?? 0)) * PULL + disc.shiftX) * alpha;
+        node.vy =
+          (node.vy ?? 0) + ((disc.y - (node.y ?? 0)) * PULL + disc.shiftY) * alpha;
       }
     }
   };
@@ -52,7 +61,14 @@ export function clusterForce<Node extends Body>(groupOf: (node: Node) => string 
 }
 
 /** A group as the force sees it: a disc at its nodes' middle, and the push it has gathered this tick. */
-type Disc = { x: number; y: number; size: number; radius: number; shiftX: number; shiftY: number };
+type Disc = {
+  x: number;
+  y: number;
+  size: number;
+  radius: number;
+  shiftX: number;
+  shiftY: number;
+};
 
 function discOf(members: readonly Body[]): Disc {
   let [x, y] = [0, 0];
@@ -61,7 +77,14 @@ function discOf(members: readonly Body[]): Disc {
     y += node.y ?? 0;
   }
   const size = members.length;
-  return { x: x / size, y: y / size, size, radius: SPACING * Math.sqrt(size), shiftX: 0, shiftY: 0 };
+  return {
+    x: x / size,
+    y: y / size,
+    size,
+    radius: SPACING * Math.sqrt(size),
+    shiftX: 0,
+    shiftY: 0,
+  };
 }
 
 /**
@@ -73,12 +96,21 @@ function discOf(members: readonly Body[]): Disc {
  * every pair took 195 ms a tick at 5,000 one-node groups and 3 s at 20,000; the
  * grid takes 9 and 26 ms (Node 24 on the dev Mac, 2026-10-02).
  */
-function eachNearPair(discs: readonly Disc[], visit: (i: number, j: number) => void): void {
+function eachNearPair(
+  discs: readonly Disc[],
+  visit: (i: number, j: number) => void,
+): void {
   const cells = new Map<number, number[]>();
   const seen = new Int32Array(discs.length).fill(-1);
   for (const [j, { x, y, radius }] of discs.entries()) {
-    const [left, right] = [Math.floor((x - radius) / CELL_PX), Math.floor((x + radius) / CELL_PX)];
-    const [top, bottom] = [Math.floor((y - radius) / CELL_PX), Math.floor((y + radius) / CELL_PX)];
+    const [left, right] = [
+      Math.floor((x - radius) / CELL_PX),
+      Math.floor((x + radius) / CELL_PX),
+    ];
+    const [top, bottom] = [
+      Math.floor((y - radius) / CELL_PX),
+      Math.floor((y + radius) / CELL_PX),
+    ];
     for (let column = left; column <= right; column++) {
       for (let row = top; row <= bottom; row++) {
         // Two cells that share a key only cost a few extra checks.
@@ -101,7 +133,10 @@ function pushApart(a: Disc, b: Disc, angle: number): void {
   const distance = Math.hypot(b.x - a.x, b.y - a.y);
   const overlap = a.radius + b.radius - distance;
   if (overlap <= 0) return;
-  const [unitX, unitY] = distance > 0 ? [(b.x - a.x) / distance, (b.y - a.y) / distance] : [Math.cos(angle), Math.sin(angle)];
+  const [unitX, unitY] =
+    distance > 0
+      ? [(b.x - a.x) / distance, (b.y - a.y) / distance]
+      : [Math.cos(angle), Math.sin(angle)];
   const push = (PUSH * overlap) / (a.size + b.size);
   a.shiftX -= unitX * push * b.size;
   a.shiftY -= unitY * push * b.size;

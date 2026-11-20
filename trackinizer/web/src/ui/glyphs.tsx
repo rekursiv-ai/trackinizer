@@ -6,9 +6,15 @@ import type { ReactNode } from "react";
 import { routeHref } from "../router/addressBar";
 import "./glyphs.css";
 import { KindIcon } from "./kinds";
+import { must } from "../must";
 
 /** The four priority bands' names, P0 to P3. */
-export const PRIORITY_NAMES = ["P0 Critical", "P1 High", "P2 Medium", "P3 Low"] as const;
+export const PRIORITY_NAMES = [
+  "P0 Critical",
+  "P1 High",
+  "P2 Medium",
+  "P3 Low",
+] as const;
 
 /** A status (`active`, `invalid`) drawn as itself; a value the mock never drew gets a plain ring. */
 export function StatusGlyph({ status, size = 14 }: { status: string; size?: number }) {
@@ -20,7 +26,13 @@ export function StatusGlyph({ status, size = 14 }: { status: string; size?: numb
 }
 
 /** A Belief's judgement (`proven`, `undecidable`) drawn as itself. */
-export function JudgementGlyph({ judgement, size = 14 }: { judgement: string; size?: number }) {
+export function JudgementGlyph({
+  judgement,
+  size = 14,
+}: {
+  judgement: string;
+  size?: number;
+}) {
   return (
     <Glyph label={capitalize(judgement)} size={size}>
       {JUDGEMENT_MARKS[judgement] ?? PLAIN_RING}
@@ -61,11 +73,19 @@ export function priorityBand(priority: number | null | undefined): number | null
 /** `P1 High`, or `No priority`. */
 export function priorityName(priority: number | null): string {
   const band = priorityBand(priority);
-  return band === null ? "No priority" : PRIORITY_NAMES[band]!;
+  if (band === null) return "No priority";
+  // A priority below 0 has no named band; it reads as its number.
+  return PRIORITY_NAMES[band] ?? `Priority ${priority}`;
 }
 
 /** Chevrons for how far up the queue it sits: three for Critical, a dash for Low, dots for none. */
-export function PriorityGlyph({ priority, size = 14 }: { priority: number | null; size?: number }) {
+export function PriorityGlyph({
+  priority,
+  size = 14,
+}: {
+  priority: number | null;
+  size?: number;
+}) {
   const band = priorityBand(priority);
   return (
     <Glyph label={priorityName(priority)} size={size}>
@@ -76,9 +96,14 @@ export function PriorityGlyph({ priority, size = 14 }: { priority: number | null
           <circle cx="10.5" cy="7" r="1" />
         </g>
       ) : band === 3 ? (
-        <path d="M3.5 7h7" stroke="var(--ink-tertiary)" strokeWidth="1.7" strokeLinecap="round" />
+        <path
+          d="M3.5 7h7"
+          stroke="var(--ink-tertiary)"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        />
       ) : (
-        CHEVRON_ROWS[band]!.map((y) => (
+        must(CHEVRON_ROWS[band]).map((y) => (
           <path
             key={y}
             d={`M3.5 ${y + 3}L7 ${y}l3.5 3`}
@@ -103,7 +128,12 @@ export function Avatar({ actor, size = 18 }: { actor: string; size?: number }) {
   return (
     <span
       className="avatar"
-      style={{ width: size, height: size, fontSize: Math.round(size * 0.5), background: `hsl(${hash(actor) % 360} 45% 45%)` }}
+      style={{
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.5),
+        background: `hsl(${hash(actor) % 360} 45% 45%)`,
+      }}
       title={actor}
       aria-hidden="true"
     >
@@ -124,11 +154,24 @@ export function LabelChip({ label }: { label: string }) {
 
 /** The dot a label is drawn with, as in its chip. */
 export function LabelDot({ label }: { label: string }) {
-  return <i className="label-dot" style={{ background: LABEL_COLORS[hash(label) % LABEL_COLORS.length] }} />;
+  return (
+    <i
+      className="label-dot"
+      style={{ background: LABEL_COLORS[hash(label) % LABEL_COLORS.length] }}
+    />
+  );
 }
 
 /** A link to an inquiry: its kind's icon and `Kind#seq`, with its title on hover. */
-export function RefChip({ kind, seq, title }: { kind: string; seq: number; title: string }) {
+export function RefChip({
+  kind,
+  seq,
+  title,
+}: {
+  kind: string;
+  seq: number;
+  title: string;
+}) {
   return (
     <a className="ref" href={routeHref({ name: "ref", kind, seq })} title={title}>
       <KindIcon kind={kind} size={12} />
@@ -142,9 +185,24 @@ export function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function Glyph({ label, size, children }: { label: string; size: number; children: ReactNode }) {
+function Glyph({
+  label,
+  size,
+  children,
+}: {
+  label: string;
+  size: number;
+  children: ReactNode;
+}) {
   return (
-    <svg className="ic" width={size} height={size} viewBox="0 0 14 14" role="img" aria-label={label}>
+    <svg
+      className="ic"
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      role="img"
+      aria-label={label}
+    >
       {children}
     </svg>
   );
@@ -160,13 +218,29 @@ const CHECK = (
     strokeLinejoin="round"
   />
 );
-const CROSS = <path d="M5 5l4 4M9 5l-4 4" stroke="var(--bg)" strokeWidth="1.5" strokeLinecap="round" />;
-const PLAIN_RING = <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--muted)" strokeWidth="1.6" />;
+const CROSS = (
+  <path
+    d="M5 5l4 4M9 5l-4 4"
+    stroke="var(--bg)"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+  />
+);
+const PLAIN_RING = (
+  <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--muted)" strokeWidth="1.6" />
+);
 
 const STATUS_MARKS: { readonly [status: string]: ReactNode } = {
   active: (
     <>
-      <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--green)" strokeWidth="1.6" />
+      <circle
+        cx="7"
+        cy="7"
+        r="5.5"
+        fill="none"
+        stroke="var(--green)"
+        strokeWidth="1.6"
+      />
       <circle cx="7" cy="7" r="2" fill="var(--green)" />
     </>
   ),
@@ -178,7 +252,14 @@ const STATUS_MARKS: { readonly [status: string]: ReactNode } = {
   ),
   stopped: (
     <>
-      <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--amber)" strokeWidth="1.6" />
+      <circle
+        cx="7"
+        cy="7"
+        r="5.5"
+        fill="none"
+        stroke="var(--amber)"
+        strokeWidth="1.6"
+      />
       <rect x="4.6" y="4.6" width="4.8" height="4.8" rx="0.6" fill="var(--amber)" />
     </>
   ),
@@ -211,13 +292,33 @@ const JUDGEMENT_MARKS: { readonly [judgement: string]: ReactNode } = {
   ),
   undecidable: (
     <>
-      <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--violet)" strokeWidth="1.6" />
-      <path d="M4.5 7h5" stroke="var(--violet)" strokeWidth="1.6" strokeLinecap="round" />
+      <circle
+        cx="7"
+        cy="7"
+        r="5.5"
+        fill="none"
+        stroke="var(--violet)"
+        strokeWidth="1.6"
+      />
+      <path
+        d="M4.5 7h5"
+        stroke="var(--violet)"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
     </>
   ),
   unproven: (
     <>
-      <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--amber)" strokeWidth="1.6" strokeDasharray="2.4 1.8" />
+      <circle
+        cx="7"
+        cy="7"
+        r="5.5"
+        fill="none"
+        stroke="var(--amber)"
+        strokeWidth="1.6"
+        strokeDasharray="2.4 1.8"
+      />
       <circle cx="7" cy="7" r="1.4" fill="var(--amber)" />
     </>
   ),
@@ -225,7 +326,17 @@ const JUDGEMENT_MARKS: { readonly [judgement: string]: ReactNode } = {
 
 /** The chevrons' tops, by band. */
 const CHEVRON_ROWS = [[1.5, 5, 8.5], [3.5, 7], [5.5]];
-const LABEL_COLORS = ["#4ea7fc", "#26b5ce", "#4cb782", "#f2c94c", "#f2994a", "#eb5757", "#bb87fc", "#8a8f98", "#e58ad4"];
+const LABEL_COLORS = [
+  "#4ea7fc",
+  "#26b5ce",
+  "#4cb782",
+  "#f2c94c",
+  "#f2994a",
+  "#eb5757",
+  "#bb87fc",
+  "#8a8f98",
+  "#e58ad4",
+];
 
 /** FNV-1a, as the mock hashes names to colours, so a name keeps its colour everywhere. */
 function hash(text: string): number {

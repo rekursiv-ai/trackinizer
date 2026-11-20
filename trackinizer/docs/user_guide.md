@@ -134,7 +134,8 @@ the assistant mentions" turns that off.
 
 Keys: Ctrl+\\ (⌘\\ on a Mac) hides and shows Chat. Alt+Enter makes Chat fill
 the window, and Esc returns. ⌘K (Ctrl+K) opens the palette, which has New chat
-and New terminal among its commands.
+and New terminal among its commands. Ctrl+` opens a new terminal as a tab,
+last in the focused panel's strip, or in place of its open New Tab.
 
 ### The canvas
 
@@ -256,16 +257,17 @@ that chat.
   NAME** for each ready host.
 - Connect more computers the same way; each is offered once it is connected
   and allowed.
-- The canvas has a Terminal tile too: Workbench → Terminal, or New terminal in
-  the palette. It holds several terminals as tabs: + opens one, asking which
-  host when more than one is ready, and × closes one.
-- In the tile, Ctrl+Shift+T opens a tab, Ctrl+Shift+W closes one, and
+- The canvas opens terminals too: New terminal in the palette, or Ctrl+`.
+  Each terminal is a canvas tab of its own, which asks which host when more
+  than one is ready; × on its tab closes it and ends its shell.
+- In a terminal, Ctrl+Shift+T opens a tab, Ctrl+Shift+W closes one, and
   Ctrl+Shift+PageDown and Ctrl+Shift+PageUp switch tabs. **Your settings** →
   Appearance → "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal
   tabs" adds the short forms. Chrome keeps those in a plain tab and gives them
   to the page only in the installed app.
 - Every key typed in a terminal goes to the shell, the app's shortcuts
-  included: click outside the terminal to use ⌘K or Ctrl+\\.
+  included, but Ctrl+`, which opens another terminal: click outside the
+  terminal to use ⌘K or Ctrl+\\.
 - ⤢ makes a terminal fill the canvas, and ⤡ restores it. **Your settings** →
   Appearance → Terminal font size sets its text size.
 - The assistant can open a Terminal tile on a host it names; the terminal
@@ -362,32 +364,6 @@ the same.
 - A hand with nothing to lose can be given free rein. Connect a disposable
   computer with `--sandbox`, and agents there stop asking before they act
   ([Connect a computer](#connect-a-computer)).
-
-In Chat the brain shows with no screen of its own. A claude or codex run that a
-chat starts on your computer (`--detach --attach CHAT`) draws no terminal: your
-lines go to the CLI through its programmatic protocol, and its answers come back
-to the chat. Your own run in a terminal is unchanged.
-
-- **Ask cards.** What the agent asks you comes to Chat as a card: a command to
-  allow (with its folder), a file change (with its diff), a question, or a plan
-  to approve. The buttons are the agent's own choices: allow once, allow for
-  the session, refuse, or refuse and stop the turn. The first answer wins, and
-  the card closes with who answered. A card the run can no longer answer, because it ended or
-  went offline, closes as Released within about a minute. While a card waits,
-  the chat header and its workspace tab show a blue dot. A card for a run on
-  your host is yours alone to answer; one the assistant asks is answered by
-  the person it asked. A computer connected with `--sandbox` shows no cards:
-  its agents do not ask.
-- **Take a run over.** To use the CLI's own screen, attach to the run by its
-  name on the run's computer, where the runner lists the names. The run stops
-  its headless CLI and opens the CLI's terminal on the
-  same session, here; Ctrl-\ detaches and leaves it running. The session keeps
-  logging, so Chat shows each turn you type. Chat shows "Taken over in a
-  terminal" and refuses lines until you reattach.
-- **Reattach to Chat.** The button on the taken-over chat, or on the run's row
-  in the Console, gives the chat its CLI back. The terminal ends, and the run
-  starts again where it ran, on the same CLI session, with every turn you typed
-  in the terminal.
 
 ### Where a session lands
 

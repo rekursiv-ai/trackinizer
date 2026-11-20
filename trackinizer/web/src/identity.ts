@@ -8,7 +8,12 @@ export type AppIdentity = {
   readonly short_name: string;
   readonly theme_color: string;
   readonly background_color: string;
-  readonly icons: readonly { readonly src: string; readonly sizes: string; readonly type: string; readonly purpose: string }[];
+  readonly icons: readonly {
+    readonly src: string;
+    readonly sizes: string;
+    readonly type: string;
+    readonly purpose: string;
+  }[];
 };
 
 export const TRACKINIZER: AppIdentity = {
@@ -17,8 +22,18 @@ export const TRACKINIZER: AppIdentity = {
   theme_color: "#090a0b",
   background_color: "#090a0b",
   icons: [
-    { src: `${APP_BASE}icon-192.png`, sizes: "192x192", type: "image/png", purpose: "any maskable" },
-    { src: `${APP_BASE}icon-512.png`, sizes: "512x512", type: "image/png", purpose: "any maskable" },
+    {
+      src: `${APP_BASE}icon-192.png`,
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "any maskable",
+    },
+    {
+      src: `${APP_BASE}icon-512.png`,
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "any maskable",
+    },
   ],
 };
 
@@ -27,7 +42,8 @@ export function manifestOf(identity: AppIdentity) {
   return {
     name: identity.name,
     short_name: identity.short_name,
-    description: "Issues, beliefs, papers, experiments and agent sessions as one graph, updated live.",
+    description:
+      "Issues, beliefs, papers, experiments and agent sessions as one graph, updated live.",
     id: APP_BASE,
     start_url: APP_BASE,
     scope: APP_BASE,

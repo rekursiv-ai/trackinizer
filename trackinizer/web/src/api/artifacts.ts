@@ -11,8 +11,10 @@ export async function getArtifactContentRevision(
 ): Promise<ArtifactContentRevision> {
   const value: WireRevision = await send(TIMEOUT_MS.read, signal, (signal) =>
     client.GET("/api/artifacts/{artifact_id}/content", {
-      params: { path: { artifact_id: id } }, signal,
-    }));
+      params: { path: { artifact_id: id } },
+      signal,
+    }),
+  );
   if (!value || value.artifact_id.toLowerCase() !== id.toLowerCase()) {
     throw new Error("Invalid Artifact revision");
   }

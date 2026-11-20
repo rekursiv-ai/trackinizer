@@ -15,23 +15,43 @@ equal that module's ``Frame`` values; a test holds them equal.
 
 - Browser to server: ``ATTACH`` (:data:`TICKET_CHARS` ASCII ticket bytes then a
   u64 offset) first, then ``INPUT``, ``RESIZE`` (u16 rows, u16 cols), ``STOP``.
-- Server to browser: ``ACK`` (u64 offset the stream resumes at), ``OUTPUT``, ``EXIT``
-  (u32 status).
+- Server to browser: ``ACK`` (u64 offset the stream resumes at; one past the
+  browser's offset means the output between is lost), ``OUTPUT``, ``EXIT`` (u32
+  status). An ``ACK`` may also fall before the browser's offset; it skips the bytes it
+  already has.
 - Server to daemon: ``INPUT``, ``RESIZE``, ``STOP``. Daemon to server: ``OUTPUT``, ``EXIT``.
-
-A terminal of kind ``files`` carries no shell: the daemon answers the file requests
-the browser sends as ``INPUT`` with ``OUTPUT``, over the same sockets, ring and limits.
-The server never reads either; the daemon defines them.
 
 A direct link (a WebRTC data channel between the browser and the daemon) is set up
 over these same sockets. The server forwards ``SIGNAL`` (a :class:`DirectSignal`)
-and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The daemon
+without reading it, and the browser's ``ROUTE`` (u8 route, u64 offset), except that a
+return to the relay goes on with the offset the server's ring ends at. The daemon
 sends ``KEEPALIVE`` (u32 milliseconds since it last saw input, then u32 milliseconds
 since the shell last wrote output) every :data:`KEEPALIVE_SEC` while output goes
-direct, so the idle limit still holds and the server knows the host is in use. A
-daemon from before output idle time sends the first u32 alone. A
-daemon that returns to the relay answers with ``ACK`` (the offset it resumes at)
-then ``OUTPUT``; the server restarts its ring there.
+direct, so the server knows the host is in use. A daemon from before output idle
+time sends the first u32 alone. A daemon that returns to the relay answers with
+``ACK`` (the offset it resumes at) then ``OUTPUT``; the server's ring continues there,
+keeping the bytes it holds before that offset.
+
+A started terminal outlives both sockets; only its shell's exit, a stop, or its host
+going ends it. A browser that drops attaches again with a fresh ticket. A daemon
+that drops, or a newer instance of it, re-claims the terminal by dialling
+:data:`HOST_TERMINAL_WS_PATH` with ``?ready=true&resume=true``:
+
+1. The daemon sends an empty ``ACK``.
+2. The server closes any daemon socket it still holds for the terminal with
+   :data:`CLOSE_TAKEN_OVER` and answers ``ACK`` with the u64 end of its ring.
+3. The daemon sends an empty ``ACK``; the server hands it the input and size the
+   browser sent meanwhile.
+4. Only if the offset the daemon resumes at is not the ring's end, it sends ``ACK``
+   with that u64 offset, and the server restarts its ring there.
+5. ``OUTPUT`` follows as usual.
+
+A resume of a terminal that is unknown or ended is closed with :data:`CLOSE_ENDED`,
+so the daemon ends that shell; of a terminal whose shell never started, with
+:data:`CLOSE_REFUSED`. The server ends a started terminal no daemon holds with
+:data:`CLOSE_DAEMON_LOST` once its daemon has been gone :data:`DAEMON_GRACE_SEC`, or
+once another instance of its host has waited :data:`RECLAIM_SEC`, counted from the
+later of the loss and that instance's first wait, without re-claiming it.
 
 This package is part of the publishable client distribution, so it must
 not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -39,11 +59,11 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from typing import Annotated, Final, Literal, Self
+from typing import Annotated, Final, Literal
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from trackinizer.wire.wire_hosts import NAME_PATTERN, HostRun, HostStatus
 
@@ -52,11 +72,9 @@ __all__ = [
     "CLOSE_DAEMON_LOST",
     "CLOSE_ENDED",
     "CLOSE_HOST_REVOKED",
-    "CLOSE_IDLE",
-    "CLOSE_LIFETIME",
     "CLOSE_REFUSED",
     "CLOSE_TAKEN_OVER",
-    "DETACH_GRACE_SEC",
+    "DAEMON_GRACE_SEC",
     "DIRECT_FRAME_BYTES",
     "DIRECT_OPEN_TIMEOUT_SEC",
     "FINAL_CLOSE_CODES",
@@ -72,9 +90,7 @@ __all__ = [
     "FRAME_STOP",
     "HOST_TERMINAL_WAIT_PATH",
     "HOST_TERMINAL_WS_PATH",
-    "IDLE_SEC",
     "KEEPALIVE_SEC",
-    "LIFETIME_SEC",
     "MAX_COLS",
     "MAX_ICE_SERVERS",
     "MAX_INPUT_BYTES_PER_SEC",
@@ -85,8 +101,8 @@ __all__ = [
     "MAX_SIGNALS_PER_MIN",
     "MAX_SIGNAL_BYTES",
     "OPEN_TTL_SEC",
+    "RECLAIM_SEC",
     "RECONNECT_BACKOFF_SEC",
-    "RECONNECT_WINDOW_SEC",
     "RING_BYTES",
     "ROUTE_DIRECT",
     "ROUTE_RELAY",
@@ -107,10 +123,8 @@ __all__ = [
     "HostsVersion",
     "LiveTerminal",
     "OpenTerminal",
-    "TerminalCommand",
     "TerminalHost",
     "TerminalHosts",
-    "TerminalKind",
     "TerminalOpened",
     "TerminalTicket",
     "TerminalWait",
@@ -153,7 +167,8 @@ HOST_TERMINAL_WAIT_PATH: Final = "/api/hosts/{host_id}/terminals/wait"
 or ``null`` when none came."""
 
 HOST_TERMINAL_WS_PATH: Final = "/api/hosts/{host_id}/terminals/{terminal_id}/ws"
-"""The daemon's WebSocket, authenticated by the host credential."""
+"""The daemon's WebSocket, authenticated by the host credential: ``?instance=ID``, and
+``ready=true`` to acknowledge startup, ``resume=true`` to re-claim a started shell."""
 
 FRAME_ATTACH: Final = 1
 FRAME_INPUT: Final = 2
@@ -190,14 +205,12 @@ TICKET_CHARS: Final = 43
 
 CLOSE_ENDED: Final = 4000
 CLOSE_TAKEN_OVER: Final = 4001
-CLOSE_IDLE: Final = 4002
-CLOSE_LIFETIME: Final = 4003
 CLOSE_DAEMON_LOST: Final = 4004
 CLOSE_REFUSED: Final = 4403
 CLOSE_HOST_REVOKED: Final = 4410
 
 FINAL_CLOSE_CODES: Final = frozenset(
-    {CLOSE_ENDED, CLOSE_TAKEN_OVER, CLOSE_IDLE, CLOSE_LIFETIME, CLOSE_HOST_REVOKED},
+    {CLOSE_ENDED, CLOSE_TAKEN_OVER, CLOSE_HOST_REVOKED},
 )
 """Close codes after which the browser does not reconnect."""
 
@@ -217,15 +230,18 @@ WAIT_MAX_SEC: Final = 25
 WAIT_LEASE_SEC: Final = 45
 """A daemon that waited within this long can take an open."""
 
-DETACH_GRACE_SEC: Final = 60
-IDLE_SEC: Final = 3_600
-LIFETIME_SEC: Final = 86_400
 SWEEP_SEC: Final = 60
+
+DAEMON_GRACE_SEC: Final = 10_800
+"""How long a started terminal waits for its daemon to dial back."""
+
+RECLAIM_SEC: Final = 60
+"""How long a newer daemon instance of the host has to re-claim a terminal before it is
+taken to be gone."""
 
 MAX_OPENS_PER_MIN_PER_USER: Final = 10
 
 RECONNECT_BACKOFF_SEC: Final = (0.5, 1.0, 2.0, 4.0, 8.0)
-RECONNECT_WINDOW_SEC: Final = 60
 
 type IceServers = Annotated[
     list[Annotated[str, Field(pattern=r"^stun:\S{1,200}$")]],
@@ -233,17 +249,11 @@ type IceServers = Annotated[
 ]
 """STUN servers the browser and the daemon both use to find each other's address."""
 
-type TerminalCommand = Literal["claude", "codex", "sagent"]
-"""A CLI a terminal may start in place of a login shell; the daemon allows these."""
-
-type TerminalKind = Literal["shell", "files"]
-"""What a terminal carries: a shell, or the daemon's answers to file requests."""
-
 type RunFolder = Annotated[
     str,
     Field(max_length=1_024, pattern=r"^[/~][^\x00-\x1f\x7f]*$"),
 ]
-"""The folder a run starts in: absolute or ``~``-relative, with no control character,
+"""The folder a shell starts in: absolute or ``~``-relative, with no control character,
 since the daemon writes it into the terminal."""
 
 
@@ -267,40 +277,9 @@ class OpenTerminal(BaseModel):
     surface: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")] | None = None
     """The view that opened it (Chat's terminal side, or one tile): it re-attaches to its own."""
 
-    command: TerminalCommand | None = None
-    """Start a detached agent run of this CLI, in place of a login shell."""
-
-    attach: uuid.UUID | None = None
-    """The AgentSession the run re-opens; needs ``command``."""
-
-    run_name: str | None = Field(default=None, pattern=NAME_PATTERN)
-    """The detached run's name, which an attach takes; needs ``command``."""
-
     cwd: RunFolder | None = None
-    """The run's folder on the host, absolute or ``~``; needs ``command``."""
-
-    kind: TerminalKind = "shell"
-    """``files`` starts no shell: the daemon answers file requests on it instead."""
-
-    @model_validator(mode="after")
-    def _run_fields_need_a_command(self) -> Self:
-        """Refuse an ``attach``, ``run_name`` or ``cwd`` that names no CLI."""
-        if self.command is None and (
-            self.attach is not None or self.run_name is not None or self.cwd is not None
-        ):
-            raise ValueError("attach, run_name and cwd need a command")
-        return self
-
-    # A files terminal belongs to no canvas, so a canvas's listing never offers it as a
-    # shell to re-attach; with no command it names no run either.
-    @model_validator(mode="after")
-    def _files_name_no_run(self) -> Self:
-        """Refuse a ``files`` terminal that names a CLI or a canvas."""
-        if self.kind == "files" and (
-            self.command is not None or self.canvas is not None
-        ):
-            raise ValueError("a files terminal takes no command or canvas")
-        return self
+    """The folder on the host the shell starts in, absolute or ``~``; its home when
+    ``None``."""
 
 
 class TerminalOpened(BaseModel):
@@ -350,7 +329,7 @@ class TerminalHost(BaseModel):
     """The folder its owner last chose for a CLI run; None until one is named."""
 
     runs: list[HostRun] = Field(default_factory=list)
-    """Its owner's live sessions that name it. They reach the server without its daemon, so
+    """The agent processes that run on it. Each reaches the server without its daemon, so
     the host is still connected while one is live, whatever ``status`` says."""
 
     daemon_outdated: bool = False
@@ -358,11 +337,9 @@ class TerminalHost(BaseModel):
     supports (``wire_daemon.MIN_DAEMON_VERSION``): it may never open a terminal
     until it is upgraded."""
 
-    files: bool = False
-    """Its facts say its daemon answers a ``files`` terminal."""
-
     tools: bool = False
-    """Its facts say its daemon serves tools to an agent's ``RemoteTool``."""
+    """Its facts say its daemon serves tools: to an agent's ``RemoteTool``, and to its
+    owner's browser, which reads the host's files with them."""
 
 
 class LiveTerminal(BaseModel):
@@ -420,22 +397,8 @@ class TerminalWait(BaseModel):
     canvas: uuid.UUID | None = None
     workspace: uuid.UUID | None = None
 
-    command: TerminalCommand | None = None
-    """As :attr:`OpenTerminal.command`: the CLI to start in place of a login shell."""
-
-    attach: uuid.UUID | None = None
-    """As :attr:`OpenTerminal.attach`: the AgentSession the run re-opens."""
-
-    run_name: str | None = Field(default=None, pattern=NAME_PATTERN)
-    """As :attr:`OpenTerminal.run_name`: the detached run's name."""
-
     cwd: RunFolder | None = None
-    """As :attr:`OpenTerminal.cwd`: the folder the run starts in, on this host."""
-
-    # Absent for a shell, so a host on an older wire, which refuses a key it does not
-    # know, still opens one; only a host whose facts say ``files`` is sent one.
-    kind: Literal["files"] | None = None
-    """``files``: answer file requests in place of starting a shell."""
+    """As :attr:`OpenTerminal.cwd`: the folder the shell starts in, on this host."""
 
 
 class DirectSignal(BaseModel):

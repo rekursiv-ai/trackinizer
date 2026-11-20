@@ -2,14 +2,22 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { type Command, CommandRegistry, CommandRegistryContext, Shortcuts, useCommands } from "../commands/registry";
+import {
+  type Command,
+  CommandRegistry,
+  CommandRegistryContext,
+  Shortcuts,
+  useCommands,
+} from "../commands/registry";
 import { findRoots, UNROOTED } from "./roots";
 import { RootsPanel } from "./RootsPanel";
 import { edge, node, uuid } from "./testing";
+import { must } from "../must";
 
 const threeHoursAgo = new Date(Date.now() - 3 * 3_600_000).toISOString();
 /** Noon UTC on 20 September, `minute` past: the same day in any time zone the tests run in. */
-const sep20 = (minute: number) => `2026-09-20T12:${String(minute).padStart(2, "0")}:00+00:00`;
+const sep20 = (minute: number) =>
+  `2026-09-20T12:${String(minute).padStart(2, "0")}:00+00:00`;
 
 /** Root 1 "Alpha" over two Issues; root 2 "Beta", made newer by its Experiment; a Paper under no root. */
 const ROOTS = findRoots({
@@ -27,7 +35,9 @@ const ROOTS = findRoots({
 /** Each row as `<ref> <title> <size> <age>`, the marked one starred. */
 function rows(): string[] {
   return screen.getAllByRole("option").map((row) => {
-    const text = [".roots-ref", ".roots-title", ".roots-size", ".roots-age"].map((part) => row.querySelector(part)!.textContent);
+    const text = [".roots-ref", ".roots-title", ".roots-size", ".roots-age"].map(
+      (part) => must(row.querySelector(part)).textContent,
+    );
     return `${row.getAttribute("aria-selected") === "true" ? "*" : ""}${text.join(" ").trim()}`;
   });
 }
@@ -48,16 +58,31 @@ afterEach(() => {
 test("a row shows the root's kind glyph, Kind#seq, title, subgraph size and newest age; the nodes under no root come last", () => {
   show();
   expect(screen.getByText("2 roots")).toBeTruthy();
-  expect(rows()).toEqual(["Issue#2 Beta 2 3h", "Issue#1 Alpha 3 Sep 20", "Unrooted 1 Sep 20"]);
-  for (const row of screen.getAllByRole("option")) expect(row.querySelector("svg.ic")).not.toBeNull();
-  expect(screen.getAllByRole("option")[0]!.querySelector(".roots-size")!.getAttribute("title")).toBe("1 Issue, 1 Experiment");
+  expect(rows()).toEqual([
+    "Issue#2 Beta 2 3h",
+    "Issue#1 Alpha 3 Sep 20",
+    "Unrooted 1 Sep 20",
+  ]);
+  for (const row of screen.getAllByRole("option"))
+    expect(row.querySelector("svg.ic")).not.toBeNull();
+  expect(
+    must(
+      must(screen.getAllByRole("option")[0]).querySelector(".roots-size"),
+    ).getAttribute("title"),
+  ).toBe("1 Issue, 1 Experiment");
 });
 
 test("Size sorts the roots biggest first, and Recent back by their newest node; Unrooted stays last", () => {
   show();
   fireEvent.click(screen.getByRole("button", { name: "Size" }));
-  expect(screen.getByRole("button", { name: "Size" }).getAttribute("aria-pressed")).toBe("true");
-  expect(rows()).toEqual(["Issue#1 Alpha 3 Sep 20", "Issue#2 Beta 2 3h", "Unrooted 1 Sep 20"]);
+  expect(
+    screen.getByRole("button", { name: "Size" }).getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(rows()).toEqual([
+    "Issue#1 Alpha 3 Sep 20",
+    "Issue#2 Beta 2 3h",
+    "Unrooted 1 Sep 20",
+  ]);
   fireEvent.click(screen.getByRole("button", { name: "Recent" }));
   expect(rows()[0]).toBe("Issue#2 Beta 2 3h");
 });
@@ -67,7 +92,11 @@ test("j and k, or the arrows, move through the roots; Enter selects the marked o
   const user = userEvent.setup();
   screen.getByRole("listbox").focus();
   await user.keyboard("jj");
-  expect(rows()).toEqual(["Issue#2 Beta 2 3h", "*Issue#1 Alpha 3 Sep 20", "Unrooted 1 Sep 20"]);
+  expect(rows()).toEqual([
+    "Issue#2 Beta 2 3h",
+    "*Issue#1 Alpha 3 Sep 20",
+    "Unrooted 1 Sep 20",
+  ]);
   await user.keyboard("{ArrowDown}{ArrowDown}");
   expect(rows()[2]).toBe("*Unrooted 1 Sep 20");
   await user.keyboard("k{ArrowUp}");
@@ -114,7 +143,11 @@ test("compact, beside an open Peek, it keeps only each root's glyph, named by it
   const user = userEvent.setup();
   expect(screen.queryByRole("searchbox", { name: "Filter roots" })).toBeNull();
   expect(screen.queryByRole("group", { name: "Sort roots" })).toBeNull();
-  expect(screen.getAllByRole("option").map((row) => [row.getAttribute("aria-label"), row.textContent])).toEqual([
+  expect(
+    screen
+      .getAllByRole("option")
+      .map((row) => [row.getAttribute("aria-label"), row.textContent]),
+  ).toEqual([
     ["Issue#2 Beta", ""],
     ["Issue#1 Alpha", ""],
     ["Unrooted", ""],
@@ -132,7 +165,9 @@ test("Enter on Size or Recent sorts, and selects no root", async () => {
   const user = userEvent.setup();
   screen.getByRole("button", { name: "Size" }).focus();
   await user.keyboard("{Enter}");
-  expect(screen.getByRole("button", { name: "Size" }).getAttribute("aria-pressed")).toBe("true");
+  expect(
+    screen.getByRole("button", { name: "Size" }).getAttribute("aria-pressed"),
+  ).toBe("true");
   expect(rows()[0]).toBe("Issue#1 Alpha 3 Sep 20");
   expect(onSelect).not.toHaveBeenCalled();
 });
@@ -151,14 +186,20 @@ test("a root picked from the filter hands the keys to the list and clears the fi
   const onSelect = vi.fn();
   render(<Beside onSelect={onSelect} />);
   const user = userEvent.setup();
-  await user.type(screen.getByRole("searchbox", { name: "Filter roots" }), "alp{Enter}");
+  await user.type(
+    screen.getByRole("searchbox", { name: "Filter roots" }),
+    "alp{Enter}",
+  );
   expect(onSelect).toHaveBeenLastCalledWith(uuid(1));
   expect(document.activeElement).toBe(screen.getByRole("listbox"));
-  expect(screen.getAllByRole("option").map((row) => `${row.getAttribute("aria-selected") === "true" ? "*" : ""}${row.getAttribute("aria-label")}`)).toEqual([
-    "Issue#2 Beta",
-    "*Issue#1 Alpha",
-    "Unrooted",
-  ]);
+  expect(
+    screen
+      .getAllByRole("option")
+      .map(
+        (row) =>
+          `${row.getAttribute("aria-selected") === "true" ? "*" : ""}${row.getAttribute("aria-label")}`,
+      ),
+  ).toEqual(["Issue#2 Beta", "*Issue#1 Alpha", "Unrooted"]);
   await user.keyboard("j{Enter}");
   expect(onSelect).toHaveBeenLastCalledWith(UNROOTED);
 });
@@ -170,7 +211,12 @@ function Mount({ commands }: { commands: readonly Command[] }) {
 
 test("keys the list has no use for reach the view's shortcuts: . focuses, Esc clears and / searches beside Peek", async () => {
   const ran: string[] = [];
-  const command = (key: string): Command => ({ id: key, title: key, keys: [key], run: () => ran.push(key) });
+  const command = (key: string): Command => ({
+    id: key,
+    title: key,
+    keys: [key],
+    run: () => ran.push(key),
+  });
   const onSelect = vi.fn();
   render(
     <CommandRegistryContext value={new CommandRegistry()}>
@@ -184,5 +230,7 @@ test("keys the list has no use for reach the view's shortcuts: . focuses, Esc cl
   await user.keyboard("j.{Escape}/");
   expect(ran).toEqual([".", "Escape", "/"]);
   // j stays the list's.
-  expect(screen.getAllByRole("option")[0]!.getAttribute("aria-selected")).toBe("true");
+  expect(must(screen.getAllByRole("option")[0]).getAttribute("aria-selected")).toBe(
+    "true",
+  );
 });

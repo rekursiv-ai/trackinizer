@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Final, TypedDict, cast
 
 from treekle import json_loads
 
@@ -14,11 +15,13 @@ from trackinizer.server.api.session_test_support import (
     ASSISTANT_CONFIG,
     OTHER_AGENT,
     USER_AGENT,
+    attached_process,
     browser,
     seed_accounts,
     seed_session,
 )
-from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.session_relay import SessionRelay
+from trackinizer.wire.wire_session_relay import AgentState, TeamMember
 
 
 if TYPE_CHECKING:
@@ -30,11 +33,14 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
+_SINCE: Final = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+
+
 @pytest.fixture(autouse=True)
 def served(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Serve with a fresh poller table."""
+    """Serve with a fresh session relay."""
     patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
-    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "session_relay", SessionRelay())
 
 
 @pytest.mark.parametrize(
@@ -55,29 +61,72 @@ def test_a_window_or_limit_out_of_bounds_is_refused(
 async def test_the_caller_reads_their_own_live_session_and_no_one_elses(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
+    """Live while the relay holds an agent process for it; then where it last ran."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    mine = await seed_session(store, USER_AGENT, actor="Agent", cli="claude")
-    _ = await seed_session(store, OTHER_AGENT, actor="Other", cli="codex")
-    inbound = cast(InboundQueue, app.state.inbound)
-    inbound.mark_poller(mine, host="workstation", cli="claude")
+    mine = await seed_session(store, USER_AGENT, actor="Agent", polled=False)
+    theirs = await seed_session(store, OTHER_AGENT, actor="Other", polled=False)
+    relay = cast(SessionRelay, app.state.session_relay)
     browser()
 
-    answer = await client.get("/api/sessions")
+    async with (
+        attached_process(relay, mine, host="workstation"),
+        attached_process(relay, theirs, host="theirs"),
+    ):
+        served = await client.get("/api/sessions")
+    left = await client.get("/api/sessions")
 
-    assert answer.status_code == 200, answer.text
-    listed = json_loads(answer.content, _Listing)
+    listings = [json_loads(each.content, _Listing) for each in (served, left)]
+    assert (served.status_code, left.status_code) == (200, 200)
     assert [
-        (each["id"], each["live"], each["host"]) for each in listed["sessions"]
-    ] == [
-        (str(mine), True, "workstation"),
-    ]
-    assert (listed["issues"], listed["more"]) == ([], False)
+        [(each["id"], each["live"], each["host"]) for each in listed["sessions"]]
+        for listed in listings
+    ] == [[(str(mine), True, "workstation")], [(str(mine), False, "workstation")]]
+    assert (listings[0]["issues"], listings[0]["more"]) == ([], False)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("state", "working"),
+    [
+        (None, False),
+        (AgentState(line="", busy=False, since=_SINCE), False),
+        (AgentState(line="", busy=True, since=_SINCE), True),
+        (
+            AgentState(
+                line="",
+                busy=False,
+                since=_SINCE,
+                team=(TeamMember(label="kid", parent="Agent", busy=True),),
+            ),
+            True,
+        ),
+    ],
+    ids=["nothing-said", "idle", "busy", "a-child-works"],
+)
+async def test_a_session_works_while_its_process_says_its_agents_work(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    state: AgentState | None,
+    working: bool,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    mine = await seed_session(store, USER_AGENT, actor="Agent", polled=False)
+    relay = cast(SessionRelay, app.state.session_relay)
+    browser()
+
+    async with attached_process(relay, mine, state=state):
+        served = await client.get("/api/sessions")
+
+    [listed] = json_loads(served.content, _Listing)["sessions"]
+    assert (listed["live"], listed["working"]) == (True, working)
 
 
 class _Session(TypedDict):
     id: str
     live: bool
+    working: bool
     host: str | None
 
 

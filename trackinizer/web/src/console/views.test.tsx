@@ -5,7 +5,12 @@ import { afterEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
 import { ProfileContext } from "../app/boot";
 import { PROFILE } from "../detail/testing";
-import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
+import {
+  DEFAULT_PREFERENCES,
+  type Preferences,
+  preferences,
+  receivePreferences,
+} from "../preferences";
 import type { KeptView } from "./legacyViews";
 import { orderViews, useViews } from "./views";
 
@@ -16,7 +21,7 @@ function server({ refuse = false } = {}) {
   let held = DEFAULT_PREFERENCES;
   return stubFetch(async (request) => {
     if (refuse) return Response.json({ detail: "refused" }, { status: 422 });
-    held = { ...held, ...(await request.json() as Partial<Preferences>) };
+    held = { ...held, ...((await request.json()) as Partial<Preferences>) };
     return Response.json(held);
   });
 }
@@ -35,12 +40,26 @@ afterEach(async () => {
 
 /** `useViews` for `email`, as a fresh page load would run it. */
 function load(email = PROFILE.email) {
-  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}><ProfileContext value={{ ...PROFILE, email }}>{children}</ProfileContext></QueryClientProvider>;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ProfileContext value={{ ...PROFILE, email }}>{children}</ProfileContext>
+    </QueryClientProvider>
+  );
   return renderHook(() => useViews(), { wrapper });
 }
 
 function view(id: string, created: string, pinned = false): KeptView {
-  return { id, name: id, pinned, created, agents: [], rooms: [], clis: [], level: 1, range: { live: true } };
+  return {
+    id,
+    name: id,
+    pinned,
+    created,
+    agents: [],
+    rooms: [],
+    clis: [],
+    level: 1,
+    range: { live: true },
+  };
 }
 
 test("the rail lists pinned views first, then the rest, each newest first", () => {
@@ -50,18 +69,33 @@ test("the rail lists pinned views first, then the rest, each newest first", () =
     view("new", "2026-10-02T09:00:00Z"),
     view("pinned-new", "2026-10-02T08:00:00Z", true),
   ];
-  expect(orderViews(views).map(({ id }) => id)).toEqual(["pinned-new", "pinned-old", "new", "old"]);
+  expect(orderViews(views).map(({ id }) => id)).toEqual([
+    "pinned-new",
+    "pinned-old",
+    "new",
+    "old",
+  ]);
 });
 
 test("a first visit opens an unsaved Untitled view of every agent's messages, live; its first change saves it, and later ones update it", async () => {
   server();
   const { result } = load();
   expect(result.current.views).toEqual([]);
-  expect(result.current.open).toMatchObject({ name: "Untitled view", pinned: false, agents: [], rooms: [], clis: [], level: 1, range: { live: true } });
+  expect(result.current.open).toMatchObject({
+    name: "Untitled view",
+    pinned: false,
+    agents: [],
+    rooms: [],
+    clis: [],
+    level: 1,
+    range: { live: true },
+  });
   act(() => result.current.change({ ...result.current.open, agents: ["atlas-*"] }));
   await waitFor(() => expect(result.current.open).toEqual(result.current.views[0]));
   act(() => result.current.change({ ...result.current.open, level: 2 }));
-  expect(result.current.views).toEqual([expect.objectContaining({ name: "Untitled view", agents: ["atlas-*"], level: 2 })]);
+  expect(result.current.views).toEqual([
+    expect.objectContaining({ name: "Untitled view", agents: ["atlas-*"], level: 2 }),
+  ]);
   await waitFor(() => expect(result.current.open).toEqual(result.current.views[0]));
 });
 
@@ -69,11 +103,27 @@ test("a change shows at once, is sent as only console_views, and is kept nowhere
   const sent = server();
   const first = load();
   const second = load();
-  act(() => first.result.current.change({ ...first.result.current.open, agents: ["atlas-*"], rooms: ["ops"] }));
-  expect(second.result.current.views).toEqual([expect.objectContaining({ agents: ["atlas-*"], rooms: ["ops"] })]);
+  act(() =>
+    first.result.current.change({
+      ...first.result.current.open,
+      agents: ["atlas-*"],
+      rooms: ["ops"],
+    }),
+  );
+  expect(second.result.current.views).toEqual([
+    expect.objectContaining({ agents: ["atlas-*"], rooms: ["ops"] }),
+  ]);
   await waitFor(() => expect(sent).toHaveLength(1));
   expect(sent.map(({ method, path, body }) => [method, path, body])).toEqual([
-    ["PATCH", "/api/me/preferences", { console_views: [expect.objectContaining({ agents: ["atlas-*"], rooms: ["ops"] })] }],
+    [
+      "PATCH",
+      "/api/me/preferences",
+      {
+        console_views: [
+          expect.objectContaining({ agents: ["atlas-*"], rooms: ["ops"] }),
+        ],
+      },
+    ],
   ]);
   expect(localStorage.length).toBe(0);
 });
@@ -88,7 +138,9 @@ test("+ starts another Untitled view, and a reload opens the view this tab had o
   expect(result.current.open.id).not.toBe(first);
   act(() => result.current.change({ ...result.current.open, level: 3 }));
   // Pinned, the second view lists first, so only the tab's own memory opens the first.
-  act(() => result.current.edit(result.current.open.id, (view) => ({ ...view, pinned: true })));
+  act(() =>
+    result.current.edit(result.current.open.id, (view) => ({ ...view, pinned: true })),
+  );
   act(() => result.current.openView(first));
   unmount();
   expect(load().result.current.open).toMatchObject({ id: first, clis: ["claude"] });
@@ -102,8 +154,12 @@ test("a view is renamed, pinned and deleted from the rail; deleting the open one
   act(() => result.current.openView(null));
   act(() => result.current.change({ ...result.current.open, agents: ["b"] }));
   const b = result.current.open.id;
-  act(() => result.current.edit(a, (one) => ({ ...one, name: "Live leads", pinned: true })));
-  expect(result.current.views.map(({ id, name, pinned }) => [id, name, pinned])).toEqual([
+  act(() =>
+    result.current.edit(a, (one) => ({ ...one, name: "Live leads", pinned: true })),
+  );
+  expect(
+    result.current.views.map(({ id, name, pinned }) => [id, name, pinned]),
+  ).toEqual([
     [a, "Live leads", true],
     [b, "Untitled view", false],
   ]);
@@ -148,7 +204,8 @@ test("when the browser denies sessionStorage, the console still opens and its vi
 test("a view another tab edits or deletes is neither overwritten nor brought back by this tab", async () => {
   const sent = server();
   /** The preferences frame another tab's change brings to this one. */
-  const otherTab = (views: KeptView[]) => act(() => receivePreferences({ ...DEFAULT_PREFERENCES, console_views: views }));
+  const otherTab = (views: KeptView[]) =>
+    act(() => receivePreferences({ ...DEFAULT_PREFERENCES, console_views: views }));
   const { result } = load();
   act(() => result.current.change({ ...result.current.open, agents: ["a"] }));
   const id = result.current.open.id;
@@ -156,7 +213,9 @@ test("a view another tab edits or deletes is neither overwritten nor brought bac
   await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
   otherTab([{ ...view(id, result.current.open.created), agents: ["z"] }]);
   act(() => result.current.change({ ...result.current.open, level: 2 }));
-  expect(preferences().console_views).toEqual([expect.objectContaining({ id, agents: ["z"], level: 2 })]);
+  expect(preferences().console_views).toEqual([
+    expect.objectContaining({ id, agents: ["z"], level: 2 }),
+  ]);
   await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
   otherTab([]);
   expect(result.current.open.id).not.toBe(id);
@@ -167,7 +226,10 @@ test("a view another tab edits or deletes is neither overwritten nor brought bac
 test("the open view's id is kept in this tab's sessionStorage, under the key older builds kept it under", () => {
   server();
   const kept = view("kept", "2026-10-01T09:00:00Z");
-  receivePreferences({ ...DEFAULT_PREFERENCES, console_views: [view("newer", "2026-10-02T09:00:00Z"), kept] });
+  receivePreferences({
+    ...DEFAULT_PREFERENCES,
+    console_views: [view("newer", "2026-10-02T09:00:00Z"), kept],
+  });
   sessionStorage.setItem("trackinizer.v2.console.open", "kept");
   const { result } = load();
   expect(result.current.open.id).toBe("kept");

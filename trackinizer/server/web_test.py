@@ -6,10 +6,12 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast, override
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
+import asyncio
 import json
 import os
 import struct
@@ -49,18 +51,16 @@ from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import (
     iter_routes,
     registered_paths,
 )
+from trackinizer.server.store.search import SessionSearchHit
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     CanvasAgents,
     FeedScope,
 )
-from trackinizer.server.store.session_search import SessionSearchHit
 from trackinizer.types.columns import column_specs, storage_name
 from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
@@ -74,12 +74,14 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+from trackinizer.wire.refs import SeqRef
 from trackinizer.wire.wire_sessions import (
     FeedActorFacet,
     FeedBucket,
     FeedEvent,
     FeedFacetsResponse,
     FeedHistogramResponse,
+    WorkedOn,
 )
 
 
@@ -719,6 +721,63 @@ class TestRoutes:
                 q="title:^a",
                 identity=_TEST_IDENTITY,
             )
+
+    def test_more_foci_than_a_read_takes_are_refused_before_it_runs(self) -> None:
+        engine = FakeEngine()
+        app = FastAPI()
+        app.state.engine = engine
+        app.state.store = _store(engine)
+        web.attach(app)
+        app.dependency_overrides[current_user] = _viewer
+        client = TestClient(app)
+
+        response = client.get(
+            "/api/web/graph",
+            params=tuple(("focus", "Issue/1") for _ in range(web.MOST_FOCI + 1)),
+        )
+
+        assert response.status_code == 422, response.text
+        engine.conn.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_worked_on_reads_the_readers_own_changes_through_its_access(
+        self,
+    ) -> None:
+        engine = FakeEngine()
+        request = _request(_store(engine), engine)
+        engine.conn.fetch.return_value = []
+
+        await web.web_worked_on(
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
+            limit=7,
+        )
+
+        call = engine.conn.fetch.call_args
+        assert call is not None
+        sql = str(call.args[0])
+        # The reader's access gates every change it counts.
+        assert "@> ARRAY['workspace']::text[] AND (" in sql
+        assert call.args[1:4] == (7, _TEST_IDENTITY.email, list(web._NOT_WORK))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, 101])
+    async def test_worked_on_refuses_a_limit_outside_1_to_100(self, limit: int) -> None:
+        engine = FakeEngine()
+        request = _request(_store(engine), engine)
+
+        with pytest.raises(HTTPException) as caught:
+            await web.web_worked_on(
+                cast(Request, request),
+                identity=_TEST_IDENTITY,
+                limit=limit,
+            )
+
+        assert (caught.value.status_code, caught.value.detail) == (
+            400,
+            "limit must be in [1, 100]",
+        )
+        engine.conn.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_recent_lookup_and_get_routes(self) -> None:
@@ -1421,65 +1480,7 @@ class TestFeedReads:
         backwards = (("since", window[1][1]), ("until", window[0][1]))
         assert client.get("/api/web/feed/facets", params=backwards).status_code == 400
 
-    def test_an_agent_with_a_live_run_says_what_the_run_is_doing(self) -> None:
-        """The console's Reattach button is for the agent whose run was taken over."""
-        taken, waiting, quiet, ended = (new_uuid() for _ in range(4))
-        run = "a" * 32
-        inbound = InboundQueue()
-        for session in (taken, waiting, ended):
-            inbound.mark_poller(session, cli="claude", instance=run)
-        assert inbound.report_state(taken, instance=run, state="taken_over")
-        store = _FeedStore()
-        store.engine.conn.fetch.return_value = [
-            {"session_id": waiting, "opened": "a1", "closed": None},
-        ]
-        last = datetime(2026, 10, 1, tzinfo=UTC)
-        store.read_feed_facets.return_value = FeedFacetsResponse(
-            actors=[
-                FeedActorFacet(
-                    actor=name,
-                    session_id=session,
-                    cli="claude",
-                    rooms=[],
-                    count=1,
-                    conversation=1,
-                    last=last,
-                    ended=last if session == ended else None,
-                )
-                for name, session in (
-                    ("taken", taken),
-                    ("waiting", waiting),
-                    ("quiet", quiet),
-                    ("ended", ended),
-                )
-            ],
-            rooms=[],
-            kinds=[],
-        )
-        client = self._client(store)
-        cast("FastAPI", client.app).state.inbound = inbound
-
-        response = client.get("/api/web/feed/facets")
-
-        assert response.status_code == 200, response.text
-        actors = from_plain(response.json(), dict[str, object])["actors"]
-        assert {
-            each["actor"]: each["state"]
-            for each in from_plain(actors, list[dict[str, object]])
-        } == {
-            "taken": "taken_over",
-            "waiting": "requires_action",
-            "quiet": "idle",
-            "ended": "idle",
-        }
-        assert store.engine.conn.fetch.call_args is not None
-        asked = from_plain(
-            store.engine.conn.fetch.call_args.args[1],
-            list[uuid.UUID],
-        )
-        assert set(asked) == {taken, waiting}
-
-    def test_facets_with_no_polled_agent_ask_no_run_its_state(self) -> None:
+    def test_facets_answer_the_stores_counts_as_they_are(self) -> None:
         store = _FeedStore()
         store.read_feed_facets.return_value = FeedFacetsResponse(
             actors=[
@@ -1498,7 +1499,6 @@ class TestFeedReads:
             kinds=[],
         )
         client = self._client(store)
-        cast("FastAPI", client.app).state.inbound = InboundQueue()
 
         response = client.get("/api/web/feed/facets")
 
@@ -2725,6 +2725,107 @@ async def _linked_issues(
     return ids
 
 
+_AGENT: Final = "claude-opus"
+"""The actor of a change the reader's agent made through one of the reader's keys."""
+
+# (title, actor, change kind, days ago) of each change the reader's records list reads;
+# ``session`` is an AgentSession, ``workspace`` a workspace's Issue and ``hidden`` filed
+# from another person's private chat, which the reader may not read.
+_WORK: Final = (
+    ("agents", _AGENT, "created", 0),
+    ("older", _TEST_IDENTITY.email, "created", 3),
+    ("older", _TEST_IDENTITY.email, "title", 2),
+    ("newer", _TEST_IDENTITY.email, "created", 1),
+    # The server's cost roll-up on ``older`` is not work, so ``newer`` stays first.
+    ("older", _TEST_IDENTITY.email, "marginal_cost", 0),
+    ("stale", _TEST_IDENTITY.email, "created", 31),
+    ("theirs", _ACCOUNT, "created", 0),
+    ("session", _TEST_IDENTITY.email, "created", 0),
+    ("workspace", _TEST_IDENTITY.email, "created", 0),
+    ("hidden", _TEST_IDENTITY.email, "created", 0),
+)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("limit", "listed"),
+    [
+        pytest.param(10, ["agents", "newer", "older"], id="10"),
+        pytest.param(1, ["agents"], id="1"),
+    ],
+)
+async def test_worked_on_lists_what_the_reader_changed_last_each_once(
+    store: Store,
+    limit: int,
+    listed: list[str],
+) -> None:
+    """Its agents' count; another's, old, cost, session, workspace or hidden do not."""
+    titles = sorted({title for title, *_ in _WORK} - {"session"})
+    ids = dict(zip(titles, await _linked_issues(store, tuple(titles), ()), strict=True))
+    (ids["session"],) = await store.submit_batch(
+        [SubmitAgentSession(account=_ACCOUNT, title="session")],
+        session_audience="open",
+    )
+    now = datetime.now(UTC)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status)"
+            " VALUES ($1, $2, 'Web', 'viewer', 'active')",
+            _TEST_IDENTITY.user_id,
+            _TEST_IDENTITY.email,
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role)"
+            " VALUES ($1, $2, 'agent', '', 'tk_', 'writer')",
+            _TEST_IDENTITY.api_key_id,
+            _TEST_IDENTITY.user_id,
+        )
+        await conn.execute(
+            "UPDATE inquiries SET labels = ARRAY['workspace'] WHERE id = $1",
+            ids["workspace"],
+        )
+        private = uuid.uuid4()
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title,"
+            " agentsession_audience, agentsession_cli)"
+            " VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', $2,"
+            " 'private', 'private', 'sagent')",
+            private,
+            _ACCOUNT,
+        )
+        await conn.execute(
+            "UPDATE inquiries SET filed_from_chat = $1 WHERE id = $2",
+            private,
+            ids["hidden"],
+        )
+        seqs = {
+            from_plain(row["id"], uuid.UUID): from_plain(row["seq"], int)
+            for row in await conn.fetch("SELECT id, seq FROM inquiries")
+        }
+        for title, actor, kind, days in _WORK:
+            await conn.execute(
+                "INSERT INTO change_log (id, created, actor, api_key_id, subject_id,"
+                " subject_kind, kind, old_title, new_title)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)",
+                uuid.uuid4(),
+                now - timedelta(days=days, minutes=1),
+                actor,
+                _TEST_IDENTITY.api_key_id if actor == _AGENT else None,
+                ids[title],
+                "AgentSession" if title == "session" else "Issue",
+                kind,
+                title if kind == "title" else None,
+            )
+    request = cast(Request, _request(store, store.engine))
+
+    worked = await web.web_worked_on(request, identity=_TEST_IDENTITY, limit=limit)
+
+    assert worked == [
+        WorkedOn(id=ids[title], kind="Issue", seq=seqs[ids[title]]) for title in listed
+    ]
+
+
 _CITED: Final = ("cited 0", "cited 1", "cited 2", "unlinked", "newest")
 # Links in both directions: ``cited 0`` points at ``newest``.
 _CITED_LINKS: Final = ((0, 4), (4, 1), (4, 2))
@@ -2807,7 +2908,7 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
         request,
         identity=_TEST_IDENTITY,
         limit=limit,
-        focus=ids[_FOCUS],
+        focus=[str(ids[_FOCUS])],
         hops=hops,
     )
 
@@ -2850,9 +2951,90 @@ async def test_web_graph_refuses_an_unknown_focus_and_hops_outside_1_to_3(
         await web.web_graph(
             request,
             identity=_TEST_IDENTITY,
-            focus=ids[_FOCUS] if known else uuid.uuid4(),
+            focus=[str(ids[_FOCUS] if known else uuid.uuid4())],
             hops=hops,
         )
+
+    assert caught.value.status_code == status
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_walks_from_every_focus_named_by_id_or_by_number(
+    store: Store,
+) -> None:
+    """Each focus, a UUID or ``Kind/seq``, is at hop 0; one no row has is left out."""
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        # ``far``, Issue#1, by number; ``far 2`` by id; and two that name nothing.
+        focus=["issue/1", str(ids[4]), str(uuid.uuid4()), "Issue/99"],
+        hops=1,
+    )
+
+    nodes = {
+        n["id"]: n["hops"]
+        for n in (
+            from_plain(each, dict[str, object])
+            for each in from_plain(graph["nodes"], list[object])
+        )
+    }
+    assert nodes == {
+        str(ids[0]): 0,
+        str(ids[4]): 0,
+        str(ids[1]): 1,
+        str(ids[3]): 1,
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_reads_one_record_named_both_ways_as_one_focus(
+    store: Store,
+) -> None:
+    """``focus``, Issue#3, by number and by id is one node at hop 0, not two."""
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        focus=["Issue/3", str(ids[_FOCUS])],
+        hops=1,
+    )
+
+    assert [
+        (n["id"], n["hops"])
+        for n in (
+            from_plain(each, dict[str, object])
+            for each in from_plain(graph["nodes"], list[object])
+        )
+    ] == [(str(ids[1]), 1), (str(ids[2]), 0), (str(ids[3]), 1)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("focus", "status"),
+    [
+        pytest.param(["Issue/99", str(uuid.UUID(int=1))], 404, id="none-known"),
+        pytest.param(["not a record"], 400, id="malformed"),
+    ],
+)
+async def test_web_graph_refuses_a_focus_list_naming_nothing_or_too_much(
+    store: Store,
+    focus: list[str],
+    status: int,
+) -> None:
+    """No known focus is 404, as one unknown focus is; a value of neither form, 400."""
+    await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(request, identity=_TEST_IDENTITY, focus=focus)
 
     assert caught.value.status_code == status
 
@@ -2878,7 +3060,7 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
             hub,
         )
     request = cast(Request, _request(store, store.engine))
-    around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=hub)
+    around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=[str(hub)])
     assert len(from_plain(around["nodes"], list[object])) == 60
     whole = from_plain(
         (await web.web_graph(request, identity=_TEST_IDENTITY))["nodes"],
@@ -2889,8 +3071,38 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
     assert not any("hops" in node for node in whole)
 
 
+@dataclass(slots=True, kw_only=True)
+class _ProbeClock:
+    """A clock the probe's own sleeps advance: a sleep takes no time and is never late."""
+
+    now: float = 1000.0
+    """Not 0: a probe that took the clock itself for the time since it began would pass."""
+
+    slept: list[float] = field(default_factory=list[float])
+    """Each delay the probe asked to sleep, in order."""
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.slept.append(round(delay, 6))
+        self.now += max(delay, 0.0)
+        # Yield as a real sleep does: the response is watching for a client that left.
+        await asyncio.sleep(0)
+
+
 class TestSubscribeProbe:
     """The stream probe sends frames on the caller's schedule, then ends cleanly."""
+
+    # On the machine's clock a busy runner sent the last frame at 0.111 s of a 0.045 s
+    # schedule: the frames' times said how loaded the machine was, not what was asked.
+    @pytest.fixture(autouse=True)
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> _ProbeClock:
+        """Give the probe a clock its sleeps advance, so no test waits or races one."""
+        clock = _ProbeClock()
+        monkeypatch.setattr(web, "time", SimpleNamespace(monotonic=clock.monotonic))
+        monkeypatch.setattr(web, "asyncio", SimpleNamespace(sleep=clock.sleep))
+        return clock
 
     @classmethod
     def _get(
@@ -2918,7 +3130,10 @@ class TestSubscribeProbe:
         ]
         return status, headers, frames
 
-    def test_frames_follow_the_schedule_then_the_stream_ends(self) -> None:
+    def test_frames_follow_the_schedule_then_the_stream_ends(
+        self,
+        clock: _ProbeClock,
+    ) -> None:
         status, headers, frames = self._get(
             first_after_sec=0.01,
             every_sec=0.01,
@@ -2929,21 +3144,25 @@ class TestSubscribeProbe:
         assert "no-transform" not in headers.get("cache-control", "")
         # Frames at 0.01, 0.02, 0.03 and 0.04 s; none at or after for_sec.
         assert [from_plain(f["seq"], int) for f in frames] == [0, 1, 2, 3]
-        elapsed = [from_plain(f["t"], float) for f in frames]
-        assert elapsed[0] >= 0.01
-        assert elapsed == sorted(elapsed)
-        assert elapsed[-1] < 0.045
+        assert [from_plain(f["t"], float) for f in frames] == [0.01, 0.02, 0.03, 0.04]
+        # One sleep to each frame, then one to for_sec, where the stream ends.
+        assert clock.slept == [0.01, 0.01, 0.01, 0.01, 0.005]
 
-    def test_one_frame_without_an_interval(self) -> None:
+    def test_one_frame_without_an_interval(self, clock: _ProbeClock) -> None:
         # One byte, then silence until for_sec: the idle-cut experiment.
         _, _, frames = self._get(first_after_sec=0, for_sec=0.05)
         assert [from_plain(f["seq"], int) for f in frames] == [0]
+        assert clock.slept == [0, 0.05]
 
-    def test_no_bytes_when_the_first_is_due_after_the_end(self) -> None:
+    def test_no_bytes_when_the_first_is_due_after_the_end(
+        self,
+        clock: _ProbeClock,
+    ) -> None:
         # Headers only: the experiment for a proxy that holds them.
         status, _, frames = self._get(first_after_sec=0.05, for_sec=0.05)
         assert status == 200
         assert frames == []
+        assert clock.slept == [0.05]
 
     def test_forbid_transform_marks_the_response(self) -> None:
         _, headers, _ = self._get(for_sec=0.01, forbid_transform=True)
@@ -3003,105 +3222,6 @@ class _StartTags(HTMLParser):
     @override
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.tags.append((tag, {name: value or "" for name, value in attrs}))
-
-
-class TestSearchEmbedder:
-    """Which embedder a session search uses: none, the A/B model, or the default."""
-
-    @classmethod
-    def _request(cls) -> Request:
-        return Request({"type": "http", "app": FastAPI()})
-
-    @classmethod
-    def _stub(
-        cls,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> tuple[object, object, list[tuple[object, ...]]]:
-        override, default = object(), object()
-        calls: list[tuple[object, ...]] = []
-
-        def fake_override(request: Request, name: str, dim: int | None) -> object:
-            calls.append(("override", request, name, dim))
-            return override
-
-        def fake_default(request: Request) -> object:
-            calls.append(("default", request))
-            return default
-
-        monkeypatch.setattr(web, "_override_embedder", fake_override)
-        monkeypatch.setattr(web, "_session_embedder", fake_default)
-        return override, default, calls
-
-    @pytest.mark.parametrize("semantic", [False, True])
-    def test_a_dimension_without_a_model_is_refused_with_its_reason(
-        self,
-        semantic: bool,
-    ) -> None:
-        with pytest.raises(HTTPException) as caught:
-            web._search_embedder(
-                self._request(),
-                semantic=semantic,
-                model="",
-                dim=256,
-            )
-        assert (caught.value.status_code, caught.value.detail) == (
-            400,
-            "dim requires model",
-        )
-
-    def test_a_search_that_is_not_semantic_uses_no_embedder(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        self._stub(monkeypatch)
-        for model in ("", "qwen3-embedding-4b"):
-            found = web._search_embedder(
-                self._request(),
-                semantic=False,
-                model=model,
-                dim=None,
-            )
-            assert found is None
-
-    def test_a_model_selects_the_override_with_its_dimension(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        override, _, calls = self._stub(monkeypatch)
-        request = self._request()
-        found = web._search_embedder(
-            request,
-            semantic=True,
-            model="m",
-            dim=512,
-        )
-        assert found is override
-        assert calls == [("override", request, "m", 512)]
-
-    def test_no_model_selects_the_default(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _, default, calls = self._stub(monkeypatch)
-        request = self._request()
-        found = web._search_embedder(
-            request,
-            semantic=True,
-            model="",
-            dim=None,
-        )
-        assert found is default
-        assert calls == [("default", request)]
-
-    @pytest.mark.parametrize("cached", [StubEmbedder(dim=1024), None])
-    def test_the_default_embedder_is_built_once_per_process(
-        self,
-        cached: StubEmbedder | None,
-    ) -> None:
-        app = FastAPI()
-        app.state.session_embedder = cached
-        request = Request({"type": "http", "app": app})
-        assert web._session_embedder(request) is cached
 
 
 class TestOptionalIdentity:
@@ -3210,7 +3330,7 @@ async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
     graph = await web.web_graph(
         request,
         identity=_TEST_IDENTITY,
-        focus=focus,
+        focus=[str(focus)],
         limit=limit,
     )
 
@@ -3230,7 +3350,8 @@ async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
         "edges": [{"from_id": str(peer), "to_id": str(focus), "edge_kind": "narrows"}],
     }
     call = _neighbourhood_call(neighbourhood)
-    assert call.args == (engine.conn, focus)
+    assert call.args == (engine.conn,)
+    assert call.kwargs["focus"] == [focus]
     assert call.kwargs["limit"] == (60 if limit is None else limit)
     assert call.kwargs["hops"] == 2
     assert call.kwargs["policy"] is get_store(request).access_policy
@@ -3240,6 +3361,36 @@ async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
     assert principal.role == _TEST_IDENTITY.role
     assert engine.conn.fetch.await_args_list[0].args[1:] == ([focus, peer],)
     assert engine.conn.fetch.await_args_list[1].args[1:] == ([peer, focus],)
+
+
+@pytest.mark.asyncio
+async def test_a_focus_by_number_the_reader_may_not_read_is_left_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``read_named`` reads numbers through the reader's access; one it hides drops."""
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    named = AsyncMock(return_value={})
+    neighbourhood = AsyncMock(return_value={})
+    monkeypatch.setattr(web, "read_named", named)
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    shown = new_uuid()
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(
+            request,
+            identity=_TEST_IDENTITY,
+            focus=["Issue/7", str(shown)],
+        )
+
+    assert caught.value.status_code == 404
+    call = named.await_args
+    assert call is not None
+    assert call.args == (engine.conn,)
+    assert call.kwargs["wanted"] == [SeqRef(kind="Issue", seq=7)]
+    assert call.kwargs["policy"] is get_store(request).access_policy
+    assert isinstance(call.kwargs["principal"], Principal)
+    assert _neighbourhood_call(neighbourhood).kwargs["focus"] == [shown]
 
 
 @pytest.mark.asyncio
@@ -3265,7 +3416,7 @@ async def test_focused_graph_rejects_bad_hops_and_missing_focus_without_fetching
         await web.web_graph(
             request,
             identity=_TEST_IDENTITY,
-            focus=new_uuid(),
+            focus=[str(new_uuid())],
             hops=hops,
         )
     assert (caught.value.status_code, caught.value.detail) == (status, detail)
@@ -3297,24 +3448,6 @@ def test_session_search_hit_keeps_every_record_coordinate_and_display_field() ->
         "snippet": "Found text",
         "title": "Deploy",
     }
-
-
-@pytest.mark.parametrize(
-    ("name", "dim"),
-    [
-        ("unknown-embedder", None),
-        ("qwen3-embedding-4b", 99_999),
-    ],
-)
-def test_invalid_override_configuration_becomes_a_client_error(
-    name: str,
-    dim: int | None,
-) -> None:
-    request = Request({"type": "http", "app": FastAPI()})
-    with pytest.raises(HTTPException) as caught:
-        web._override_embedder(request, name, dim)
-    assert caught.value.status_code == 400
-    assert name in caught.value.detail or str(dim) in caught.value.detail
 
 
 def _neighbourhood_call(

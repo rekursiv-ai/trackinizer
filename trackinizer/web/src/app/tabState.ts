@@ -34,11 +34,15 @@ export function useTabState<T>(
 }
 
 /** Whether `value` is pages loaded per kind: each a whole number, at least one. */
-export function isPageCounts(value: unknown): value is { readonly [kind: string]: number } {
+export function isPageCounts(
+  value: unknown,
+): value is { readonly [kind: string]: number } {
   return (
     typeof value === "object" &&
     value !== null &&
-    Object.values(value).every((pages) => Number.isSafeInteger(pages) && (pages as number) >= 1)
+    Object.values(value).every(
+      (pages) => Number.isSafeInteger(pages) && (pages as number) >= 1,
+    )
   );
 }
 

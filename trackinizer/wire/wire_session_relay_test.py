@@ -13,6 +13,7 @@ from trackinizer.wire.wire_session_ir import RecordBody
 from trackinizer.wire.wire_session_relay import (
     AgentProcess,
     AgentState,
+    BackgroundJob,
     Command,
     EventLine,
     Hello,
@@ -29,6 +30,7 @@ from trackinizer.wire.wire_session_relay import (
     Setting,
     SettingsLine,
     StateLine,
+    TeamMember,
     ViewerFrame,
 )
 
@@ -37,6 +39,16 @@ _SESSION = UUID(int=1)
 _PROCESS = UUID(int=2)
 _SINCE = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 _STATE = AgentState(line="[3s 1k↑ 20↓]", busy=True, since=_SINCE)
+_JOB = BackgroundJob(
+    call_id="w1",
+    tool="Bash",
+    title="make build",
+    agent="kid",
+    started=_SINCE,
+    state="running",
+)
+_ROOT = TeamMember(label="Agent", busy=False, spend_usd=1.5, session=_SESSION)
+_KID = TeamMember(label="kid", parent="Agent", busy=True)
 _MODEL = Setting(
     name=("model",),
     help_short="The model that answers.",
@@ -102,6 +114,45 @@ def test_a_process_may_not_send_what_only_the_relay_writes() -> None:
         pydantic.TypeAdapter(ProcessFrame).validate_json(relay_only)
 
 
+@pytest.mark.parametrize(
+    ("busy", "jobs", "team", "working"),
+    [
+        (False, (), (_ROOT,), False),
+        (True, (), (_ROOT,), True),
+        (False, (_JOB,), (_ROOT,), True),
+        (False, (), (_ROOT, _KID), True),
+    ],
+    ids=["idle", "busy", "a-job", "a-child"],
+)
+def test_a_state_works_while_the_root_a_job_or_a_child_does(
+    busy: bool,
+    jobs: tuple[BackgroundJob, ...],
+    team: tuple[TeamMember, ...],
+    working: bool,
+) -> None:
+    state = AgentState(line="", busy=busy, since=_SINCE, jobs=jobs, team=team)
+
+    assert state.working == working
+    assert AgentState.model_validate_json(state.model_dump_json()) == state
+
+
+def test_a_state_from_a_process_too_old_to_name_its_team_says_none_and_works_while_busy() -> (
+    None
+):
+    """Such a process sends neither field, or the labels of its children at work."""
+    old = AgentState.model_validate(
+        {
+            "line": "",
+            "busy": False,
+            "since": "2026-11-10T12:00:00Z",
+            "agents": ["kid"],
+        },
+    )
+
+    assert (old.jobs, old.team, old.working) == (None, None, False)
+    assert old.model_copy(update={"busy": True}).working
+
+
 def test_a_frame_reads_past_a_field_a_newer_peer_added() -> None:
     read = Hello.model_validate(
         {
@@ -140,8 +191,37 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
             "busy": True,
             "since": "2026-11-10T12:00:00Z",
             "pending": [],
+            "jobs": None,
+            "team": None,
+            "turn_ended": None,
+            "working": True,
         },
     }
+    assert _JOB.model_dump(mode="json") == {
+        "call_id": "w1",
+        "tool": "Bash",
+        "title": "make build",
+        "agent": "kid",
+        "started": "2026-11-10T12:00:00Z",
+        "state": "running",
+        "awaited": False,
+    }
+    assert [member.model_dump(mode="json") for member in (_ROOT, _KID)] == [
+        {
+            "label": "Agent",
+            "parent": "",
+            "busy": False,
+            "spend_usd": 1.5,
+            "session": "00000000-0000-0000-0000-000000000001",
+        },
+        {
+            "label": "kid",
+            "parent": "Agent",
+            "busy": True,
+            "spend_usd": 0.0,
+            "session": None,
+        },
+    ]
     assert SettingsLine(settings=(_MODEL,)).model_dump(mode="json") == {
         "type": "settings",
         "settings": [
@@ -162,7 +242,27 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
         "author": "ada@example.com",
         "kind": "Halt",
         "payload": {},
+        "recipient": "",
+        "booked": None,
     }
+
+
+def test_an_input_from_another_session_s_agent_names_its_agent_and_booking() -> None:
+    """A process that predates the fields reads a person's input as before."""
+    sent = Input(
+        id=UUID(int=7),
+        author="worker#415",
+        kind="UserMessage",
+        payload={"py/object": "UserMessage", "content": "status?"},
+        recipient="lead",
+        booked="ask",
+    )
+    older = {"type": "input", "id": str(UUID(int=7)), "author": "a@x.y", "kind": "Halt"}
+
+    assert Input.model_validate_json(sent.model_dump_json()) == sent
+    assert Input.model_validate({**older, "payload": {}}).booked is None
+    with pytest.raises(pydantic.ValidationError):
+        _ = Input.model_validate({**older, "payload": {}, "booked": "shout"})
 
 
 def test_an_action_is_a_setting_with_no_value_and_a_name_of_at_least_one_part() -> None:
@@ -325,6 +425,21 @@ def test_a_serve_session_does_not_print_its_token() -> None:
     assert ServeSession.model_validate_json(serve.model_dump_json()) == serve
 
 
+def test_a_serve_session_says_whether_it_was_placed_for_remote_agents() -> None:
+    """One from a server that does not say is no remote agent's."""
+    plain = {
+        "session_id": str(_SESSION),
+        "process_id": str(_PROCESS),
+        "token": "t",
+        "spec": {"host": "remote-agents"},
+    }
+    remote = ServeSession.model_validate({**plain, "remote": True})
+
+    assert ServeSession.model_validate(plain).remote is False
+    assert remote.remote is True
+    assert ServeSession.model_validate_json(remote.model_dump_json()) == remote
+
+
 def test_a_process_that_never_started_ends_with_no_exit_code() -> None:
     ended = ProcessEnded(process_id=_PROCESS, exit_code=None, reason="no client")
 
@@ -362,9 +477,68 @@ def test_a_host_says_each_thing_it_offers_by_a_fact_of_its_own() -> None:
     """A daemon and a server of different versions must agree on these names."""
     assert (
         wire_session_relay.SESSIONS_FACT,
-        wire_session_relay.SHARED_FACT,
+        wire_session_relay.REMOTE_AGENTS_FACT,
         wire_session_relay.LOGINS_FACT,
-    ) == ("sessions", "shared", "logins")
+    ) == ("sessions", "remote_agents", "logins")
+
+
+def test_a_remote_agent_takes_a_campaign_lead_s_flags() -> None:
+    """The lead's time, label, model, effort, budget, rounds and prompt, each valued."""
+    lead = (
+        "--time",
+        "2:00:00",
+        "--name",
+        "lead-tiles-20261115-1800",
+        "--model",
+        "opus",
+        "--model.thinking.effort",
+        "high",
+        "--max-budget-usd",
+        "5",
+        "--max-tool-call-rounds",
+        "200",
+        "--system-prompt",
+        "# Research lead\n\n- run the loop",
+        "--append-system-prompt",
+        "Brief: Issue#7",
+    )
+
+    assert wire_session_relay.remote_flags_refused(lead) == ""
+    assert wire_session_relay.remote_flags_refused(()) == ""
+
+
+@pytest.mark.parametrize(
+    ("args", "why"),
+    [
+        (("--tools", "Bash"), "a remote agent takes no --tools"),
+        (("--add-dir", "/"), "a remote agent takes no --add-dir"),
+        (("--model=opus",), "a remote agent takes no --model=opus"),
+        (("--name", "a", "--time", "1:00"), "a remote agent takes --time first"),
+        (("--model",), "a remote agent takes --model with a value"),
+        (
+            ("--name", "a", "--model", "--tools"),
+            "a remote agent takes --model with a value",
+        ),
+        (("--model", "a", "--model", "b"), "a remote agent takes --model once"),
+        (("opus",), "a remote agent takes no opus"),
+    ],
+    ids=[
+        "a confining flag",
+        "another",
+        "a joined value",
+        "a time not first",
+        "a missing value",
+        "a flag as a value",
+        "a flag twice",
+        "a bare word",
+    ],
+)
+def test_a_remote_agent_refuses_any_other_flag_saying_which(
+    args: tuple[str, ...],
+    why: str,
+) -> None:
+    """A flag such as ``--tools`` or ``--add-dir`` would reach past the confinement."""
+    assert wire_session_relay.remote_flags_refused(args) == why
 
 
 if __name__ == "__main__":

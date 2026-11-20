@@ -35,10 +35,11 @@ from trackinizer.server.api.app import (
     unique_violation_handler,
     validation_handler,
 )
+from trackinizer.server.api.session_relay_routes import ProcessKeySweep
 from trackinizer.server.config import Config, ConfigError, ServiceKeys
-from trackinizer.server.embedders import registry
-from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.route_iter import iter_routes
 from trackinizer.server.secrets import FileSecrets, SecretRef
+from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.terminals import TerminalRelay
 from trackinizer.server.tool_relay import ToolRelay
 from trackinizer.server.visuals.catalog import Canvas, default_canvas
@@ -58,7 +59,7 @@ if TYPE_CHECKING:
     from starlette.types import Receive, Scope, Send
 
     from trackinizer.server.store.core import Store
-    from trackinizer.types.embedder import QueryEmbedder
+    from trackinizer.server.store.search import VectorSearch
 
 
 class TestCLIHelpers:
@@ -468,8 +469,8 @@ class TestRequestLogging:
 class TestAuthDisabledWarning:
     """The lifespan loudly warns when auth is disabled (synthetic-admin mode)."""
 
-    # The warning fires inside ``lifespan``; the engine, store, and embedder are
-    # replaced so the body runs hermetically (no real DB).
+    # The warning fires inside ``lifespan``; the engine and store are replaced so
+    # the body runs hermetically (no real DB).
     @classmethod
     def _run_lifespan(
         cls,
@@ -477,17 +478,12 @@ class TestAuthDisabledWarning:
         *,
         auth_disabled: bool,
     ) -> None:
-        """Drive the real ``lifespan`` once with engine/store/embedder stubbed."""
+        """Drive the real ``lifespan`` once with engine and store stubbed."""
         store, engine = make_store()
         monkeypatch.setattr(
             app,
             "build_engine",
             Mock(return_value=engine),
-        )
-        monkeypatch.setattr(
-            app,
-            "build_embedder",
-            Mock(return_value=object()),
         )
         monkeypatch.setattr(
             app,
@@ -543,11 +539,6 @@ class TestAuthDisabledWarning:
         )
         monkeypatch.setattr(
             app,
-            "build_embedder",
-            Mock(return_value=object()),
-        )
-        monkeypatch.setattr(
-            app,
             "Store",
             Mock(return_value=store),
         )
@@ -580,104 +571,6 @@ class TestAuthDisabledWarning:
         assert not self._seeded_no_auth_user(monkeypatch, auth_disabled=False)
 
 
-class TestSessionEmbedderResolution:
-    """``_resolve_session_embedder`` decides degrade-vs-warm without downloading."""
-
-    def test_startup_passes_dimension_to_gate_and_builder(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        check = Mock(return_value=True)
-        build = Mock(return_value=StubEmbedder(dim=256))
-
-        def is_weightless(name: str) -> bool:
-            del name
-            return True
-
-        monkeypatch.setattr(registry, "weights_present", check)
-        monkeypatch.setattr(registry, "build_session_embedder", build)
-        monkeypatch.setattr(registry, "is_weightless", is_weightless)
-        app._resolve_session_embedder(
-            FastAPI(),
-            Config(session_embedder="qwen3-embedding-4b", session_embedder_dim=256),
-        )
-        check.assert_called_once_with("qwen3-embedding-4b", dim=256)
-        build.assert_called_once_with("qwen3-embedding-4b", dim=256)
-
-    def test_unset_knob_leaves_embedder_none(self) -> None:
-        fastapi_app = FastAPI()
-        task = app._resolve_session_embedder(
-            fastapi_app,
-            Config(session_embedder=""),
-        )
-        assert task is None
-        assert cast(object, fastapi_app.state.session_embedder) is None
-
-    def test_stub_is_ready_without_a_warm_task(self) -> None:
-        """A weightless stub is set immediately; no warm task, no download."""
-        fastapi_app = FastAPI()
-        task = app._resolve_session_embedder(
-            fastapi_app,
-            Config(session_embedder="stub-1024"),
-        )
-        assert task is None  # Nothing to warm.
-        embedder = cast("QueryEmbedder | None", fastapi_app.state.session_embedder)
-        assert embedder is not None
-        assert embedder.name == "stub-1024"
-
-    def test_qwen_without_weights_degrades_and_logs_prep(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Weights absent -> embedder None (degrade), prep command logged, NO download."""
-        check = Mock(return_value=False)
-        monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
-        fastapi_app = FastAPI()
-        with caplog.at_level(logging.ERROR):
-            task = app._resolve_session_embedder(
-                fastapi_app,
-                Config(session_embedder="qwen3-embedding-4b@1024"),
-            )
-        assert task is None
-        assert cast(object, fastapi_app.state.session_embedder) is None
-        assert "prep_models" in caplog.text
-        check.assert_called_once_with()
-
-    def test_qwen_with_weights_sets_embedder_and_schedules_warm(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Weights present -> embedder set + a warm task scheduled (no query embed here)."""
-        check = Mock(return_value=True)
-        monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
-        warmed: list[str] = []
-
-        async def _fake_warm(embedder: QueryEmbedder) -> None:
-            await _record_warm(embedder, warmed)
-
-        async def _drive() -> tuple[object, object]:
-            fastapi_app = FastAPI()
-            # Replace the real warm coroutine so the test never loads a model.
-            monkeypatch.setattr(
-                app,
-                "_warm_session_embedder",
-                _fake_warm,
-            )
-            task = app._resolve_session_embedder(
-                fastapi_app,
-                Config(session_embedder="qwen3-embedding-4b@1024"),
-            )
-            assert task is not None
-            await task
-            return cast(object, fastapi_app.state.session_embedder), task
-
-        embedder, _task = asyncio.run(_drive())
-        assert embedder is not None
-        assert warmed == ["warmed"]  # The warm task ran, without downloading.
-        check.assert_called_once_with()
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("startup_failure", [False, True])
 async def test_lifespan_joins_tasks_after_startup_or_background_failure(
@@ -686,12 +579,11 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
 ) -> None:
     store, engine = make_store()
     monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
     monkeypatch.setattr(app, "Store", Mock(return_value=store))
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     monkeypatch.setattr(
         app,
-        "push_changes_to_live_subscribers",
+        "authority_sweep_loop",
         AsyncMock(side_effect=RuntimeError("background failed")),
     )
     services = (
@@ -715,12 +607,11 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_sweeps_the_terminals_and_the_tool_connections(
+async def test_lifespan_sweeps_the_terminals_tool_connections_and_live_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, engine = make_store()
     monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
     monkeypatch.setattr(app, "Store", Mock(return_value=store))
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     sweeping = AsyncMock()
@@ -732,11 +623,20 @@ async def test_lifespan_sweeps_the_terminals_and_the_tool_connections(
         await asyncio.sleep(0)
 
     relays: list[object] = [call.args[0] for call in sweeping.call_args_list]
-    assert [type(relay) for relay in relays] == [TerminalRelay, ToolRelay]
-    # The tool connections are swept as the configuration says; the terminals as they were.
+    assert [type(relay) for relay in relays] == [
+        TerminalRelay,
+        ToolRelay,
+        ProcessKeySweep,
+    ]
+    # The live sessions' relay is swept, then the process keys it holds none of.
+    swept = relays[2]
+    assert isinstance(swept, ProcessKeySweep)
+    assert (type(swept.relay), swept.store) == (SessionRelay, store)
+    # Tool connections are swept as the configuration says; the rest as terminals are.
     assert [call.kwargs for call in sweeping.call_args_list] == [
         {},
         {"interval_sec": 7.0},
+        {},
     ]
 
 
@@ -975,35 +875,49 @@ def test_lifespan_keeps_the_service_keys_it_names(
     assert told == ([(keys, policy)] if named else [])
 
 
-def test_lifespan_cancels_the_embedder_warm_up_at_shutdown(
+@pytest.mark.parametrize("searched", [True, False])
+def test_lifespan_holds_the_deployments_vector_search(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    searched: bool,
 ) -> None:
-    warming: list[asyncio.Task[None]] = []
-
-    def resolve(fastapi_app: FastAPI, config: Config) -> asyncio.Task[None]:
-        del fastapi_app, config
-        warming.append(asyncio.create_task(_forever()))
-        return warming[0]
-
-    monkeypatch.setattr(app, "_resolve_session_embedder", resolve)
+    deployment = Deployment.Config().make()
+    if searched:
+        deployment.vector_search = cast("VectorSearch", object())
     fastapi_app = FastAPI()
-    fastapi_app.state.config = Config()
+    fastapi_app.state.config = Config(secrets="none")
+    fastapi_app.state.deployment = deployment
 
-    _ = _lifespan_state(monkeypatch, fastapi_app, "config")
+    held = _lifespan_state(monkeypatch, fastapi_app, "vector_search")
 
-    (task,) = warming
-    assert task.cancelled()
+    assert held is deployment.vector_search
+    assert (held is None) is not searched
 
 
-@pytest.mark.asyncio
-async def test_warming_the_session_embedder_embeds_one_query() -> None:
-    embed_query = AsyncMock(return_value=[0.0])
+def test_the_old_runners_chat_and_run_routes_are_registered_nowhere() -> None:
+    """A session's agent process and its relay replaced these; none answers."""
+    removed = {
+        ("POST", "/api/sessions/{session_id}/inbound"),
+        ("GET", "/api/sessions/{session_id}/inbound"),
+        ("POST", "/api/sessions/{session_id}/run-state"),
+        ("PUT", "/api/sessions/{session_id}/partial"),
+        ("GET", "/api/sessions/{session_id}/partial"),
+        ("DELETE", "/api/sessions/{session_id}/partial/{turn}"),
+        ("POST", "/api/sessions/{session_id}/runs/{run_id}/output"),
+        ("GET", "/api/sessions/{session_id}/runs/{run_id}/output"),
+        ("POST", "/api/sessions/{session_id}/reattach"),
+        ("GET", "/api/chat-models"),
+        ("POST", "/api/chats/uploads"),
+        ("GET", "/api/chats/uploads/wait"),
+        ("POST", "/api/chats/uploads/{request_id}"),
+        ("POST", "/api/chats/files/link"),
+        ("POST", "/api/chats/files/remove"),
+    }
+    registered = {
+        (method, path) for path, methods in iter_routes(app.app) for method in methods
+    }
 
-    await app._warm_session_embedder(
-        cast("QueryEmbedder", Mock(embed_query=embed_query)),
-    )
-
-    embed_query.assert_awaited_once_with("warm")
+    assert registered & removed == set()
 
 
 def _lifespan_state(
@@ -1014,7 +928,6 @@ def _lifespan_state(
     """Drive the real ``lifespan`` with a stubbed engine; return ``state.<name>``."""
     store, engine = make_store()
     monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
     monkeypatch.setattr(app, "Store", Mock(return_value=store))
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
 
@@ -1023,12 +936,6 @@ def _lifespan_state(
             return cast(object, getattr(fastapi_app.state, name))
 
     return asyncio.run(_drive())
-
-
-async def _record_warm(embedder: object, sink: list[str]) -> None:
-    """Stand-in warm coroutine: records that it ran, embeds nothing."""
-    del embedder
-    sink.append("warmed")
 
 
 def _lifespan_secrets(
@@ -1041,11 +948,6 @@ def _lifespan_secrets(
     fastapi_app = fastapi_app or FastAPI()
     fastapi_app.state.config = Config(secrets=spec)
     return _lifespan_state(monkeypatch, fastapi_app, "secrets")
-
-
-async def _forever() -> None:
-    """Stand-in warm task that runs until cancelled."""
-    _ = await asyncio.Event().wait()
 
 
 if __name__ == "__main__":

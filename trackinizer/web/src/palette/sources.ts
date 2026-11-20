@@ -1,9 +1,17 @@
 import { type QueryClient, useQueries } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { Detail, DetailRow } from "../api/detail";
 import type { InquiryRow } from "../api/inquiries";
 import { searchInquiries } from "../api/search";
 import { openedAt } from "../detail/queries";
+import { must } from "../must";
 
 /** An inquiry the palette lists: what its row shows, and what a search reads. */
 export type Found = {
@@ -33,13 +41,20 @@ export function cachedInquiries(queryClient: QueryClient): Found[] {
     const held = byId.get(found.id);
     if (!held || modifiedAt(found) > modifiedAt(held)) byId.set(found.id, found);
   };
-  for (const [, page] of queryClient.getQueriesData<InquiryRow[]>({ queryKey: ["inquiries", "list"] })) {
+  for (const [, page] of queryClient.getQueriesData<InquiryRow[]>({
+    queryKey: ["inquiries", "list"],
+  })) {
     page?.forEach(add);
   }
-  for (const [, detail] of queryClient.getQueriesData<Detail>({ queryKey: ["detail"] })) {
+  for (const [, detail] of queryClient.getQueriesData<Detail>({
+    queryKey: ["detail"],
+  })) {
     if (!detail) continue;
     add(foundOf(detail.self));
-    for (const peers of [...Object.values(detail.edges), ...Object.values(detail.backlinks)]) {
+    for (const peers of [
+      ...Object.values(detail.edges),
+      ...Object.values(detail.backlinks),
+    ]) {
       peers.forEach(add);
     }
   }
@@ -63,14 +78,19 @@ export function recentDetails(queryClient: QueryClient): Found[] {
  * detail gets new data or leaves the cache, so an open palette lists what loads
  * under it. Other cache events, such as a fetch starting, change neither.
  */
-export function useLoaded(queryClient: QueryClient): { cached: Found[]; recent: Found[] } {
+export function useLoaded(queryClient: QueryClient): {
+  cached: Found[];
+  recent: Found[];
+} {
   const version = useRef(0);
   const subscribe = useCallback(
     (changed: () => void) =>
       queryClient.getQueryCache().subscribe((event) => {
         const [scope, name] = event.query.queryKey;
         const rows = scope === "detail" || (scope === "inquiries" && name === "list");
-        const landed = (event.type === "updated" && event.action.type === "success") || event.type === "removed";
+        const landed =
+          (event.type === "updated" && event.action.type === "success") ||
+          event.type === "removed";
         if (!rows || !landed) return;
         version.current += 1;
         changed();
@@ -79,7 +99,10 @@ export function useLoaded(queryClient: QueryClient): { cached: Found[]; recent: 
   );
   const at = useSyncExternalStore(subscribe, () => version.current);
   return useMemo(
-    () => ({ cached: cachedInquiries(queryClient), recent: recentDetails(queryClient) }),
+    () => ({
+      cached: cachedInquiries(queryClient),
+      recent: recentDetails(queryClient),
+    }),
     // `at` is not read inside: it is what changes when their answer would.
     [queryClient, at],
   );
@@ -128,12 +151,15 @@ export function useServerSearch(
     return () => clearTimeout(timer);
   }, [q, searched]);
   const active = q && q === searched ? q : null;
-  const ordered = [...kinds].sort((a, b) => Number(b === "Issue") - Number(a === "Issue"));
+  const ordered = [...kinds].sort(
+    (a, b) => Number(b === "Issue") - Number(a === "Issue"),
+  );
   const results = useQueries({
     queries: active
       ? ordered.map((kind) => ({
           queryKey: ["search", active, kind],
-          queryFn: ({ signal }: { signal: AbortSignal }) => searchInquiries({ q: active, kind, limit: 5 }, { signal }),
+          queryFn: ({ signal }: { signal: AbortSignal }) =>
+            searchInquiries({ q: active, kind, limit: 5 }, { signal }),
           staleTime: Infinity,
         }))
       : [],
@@ -141,7 +167,7 @@ export function useServerSearch(
   return {
     waiting: q !== "" && q !== searched,
     searches: results.map((result, index) => ({
-      kind: ordered[index]!,
+      kind: must(ordered[index]),
       hits: result.data?.map(foundOf),
       error: result.isFetching ? null : result.error,
       pending: result.isPending || result.isFetching,

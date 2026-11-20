@@ -51,7 +51,6 @@ _EVERY = {
     "output": ["none"],
 }
 _WHOLE = "A catalog's thinking must state effort, budget, and output."
-_ALIASES = "YAML aliases are not allowed."
 
 
 def _in(path: Path, *, line: int, message: str) -> str:
@@ -639,13 +638,14 @@ reference:
   thinking: {effort: [none], budget: [none], output: [none]}
 profiles:
   base:
-    knowledge_cutoff: May 2025
+    knowledge_cutoff: '2025-05'
     thinking: {effort: [none, high], budget: [none, auto], output: [none, text]}
 models:
   - model_id: example-1.0
     wire_model_id: vendor-example
     profile: base
     effort_as_level: true
+    thinking_off_max_effort: low
     thinking: {effort: [none, low, high], budget: [none, auto], output: [none, text]}
     prices:
       - {request: 1.0, response: 2.0, cache_write: 0.0, cache_write_1h: 0.0,
@@ -675,7 +675,7 @@ providers:
     row = table["default"]
     assert row.wire_model_id == "vendor-example"
     assert row.approx_chars_per_token == 3.5
-    assert row.knowledge_cutoff == "May 2025"
+    assert row.knowledge_cutoff == "2025-05"
     assert row.limits.max_request_tokens == 1000
     # The section's ``thinking`` replaces only the axes it names.
     assert (row.thinking_effort, row.thinking_budget, row.thinking_output) == (
@@ -684,6 +684,7 @@ providers:
         {"none", "text"},
     )
     assert row.effort_as_level
+    assert row.thinking_off_max_effort == "low"
     assert row.retries_internally
     assert row.account_auth
     assert row.service_tier == {"auto", "default", "priority"}
@@ -744,6 +745,131 @@ def test_the_default_effort_layers_like_any_field(
     assert _load(path)["example"].default.thinking_effort == effort
 
 
+def test_a_default_effort_a_row_lacks_falls_to_none_last(tmp_path: Path) -> None:
+    """Every level below and above the default is tried before ``none``."""
+    path = _write(
+        tmp_path / "x.yaml",
+        _model() | {"thinking_effort_default": "high"},
+        extra={
+            "reference": {
+                "limits": {"max_request_tokens": 1000},
+                "thinking": _THINKING,
+            },
+        },
+    )
+    assert _load(path)["example"].default.thinking_effort == "none"
+
+
+def test_a_limit_a_profile_adds_must_be_restated_by_the_model(tmp_path: Path) -> None:
+    """Each layer is checked against every layer below it, not the reference alone."""
+    path = _write(
+        tmp_path / "x.yaml",
+        _model(profile="p", limits={"max_request_tokens": 500}),
+        extra={
+            "reference": {
+                "limits": {"max_request_tokens": 1000},
+                "thinking": _THINKING,
+            },
+            "profiles": {
+                "p": {"limits": {"max_request_tokens": 800, "max_image_edge_px": 2048}},
+            },
+        },
+    )
+    message = (
+        "model 'example-1.0' restates no max_image_edge_px of the limits below it;"
+        " state it, 0 for none."
+    )
+    with pytest.raises(ValueError, match=_exactly(message)):
+        _load(path)
+
+
+@pytest.mark.parametrize("cutoff", ["2025-05", "2026-05-18"])
+def test_a_cutoff_is_iso_at_the_precision_the_vendor_publishes(
+    tmp_path: Path,
+    cutoff: str,
+) -> None:
+    path = _write(tmp_path / "x.yaml", _model() | {"knowledge_cutoff": cutoff})
+    assert _load(path)["example"].knowledge_cutoff == cutoff
+
+
+@pytest.mark.parametrize("cutoff", ["May 2025", "2025-13", "2026-02-30", "2025"])
+def test_a_cutoff_in_any_other_form_is_refused(tmp_path: Path, cutoff: str) -> None:
+    path = _write(tmp_path / "x.yaml", _model() | {"knowledge_cutoff": cutoff})
+    message = (
+        f"Model 'example-1.0' has knowledge_cutoff {cutoff!r};"
+        " write it as YYYY-MM or YYYY-MM-DD."
+    )
+    with pytest.raises(ValueError, match=_exactly(message)):
+        _load(path)
+
+
+@pytest.mark.parametrize(
+    ("layer", "where"),
+    [
+        ("profile", "profile 'p'"),
+        ("model", "model 'example-1.0'"),
+        ("section", "section 'vendor'"),
+        ("entry", "section 'vendor'"),
+    ],
+)
+def test_a_limits_override_must_restate_each_limit_below_it(
+    tmp_path: Path,
+    layer: str,
+    where: str,
+) -> None:
+    """``limits`` replaces whole, so a limit left out would silently become 0."""
+    short = {"max_request_tokens": 500}
+    whole = {"max_request_tokens": 500, "max_image_edge_px": 2048}
+    reference = {
+        "limits": {"max_request_tokens": 1000, "max_image_edge_px": 2048},
+        "thinking": _THINKING,
+    }
+
+    def written(limits: dict[str, int]) -> Path:
+        given = {"limits": limits}
+        return _write(
+            tmp_path / f"{layer}.yaml",
+            _model(profile="p") | (given if layer == "model" else {}),
+            vendor=(given if layer == "section" else {})
+            | ({"models": {"example-1.0": given}} if layer == "entry" else {}),
+            extra={
+                "reference": reference,
+                "profiles": {"p": given if layer == "profile" else {}},
+            },
+        )
+
+    message = (
+        f"{where} restates no max_image_edge_px of the limits below it;"
+        " state it, 0 for none."
+    )
+    with pytest.raises(ValueError, match=_exactly(message)):
+        _load(written(short))
+    row = _load(written(whole))["example"]
+    assert (row.limits.max_request_tokens, row.limits.max_image_edge_px) == (500, 2048)
+
+
+def test_a_row_starting_with_thinking_off_above_its_cap_is_refused(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path / "x.yaml",
+        _model()
+        | {
+            "thinking_off_max_effort": "low",
+            "thinking_effort_default": "high",
+            "thinking_budget_default": "none",
+        },
+        extra={
+            "reference": {"limits": {"max_request_tokens": 1000}, "thinking": _EVERY},
+        },
+    )
+    message = (
+        "thinking_budget='none' is not offered by example-1.0 at thinking_effort='high'"
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _load(path)
+
+
 def test_the_default_budget_layers_like_any_field(tmp_path: Path) -> None:
     path = _write(
         tmp_path / "x.yaml",
@@ -758,6 +884,25 @@ def test_the_default_budget_layers_like_any_field(tmp_path: Path) -> None:
         },
     )
     assert _load(path)["example"].default.thinking_budget == "auto"
+
+
+@pytest.mark.parametrize(
+    ("default", "ttl"),
+    [(None, 300.0), (3600.0, 3600.0), (60.0, 300.0)],
+    ids=["unset", "offered", "unoffered"],
+)
+def test_a_default_cache_lifetime_is_what_a_bare_id_starts_at(
+    tmp_path: Path,
+    default: float | None,
+    ttl: float,
+) -> None:
+    given = {} if default is None else {"cache_ttl_sec_default": default}
+    path = _write(
+        tmp_path / "x.yaml",
+        _model(),
+        vendor={"cache_ttl_sec": [300.0, 3600.0], **given},
+    )
+    assert _load(path)["example"].default.cache_ttl_sec == ttl
 
 
 @pytest.mark.parametrize(
@@ -865,9 +1010,21 @@ def test_a_card_starts_on_its_effective_date(tmp_path: Path, quoted: bool) -> No
         ([_model("Opus-5.0")], {}, "is not family-major.minor"),
         ([_model("opus-5.0.1")], {}, "is not family-major.minor"),
         ([_model(prices=[])], {}, "missing a price or setting"),
-        ([_model(thinking=_THINKING | {"effort": []})], {}, "missing a price"),
-        ([_model(thinking=_THINKING | {"budget": []})], {}, "missing a price"),
-        ([_model(thinking=_THINKING | {"output": []})], {}, "missing a price"),
+        (
+            [_model(thinking=_THINKING | {"effort": []})],
+            {},
+            "^thinking_effort offers nothing selectable",
+        ),
+        (
+            [_model(thinking=_THINKING | {"budget": []})],
+            {},
+            "^thinking_budget offers nothing selectable",
+        ),
+        (
+            [_model(thinking=_THINKING | {"output": []})],
+            {},
+            "^thinking_output offers nothing selectable",
+        ),
         ([_model(approx_chars_per_token=0.0)], {}, "missing a price"),
         ([_model(approx_chars_per_token=float("nan"))], {}, "missing a price"),
         ([_model(approx_chars_per_token=float("inf"))], {}, "missing a price"),
@@ -946,7 +1103,8 @@ def test_a_catalog_that_breaks_a_rule_is_rejected(
     ],
 )
 def test_a_negative_limit_is_rejected(tmp_path: Path, limit: str) -> None:
-    path = _write(tmp_path / "x.yaml", _model(limits={limit: -1}))
+    restated = {"max_request_tokens": 1000, limit: -1}
+    path = _write(tmp_path / "x.yaml", _model(limits=restated))
     with pytest.raises(ValueError, match="negative limit"):
         _load(path)
 
@@ -1056,7 +1214,6 @@ def test_a_card_given_twice_is_rejected(tmp_path: Path) -> None:
     [
         ("models: []\nmodels: []", 2, "the key 'models' is given twice."),
         ("models: []\n1: bad", 2, "YAML mapping keys must be strings."),
-        ("models: &rows []\nprofiles: {bad: {context: *rows}}", 2, _ALIASES),
     ],
 )
 def test_a_document_the_strict_loader_refuses_names_file_and_line(
@@ -1104,17 +1261,21 @@ def test_a_section_naming_an_unknown_thinking_axis_is_rejected(tmp_path: Path) -
         _load(path)
 
 
-def test_an_alias_inside_a_list_is_rejected(tmp_path: Path) -> None:
+def test_a_section_serves_the_models_another_names_by_anchor(tmp_path: Path) -> None:
+    """One list, so a model added to one section's is served by both."""
     path = tmp_path / "x.yaml"
     path.write_text(
         "reference: {thinking: {effort: [none], budget: [none], output: [none]}}\n"
         "models:\n"
-        "- {model_id: a-1.0, prices: [&card {request: 0, response: 0, cache_write: 0,"
+        "- {model_id: a-1.0, prices: [{request: 0, response: 0, cache_write: 0,"
         " cache_write_1h: 0, cache_read: 0}]}\n"
-        "- {model_id: b-1.0, prices: [*card]}\n",
+        "providers:\n"
+        "  sub: {sends: [], models: &served {a-1.0: }}\n"
+        "  cli: {sends: [], models: *served}\n",
     )
-    with pytest.raises(ValueError, match=_in(path, line=4, message=_ALIASES)):
-        _load(path)
+    sub = ModelTable.from_yaml(path, section="sub")
+    cli = ModelTable.from_yaml(path, section="cli")
+    assert list(sub) == list(cli) == ["a-1.0"]
 
 
 def test_a_section_listing_no_models_serves_none(tmp_path: Path) -> None:

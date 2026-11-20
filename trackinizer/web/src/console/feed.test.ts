@@ -4,6 +4,7 @@ import type { FeedCursor, FeedEvent } from "../api/sessions";
 import { stubFetch } from "../api/testing";
 import { Serial } from "../live/serial";
 import { appendEvents, ConsoleFeed } from "./feed";
+import { must } from "../must";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -28,20 +29,44 @@ function event(seq: number, { session = A, part = 0 } = {}): FeedEvent {
   };
 }
 
-const cursor = (last: FeedEvent): FeedCursor => ({ created: last.created, session_id: last.session_id, part: last.part, seq: last.seq });
+const cursor = (last: FeedEvent): FeedCursor => ({
+  created: last.created,
+  session_id: last.session_id,
+  part: last.part,
+  seq: last.seq,
+});
 
 /** Every record: no agent, room, CLI or kind left out. */
 const EVERYTHING = { actor: [], room: [], cli: [], kind: [] };
 
 test("events append once each, by session, part and seq, and past 5,000 the oldest drop", () => {
-  const first = appendEvents([], [event(0), event(1), event(0, { part: 1 }), event(0, { session: B })]);
-  expect(first.map((held) => held.key)).toEqual([`${A}:0:0`, `${A}:0:1`, `${A}:1:0`, `${B}:0:0`]);
+  const first = appendEvents(
+    [],
+    [event(0), event(1), event(0, { part: 1 }), event(0, { session: B })],
+  );
+  expect(first.map((held) => held.key)).toEqual([
+    `${A}:0:0`,
+    `${A}:0:1`,
+    `${A}:1:0`,
+    `${B}:0:0`,
+  ]);
   expect(appendEvents(first, [event(1)])).toBe(first);
-  const many = appendEvents(first, Array.from({ length: 5000 }, (_, k) => event(k + 2)));
+  const many = appendEvents(
+    first,
+    Array.from({ length: 5000 }, (_, k) => event(k + 2)),
+  );
   expect(many).toHaveLength(5000);
-  expect([many[0]!.key, many.at(-1)!.key]).toEqual([`${A}:0:2`, `${A}:0:5001`]);
-  expect(many[0]!.n).toBe(4);
-  expect(many[0]!.record).toMatchObject({ idx: 2, kind: "AssistantMessage", payload: { content: "Turn 2" }, text: "Turn 2" });
+  expect([must(many[0]).key, must(many.at(-1)).key]).toEqual([
+    `${A}:0:2`,
+    `${A}:0:5001`,
+  ]);
+  expect(must(many[0]).n).toBe(4);
+  expect(must(many[0]).record).toMatchObject({
+    idx: 2,
+    kind: "AssistantMessage",
+    payload: { content: "Turn 2" },
+    text: "Turn 2",
+  });
 });
 
 test("live: the first read is the newest page; a stream batch reads past the cursor until a short page", async () => {
@@ -49,22 +74,45 @@ test("live: the first read is the newest page; a stream batch reads past the cur
   const full = Array.from({ length: 300 }, (_, k) => event(k + 2));
   const sent = stubFetch((request) => {
     const query = new URL(request.url).searchParams;
-    if (query.get("tail") === "true") return Response.json({ events: tail, next_after: cursor(tail.at(-1)!) });
-    if (query.get("after_seq") === "1") return Response.json({ events: full, next_after: cursor(full.at(-1)!) });
+    if (query.get("tail") === "true")
+      return Response.json({ events: tail, next_after: cursor(must(tail.at(-1))) });
+    if (query.get("after_seq") === "1")
+      return Response.json({ events: full, next_after: cursor(must(full.at(-1))) });
     return Response.json({ events: [event(302)], next_after: cursor(event(302)) });
   });
-  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { live: true }, EVERYTHING, 4);
+  const feed = new ConsoleFeed(
+    new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+    { live: true },
+    EVERYTHING,
+    4,
+  );
   const loading = feed.load();
-  expect(await feed.update({ ids: new Set(["x"]), gap: false })).toEqual({ afterMs: 1000 });
+  expect(await feed.update({ ids: new Set(["x"]), gap: false })).toEqual({
+    afterMs: 1000,
+  });
   await loading;
   expect(feed.getSnapshot()).toMatchObject({ loading: false, error: null });
   expect(feed.getSnapshot().held).toHaveLength(2);
   expect(await feed.update({ ids: new Set(["x"]), gap: false })).toBeNull();
   expect(feed.getSnapshot().held).toHaveLength(303);
-  expect(sent.map((request) => Object.fromEntries(new URLSearchParams(request.query)))).toEqual([
+  expect(
+    sent.map((request) => Object.fromEntries(new URLSearchParams(request.query))),
+  ).toEqual([
     { tail: "true", limit: "300" },
-    { after_created: tail[1]!.created, after_session: A, after_part: "0", after_seq: "1", limit: "300" },
-    { after_created: full.at(-1)!.created, after_session: A, after_part: "0", after_seq: "301", limit: "300" },
+    {
+      after_created: must(tail[1]).created,
+      after_session: A,
+      after_part: "0",
+      after_seq: "1",
+      limit: "300",
+    },
+    {
+      after_created: must(full.at(-1)).created,
+      after_session: A,
+      after_part: "0",
+      after_seq: "301",
+      limit: "300",
+    },
   ]);
 });
 
@@ -72,125 +120,245 @@ test("Messages reads only the conversation, in place of its kinds, so its newest
   const page = Array.from({ length: 300 }, (_, k) => event(k));
   const sent = stubFetch((request) => {
     const events = new URL(request.url).searchParams.has("after_seq") ? [] : page;
-    return Response.json({ events, next_after: cursor(page.at(-1)!) });
+    return Response.json({ events, next_after: cursor(must(page.at(-1))) });
   });
-  const messages = { actor: ["codex"], room: [], cli: [], kind: ["AgentToAgentMessage", "AssistantMessage", "ContextState", "UserMessage"] };
-  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { live: true }, messages, 1);
+  const messages = {
+    actor: ["codex"],
+    room: [],
+    cli: [],
+    kind: ["AgentToAgentMessage", "AssistantMessage", "ContextState", "UserMessage"],
+  };
+  const feed = new ConsoleFeed(
+    new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+    { live: true },
+    messages,
+    1,
+  );
   await feed.load();
   await feed.update({ ids: new Set(["x"]), gap: false });
   expect(feed.getSnapshot().held).toHaveLength(300);
-  expect(sent.map((request) => Object.fromEntries(new URLSearchParams(request.query)))).toEqual([
+  expect(
+    sent.map((request) => Object.fromEntries(new URLSearchParams(request.query))),
+  ).toEqual([
     { tail: "true", conversation: "true", limit: "300", actor: "codex" },
-    { conversation: "true", after_created: page.at(-1)!.created, after_session: A, after_part: "0", after_seq: "299", limit: "300", actor: "codex" },
+    {
+      conversation: "true",
+      after_created: must(page.at(-1)).created,
+      after_session: A,
+      after_part: "0",
+      after_seq: "299",
+      limit: "300",
+      actor: "codex",
+    },
   ]);
 });
 
 test("live: while the newest pages hold too few records the view's level shows, older pages are read, at most five", async () => {
   // Context bookkeeping, which + Calls hides.
-  const hidden = (seq: number): FeedEvent => ({ ...event(seq), kind: "ContextState", message: { kind: "token_count" } });
+  const hidden = (seq: number): FeedEvent => ({
+    ...event(seq),
+    kind: "ContextState",
+    message: { kind: "token_count" },
+  });
   const page = Array.from({ length: 300 }, (_, k) => hidden(k + 1));
   const sent = stubFetch((request) => {
     const query = new URL(request.url).searchParams;
-    if (query.has("after_seq")) return Response.json({ events: [], next_after: cursor(page.at(-1)!) });
+    if (query.has("after_seq"))
+      return Response.json({ events: [], next_after: cursor(must(page.at(-1))) });
     const events = query.has("before_seq") ? [event(0)] : page;
-    return Response.json({ events, next_after: cursor(events.at(-1)!) });
+    return Response.json({ events, next_after: cursor(must(events.at(-1))) });
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const feed = new ConsoleFeed(client, { live: true }, EVERYTHING, 2);
   await feed.load();
-  expect(feed.getSnapshot().held.map(({ key }) => key).slice(0, 2)).toEqual([`${A}:0:0`, `${A}:0:1`]);
+  expect(
+    feed
+      .getSnapshot()
+      .held.map(({ key }) => key)
+      .slice(0, 2),
+  ).toEqual([`${A}:0:0`, `${A}:0:1`]);
   expect(feed.getSnapshot().held).toHaveLength(301);
-  expect(sent.map((request) => Object.fromEntries(new URLSearchParams(request.query)))).toEqual([
+  expect(
+    sent.map((request) => Object.fromEntries(new URLSearchParams(request.query))),
+  ).toEqual([
     { tail: "true", limit: "300" },
-    { tail: "true", before_created: page[0]!.created, before_session: A, before_part: "0", before_seq: "1", limit: "300" },
+    {
+      tail: "true",
+      before_created: must(page[0]).created,
+      before_session: A,
+      before_part: "0",
+      before_seq: "1",
+      limit: "300",
+    },
   ]);
   // Past the cursor, as before: the older pages left it at the newest.
   await feed.update({ ids: new Set(["x"]), gap: false });
-  expect(new URLSearchParams(sent.at(-1)!.query).get("after_seq")).toBe("300");
+  expect(new URLSearchParams(must(sent.at(-1)).query).get("after_seq")).toBe("300");
 
   // Nothing it shows in five full pages: it stops there.
   let seq = 10_000;
   const reads = stubFetch(() => {
     const events = Array.from({ length: 300 }, () => hidden(seq--)).toReversed();
-    return Response.json({ events, next_after: cursor(events.at(-1)!) });
+    return Response.json({ events, next_after: cursor(must(events.at(-1))) });
   });
   const empty = new ConsoleFeed(client, { live: true }, EVERYTHING, 2);
   await empty.load();
   expect([reads.length, empty.getSnapshot().held.length]).toEqual([5, 1500]);
 });
 
-test.each(["same instant", "overlapping visible boundary"])("live tail progresses through %s to fifty unique visible records", async (shape) => {
-  const hidden = (seq: number): FeedEvent => ({ ...event(seq), kind: "ContextState", message: { kind: "token_count" } });
-  const records = shape === "same instant"
-    ? [...Array.from({ length: 50 }, (_, seq) => event(seq)), ...Array.from({ length: 301 }, (_, seq) => hidden(seq + 50))]
-    : [event(0), ...Array.from({ length: 251 }, (_, seq) => hidden(seq + 1)), ...Array.from({ length: 49 }, (_, seq) => event(seq + 252)), ...Array.from({ length: 251 }, (_, seq) => hidden(seq + 301))];
-  const ordered = records.map((record) => ({ ...record, created: "2026-10-01T10:00:00Z" }));
-  const sent = stubFetch((request) => {
-    const query = new URL(request.url).searchParams;
-    const before = query.get("before_seq");
-    const events = ordered.filter(({ seq }) => before === null || seq < Number(before)).slice(-300);
-    return Response.json({ events, next_after: events.length ? cursor(events.at(-1)!) : null });
-  });
-  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { live: true }, EVERYTHING, 2);
-  await feed.load();
-  const held = feed.getSnapshot().held;
-  expect(held.filter(({ event }) => event.kind === "AssistantMessage")).toHaveLength(50);
-  expect(new Set(held.map(({ key }) => key)).size).toBe(ordered.length);
-  expect(sent).toHaveLength(2);
-  expect(new URLSearchParams(sent[1]!.query).get("before_seq")).toBe(String(ordered.at(-300)!.seq));
-});
+test.each(["same instant", "overlapping visible boundary"])(
+  "live tail progresses through %s to fifty unique visible records",
+  async (shape) => {
+    const hidden = (seq: number): FeedEvent => ({
+      ...event(seq),
+      kind: "ContextState",
+      message: { kind: "token_count" },
+    });
+    const records =
+      shape === "same instant"
+        ? [
+            ...Array.from({ length: 50 }, (_, seq) => event(seq)),
+            ...Array.from({ length: 301 }, (_, seq) => hidden(seq + 50)),
+          ]
+        : [
+            event(0),
+            ...Array.from({ length: 251 }, (_, seq) => hidden(seq + 1)),
+            ...Array.from({ length: 49 }, (_, seq) => event(seq + 252)),
+            ...Array.from({ length: 251 }, (_, seq) => hidden(seq + 301)),
+          ];
+    const ordered = records.map((record) => ({
+      ...record,
+      created: "2026-10-01T10:00:00Z",
+    }));
+    const sent = stubFetch((request) => {
+      const query = new URL(request.url).searchParams;
+      const before = query.get("before_seq");
+      const events = ordered
+        .filter(({ seq }) => before === null || seq < Number(before))
+        .slice(-300);
+      return Response.json({
+        events,
+        next_after: events.length ? cursor(must(events.at(-1))) : null,
+      });
+    });
+    const feed = new ConsoleFeed(
+      new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+      { live: true },
+      EVERYTHING,
+      2,
+    );
+    await feed.load();
+    const held = feed.getSnapshot().held;
+    expect(held.filter(({ event }) => event.kind === "AssistantMessage")).toHaveLength(
+      50,
+    );
+    expect(new Set(held.map(({ key }) => key)).size).toBe(ordered.length);
+    expect(sent).toHaveLength(2);
+    expect(new URLSearchParams(must(sent[1]).query).get("before_seq")).toBe(
+      String(must(ordered.at(-300)).seq),
+    );
+  },
+);
 
-test.each([false, true])("a hidden live update stops before later reads and resumes without losing records (gap=%s)", async (gap) => {
-  const full = Array.from({ length: 300 }, (_, seq) => event(seq + 1));
-  let release: (response: Response) => void = () => { throw new Error("No held read"); };
-  let started: () => void = () => {};
-  const pending = new Promise<void>((resolve) => { started = resolve; });
-  let initial = true;
-  const sent = stubFetch((request) => {
-    const query = new URL(request.url).searchParams;
-    if (initial) { initial = false; return Response.json({ events: [event(0)], next_after: cursor(event(0)) }); }
-    if (query.get("after_seq") === "0") {
-      started();
-      return new Promise<Response>((resolve) => { release = resolve; });
-    }
-    const events = query.has("tail") ? [event(301)] : [event(301)];
-    return Response.json({ events, next_after: cursor(event(301)) });
-  });
-  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { live: true }, EVERYTHING, 4);
-  await feed.load();
-  let open = true;
-  const serial = new Serial(feed, () => open);
-  serial.push([A], gap);
-  await pending;
-  open = false;
-  release(Response.json({ events: full, next_after: cursor(full.at(-1)!) }));
-  await vi.waitFor(() => expect(feed.getSnapshot().held).toHaveLength(301), { interval: 1 });
-  expect(sent).toHaveLength(2);
-  open = true;
-  serial.resume();
-  await vi.waitFor(() => expect(sent).toHaveLength(gap ? 4 : 3), { interval: 1 });
-  expect(feed.getSnapshot().held.map(({ event }) => event.seq)).toEqual(Array.from({ length: 302 }, (_, seq) => seq));
-  serial.dispose();
-});
+test.each([false, true])(
+  "a hidden live update stops before later reads and resumes without losing records (gap=%s)",
+  async (gap) => {
+    const full = Array.from({ length: 300 }, (_, seq) => event(seq + 1));
+    let release: (response: Response) => void = () => {
+      throw new Error("No held read");
+    };
+    let started: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let initial = true;
+    const sent = stubFetch((request) => {
+      const query = new URL(request.url).searchParams;
+      if (initial) {
+        initial = false;
+        return Response.json({ events: [event(0)], next_after: cursor(event(0)) });
+      }
+      if (query.get("after_seq") === "0") {
+        started();
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      }
+      const events = query.has("tail") ? [event(301)] : [event(301)];
+      return Response.json({ events, next_after: cursor(event(301)) });
+    });
+    const feed = new ConsoleFeed(
+      new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+      { live: true },
+      EVERYTHING,
+      4,
+    );
+    await feed.load();
+    let open = true;
+    const serial = new Serial(feed, () => open);
+    serial.push([A], gap);
+    await pending;
+    open = false;
+    release(Response.json({ events: full, next_after: cursor(must(full.at(-1))) }));
+    await vi.waitFor(() => expect(feed.getSnapshot().held).toHaveLength(301), {
+      interval: 1,
+    });
+    expect(sent).toHaveLength(2);
+    open = true;
+    serial.resume();
+    await vi.waitFor(() => expect(sent).toHaveLength(gap ? 4 : 3), { interval: 1 });
+    expect(feed.getSnapshot().held.map(({ event }) => event.seq)).toEqual(
+      Array.from({ length: 302 }, (_, seq) => seq),
+    );
+    serial.dispose();
+  },
+);
 
 test("live: a gap reads past the cursor, then the newest page again, and a record read again replaces the one held", async () => {
   let server = [event(0), event(1)];
   const sent = stubFetch((request) => {
     const query = new URL(request.url).searchParams;
-    const events = query.get("tail") === "true" ? server : server.filter(({ seq }) => seq > Number(query.get("after_seq")));
-    return Response.json({ events, next_after: cursor((events.at(-1) ?? server.at(-1))!) });
+    const events =
+      query.get("tail") === "true"
+        ? server
+        : server.filter(({ seq }) => seq > Number(query.get("after_seq")));
+    return Response.json({
+      events,
+      next_after: cursor(must(events.at(-1) ?? server.at(-1))),
+    });
   });
-  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { live: true }, EVERYTHING, 4);
+  const feed = new ConsoleFeed(
+    new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+    { live: true },
+    EVERYTHING,
+    4,
+  );
   await feed.load();
   // A restart writes record 0 again, under the same key, and capture adds record 2.
-  server = [{ ...event(0), message: { content: "Restarted" }, text: "Restarted" }, event(1), event(2)];
+  server = [
+    { ...event(0), message: { content: "Restarted" }, text: "Restarted" },
+    event(1),
+    event(2),
+  ];
   const texts = () => feed.getSnapshot().held.map(({ n, event }) => [n, event.text]);
   await feed.update({ ids: new Set(["x"]), gap: false });
-  expect(texts()).toEqual([[0, "Turn 0"], [1, "Turn 1"], [2, "Turn 2"]]);
+  expect(texts()).toEqual([
+    [0, "Turn 0"],
+    [1, "Turn 1"],
+    [2, "Turn 2"],
+  ]);
   await feed.update({ ids: new Set(), gap: true });
-  expect(texts()).toEqual([[0, "Restarted"], [1, "Turn 1"], [2, "Turn 2"]]);
-  expect(feed.getSnapshot().held[0]!.record.text).toBe("Restarted");
-  expect(sent.map((request) => new URLSearchParams(request.query)).map((query) => [query.get("tail"), query.get("after_seq")])).toEqual([
+  expect(texts()).toEqual([
+    [0, "Restarted"],
+    [1, "Turn 1"],
+    [2, "Turn 2"],
+  ]);
+  expect(must(feed.getSnapshot().held[0]).record.text).toBe("Restarted");
+  expect(
+    sent
+      .map((request) => new URLSearchParams(request.query))
+      .map((query) => [query.get("tail"), query.get("after_seq")]),
+  ).toEqual([
     ["true", null],
     [null, "1"],
     [null, "2"],
@@ -203,41 +371,88 @@ test("history: the window's first page, then the next on request, while a full p
   const sent = stubFetch((request) =>
     new URL(request.url).searchParams.has("after_seq")
       ? Response.json({ events: [event(300)], next_after: cursor(event(300)) })
-      : Response.json({ events: page, next_after: cursor(page.at(-1)!) }),
+      : Response.json({ events: page, next_after: cursor(must(page.at(-1))) }),
   );
-  const window = { live: false, since: "2026-10-01T09:00:00.000Z", until: null } as const;
-  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: false } } }), window, EVERYTHING, 4);
+  const window = {
+    live: false,
+    since: "2026-10-01T09:00:00.000Z",
+    until: null,
+  } as const;
+  const feed = new ConsoleFeed(
+    new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+    window,
+    EVERYTHING,
+    4,
+  );
   await feed.load();
   expect(feed.getSnapshot().more).toBe(true);
   await feed.more();
   expect(feed.getSnapshot()).toMatchObject({ more: false });
   expect(feed.getSnapshot().held).toHaveLength(301);
-  expect(sent.map((request) => Object.fromEntries(new URLSearchParams(request.query)))).toEqual([
+  expect(
+    sent.map((request) => Object.fromEntries(new URLSearchParams(request.query))),
+  ).toEqual([
     { since: window.since, limit: "300" },
-    { after_created: page.at(-1)!.created, after_session: A, after_part: "0", after_seq: "299", since: window.since, limit: "300" },
+    {
+      after_created: must(page.at(-1)).created,
+      after_session: A,
+      after_part: "0",
+      after_seq: "299",
+      since: window.since,
+      limit: "300",
+    },
   ]);
 });
 
 test("a filtered feed asks for each of its agents, rooms, CLIs and kinds, on its first page and past its cursor", async () => {
   const sent = stubFetch((request) =>
-    Response.json({ events: new URL(request.url).searchParams.has("tail") ? [event(0)] : [], next_after: cursor(event(0)) }),
+    Response.json({
+      events: new URL(request.url).searchParams.has("tail") ? [event(0)] : [],
+      next_after: cursor(event(0)),
+    }),
   );
-  const filter = { actor: ["codex", "claude"], room: ["ops"], cli: ["codex"], kind: ["ToolCall", "UserMessage"] };
-  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { live: true }, filter, 4);
+  const filter = {
+    actor: ["codex", "claude"],
+    room: ["ops"],
+    cli: ["codex"],
+    kind: ["ToolCall", "UserMessage"],
+  };
+  const feed = new ConsoleFeed(
+    new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+    { live: true },
+    filter,
+    4,
+  );
   await feed.load();
   await feed.update({ ids: new Set(["x"]), gap: false });
   const reads = sent.map((request) => new URLSearchParams(request.query));
-  const filters = (query: URLSearchParams) => ["actor", "room", "cli", "kind"].map((name) => query.getAll(name));
+  const filters = (query: URLSearchParams) =>
+    ["actor", "room", "cli", "kind"].map((name) => query.getAll(name));
   expect(reads.map(filters)).toEqual([Object.values(filter), Object.values(filter)]);
-  expect(reads.map((query) => [query.get("tail"), query.get("after_seq")])).toEqual([["true", null], [null, "0"]]);
+  expect(reads.map((query) => [query.get("tail"), query.get("after_seq")])).toEqual([
+    ["true", null],
+    [null, "0"],
+  ]);
 });
 
 test("a first page that fails says so, and a load reads it again", async () => {
   let refuse = true;
-  stubFetch(() => (refuse ? Response.json({ detail: "statement timeout" }, { status: 500 }) : Response.json({ events: [event(0)], next_after: cursor(event(0)) })));
-  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { live: true }, EVERYTHING, 4);
+  stubFetch(() =>
+    refuse
+      ? Response.json({ detail: "statement timeout" }, { status: 500 })
+      : Response.json({ events: [event(0)], next_after: cursor(event(0)) }),
+  );
+  const feed = new ConsoleFeed(
+    new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+    { live: true },
+    EVERYTHING,
+    4,
+  );
   await feed.load();
-  expect(feed.getSnapshot()).toMatchObject({ loading: false, error: { detail: "statement timeout" } });
+  expect(feed.getSnapshot()).toMatchObject({
+    loading: false,
+    error: { detail: "statement timeout" },
+  });
   expect(await feed.update({ ids: new Set(["x"]), gap: false })).toBeNull();
   refuse = false;
   await feed.load();
@@ -246,8 +461,12 @@ test("a first page that fails says so, and a load reads it again", async () => {
 });
 
 test("a disposed feed's failed read is not tried again by the query cache", async () => {
-  const sent = stubFetch(() => Response.json({ detail: "statement timeout" }, { status: 500 }));
-  const client = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 150 } } });
+  const sent = stubFetch(() =>
+    Response.json({ detail: "statement timeout" }, { status: 500 }),
+  );
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: 1, retryDelay: 150 } },
+  });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     const feed = new ConsoleFeed(client, { live: true }, EVERYTHING, 4);

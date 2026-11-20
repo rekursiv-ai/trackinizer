@@ -87,7 +87,7 @@ async def dial_tools(
     *,
     api_key: str,
     host: str,
-    asker: str,
+    asker: str | None = None,
     limit: int,
 ) -> Streams:
     """Open the agent's socket of ``host``'s tool connection, as streams.
@@ -96,7 +96,8 @@ async def dial_tools(
         url: The server's ``http://`` or ``https://`` base URL.
         api_key: Sent as a bearer token.
         host: The host whose tools to reach.
-        asker: The email the tool connection is opened for.
+        asker: The email the assistant opens the tool connection for; ``None`` for
+            the key's own account.
         limit: The longest line the reader takes: the agent's own, as a ``Read`` of a
             large image needs; the relay caps only the lines it reads, the agent's.
 
@@ -115,9 +116,10 @@ async def dial_tools(
         raise ValueError(msg)
     # Letters are always safe, so a mutant's ``safe`` of letters is this same one.
     path = TOOLS_WS_PATH.format(name=quote(host, safe=""))  # pragma: no mutate
+    query = "" if asker is None else f"?{urlencode({'asker': asker})}"
     try:
         socket_ = await connect(
-            f"{base.replace('http', 'ws', 1)}{path}?{urlencode({'asker': asker})}",
+            f"{base.replace('http', 'ws', 1)}{path}{query}",
             additional_headers={"Authorization": f"Bearer {api_key}"},
             max_size=None,
             ping_interval=20,

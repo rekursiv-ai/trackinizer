@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, override
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast, override
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -12,7 +13,11 @@ import pytest
 
 from trackinizer.conftest import make_store
 from trackinizer.server.access_policy import DefaultPolicy, Principal
-from trackinizer.server.api.conftest import make_test_identity
+from trackinizer.server.api.conftest import (
+    SCOUT,
+    make_caller,
+    make_test_identity,
+)
 from trackinizer.server.api.session_identity import (
     Asker,
     asker_reader,
@@ -20,15 +25,18 @@ from trackinizer.server.api.session_identity import (
     is_the_assistant,
     request_principal,
     require_session,
+    session_reader,
 )
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.config import Assistant, Config
 from trackinizer.types.inquiries import AgentSession, Inquiry, Issue
+from trackinizer.wire.audience import AUDIENCES
 
 
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.auth import Role
+    from trackinizer.server.config import ChatOrgs
 
 
 @pytest.mark.asyncio
@@ -153,6 +161,66 @@ class _Policy(DefaultPolicy):
         del conn
         self.seen.append(principal)
         return frozenset({"research"})
+
+
+@pytest.mark.parametrize(
+    ("orgs", "email", "hosted_domain", "org", "oversight"),
+    [
+        ("domain", "Ann@Lab.Example", "Lab.example", "lab.example", True),
+        ("domain", "Ann@Lab.Example", None, None, True),
+        ("domain", "sam@gmail.com", None, None, True),
+        ("domain", "agent@service.invalid", "service.invalid", None, False),
+        ("domain", "scout@example.com", "example.com", None, False),
+        ("single", "Ann@Lab.Example", "lab.example", None, True),
+        ("single", "agent@service.invalid", None, None, False),
+        ("single", "scout@example.com", None, None, False),
+        ("individual", "Ann@Lab.Example", "lab.example", None, True),
+        ("individual", "scout@example.com", None, None, False),
+    ],
+)
+def test_session_reader_follows_the_chat_orgs_setting(
+    orgs: ChatOrgs,
+    *,
+    email: str,
+    hosted_domain: str | None,
+    org: str | None,
+    oversight: bool,
+) -> None:
+    """Only a person has an organisation, which Google's hd claim names, and oversees.
+
+    One server reads every session.
+    """
+    state = SimpleNamespace(config=Config(assistant=SCOUT, chat_orgs=orgs))
+    request = cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
+
+    reader = session_reader(
+        request,
+        make_caller("open", "staff", email=email, hosted_domain=hosted_domain),
+    )
+    listing = session_reader(request, make_caller("open", email=email), hidden=False)
+
+    assert reader == SessionReader(
+        audiences=frozenset({"open", "staff"}),
+        email=email.lower(),
+        org=org,
+        every_session=orgs == "single",
+        oversight=oversight,
+    )
+    assert (listing.hidden, listing.oversight) == (False, False)
+
+
+def test_without_auth_the_one_caller_reads_every_session_and_open_chat() -> None:
+    state = SimpleNamespace(config=Config(auth_disabled=True, chat_orgs="individual"))
+    request = cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
+
+    reader = session_reader(request, make_caller(email="no-auth@localhost"))
+
+    assert reader == SessionReader(
+        audiences=AUDIENCES,
+        email="no-auth@localhost",
+        every_session=True,
+        oversight=True,
+    )
 
 
 if __name__ == "__main__":

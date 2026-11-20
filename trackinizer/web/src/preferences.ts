@@ -20,23 +20,52 @@ export const DEFAULT_PREFERENCES: Preferences = {
   skin: "default",
   scanlines: true,
   terminal_colors: {
-    text: "#00ff00", background: "#000000", bold: null, bold_is_bright: true,
-    palette: ["#171421", "#c01c28", "#26a269", "#a2734c", "#12488b", "#a347ba", "#2aa1b3", "#d0cfcc",
-      "#5e5c64", "#f66151", "#33d17a", "#e9ad0c", "#2a7bde", "#c061cb", "#33c7de", "#ffffff"],
+    text: "#00ff00",
+    background: "#000000",
+    bold: null,
+    bold_is_bright: true,
+    palette: [
+      "#171421",
+      "#c01c28",
+      "#26a269",
+      "#a2734c",
+      "#12488b",
+      "#a347ba",
+      "#2aa1b3",
+      "#d0cfcc",
+      "#5e5c64",
+      "#f66151",
+      "#33d17a",
+      "#e9ad0c",
+      "#2a7bde",
+      "#c061cb",
+      "#33c7de",
+      "#ffffff",
+    ],
   },
   chat_side: "left",
   app_bar: "top",
   app_bar_width: 220,
   app_bar_folded: false,
+  app_bar_pinned: true,
+  font: "system",
+  interface_text_size: 14,
+  chat_text_size: 13,
+  canvas_text_size: 14,
+  display_text_sizes: {},
   highlight_mentions: true,
   terminal_font_size: "13px",
   terminal_tab_chords: false,
-  terminal_placement: "bottom",
   home: "graph",
-  chat_provider: "assistant",
   assistant_prompt: "sagent",
   cli_folder: "",
-  chat_view: { view: "chat", density: "auto", thinking: false, output_lines: "tool", times: false },
+  chat_view: {
+    view: "chat",
+    density: "auto",
+    thinking: false,
+    output_lines: "tool",
+    times: false,
+  },
   autofix: true,
   automerge: false,
   hide_closed_pulls: true,
@@ -52,7 +81,14 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lens: null,
   drafts: {},
   create_draft: null,
-  workspaces: { order: [], hidden: [], colors: {}, expanded: [], tabs: [], last_canvas: {} },
+  workspaces: {
+    order: [],
+    hidden: [],
+    colors: {},
+    expanded: [],
+    tabs: [],
+    last_canvas: {},
+  },
   settings_artifact_id: null,
 };
 
@@ -97,9 +133,17 @@ export function usePreferences(): Preferences {
  */
 function show(next: Preferences): void {
   const kept = Object.fromEntries(
-    (Object.keys(next) as (keyof Preferences)[]).map((key) => [key, sameJson(next[key], current[key]) ? current[key] : next[key]]),
+    (Object.keys(next) as (keyof Preferences)[]).map((key) => [
+      key,
+      sameJson(next[key], current[key]) ? current[key] : next[key],
+    ]),
   ) as Preferences;
-  if ((Object.keys(kept) as (keyof Preferences)[]).every((key) => kept[key] === current[key])) return;
+  if (
+    (Object.keys(kept) as (keyof Preferences)[]).every(
+      (key) => kept[key] === current[key],
+    )
+  )
+    return;
   current = kept;
   for (const listener of [...listeners]) listener();
 }
@@ -115,7 +159,9 @@ export function receivePreferences(next: Partial<Preferences> | undefined): void
 
 /** `values` without a key this page does not know: one an older server still sends (`chat_style`) is dropped, not shown. */
 function known(values: Preferences): Preferences {
-  return Object.fromEntries(Object.entries(values).filter(([key]) => key in DEFAULT_PREFERENCES)) as Preferences;
+  return Object.fromEntries(
+    Object.entries(values).filter(([key]) => key in DEFAULT_PREFERENCES),
+  ) as Preferences;
 }
 
 /**
@@ -124,7 +170,10 @@ function known(values: Preferences): Preferences {
  * the server's back. Resolves whether the server took it. `keepalive` lets the
  * request outlive the page, for a change made as it closes.
  */
-export async function choosePreferences(change: Partial<Preferences>, { keepalive = false } = {}): Promise<boolean> {
+export async function choosePreferences(
+  change: Partial<Preferences>,
+  { keepalive = false } = {},
+): Promise<boolean> {
   show({ ...current, ...change });
   sending += 1;
   const turn = last.then(() => setPreferences(change, { keepalive }));
@@ -160,7 +209,9 @@ let listening = false;
  * Meanwhile a profile read does not undo it, as for `choosePreferences`.
  */
 export function choosePreferencesSoon(change: Partial<Preferences>): void {
-  const keys = (Object.keys(change) as (keyof Preferences)[]).filter((key) => !sameJson(change[key], current[key]));
+  const keys = (Object.keys(change) as (keyof Preferences)[]).filter(
+    (key) => !sameJson(change[key], current[key]),
+  );
   if (keys.length === 0) return;
   show({ ...current, ...change });
   if (waiting.size === 0) sending += 1;
@@ -197,7 +248,12 @@ export async function sendWaiting({ keepalive = false } = {}): Promise<void> {
  * server takes it, then this browser forgets it. Nothing to send, nothing is sent.
  */
 export async function adoptLegacyPreferences(email: string): Promise<void> {
-  const keys = [LEGACY.theme, LEGACY.style, LEGACY.chat_side, LEGACY.highlight_mentions(email)];
+  const keys = [
+    LEGACY.theme,
+    LEGACY.style,
+    LEGACY.chat_side,
+    LEGACY.highlight_mentions(email),
+  ];
   let kept: (string | null)[];
   try {
     kept = keys.map((key) => localStorage.getItem(key));
@@ -210,8 +266,10 @@ export async function adoptLegacyPreferences(email: string): Promise<void> {
     ...(side === "left" || side === "right" ? { chat_side: side } : {}),
     ...(mentions === "off" ? { highlight_mentions: false } : {}),
   };
-  if (Object.keys(change).length > 0 && !await choosePreferences(change)) return;
+  if (Object.keys(change).length > 0 && !(await choosePreferences(change))) return;
   try {
     for (const key of keys) localStorage.removeItem(key);
-  } catch { /* Storage can be unavailable; then there is nothing to forget either. */ }
+  } catch {
+    /* Storage can be unavailable; then there is nothing to forget either. */
+  }
 }

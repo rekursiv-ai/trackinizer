@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Final
 from urllib.parse import parse_qsl
 from uuid import UUID
 
+import contextlib
 import json
 import time
 
@@ -29,6 +30,7 @@ from trackinizer.wire.wire_session_relay import (
     ProcessSpec,
     ServeSession,
     StateLine,
+    StopProcess,
 )
 
 
@@ -90,7 +92,7 @@ _CALLS: Final[tuple[tuple[str, str, Callable[[Client], object]], ...]] = (
 
 
 def _client(answer: Callable[[httpx2.Request], httpx2.Response]) -> Client:
-    found = Client("http://relay.test")
+    found = Client("https://relay.test")
     found._http.close()
     found._http = httpx2.Client(
         base_url=found.base_url,
@@ -256,6 +258,41 @@ def test_open_lines_yields_each_frame_and_skips_what_is_not_one() -> None:
     assert _read_timeout(recorder.requests[0]) == 2.5 * LINES_PING_SEC
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_lines_stream_closes_response_after_partial_read_or_error(fail: bool) -> None:
+    response = httpx2.Response(200, content=iter([b'data: {"type":"opened"}\n\n']))
+    with (
+        _client(_Recorder(response)) as found,
+        pytest.raises(ValueError, match="caller failed")
+        if fail
+        else contextlib.nullcontext(),
+        found.lines_stream(_SESSION) as frames,
+    ):
+        assert next(frames) == Opened()
+        assert not response.is_closed
+        if fail:
+            raise ValueError("caller failed")
+    assert response.is_closed
+
+
+def _broken_lines() -> Iterator[bytes]:
+    yield b": open\n\n"
+    raise httpx2.ReadError("stream broke")
+
+
+def test_a_broken_lines_stream_wraps_the_transport_error() -> None:
+    response = httpx2.Response(200, content=_broken_lines())
+    with (
+        _client(_Recorder(response)) as found,
+        pytest.raises(
+            ClientError,
+            match="stream broke",
+        ),
+    ):
+        _ = list(found.open_lines(_SESSION))
+    assert response.is_closed
+
+
 def test_open_lines_reads_a_refusals_body_before_it_names_the_refusal() -> None:
     # Made here, not shared: a stream's body is unread until asked for, and once read
     # stays read, so a shared one would pass a client that never reads it.
@@ -295,23 +332,26 @@ def test_open_lines_raises_a_client_error_naming_the_stream_it_cannot_read(
     assert raised.value.status_code is None
 
 
-def test_the_daemons_session_wait_returns_the_next_start_or_none() -> None:
+def test_the_daemons_session_wait_returns_the_next_start_a_stop_or_none() -> None:
     serve = ServeSession(
         session_id=_SESSION,
         process_id=_PROCESS,
         token=f"key-{_PROCESS.hex}",
         spec=_SPEC,
     )
+    stop = StopProcess(process_id=_PROCESS)
     recorder = _Recorder(
         httpx2.Response(200, json=serve.model_dump(mode="json")),
         httpx2.Response(200, json=None),
+        httpx2.Response(200, json=stop.model_dump(mode="json")),
     )
 
     with _client(recorder) as found:
         first = found.wait_session(_HOST, instance=_INSTANCE, wait_sec=25)
         second = found.wait_session(_HOST, instance=_INSTANCE, wait_sec=0)
+        third = found.wait_session(_HOST, instance=_INSTANCE, wait_sec=0)
 
-    assert (first, second) == (serve, None)
+    assert (first, second, third) == (serve, None, stop)
     sent = recorder.requests[0]
     assert (sent.method, sent.url.path, dict(parse_qsl(sent.url.query.decode()))) == (
         "GET",
@@ -324,7 +364,12 @@ def test_the_daemons_session_wait_returns_the_next_start_or_none() -> None:
 
 
 def test_the_daemon_reports_how_a_process_it_started_ended() -> None:
-    ended = ProcessEnded(process_id=_PROCESS, exit_code=None, reason="no such folder")
+    ended = ProcessEnded(
+        process_id=_PROCESS,
+        exit_code=3,
+        reason="exited with code 3",
+        output="Traceback",
+    )
     recorder = _Recorder(httpx2.Response(204))
 
     with _client(recorder) as found:
@@ -333,7 +378,12 @@ def test_the_daemon_reports_how_a_process_it_started_ended() -> None:
     assert _sent(recorder.requests[0]) == (
         "POST",
         f"/api/hosts/{_HOST}/sessions/ended",
-        {"process_id": str(_PROCESS), "exit_code": None, "reason": "no such folder"},
+        {
+            "process_id": str(_PROCESS),
+            "exit_code": 3,
+            "reason": "exited with code 3",
+            "output": "Traceback",
+        },
     )
 
 

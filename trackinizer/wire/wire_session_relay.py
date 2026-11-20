@@ -23,7 +23,9 @@ A session is live while an agent process holds a socket on
 
 - A viewer reads :data:`SESSION_LINES_PATH`, a stream of server-sent frames.
 - A person posts to :data:`SESSION_INPUTS_PATH`, and starts, reads and stops the
-  process on :data:`SESSION_PROCESS_PATH`.
+  process on :data:`SESSION_PROCESS_PATH`. A message sent to the session through
+  ``POST /api/messages`` (``wire_sessions.SendMessage``), a person's or another
+  session's agent's, comes down as an :class:`Input` too.
 - The daemon is handed a start on its held ``GET`` of
   :data:`HOST_SESSIONS_WAIT_PATH`, and reports the process's end to
   :data:`HOST_SESSIONS_ENDED_PATH`.
@@ -63,31 +65,35 @@ from __future__ import annotations
 from typing import Annotated, Final, Literal, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
 from trackinizer.wire.wire_session_ir import RecordBody
+from trackinizer.wire.wire_sessions import MessageKind
 from trackinizer.wire.wire_terminals import RunFolder
 
 
 __all__ = [
     "HOST_SESSIONS_ENDED_PATH",
     "HOST_SESSIONS_WAIT_PATH",
+    "INPUT_REFUSED",
     "LINES_PING_SEC",
     "LOGINS_FACT",
     "MAX_FRAME_BYTES",
     "MAX_REASON_CHARS",
     "NOT_LIVE",
     "NO_PLACE",
+    "REMOTE_AGENTS_FACT",
+    "REMOTE_AGENT_FLAGS",
     "SESSIONS_FACT",
     "SESSION_INPUTS_PATH",
     "SESSION_LINES_PATH",
     "SESSION_PROCESS_PATH",
     "SESSION_PROCESS_WS_PATH",
-    "SHARED_FACT",
     "STALE_PART",
     "AgentProcess",
     "AgentState",
+    "BackgroundJob",
     "Command",
     "EventLine",
     "Hello",
@@ -105,7 +111,10 @@ __all__ = [
     "Setting",
     "SettingsLine",
     "StateLine",
+    "StopProcess",
+    "TeamMember",
     "ViewerFrame",
+    "remote_flags_refused",
 ]
 
 SESSION_LINES_PATH: Final = "/api/sessions/{session_id}/lines"
@@ -131,9 +140,10 @@ HOST_SESSIONS_ENDED_PATH: Final = "/api/hosts/{host_id}/sessions/ended"
 SESSIONS_FACT: Final = "sessions"
 """The fact a daemon reports as ``true`` when it starts agent processes."""
 
-SHARED_FACT: Final = "shared"
-"""The fact a daemon reports as ``true`` when it confines each agent process it
-starts, so that it may run agents for accounts other than its own."""
+REMOTE_AGENTS_FACT: Final = "remote_agents"
+"""The fact a daemon reports as ``true`` when it is a remote agent service: it
+confines each agent process it starts, so that it may run agents for accounts other
+than its own."""
 
 LOGINS_FACT: Final = "logins"
 """The fact a daemon reports as ``true`` when its host's model login answers the
@@ -141,6 +151,10 @@ model calls of agents that run elsewhere."""
 
 NOT_LIVE: Final = "not_live"
 """The ``code`` of a 409 for an input to a session no process serves."""
+
+INPUT_REFUSED: Final = "input_refused"
+"""The ``code`` of a 409 for an input the server will not hold for the session's
+process: larger than a frame, or past what it holds unread; its message says which."""
 
 NO_PLACE: Final = "no_place"
 """The ``code`` of a 409 for a start a named place cannot serve: its host starts
@@ -158,7 +172,7 @@ LINES_PING_SEC: Final = 25
 keep-alive. A reader that hears nothing for 2.5 times this has lost the stream."""
 
 MAX_REASON_CHARS: Final = 4_096
-"""The most of a process's output a daemon reports as why it ended."""
+"""The most characters a daemon reports of why a process ended, and of its output."""
 
 type InputKind = Literal["UserMessage", "Halt", "Command"]
 """What a person may send the root agent: a line, a stop of the turn, or a slash
@@ -181,8 +195,58 @@ class Hello(BaseModel):
     """The name of the host it runs on."""
 
 
+class BackgroundJob(BaseModel):
+    """A tool call an agent of the session runs apart from its turn.
+
+    One asked to run in the background or later, or detached from a turn that
+    stopped waiting for it.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    call_id: str
+    tool: str
+    title: str
+    """The tool's own label for the call, as sagent's terminal shows it."""
+
+    agent: str = ""
+    """The label of the child agent that runs it; empty for the root's own."""
+
+    started: UtcDatetime
+    """When it was asked for."""
+
+    state: Literal["sleeping", "running"]
+    """``sleeping`` until a delayed call starts, then ``running``."""
+
+    awaited: bool = False
+    """Whether its agent waits for it, by a ``BackgroundTask`` foreground call; that
+    call is no job of its own."""
+
+
+class TeamMember(BaseModel):
+    """An agent of the session, as sagent's tree screen shows it."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    label: str
+    parent: str = ""
+    """The label of the agent that spawned it; empty for a root."""
+
+    busy: bool
+    """Whether its model call, its tool calls or a compaction runs."""
+
+    spend_usd: float = 0.0
+    session: UUID | None = None
+    """The session its records are stored in: the session's own for the root agent;
+    ``None`` for an agent none is stored for yet."""
+
+
 class AgentState(BaseModel):
-    """What the root agent is doing now: the whole source of a viewer's status line."""
+    """What the session's agents are doing now.
+
+    The source of a viewer's status line, its spinners, and its count of what runs
+    in the background.
+    """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -190,13 +254,39 @@ class AgentState(BaseModel):
     """The status line as sagent's own terminal shows it, with no spinner."""
 
     busy: bool
-    """Whether a model call, a tool call or a compaction runs."""
+    """Whether the root agent's model call, its tool calls or a compaction runs."""
 
     since: UtcDatetime
     """When ``busy`` last changed; a viewer counts up from it while the agent is busy."""
 
     pending: tuple[JSON, ...] = ()
     """Each message sent mid-turn that waits for the model, in the events' codec."""
+
+    jobs: tuple[BackgroundJob, ...] | None = None
+    """Each background job of every agent of the session, the root's first; ``None``
+    from a process too old to say, whose jobs only its records tell."""
+
+    team: tuple[TeamMember, ...] | None = None
+    """Each agent of the session, a root's children after it, depth first, as sagent's
+    tree screen orders them; ``None`` from a process too old to say."""
+
+    turn_ended: UtcDatetime | None = None
+    """When the root agent last ended a turn: left with nothing to do, failed, or
+    halted; ``None`` before its first. One that leaves a background job running has
+    not ended: it ends once the turn the job's result starts does."""
+
+    @computed_field
+    @property
+    def working(self) -> bool:
+        """Whether anything of the session works: the root, a job, or a child agent.
+
+        A process too old to name its jobs and agents works while its root does.
+        """
+        return (
+            self.busy
+            or bool(self.jobs)
+            or any(member.busy for member in self.team or ())
+        )
 
 
 class AgentProcess(BaseModel):
@@ -217,11 +307,21 @@ class AgentProcess(BaseModel):
     """Why it is ``detached``: ``stopped``, ``exited``, ``disconnected``, or what its
     daemon reported; empty otherwise."""
 
+    failed: bool = False
+    """Whether it is ``detached`` as a failure: given up on before its ``Hello``, ended
+    while still starting, or reported by its daemon with an exit code other than 0,
+    or none. A person's stop is no failure."""
+
     version: str = ""
     """Its client's version, once it has said :class:`Hello`."""
 
     since: UtcDatetime
     """When it entered ``state``."""
+
+    output: str = ""
+    """The end of its output, as its daemon reported it when it ended: answered by
+    ``GET`` :data:`SESSION_PROCESS_PATH` to a writer of the session alone, and empty
+    for anyone else and in every line a viewer reads."""
 
 
 class EventLine(BaseModel):
@@ -302,7 +402,11 @@ class ProcessLine(BaseModel):
 
 
 class Opened(BaseModel):
-    """The first frame of a viewer's stream: where the session stands as it opens."""
+    """The first frame of a viewer's stream: where the session stands as it opens.
+
+    The event lines of a reply still being written follow it, if one is; a finished
+    reply is a record, read with the records.
+    """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -321,7 +425,8 @@ type ViewerFrame = Annotated[
     Opened | EventLine | StateLine | SettingsLine | RecordLine | ProcessLine,
     Field(discriminator="type"),
 ]
-"""One frame of a viewer's stream: an :class:`Opened` first, then each line."""
+"""One frame of a viewer's stream: an :class:`Opened` first, then the event lines of a
+reply still being written, then each line."""
 
 type ProcessFrame = Annotated[
     Hello | EventLine | StateLine | SettingsLine,
@@ -378,10 +483,18 @@ class Input(BaseModel):
     type: Literal["input"] = "input"
     id: UUID
     author: str
-    """The sender's email, attested by the server."""
+    """Who sent it, as the server attests: a person's email, or ``label#number`` for
+    an agent of another session."""
 
     kind: InputKind
     payload: JSON
+    recipient: str = ""
+    """The agent it is for, by its label in the session; empty for the root. A
+    ``Halt`` for ``all`` halts every agent of the process: the server's, when the
+    deployment's agent policy asks it to."""
+
+    booked: MessageKind | None = None
+    """How the sending agent's team booked it; ``None`` for a person's input."""
 
 
 class ProcessSpec(BaseModel):
@@ -405,7 +518,54 @@ class ProcessSpec(BaseModel):
     """The folder on ``host`` to start in."""
 
     args: tuple[str, ...] = ()
-    """sagent's own command-line flags, as a person would type them."""
+    """sagent's own command-line flags, as a person would type them, after the
+    client's ``--time TIME`` when the start has a time limit. A remote agent takes only
+    :data:`REMOTE_AGENT_FLAGS` (:func:`remote_flags_refused`)."""
+
+
+REMOTE_AGENT_FLAGS: Final = frozenset(
+    {
+        "--time",
+        "--name",
+        "--model",
+        "--model.thinking.effort",
+        "--max-budget-usd",
+        "--max-tool-call-rounds",
+        "--system-prompt",
+        "--append-system-prompt",
+    },
+)
+"""The flags a remote agent's start may carry, each once and with its value: a campaign
+lead's time limit, label, model, effort, caps and prompt.
+None of them reaches past the confinement the service adds after them: its tools,
+providers, directives, skills or MCP servers."""
+
+
+def remote_flags_refused(args: tuple[str, ...]) -> str:
+    """Say why a remote agent refuses a start's ``args``; empty when it takes them.
+
+    Args:
+      args: The start's flags, ``ProcessSpec.args``.
+
+    Returns:
+      why: The first word it refuses and why, as ``a remote agent takes no --tools``;
+        ``""`` when each is one of :data:`REMOTE_AGENT_FLAGS`, once, with a value that
+        is no flag, and ``--time`` comes first.
+
+    """
+    seen: set[str] = set()
+    for at in range(0, len(args), 2):
+        flag = args[at]
+        if flag not in REMOTE_AGENT_FLAGS:
+            return f"a remote agent takes no {flag}"
+        if flag == "--time" and at:
+            return "a remote agent takes --time first"
+        if at + 1 == len(args) or args[at + 1].startswith("--"):
+            return f"a remote agent takes {flag} with a value"
+        if flag in seen:
+            return f"a remote agent takes {flag} once"
+        seen.add(flag)
+    return ""
 
 
 class ServeSession(BaseModel):
@@ -419,6 +579,23 @@ class ServeSession(BaseModel):
     """An API key for this process alone, revoked when it is stopped or ends."""
 
     spec: ProcessSpec
+    remote: bool = False
+    """Whether the server placed it with a remote agent service, whose daemon must
+    confine it: one that confines nothing refuses it."""
+
+
+class StopProcess(BaseModel):
+    """A stop of a process a remote agent service runs, which its daemon carries out.
+
+    The server stops a process by closing its socket, which an agent that was broken
+    into need not heed; its service ends it whole. Only a remote agent service's wait
+    is handed one.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    type: Literal["stop"] = "stop"
+    process_id: UUID
 
 
 class ProcessEnded(BaseModel):
@@ -428,7 +605,12 @@ class ProcessEnded(BaseModel):
 
     process_id: UUID
     exit_code: int | None
-    """Its exit status; ``None`` when it could not be started."""
+    """Its exit status; ``None`` when it could not be started, or ended unwatched."""
 
     reason: str = Field(max_length=MAX_REASON_CHARS)
-    """The end of its output, or why it could not be started."""
+    """Why it ended in the daemon's own words: its exit code, or why it could not be
+    started. Every reader of the session is told it."""
+
+    output: str = Field(default="", max_length=MAX_REASON_CHARS)
+    """The end of its output, which may hold anything the process printed: only a
+    writer of the session reads it."""

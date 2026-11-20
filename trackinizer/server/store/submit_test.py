@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -16,22 +16,18 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import (
-    FakeEngine,
     executed_sql,
     make_conn,
     make_store,
     new_uuid,
     queue_field_rows,
 )
-from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.mock_test_support import AsyncMockProtocol
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.wire.bodies import (
     BatchEdge,
@@ -48,10 +44,6 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
-
-
-if TYPE_CHECKING:
-    from trackinizer.mock_test_support import MockConnection
 
 
 class TestSubmit:
@@ -373,9 +365,8 @@ class TestSubmit:
 
     @pytest.mark.asyncio
     async def test_submit_experiment_validates_codechanges_before_insert(self) -> None:
-        # An invalid codechange ref must fail BEFORE the row is inserted and
-        # embedded: validation is a pre_insert gate, so a bad ref wastes no
-        # embed work and writes no inquiries row.
+        # An invalid codechange ref must fail BEFORE the row is inserted:
+        # validation is a pre_insert gate, so a bad ref writes no inquiries row.
         bad_ref = new_uuid()
         conn = make_conn()
         conn.fetch = AsyncMock(return_value=[])  # lookup_kinds: ref not found.
@@ -386,7 +377,6 @@ class TestSubmit:
             )
         sqls = executed_sql(conn)
         assert not any("INSERT INTO inquiries" in s for s in sqls)
-        assert not any("INSERT INTO inquiry_embeddings" in s for s in sqls)
 
     @pytest.mark.asyncio
     async def test_submit_belief_inserts_and_logs(self) -> None:
@@ -658,53 +648,6 @@ class TestSubmitExceptionDrainsHeaderSlot:
             f"submit left the externally-set Idempotency-Key {header_key} in "
             f"the slot after raising; it will leak into the next submit's "
             f"emit_change"
-        )
-
-
-class _BeginRecordingEmbedder:
-    """Embedder that records whether ``BEGIN`` ran on ``conn`` at embed time.
-
-    The single-submit path must embed BEFORE opening the transaction (F56),
-    matching ``set_title``: a network embedder held inside the tx pins the
-    single PGlite connection across the round-trip, serializing every writer.
-    """
-
-    name = "begin-recorder"
-    dim = StubEmbedder.dim
-
-    def __init__(self, conn: MockConnection) -> None:
-        self._conn = conn
-        self.began_before_embed: list[bool] = []
-
-    async def embed(self, text: str) -> list[float]:
-        del text
-        self.began_before_embed.append(
-            any(
-                call.args and call.args[0] == "BEGIN"
-                for call in self._conn.execute.call_args_list
-            ),
-        )
-        return [0.0] * self.dim
-
-
-class TestSubmitEmbedsBeforeTx:
-    """Single-submit embeds before the owned tx (F56 lock-contention fix)."""
-
-    @pytest.mark.asyncio
-    async def test_single_submit_embeds_before_begin(self) -> None:
-        """``submit_issue`` must embed before issuing ``BEGIN`` on its conn.
-
-        Embedding inside the tx pins the single PGlite connection across the
-        embedder round-trip; ``set_title`` already embeds first, and submit
-        must match so a submit doesn't block every other writer.
-        """
-        conn = make_conn()
-        embedder = _BeginRecordingEmbedder(conn)
-        store = Store(cast(DatabaseEngine, FakeEngine(conn)), embed=embedder)
-        await store.submit_issue(SubmitIssue(title="t", account="tester@example.com"))
-        assert embedder.began_before_embed == [False], (
-            "submit embedded after BEGIN -- the embedder round-trip holds the "
-            "single PGlite connection across the tx, serializing writers"
         )
 
 

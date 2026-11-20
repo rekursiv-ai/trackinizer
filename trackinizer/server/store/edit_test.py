@@ -716,12 +716,12 @@ class TestSettersForwardToThePipeline:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "route",
-        # ``set_title`` re-embeds in its own transaction, and a cost axis writes
-        # through ``set_cost_axis``; every other field route's setter is a pipeline's.
+        # A cost axis writes through ``set_cost_axis``; every other field route's
+        # setter is a pipeline's.
         [
             pytest.param(route, id=route.column)
             for route in inquiry_field_routes()
-            if route.set_method not in {None, "set_title"}
+            if route.set_method is not None
         ],
     )
     async def test_a_setter_forwards_its_row_value_and_audit_unchanged(

@@ -9,7 +9,9 @@ import type { Role } from "../api/me";
 const RANK: { readonly [role in Role]: number } = { viewer: 0, writer: 1, admin: 2 };
 
 /** Every role, weakest first. */
-const ROLES: readonly Role[] = (Object.keys(RANK) as Role[]).sort((a, b) => RANK[a] - RANK[b]);
+const ROLES: readonly Role[] = (Object.keys(RANK) as Role[]).sort(
+  (a, b) => RANK[a] - RANK[b],
+);
 
 /**
  * The roles someone whose role is `ceiling` may hand out: theirs and weaker
@@ -17,5 +19,7 @@ const ROLES: readonly Role[] = (Object.keys(RANK) as Role[]).sort((a, b) => RANK
  * one that would (403). None for a role this build does not know.
  */
 export function rolesUpTo(ceiling: string): Role[] {
-  return Object.hasOwn(RANK, ceiling) ? ROLES.filter((role) => RANK[role] <= RANK[ceiling as Role]) : [];
+  return Object.hasOwn(RANK, ceiling)
+    ? ROLES.filter((role) => RANK[role] <= RANK[ceiling as Role])
+    : [];
 }

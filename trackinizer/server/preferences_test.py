@@ -8,16 +8,23 @@ from unittest.mock import AsyncMock
 import uuid
 
 from pydantic import JsonValue
+from pydantic_core import to_json
+from treekle import from_plain
 
 import pydantic
 import pytest
 
 from trackinizer.mock_test_support import AsyncMockProtocol, MockConnection
 from trackinizer.server.preferences import (
+    AGENT_KEYS,
     ASSISTANT_KEYS,
     SETTING,
     ChatView,
     Preferences,
+    assistant_settings_schema,
+    assistant_view,
+    inline_refs,
+    read_preferences,
     stored_preferences,
     write_preferences,
 )
@@ -59,12 +66,16 @@ _DEFAULTS: dict[str, JsonValue] = {
     "app_bar": "top",
     "app_bar_width": 220,
     "app_bar_folded": False,
+    "app_bar_pinned": True,
+    "font": "system",
+    "interface_text_size": 14,
+    "chat_text_size": 13,
+    "canvas_text_size": 14,
+    "display_text_sizes": {},
     "highlight_mentions": True,
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
-    "terminal_placement": "bottom",
     "home": "graph",
-    "chat_provider": "assistant",
     "assistant_prompt": "sagent",
     "cli_folder": "",
     "chat_view": {
@@ -286,13 +297,6 @@ def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> No
     assert marked == ASSISTANT_KEYS
 
 
-def test_a_new_chat_starts_on_the_assistant_unless_the_user_picked_a_cli() -> None:
-    assert stored_preferences(None).chat_provider == "assistant"
-    assert stored_preferences({"chat_provider": "codex"}).chat_provider == "codex"
-    with pytest.raises(pydantic.ValidationError):
-        Preferences.model_validate({"chat_provider": "gemini"})
-
-
 @pytest.mark.parametrize("folder", ["", "~", "~/work/web", "/srv/repo"])
 def test_a_run_folder_is_home_or_a_path_a_run_takes(folder: str) -> None:
     assert stored_preferences({"cli_folder": folder}).cli_folder == folder
@@ -305,36 +309,24 @@ def test_a_run_folder_a_run_would_refuse_is_refused(folder: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
-    conn = cast(
-        MockConnection,
-        AsyncMock(
-            fetchrow=AsyncMock(
-                return_value={"preferences": {"chat_provider": "claude"}},
-            ),
-        ),
-    )
-    written = await write_preferences(
-        cast("Conn", conn),
-        user_id=_USER,
-        change={"chat_provider": "claude"},
-    )
-    assert written is not None
-    assert written.chat_provider == "claude"
-    conn.fetchrow.assert_awaited_once_with(
-        "UPDATE users SET preferences = "
-        "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
-        "WHERE id = $3 RETURNING preferences",
-        {"chat_provider": "claude"},
-        ["chat_style", "chat_tool_calls"],
-        _USER,
-    )
-    with pytest.raises(ValueError, match="chat_provider: "):
+@pytest.mark.parametrize(
+    ("key", "stored", "sent"),
+    [("chat_provider", "codex", "claude"), ("terminal_placement", "side", "bottom")],
+)
+async def test_a_retired_key_reads_as_nothing_and_is_refused_on_write(
+    key: str,
+    stored: str,
+    sent: str,
+) -> None:
+    assert key not in stored_preferences({key: stored}).model_dump()
+    conn = cast(MockConnection, AsyncMock())
+    with pytest.raises(ValueError, match=f"No such preference: {key}"):
         await write_preferences(
             cast("Conn", conn),
             user_id=_USER,
-            change={"chat_provider": "gemini"},
+            change={key: sent},
         )
+    conn.fetchrow.assert_not_awaited()
 
 
 _TERMINAL: Final = {
@@ -419,7 +411,7 @@ async def test_a_write_picks_a_chat_view_and_puts_it_back_dropping_the_retired_k
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"chat_view": _TERMINAL},
-        ["chat_style", "chat_tool_calls"],
+        ["chat_style", "chat_tool_calls", "chat_provider", "terminal_placement"],
         _USER,
     )
     conn.fetchrow = cast(
@@ -438,7 +430,13 @@ async def test_a_write_picks_a_chat_view_and_puts_it_back_dropping_the_retired_k
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_view", "chat_style", "chat_tool_calls"],
+        [
+            "chat_view",
+            "chat_style",
+            "chat_tool_calls",
+            "chat_provider",
+            "terminal_placement",
+        ],
         _USER,
     )
 
@@ -455,6 +453,108 @@ def test_a_terminal_font_size_is_px_or_pt(size: str) -> None:
 def test_any_other_terminal_font_size_is_refused(size: str) -> None:
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"terminal_font_size": size})
+
+
+def test_the_app_bar_is_pinned_until_the_user_or_their_agent_unpins_it() -> None:
+    assert stored_preferences(None).app_bar_pinned is True
+    assert stored_preferences({"app_bar_pinned": False}).app_bar_pinned is False
+    assert "app_bar_pinned" in ASSISTANT_KEYS
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"app_bar_pinned": "no"})
+
+
+@pytest.mark.parametrize("font", ["system", "inter", "source_sans_3", "nunito_sans"])
+def test_a_font_is_the_systems_or_one_the_app_serves(font: str) -> None:
+    assert Preferences.model_validate({"font": font}).font == font
+    assert "font" in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize("font", ["Inter", "comic_sans", "", "ibm-plex-sans"])
+def test_any_other_font_is_refused(font: str) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"font": font})
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"interface_text_size": 11},
+        {"interface_text_size": 20},
+        {"chat_text_size": 10},
+        {"chat_text_size": 24},
+        {"canvas_text_size": 11},
+        {"canvas_text_size": 20},
+    ],
+)
+def test_text_sizes_take_their_whole_px_bounds(change: dict[str, JsonValue]) -> None:
+    key = next(iter(change))
+    assert Preferences.model_validate(change).model_dump()[key] == change[key]
+    assert key in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"interface_text_size": 10},
+        {"interface_text_size": 21},
+        {"chat_text_size": 9},
+        {"chat_text_size": 25},
+        {"chat_text_size": 13.5},
+        {"chat_text_size": "13"},
+        {"chat_text_size": None},
+        {"canvas_text_size": 10},
+        {"canvas_text_size": 21},
+    ],
+)
+def test_a_text_size_past_its_bounds_or_not_whole_px_is_refused(
+    change: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate(change)
+
+
+def test_a_display_keeps_its_own_sizes_and_follows_the_default_for_the_rest() -> None:
+    sizes = {
+        "2560x1440": {
+            "label": "2560 × 1440",
+            "interface_text_size": 16,
+            "chat_text_size": None,
+        },
+        "1512x982": {
+            "label": "Built-in Retina Display",
+            "chat_text_size": 15,
+            "canvas_text_size": 12,
+        },
+    }
+    read = stored_preferences({"display_text_sizes": sizes})
+    assert read.display_text_sizes["2560x1440"].interface_text_size == 16
+    assert read.display_text_sizes["2560x1440"].chat_text_size is None
+    assert read.display_text_sizes["1512x982"].interface_text_size is None
+    assert read.display_text_sizes["1512x982"].canvas_text_size == 12
+    assert read.display_text_sizes["2560x1440"].canvas_text_size is None
+    assert read.chat_text_size == 13
+    # The user's own record, which Settings' displays manage: not the assistant's.
+    assert "display_text_sizes" not in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize(
+    "sizes",
+    [
+        {"wide": {"label": "x"}},
+        {"0x900": {"label": "x"}},
+        {"1440x900": {"label": "x", "chat_text_size": 30}},
+        {"1440x900": {"label": "x", "interface_text_size": 10}},
+        {"1440x900": {"label": "x", "canvas_text_size": 21}},
+        {"1440x900": {"chat_text_size": 14}},
+        {"1440x900": {"label": "x", "zoom": 2}},
+        {f"{1000 + n}x900": {"label": "x"} for n in range(51)},
+    ],
+)
+def test_a_display_that_is_not_a_size_or_holds_a_size_past_bounds_is_refused(
+    sizes: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"display_text_sizes": sizes})
 
 
 _USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -479,7 +579,13 @@ async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_side", "chat_style", "chat_tool_calls"],
+        [
+            "chat_side",
+            "chat_style",
+            "chat_tool_calls",
+            "chat_provider",
+            "terminal_placement",
+        ],
         _USER,
     )
 
@@ -517,6 +623,32 @@ async def test_a_key_or_value_the_preferences_do_not_take_writes_nothing(
     with pytest.raises(ValueError, match=message):
         await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
     assert not conn.fetchrow.called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"colour": "red", "size": 3}, "No such preference: colour, size"),
+        (
+            {
+                "theme": "blue",
+                "display_text_sizes": {
+                    "1440x900": {"label": "x", "chat_text_size": 30},
+                },
+            },
+            "theme: [^;]+; display_text_sizes.1440x900.chat_text_size: ",
+        ),
+    ],
+    ids=["unknown keys", "bad values"],
+)
+async def test_a_refused_write_names_every_key_and_where_in_it_the_value_is_wrong(
+    change: dict[str, object],
+    message: str,
+) -> None:
+    conn = cast(MockConnection, AsyncMock())
+    with pytest.raises(ValueError, match=f"^{message}"):
+        await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
 
 
 def test_the_user_data_keys_round_trip_whole() -> None:
@@ -664,6 +796,75 @@ def test_a_value_past_its_bound_or_type_is_refused(
 ) -> None:
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate(change)
+
+
+def test_the_settings_an_agent_sees_are_every_assistant_key_whole_and_resettable() -> (
+    None
+):
+    schema = assistant_settings_schema()
+    keys = from_plain(schema["properties"], dict[str, dict[str, JsonValue]])
+    assert set(keys) == AGENT_KEYS
+    # What the next agent loads, and what agents do to pull requests, stay the person's.
+    assert {"cli_folder", "autofix", "automerge"} == ASSISTANT_KEYS - AGENT_KEYS
+    assert "$ref" not in to_json(schema).decode()
+    assert (schema["type"], schema["additionalProperties"]) == ("object", False)
+    for key, offered in keys.items():
+        members = from_plain(offered["anyOf"], list[dict[str, JsonValue]])
+        assert members[1] == {"type": "null"}, key
+        # Said once, beside the choices: a model's own docstring may stay inside.
+        assert members[0].get("description") != offered["description"], key
+        assert offered["description"] == (Preferences.model_fields[key].description), (
+            key
+        )
+    canvas = from_plain(keys["canvas_text_size"]["anyOf"], list[dict[str, JsonValue]])
+    assert (canvas[0]["minimum"], canvas[0]["maximum"]) == (11, 20)
+
+
+def test_inlining_replaces_every_ref_in_lists_objects_and_definitions() -> None:
+    defs: dict[str, JsonValue] = {
+        "Size": {"type": "integer", "minimum": 10, "title": "Size"},
+        "Pair": {"type": "array", "prefixItems": [{"$ref": "#/$defs/Size"}]},
+    }
+    schema: JsonValue = {
+        "title": "Change",
+        "anyOf": [{"$ref": "#/$defs/Pair"}, {"type": "null"}],
+        "properties": {"size": {"$ref": "#/$defs/Size", "x-setting": True}},
+        "enum": ["a", "b"],
+    }
+
+    assert inline_refs(schema, defs) == {
+        "anyOf": [
+            {"type": "array", "prefixItems": [{"type": "integer", "minimum": 10}]},
+            {"type": "null"},
+        ],
+        "properties": {"size": {"type": "integer", "minimum": 10}},
+        "enum": ["a", "b"],
+    }
+
+
+def test_a_canvas_agent_sees_the_ui_settings_alone_the_defaults_filling_the_rest() -> (
+    None
+):
+    view = assistant_view({"font": "geist", "stars": ["a"], "retired_key": 1})
+    assert set(view) == ASSISTANT_KEYS
+    assert (view["font"], view["chat_text_size"]) == ("geist", 13)
+    assert assistant_view(None)["canvas_text_size"] == 14
+
+
+@pytest.mark.asyncio
+async def test_a_users_preferences_are_read_as_stored() -> None:
+    conn = cast(
+        MockConnection,
+        AsyncMock(fetchval=AsyncMock(return_value={"home": "empty"})),
+    )
+
+    stored = await read_preferences(cast("Conn", conn), user_id=_USER)
+
+    assert stored == {"home": "empty"}
+    conn.fetchval.assert_awaited_once_with(
+        "SELECT preferences FROM users WHERE id = $1",
+        _USER,
+    )
 
 
 if __name__ == "__main__":

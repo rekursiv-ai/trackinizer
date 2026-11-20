@@ -21,10 +21,7 @@ import asyncpg
 
 from trackinizer.server.access_policy import Resource, inquiry_read_filter
 from trackinizer.server.notify import notify_after_commit, tx
-from trackinizer.server.primitives import (
-    upsert_embedding,
-    validate_list_references,
-)
+from trackinizer.server.primitives import validate_list_references
 from trackinizer.server.projection import fetch_edges, materialize
 from trackinizer.server.setter_dispatch import (
     COLUMN_SPECS,
@@ -93,52 +90,17 @@ class _EditMixin(_CascadeAuditMixin):
             # ``min_length=1`` + non-blank validator so a direct Store caller
             # can't blank a required field that the route validates. A
             # whitespace-only title is no title.
-            raise ConflictError("title cannot be empty")
-        # Embed *before* opening the transaction. The submit path does
-        # the same: a network embedder would otherwise hold the row's
-        # ``FOR UPDATE`` lock for the round-trip, blocking every other
-        # writer touching this Inquiry. The cost of a wasted embed on
-        # the rare dedup-hit is dominated by the lock-contention win.
-        new_vecs = await self._embed_all(value)
-        async with (
-            notify_after_commit(),
-            self.engine.acquire() as conn,
-            tx(conn),
-        ):
-            replay = await self._replay_field_change(
-                conn,
-                target_id,
-                "title",
-                actor=actor,
+            raise ConflictError(
+                "title cannot be empty",  # pragma: no mutate[diagnostic-text]
             )
-            if replay is not None:
-                return replay
-            row = await self._read_field(conn, target_id, "title")
-            replay = await self._replay_field_change(
-                conn,
-                target_id,
-                "title",
-                actor=actor,
-            )
-            if replay is not None:
-                return replay
-            if row["title"] == value:
-                return None
-            await self._update_field(conn, target_id, "title", value)
-            for model, vec in new_vecs:
-                await upsert_embedding(conn, target_id, model, vec)
-            change_id, _ = await self._emit_field_change(
-                conn,
-                target_id,
-                cast(Inquiry.InquiryKind, row["kind"]),
-                "title",
-                Snapshot(title=from_plain(row["title"], str)),
-                new=Snapshot(title=value),
-                api_key_id=api_key_id,
-                actor=actor,
-                reason=reason,
-            )
-            return change_id
+        return await self._set_field(
+            target_id,
+            value,
+            column="title",
+            api_key_id=api_key_id,
+            actor=actor,
+            reason=reason,
+        )
 
     # ``FOR UPDATE`` is load-bearing: every ``set_X`` reads then decides whether to
     # write; without the lock a concurrent purge or competing edit between the two steps

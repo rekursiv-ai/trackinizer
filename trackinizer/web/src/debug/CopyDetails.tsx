@@ -14,7 +14,15 @@ import { errorDetails, keepRefused } from "./details";
  * for `trackinizer.details()`, and the console says so; the text is not logged,
  * since the message can hold what a user wrote.
  */
-export function CopyDetails({ message, error, labelled = false }: { message: string; error: unknown; labelled?: boolean }) {
+export function CopyDetails({
+  message,
+  error,
+  labelled = false,
+}: {
+  message: string;
+  error: unknown;
+  labelled?: boolean;
+}) {
   const [copied, setCopied] = useState<boolean | null>(null);
   const copy = () => {
     const text = errorDetails(message, error);
@@ -24,14 +32,27 @@ export function CopyDetails({ message, error, labelled = false }: { message: str
         () => setCopied(true),
         () => {
           keepRefused(text);
-          console.warn("Trackinizer web app: the browser refused the clipboard; run trackinizer.details() here for the details.");
+          console.warn(
+            "Trackinizer web app: the browser refused the clipboard; run trackinizer.details() here for the details.",
+          );
           setCopied(false);
         },
       );
   };
-  const label = copied === null ? "Copy details" : copied ? "Details copied" : "Not copied: see the console";
+  const label =
+    copied === null
+      ? "Copy details"
+      : copied
+        ? "Details copied"
+        : "Not copied: see the console";
   return (
-    <button type="button" className="btn ghost" aria-label={labelled ? undefined : label} title={label} onClick={copy}>
+    <button
+      type="button"
+      className="btn ghost"
+      aria-label={labelled ? undefined : label}
+      title={label}
+      onClick={copy}
+    >
       <Icon name={copied === null ? "copy" : copied ? "check" : "x"} size={13} />
       {labelled ? label : null}
     </button>

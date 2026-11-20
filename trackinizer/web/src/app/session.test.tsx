@@ -32,7 +32,9 @@ test("leaving saves every draft, then loads the login page, which returns to thi
   session.leaveForLogin();
   expect(order).toEqual(["broken", "title"]);
   expect(assign.mock.calls).toEqual([[loginUrl("/trax/ref/Issue/7?tab=2")]]);
-  expect(logged().filter(({ event }) => event === "session.ended")).toEqual([expect.objectContaining({ level: "warn", fields: { drafts: 2 } })]);
+  expect(logged().filter(({ event }) => event === "session.ended")).toEqual([
+    expect.objectContaining({ level: "warn", fields: { drafts: 2 } }),
+  ]);
   expect(new URL(LOGIN_URL, location.origin).searchParams.get("next")).toBe("/trax/");
 });
 
@@ -41,7 +43,9 @@ test("leaving an old link's #/... address returns to its route's path", () => {
   history.replaceState(null, "", "/trax/#/list/Belief");
   new Session(assign).leaveForLogin();
   expect(assign.mock.calls).toEqual([[loginUrl("/trax/list/Belief")]]);
-  expect(new URL(loginUrl("/trax/list/Belief"), location.origin).searchParams.get("next")).toBe("/trax/list/Belief");
+  expect(
+    new URL(loginUrl("/trax/list/Belief"), location.origin).searchParams.get("next"),
+  ).toBe("/trax/list/Belief");
 });
 
 test("a mounted editor's latest draft saver runs; an unmounted one's does not", () => {

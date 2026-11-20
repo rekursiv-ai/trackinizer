@@ -37,7 +37,9 @@ export function AdminView() {
           </div>
         ) : (
           <EmptyState icon={<Icon name="shield" size={24} />} title="Admins only">
-            <p>Users and the allowlist are managed by admins. Ask an admin for access.</p>
+            <p>
+              Users and the allowlist are managed by admins. Ask an admin for access.
+            </p>
             <ReadError read={refetched} />
           </EmptyState>
         )}

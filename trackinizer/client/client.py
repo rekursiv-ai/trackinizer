@@ -37,10 +37,11 @@ operation. Either way the raw httpx2 exception never escapes the
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from functools import partial
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Literal, NamedTuple, Self, cast
 from urllib.parse import quote, urlparse
 
+import ipaddress
 import json
 import logging
 import threading
@@ -62,18 +63,20 @@ from trackinizer.wire.routes import (
 )
 from trackinizer.wire.seq_ranges import SeqRange, format_interval
 from trackinizer.wire.wire_export import EXPORT_API_PATH, EXPORT_FILTER_PARAM
+from trackinizer.wire.wire_process_keys import listed_route
 
 
 logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Collection, Generator, Iterator
     from types import TracebackType
 
     import pydantic
 
     from trackinizer.wire import (
+        wire_capture,
         wire_code,
         wire_daemon,
         wire_exec,
@@ -90,6 +93,7 @@ if TYPE_CHECKING:
         wire_variables,
     )
     from trackinizer.wire.filters import Filter
+    from trackinizer.wire.wire_capture import CaptureImage
     from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
     from trackinizer.wire.wire_daemon import (
         Claim,
@@ -136,7 +140,6 @@ if TYPE_CHECKING:
         ManifestBody,
         PartBody,
         RecordBody,
-        SlashCommandBody,
     )
     from trackinizer.wire.wire_session_relay import (
         AgentProcess,
@@ -144,10 +147,11 @@ if TYPE_CHECKING:
         ProcessEnded,
         ProcessSpec,
         ServeSession,
+        StopProcess,
         ViewerFrame,
     )
     from trackinizer.wire.wire_sessions import (
-        InboundDrainItem,
+        SearchMode,
         SessionEnd,
         SessionEndResponse,
         SessionStart,
@@ -188,6 +192,8 @@ else:
     wire_tools = lazy_import("trackinizer.wire.wire_tools")
     # Same lazy-bind for ``wire_variables``: only the variable methods touch it.
     wire_variables = lazy_import("trackinizer.wire.wire_variables")
+    # Same lazy-bind for ``wire_capture``: only ``capture_canvas`` touches it.
+    wire_capture = lazy_import("trackinizer.wire.wire_capture")
     # Same lazy-bind for ``wire_code``: only the code-store methods touch it.
     wire_code = lazy_import("trackinizer.wire.wire_code")
     # Same lazy-bind for ``wire_job``: only the ``job_*`` methods touch it.
@@ -227,7 +233,8 @@ def server_url(raw: str, source: str) -> str:
         )
     if parsed.query or parsed.fragment:
         raise ClientError(f"{source} URL must not contain query or fragment")
-    if parsed.hostname is None:
+    host = parsed.hostname
+    if host is None:
         raise ClientError(f"{source} has invalid URL {raw!r}: missing host")
     # ``parsed.port`` raises ``ValueError`` for a non-numeric or out-of-range
     # port (urllib only validates it on access), so a malformed port would
@@ -236,6 +243,14 @@ def server_url(raw: str, source: str) -> str:
         _ = parsed.port
     except ValueError as err:
         raise ClientError(f"{source} has invalid URL {raw!r}: {err}") from err
+    # Every client URL passes here, so this one check keeps each key, cookie and
+    # command off a plain-http hop. The edge's 301 to https comes too late: the first
+    # request has crossed in clear, with its key, before the redirect answers.
+    if parsed.scheme == "http" and not _on_this_computer(host):
+        raise ClientError(
+            f"{source} {raw!r} is plain http; a key or command sent over it can be "
+            "read or rewritten on the way. Use https.",
+        )
     return url
 
 
@@ -272,11 +287,27 @@ class Client:
         api_key: str = "",
         timeout_sec: float = 30.0,
         transport: httpx2.BaseTransport | None = None,
+        routes: Collection[tuple[str, str]] | None = None,
     ) -> None:
+        """Open a client for the server at ``base_url``.
+
+        Args:
+          base_url: The server's URL.
+          author: The audit actor writes name when they name none.
+          api_key: The bearer key; ``""`` sends none.
+          timeout_sec: The per-read budget of one request.
+          transport: The HTTP transport; ``None`` for a pooled one that retries a
+            failed connect once.
+          routes: The only ``(method, template)`` routes this client may call
+            (``wire_process_keys.listed_route``); any other request raises
+            ``ClientError`` before it is sent. ``None`` calls any route.
+
+        """
         self.base_url = server_url(base_url, "base_url")
         self.author = author
         self.api_key = api_key
         self.timeout_sec = timeout_sec
+        self._routes = routes
         self._client_id = uuid.uuid4().hex[:12]
         self._created_at = time.monotonic()
         self._request_count = 0
@@ -684,6 +715,7 @@ class Client:
           line: One JSON object, without its trailing newline.
 
         """
+        self._check_route("GET", EXPORT_API_PATH)
         params = {
             EXPORT_FILTER_PARAM: [
                 json.dumps(
@@ -781,15 +813,16 @@ class Client:
         self,
         query: str,
         *,
-        semantic: bool = True,
+        mode: SearchMode = "fused",
         limit: int = 20,
     ) -> dict[str, PlainTree]:
         """Search captured sessions: embeddings + full text, RRF-merged.
 
         Args:
           query: The search query text.
-          semantic: Request the embedding arm; the server degrades to
-            full-text-only when no session embedder is configured.
+          mode: ``fused`` runs both arms; ``keyword`` or ``vector`` one alone.
+            The server degrades to keyword hits when its vector arm is absent or
+            its model not loaded.
           limit: Maximum merged hits.
 
         Returns:
@@ -805,7 +838,46 @@ class Client:
                     where,
                     params={
                         "q": query,
-                        "semantic": "true" if semantic else "false",
+                        "mode": mode,
+                        "limit": limit,
+                    },
+                ),
+                where,
+            ),
+        )
+
+    def search_inquiries(
+        self,
+        query: str,
+        *,
+        mode: SearchMode = "fused",
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, PlainTree]:
+        """Search inquiry texts and edge notes: embeddings + full text, RRF-merged.
+
+        Args:
+          query: The search query text.
+          mode: ``fused`` runs both arms; ``keyword`` or ``vector`` one alone.
+          kind: The one inquiry kind to search; ``None`` searches every kind.
+          limit: Maximum merged hits.
+
+        Returns:
+          body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each
+            hit carries its ``inquiry_id``, ``kind``, ``seq``, ``title``, ``field``
+            (``text`` or a note's ``edge:<edge_kind>:<to_id>``), score, source and
+            snippet.
+
+        """
+        where = "/api/web/search_inquiries"
+        return dict(
+            _require_mapping(
+                self.get(
+                    where,
+                    params={
+                        "q": query,
+                        "mode": mode,
+                        **({} if kind is None else {"kind": kind}),
                         "limit": limit,
                     },
                 ),
@@ -920,6 +992,8 @@ class Client:
           edges: Edge definitions referencing item indices by name.
           actor: Audit actor for items that do not name their own. Omit to
             let the server default to the authenticated principal's email.
+          chat: The science chat the assistant files every item from, which it is
+            then read as; None for none.
 
         Returns:
           result: Server-minted UUIDs in item order.
@@ -1465,6 +1539,8 @@ class Client:
           summary: One sentence shown above the page.
           html: One complete document, every asset inline.
           previous_id: The Artifact this revision supersedes; ``None`` starts one.
+          chat: The science chat the assistant publishes from, which the Artifact
+            is then read as; None for none.
 
         Returns:
           revision: The Artifact and revision number the server stored.
@@ -1521,8 +1597,6 @@ class Client:
         name: str = "",
         manifest: ManifestBody | None = None,
         records: Sequence[RecordBody] = (),
-        restart: bool = False,
-        slash_commands: Sequence[SlashCommandBody] = (),
     ) -> AppendRecordsResponse:
         """Append one file's records; idempotent on ``(session_id, part, idx)``.
 
@@ -1532,17 +1606,11 @@ class Client:
 
         Args:
           session_id: The session these records belong to.
-          name: The source file's basename. Empty only on a
-            slash-command-only append: a typed command belongs to the SESSION,
-            so one submitted before the CLI has written a transcript names no
-            file. The request body rejects records without it.
+          name: The source file's basename. The request body rejects records
+            without it.
           manifest: What that file declares, re-sent every batch because it
             changes as the file grows. ``None`` exactly when ``name`` is empty.
           records: The records themselves, each carrying its derived position.
-          restart: Whether this batch re-derived the part from its start,
-            which makes the append overwrite rather than skip.
-          slash_commands: Commands the human typed since the last batch. They
-            ride this request so they commit with the turns around them.
 
         Returns:
           response: The resolved part, and how many records were written
@@ -1552,9 +1620,7 @@ class Client:
         req = wire_session_ir.AppendRecordsRequest(
             name=name,
             manifest=manifest,
-            restart=restart,
             records=list(records),
-            slash_commands=list(slash_commands),
         )
         where = wire_session_ir.session_records_path(session_id)
         response = self._request("POST", where, body=req.model_dump(mode="json"))
@@ -1830,103 +1896,6 @@ class Client:
         response = self._request("POST", where, body=payload)
         return _validate_model(wire_sessions.SessionEndResponse, response, where)
 
-    def enqueue_inbound(
-        self,
-        session_id: uuid.UUID,
-        text: str,
-    ) -> int:
-        """Enqueue a line to inject into a live session; return queued count.
-
-        The sender is attested server-side from the authenticated principal,
-        so the request carries no ``source`` -- the enqueue body forbids it.
-
-        Args:
-          session_id: AgentSession ID to message.
-          text: Message text to enqueue.
-
-        Returns:
-          result: Number of messages now queued for this session.
-
-        """
-        # This client never names an asker; an older server forbids the field.
-        body = wire_sessions.InboundEnqueueRequest(text=text).model_dump(
-            mode="json",
-            exclude={"asker"},
-        )
-        where = wire_sessions.session_inbound_path(session_id)
-        response = self._request("POST", where, body=body)
-        return _validate_model(
-            wire_sessions.InboundEnqueueResponse,
-            response,
-            where,
-        ).queued
-
-    def drain_inbound(
-        self,
-        session_id: uuid.UUID,
-        *,
-        wait_sec: float = 0.0,
-        run: str | None = None,
-        host: str | None = None,
-        cwd: str | None = None,
-        cli: str | None = None,
-        instance: str | None = None,
-        runs: bool = False,
-    ) -> list[InboundDrainItem]:
-        """Drain pending inbound messages for a session, oldest first.
-
-        Each item carries its kind and payload beside the text, attested sender,
-        room and canvas context, so the agent runner delivers each the way its CLI
-        expects. ``run``, ``host`` and ``cwd`` tell the server where the draining
-        run is, for Chat to show; ``cli`` and ``instance`` tell it which CLI polls and
-        which run it is, by which it routes a chat's lines and refuses a second run;
-        ``runs`` says the run takes ``run`` messages. Each is sent only when given.
-
-        Args:
-          session_id: Session whose queue to drain.
-          wait_sec: How long the server may hold the request open waiting for
-            a message. Zero returns whatever is pending now. A non-zero value
-            replaces repeated asking: one held request per session instead of
-            one round trip per interval, and delivery on arrival rather than
-            up to an interval late. The read timeout must exceed it, or the
-            client aborts the very wait it asked for.
-          run: The name of the detached run draining it, which an attach takes; None
-            for a run in a terminal of its own.
-          host: This computer's host name, as the daemon names it.
-          cwd: The run's working directory, ``~/...`` under its home.
-          cli: The CLI this run is, ``claude`` or ``codex``.
-          instance: An id the run minted for itself, the same on each of its drains.
-          runs: Whether this run takes ``run`` messages, the commands a chat's starter
-            clicks Run on.
-
-        Returns:
-          messages: The drained messages, as the server sent them.
-
-        """
-        where = wire_sessions.session_inbound_path(session_id)
-        drained = self._consume(
-            where,
-            scope=where,
-            # Each None is left out, so a run that knows none of these sends the query
-            # an older server always took.
-            params={
-                "wait_sec": wait_sec or None,
-                "run": run,
-                "host": host,
-                "cwd": cwd,
-                "cli": cli,
-                "instance": instance,
-                "runs": runs or None,
-            },
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
-            decode=partial(
-                _validate_model,
-                wire_sessions.DrainInboundResponse,
-                where=where,
-            ),
-        )
-        return drained.messages
-
     def send_message(
         self,
         actor: str,
@@ -1936,8 +1905,8 @@ class Client:
     ) -> list[uuid.UUID]:
         """Send ``text`` to live sessions named by ``@actor[:room]``.
 
-        Returns the session ids the server enqueued to (empty = no live
-        session matched: an honest undelivered signal).
+        Returns the session ids the server sent it to (empty = no live session
+        matched: an honest undelivered signal).
 
         Args:
           actor: Target actor name (targets all live sessions for actor).
@@ -1945,20 +1914,56 @@ class Client:
           room: Optional room filter (targets actor+room pair).
 
         Returns:
-          result: Session IDs the message was enqueued to.
+          result: Session IDs the message was sent to.
 
         """
-        # This client never names an asker, and an older server forbids the field.
-        body = wire_sessions.SendMessage(actor=actor, room=room, text=text).model_dump(
-            mode="json",
-            exclude={"asker"},
+        return self._posted_message(
+            wire_sessions.SendMessage(actor=actor, room=room, text=text),
         )
-        response = self._request("POST", wire_sessions.SEND_MESSAGE_PATH, body=body)
-        return _validate_model(
-            wire_sessions.SendMessageResponse,
-            response,
-            wire_sessions.SEND_MESSAGE_PATH,
-        ).delivered
+
+    def message_agent(
+        self,
+        to: wire_sessions.SessionAgent,
+        text: str,
+        *,
+        from_session: uuid.UUID | None = None,
+        from_label: str = "",
+        booked: wire_sessions.MessageKind | None = None,
+        key: uuid.UUID | None = None,
+    ) -> list[uuid.UUID]:
+        """Send ``text`` to one agent of a session: ``label#412``, as AgentSend names it.
+
+        Args:
+          to: The agent, by its label and its session's number or UUID.
+          text: What it says.
+          from_session: An agent process's own session, whose socket its key holds:
+            the server then names the sender ``from_label#<its number>``; ``None``
+            sends as the key's account.
+          from_label: The sending agent's label there.
+          booked: How the sending agent's team booked it.
+          key: The ``Idempotency-Key``: a send repeated under it is sent once and
+            answered as the first was; a fresh one when ``None``.
+
+        Returns:
+          delivered: The session's id when it took the message; empty when nothing
+            serves it now, an honest undelivered signal.
+
+        """
+        sender = (
+            {}
+            if from_session is None
+            else {
+                "from_session": from_session,
+                "from_label": from_label,
+                "booked": booked,
+            }
+        )
+        return self._posted_message(
+            wire_sessions.SendMessage.model_validate(
+                {"to": to, "text": text, **sender},
+            ),
+            key=key,
+        )
 
     def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
         """Read a canvas: its revision, visuals and focus.
@@ -1972,6 +1977,67 @@ class Client:
         """
         where = f"/api/canvases/{canvas_id}"
         return dict(_require_mapping(self.get(where), where))
+
+    def list_canvases(self) -> list[dict[str, PlainTree]]:
+        """List the account's canvases: each one's name, workspace and session.
+
+        Returns:
+          canvases: As the server lists them, the one changed last first.
+
+        """
+        where = "/api/canvases"
+        return [
+            dict(_require_mapping(each, where))
+            for each in _require_list(self.get(where), where)
+        ]
+
+    def rename_canvas(self, canvas_id: uuid.UUID, *, name: str) -> dict[str, PlainTree]:
+        """Rename one of the account's canvases, the tab its chat is in.
+
+        Args:
+          canvas_id: The canvas.
+          name: Its new name, unique among the account's canvases.
+
+        Returns:
+          named: The canvas's name now, and nothing else of it.
+
+        """
+        where = f"/api/canvases/{canvas_id}/name"
+        return dict(_require_mapping(self.put(where, body={"name": name}), where))
+
+    def list_workspaces(self) -> list[dict[str, PlainTree]]:
+        """List the account's workspaces, hidden ones too, in the bar's order.
+
+        Returns:
+          workspaces: Each workspace Issue's id, number and title, as the server
+            lists them.
+
+        """
+        where = "/api/workspaces"
+        return [
+            dict(_require_mapping(each, where))
+            for each in _require_list(self.get(where, params={"hidden": True}), where)
+        ]
+
+    def rename_workspace(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        title: str,
+    ) -> dict[str, PlainTree]:
+        """Rename one of the account's workspaces, as the tab bar does.
+
+        Args:
+          workspace_id: The workspace Issue.
+          title: Its new title.
+
+        Returns:
+          workspace: The renamed workspace.
+
+        """
+        where = f"/api/workspaces/{workspace_id}"
+        renamed = self.patch(where, body={"title": title})
+        return dict(_require_mapping(renamed, where))
 
     def apply_canvas_operation(
         self,
@@ -2111,6 +2177,21 @@ class Client:
             },
         )
         return dict(_require_mapping(windowed, where))
+
+    def capture_canvas(self, canvas_id: uuid.UUID) -> CaptureImage:
+        """Ask the canvas owner's open page for a picture of the canvas.
+
+        Args:
+          canvas_id: The canvas.
+
+        Returns:
+          capture: The picture, the visuals left blank, the red boxes on it and
+            where each visual's body stands. A 424 ``ClientError`` says why there
+            is no picture.
+
+        """
+        where = wire_capture.CAPTURES_PATH.format(canvas_id=canvas_id)
+        return _validate_model(wire_capture.CaptureImage, self.post(where), where)
 
     def _live_revision(self, canvas_id: uuid.UUID) -> int:
         """Return the canvas's live revision."""
@@ -2343,7 +2424,7 @@ class Client:
             where,
             scope=f"{where}/{instance}",
             params={"instance": str(instance), "wait_sec": wait_sec},
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
             decode=lambda response: (
                 None
                 if response is None
@@ -2410,7 +2491,7 @@ class Client:
             where,
             params={"owner": owner, "since": since, "wait_sec": wait_sec},
             retry_attempts=1,
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
         )
         return _validate_model(wire_terminals.HostsVersion, response, where)
 
@@ -2463,7 +2544,7 @@ class Client:
             "GET",
             where,
             params={"instance": str(instance), "wait_sec": wait_sec},
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
         )
         return (
             None
@@ -2575,11 +2656,25 @@ class Client:
             not one.
 
         """
+        with self.lines_stream(session_id) as frames:
+            yield from frames
+
+    @contextmanager
+    def lines_stream(self, session_id: uuid.UUID) -> Generator[Iterator[ViewerFrame]]:
+        """Open viewer frames; close the HTTP response when the context exits.
+
+        Args:
+          session_id: The session to watch.
+
+        Yields:
+          frames: The live frame iterator, readable on a worker thread.
+
+        """
         where = wire_session_relay.SESSION_LINES_PATH.format(session_id=session_id)
-        frames = pydantic.TypeAdapter(wire_session_relay.ViewerFrame)
+        self._check_route("GET", where)
         try:
             with self._http.stream(
-                "GET",  # pragma: no mutate -- httpx upper-cases the method.
+                "GET",  # pragma: no mutate[case-insensitive]
                 where,
                 # The read outlasts the server's keep-alive, or a quiet session
                 # would end it.
@@ -2592,12 +2687,9 @@ class Client:
                         f"{_truncate(response.text)}",
                         status_code=response.status_code,
                     )
-                for data in _sse_data(response.iter_lines()):
-                    yield frames.validate_json(data)
+                yield _line_frames(response, where=where)
         except httpx2.TransportError as err:
             raise ClientError(f"GET {where} failed: {err}") from err
-        except pydantic.ValidationError as err:
-            raise ClientError(f"{where} returned a malformed payload: {err}") from err
 
     def wait_session(
         self,
@@ -2605,7 +2697,7 @@ class Client:
         *,
         instance: uuid.UUID,
         wait_sec: float,
-    ) -> ServeSession | None:
+    ) -> ServeSession | StopProcess | None:
         """Hold up to ``wait_sec`` for a session to start here, as the daemon.
 
         Args:
@@ -2615,7 +2707,8 @@ class Client:
             exceeds it, or the client would abort the very wait it asked for.
 
         Returns:
-          serve: The start to run, or ``None`` when none came in time.
+          serve: The start to run, a stop of a process it runs (a remote agent
+            service's alone), or ``None`` when neither came in time.
 
         """
         # A plain read, as the tool wait is: the server hands a start once, so one
@@ -2625,13 +2718,16 @@ class Client:
             "GET",
             where,
             params={"instance": str(instance), "wait_sec": wait_sec},
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
         )
-        return (
-            None
-            if response is None
-            else _validate_model(wire_session_relay.ServeSession, response, where)
-        )
+        if response is None:
+            return None
+        if (
+            isinstance(response, dict)
+            and cast("dict[str, object]", response).get("type") == "stop"
+        ):
+            return _validate_model(wire_session_relay.StopProcess, response, where)
+        return _validate_model(wire_session_relay.ServeSession, response, where)
 
     def report_process_ended(self, host_id: uuid.UUID, ended: ProcessEnded) -> None:
         """Report that an agent process this daemon started exited, or never ran."""
@@ -2665,7 +2761,7 @@ class Client:
             where,
             scope=f"{where}/{instance}",
             params={"instance": str(instance), "wait_sec": wait_sec},
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
             decode=lambda response: (
                 None
                 if response is None
@@ -2709,23 +2805,24 @@ class Client:
         )
 
     def host_runs(self, name: str) -> list[HostRun]:
-        """Return the caller's live sessions that name their host; 404 for another's."""
+        """Return the agent processes on the caller's host; 404 for another's."""
         where = wire_hosts.HOST_RUNS_PATH.format(name=quote(name, safe=""))
         response = self._request("GET", where)
         return _validate_model(wire_hosts.HostRuns, response, where).runs
 
     def stop_host_run(self, name: str, session_id: uuid.UUID) -> None:
-        """Stop one of the caller's live sessions on one of their hosts.
+        """Stop the agent process of a session on one of the caller's hosts.
 
-        Its next drain is refused, so the run ends within one drain's hold.
+        It is stopped as ``DELETE /api/sessions/{id}/process`` stops it: its socket
+        closes, and its key is revoked a minute later.
 
         Args:
-          name: The host the run names.
-          session_id: The session the run drains.
+          name: The host the process runs on.
+          session_id: The session the process serves.
 
         Raises:
-          ClientError: 404 when the caller owns no such host, or no live session of
-            theirs on it drains that session.
+          ClientError: 404 when the caller owns no such host, or no process on it
+            serves that session.
 
         """
         self._request(
@@ -2737,7 +2834,7 @@ class Client:
         )
 
     def disconnect_host(self, name: str) -> list[HostRun]:
-        """Revoke a daemon and stop its owner's live sessions; return those stopped."""
+        """Revoke a daemon, stopping its host's agent processes; return those stopped."""
         where = wire_hosts.HOST_DISCONNECT_PATH.format(name=quote(name, safe=""))
         response = self._request("POST", where)
         return _validate_model(wire_hosts.HostRuns, response, where).runs
@@ -3090,7 +3187,7 @@ class Client:
             where,
             params={"instance": str(instance), "wait_sec": wait_sec},
             retry_attempts=1,
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
         )
         return _validate_model(wire_host_job.WorkOffer, response, where)
 
@@ -3194,6 +3291,27 @@ class Client:
             self._pending_reads.pop(pending, None)
         return result
 
+    # Only the fields it names: an older server forbids one it does not know, and this
+    # client never names an asker.
+    def _posted_message(
+        self,
+        message: wire_sessions.SendMessage,
+        *,
+        key: uuid.UUID | None = None,
+    ) -> list[uuid.UUID]:
+        """Post ``message`` to ``/api/messages``; return the sessions it went to."""
+        response = self._request(
+            "POST",
+            wire_sessions.SEND_MESSAGE_PATH,
+            body=message.model_dump(mode="json", exclude_unset=True),
+            change_id=key,
+        )
+        return _validate_model(
+            wire_sessions.SendMessageResponse,
+            response,
+            wire_sessions.SEND_MESSAGE_PATH,
+        ).delivered
+
     def _request(
         self,
         method: str,
@@ -3205,6 +3323,7 @@ class Client:
         retry_attempts: int = 3,
         timeout: float | None = None,
     ) -> PlainTree:
+        self._check_route(method, path)
         # ``retry_attempts`` is how many tries a mutating request gets after a
         # 5xx or read timeout. Three bounds the worst-case wait (~1s) while
         # covering the common cases: one bad pool socket, one transient 502.
@@ -3297,6 +3416,17 @@ class Client:
                 f"{method} {path}: malformed JSON in server response",
             ) from err
 
+    # Checked on the root-relative path each sender holds, not in an httpx event hook:
+    # a hook sees the full URL path, so a ``base_url`` mounted under a prefix would
+    # match no listed template and refuse every request.
+    def _check_route(self, method: str, path: str) -> None:
+        """Refuse a request ``routes`` does not list, before it is sent."""
+        if (
+            self._routes is not None
+            and listed_route(method, path, self._routes) is None
+        ):
+            raise ClientError(f"{method} {path} is not available to this client")
+
     def _log_transport_failure(
         self,
         method: str,
@@ -3341,6 +3471,18 @@ class Client:
         )
 
 
+# Loopback by address, not by name resolution: ``localhost`` is the one name kept, and
+# ``localhost.example.com`` is someone else's host.
+def _on_this_computer(host: str) -> bool:
+    """Return whether ``host`` is a loopback address or ``localhost``."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 # The template lives in :func:`wire.routes.inquiry_field_path`, so the client never
 # spells the path itself; it only supplies the id.
 def _field_path(target_id: uuid.UUID, field: str) -> str:
@@ -3377,15 +3519,26 @@ def _error_code(response: httpx2.Response) -> str:
     return code if isinstance(code, str) else ""
 
 
+def _line_frames(response: httpx2.Response, *, where: str) -> Iterator[ViewerFrame]:
+    frames = pydantic.TypeAdapter(wire_session_relay.ViewerFrame)
+    try:
+        for data in _sse_data(response.iter_lines()):
+            yield frames.validate_json(data)
+    except httpx2.TransportError as error:
+        raise ClientError(f"GET {where} failed: {error}") from error
+    except pydantic.ValidationError as error:
+        raise ClientError(f"{where} returned a malformed payload: {error}") from error
+
+
 def _sse_data(lines: Iterator[str]) -> Iterator[str]:
     """Yield the data of each unnamed server-sent event in ``lines``."""
     # A named event is the keep-alive, which carries nothing; a comment has no field.
-    named = False  # pragma: no mutate -- read for truth; None is as false.
+    named = False  # pragma: no mutate[truthiness]
     for line in lines:
         if line.startswith("event:"):
             named = True
         elif not line:
-            named = False  # pragma: no mutate -- read for truth; None is as false.
+            named = False  # pragma: no mutate[truthiness]
         elif line.startswith("data:") and not named:
             yield line.removeprefix("data:").strip()
 

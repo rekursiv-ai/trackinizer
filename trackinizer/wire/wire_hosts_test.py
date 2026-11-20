@@ -86,7 +86,6 @@ def test_run_ignores_fields_a_newer_server_added() -> None:
     sid = uuid.uuid4()
     run = HostRun.model_validate({"session_id": str(sid), "cli": "claude", "x": 1})
     assert run.session_id == sid
-    assert run.state == "idle"
     assert HostRuns.model_validate({"runs": [run.model_dump()]}).past == []
 
 

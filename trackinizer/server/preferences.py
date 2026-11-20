@@ -28,7 +28,7 @@ from pydantic import (
 from pydantic_core import to_json
 from treekle import from_plain
 
-from trackinizer.wire.wire_science_chat import AssistantPrompt, ChatProvider
+from trackinizer.wire.wire_science_chat import AssistantPrompt
 
 
 if TYPE_CHECKING:
@@ -49,12 +49,15 @@ ASSISTANT_KEYS: Final = frozenset(
         "terminal_colors",
         "chat_side",
         "app_bar",
+        "app_bar_pinned",
+        "font",
+        "interface_text_size",
+        "chat_text_size",
+        "canvas_text_size",
         "highlight_mentions",
         "terminal_font_size",
         "terminal_tab_chords",
-        "terminal_placement",
         "home",
-        "chat_provider",
         "assistant_prompt",
         "cli_folder",
         "chat_view",
@@ -65,6 +68,13 @@ ASSISTANT_KEYS: Final = frozenset(
 """The preferences a canvas's assistant may read and change for its owner: the
 UI's, each marked ``SETTING`` below. Every other key (the user's own data) stays
 the user's alone."""
+
+AGENT_KEYS: Final = ASSISTANT_KEYS - {"cli_folder", "autofix", "automerge"}
+"""The settings an agent's own tool may change for the person, with the key a start
+minted for its process: how the app looks and reads. Not the folder an agent starts
+in, whose skills and AGENTS.md the next agent loads, nor what agents do to pull
+requests: an agent a line in a shared chat steered would change what every later
+agent of the person does."""
 
 SETTING: Final[JsonDict] = {"x-setting": True}
 """Marks a field as one of the UI's settings: Settings shows it in the
@@ -361,6 +371,43 @@ class CreateDraft(_Strict):
     _bounded = field_validator("chips")(_json_within)
 
 
+type Font = Literal[
+    "system",
+    "inter",
+    "ibm_plex_sans",
+    "manrope",
+    "source_sans_3",
+    "geist",
+    "dm_sans",
+    "work_sans",
+    "public_sans",
+    "lato",
+    "nunito_sans",
+]
+"""The app's text face: the system's own, or one the app serves itself."""
+
+_InterfaceSize = Annotated[int, Field(ge=11, le=20)]
+_ChatSize = Annotated[int, Field(ge=10, le=24)]
+
+
+class DisplayTextSizes(_Strict):
+    """One display's own text sizes; a size left None follows the user's default."""
+
+    label: _Name
+    """What Settings calls the display: its size, or the name the browser gave it."""
+
+    interface_text_size: _InterfaceSize | None = None
+    chat_text_size: _ChatSize | None = None
+    canvas_text_size: _InterfaceSize | None = None
+
+
+# A display as the browser tells it without asking: its width and height in CSS px.
+_DisplayKey = Annotated[
+    str,
+    StringConstraints(pattern=r"^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$"),
+]
+
+
 class Preferences(_Strict):
     """Every preference, the user's choice or its default."""
 
@@ -427,6 +474,56 @@ class Preferences(_Strict):
         default=False,
         description="The app bar on the left folded to its icons.",
     )
+    app_bar_pinned: bool = Field(
+        default=True,
+        description=(
+            "Keep the app bar along the top shown; off, it hides until the pointer "
+            "nears the top edge."
+        ),
+        json_schema_extra=SETTING,
+    )
+    font: Font = Field(
+        default="system",
+        description=(
+            "The app's text face: system, inter, ibm_plex_sans, manrope, source_sans_3, "
+            "geist, dm_sans, work_sans, public_sans, lato or nunito_sans. Code and "
+            "terminals keep their monospace; a fixed skin keeps its own face."
+        ),
+        json_schema_extra=SETTING,
+    )
+    interface_text_size: _InterfaceSize = Field(
+        default=14,
+        description=(
+            "The app's text size in px, 11 to 20, on every display without its own."
+        ),
+        json_schema_extra=SETTING,
+    )
+    chat_text_size: _ChatSize = Field(
+        default=13,
+        description=(
+            "Chat's text size in px, its messages and its box, 10 to 24, on every "
+            "display without its own."
+        ),
+        json_schema_extra=SETTING,
+    )
+    canvas_text_size: _InterfaceSize = Field(
+        default=14,
+        description=(
+            "The canvas area's text size in px, every pane beside Chat, 11 to 20, on "
+            "every display without its own; terminals keep terminal_font_size."
+        ),
+        json_schema_extra=SETTING,
+    )
+    display_text_sizes: Annotated[
+        dict[_DisplayKey, DisplayTextSizes],
+        Field(max_length=50),
+    ] = Field(
+        default=dict[_DisplayKey, DisplayTextSizes](),
+        description=(
+            "Text sizes for one display, by its width and height in CSS px "
+            "(1512x982): each size given replaces the default there."
+        ),
+    )
     highlight_mentions: bool = Field(
         default=True,
         description="Light up the rows the assistant's answers mention.",
@@ -447,27 +544,11 @@ class Preferences(_Strict):
         ),
         json_schema_extra=SETTING,
     )
-    terminal_placement: Literal["bottom", "side"] = Field(
-        default="bottom",
-        description=(
-            "Where the terminal opens beside the page: under it, the page's width, "
-            "or at its side."
-        ),
-        json_schema_extra=SETTING,
-    )
     home: Literal["graph", "empty"] = Field(
         default="graph",
         description=(
-            "What the canvas's Home button and a new canvas tab show: "
-            "the graph, or an empty canvas."
-        ),
-        json_schema_extra=SETTING,
-    )
-    chat_provider: ChatProvider = Field(
-        default="assistant",
-        description=(
-            "The provider a new chat starts on: the assistant, or claude or codex run on "
-            "a host of yours."
+            "What a new workspace's canvas opens on: the graph of what is "
+            "relevant, or an empty tab."
         ),
         json_schema_extra=SETTING,
     )
@@ -486,9 +567,9 @@ class Preferences(_Strict):
     ] = Field(
         default="",
         description=(
-            "The folder a claude or codex run that Chat starts works in, on whichever "
-            "host it starts: ~/... under your home, or a full path. Empty for your "
-            "home directory."
+            "The folder Chat's agent starts in on a host of yours, whose skills and "
+            "AGENTS.md it loads: ~/... under your home, or a full path. Empty for your "
+            "home directory. Our cloud starts in its own home directory."
         ),
         json_schema_extra=SETTING,
     )
@@ -589,6 +670,67 @@ class Preferences(_Strict):
     )
 
 
+_SCHEMA_NOISE: Final = frozenset({"title", "x-setting"})
+"""Schema keys a model reading a tool's arguments does not need."""
+
+
+def assistant_settings_schema() -> dict[str, JsonValue]:
+    """Return the JSON schema of a change an agent's tool may make to its owner's settings.
+
+    One property per ``AGENT_KEYS`` key, each with the type, bounds, default and
+    description the server validates against, references inlined (a tool schema
+    stands alone), and each nullable: ``null`` puts the key back to its default.
+
+    Returns:
+      schema: An ``object`` schema that rejects any other key.
+
+    """
+    schema = from_plain(Preferences.model_json_schema(), dict[str, JsonValue])
+    defs = from_plain(schema["$defs"], dict[str, JsonValue])
+    properties = from_plain(schema["properties"], dict[str, dict[str, JsonValue]])
+    return {
+        "type": "object",
+        "properties": {
+            key: {
+                "anyOf": [
+                    inline_refs(
+                        {
+                            k: v
+                            for k, v in properties[key].items()
+                            if k != "description"
+                        },
+                        defs,
+                    ),
+                    {"type": "null"},
+                ],
+                "description": properties[key]["description"],
+            }
+            for key in Preferences.model_fields
+            if key in AGENT_KEYS
+        },
+        "additionalProperties": False,
+    }
+
+
+def assistant_view(stored: object) -> dict[str, JsonValue]:
+    """Return the settings a canvas's agent sees of a user's stored preferences.
+
+    Args:
+      stored: The ``users.preferences`` value, as ``stored_preferences`` reads it.
+
+    Returns:
+      view: Every ``ASSISTANT_KEYS`` key, its default filling one not set.
+
+    """
+    view = stored_preferences(stored).model_dump(
+        # Every field dumps alike in either mode today; "json" keeps a later
+        # non-JSON type (a datetime, a set) sendable.
+        mode="json",  # pragma: no mutate
+        include=set(ASSISTANT_KEYS),
+    )
+    return from_plain(view, dict[str, JsonValue])
+
+
 def stored_preferences(stored: object) -> Preferences:
     """Read a user's stored preferences, the defaults filling every key not set.
 
@@ -610,6 +752,53 @@ def stored_preferences(stored: object) -> Preferences:
         if key in Preferences.model_fields
     }
     return Preferences.model_validate(known)
+
+
+def checked_change(change: Mapping[str, object]) -> Preferences:
+    """Return the preferences ``change`` sets, checked; its ``None`` keys are left out.
+
+    Args:
+      change: The keys to change: a value sets the key, ``None`` puts it back to
+        its default.
+
+    Returns:
+      checked: The defaults with every key ``change`` sets.
+
+    Raises:
+      ValueError: Naming a key no preference has or a value its key does not take,
+        every one named, each value's place in its key given.
+
+    """
+    unknown = sorted(set(change) - set(Preferences.model_fields))
+    if unknown:
+        raise ValueError(f"No such preference: {', '.join(unknown)}")
+    try:
+        return Preferences.model_validate(
+            {key: value for key, value in change.items() if value is not None},
+        )
+    except ValidationError as error:
+        problems = (
+            f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
+            for problem in error.errors()
+        )
+        raise ValueError("; ".join(problems)) from error
+
+
+async def read_preferences(conn: Conn, *, user_id: uuid.UUID) -> object:
+    """Read a user's ``users.preferences`` as stored, for ``stored_preferences``.
+
+    A user who is gone reads as None, as one with nothing set does; a caller that must
+    tell them apart reads the row itself.
+
+    Args:
+      conn: The connection to read on.
+      user_id: Whose preferences.
+
+    Returns:
+      stored: The column's value: an object of the keys set, or None.
+
+    """
+    return await conn.fetchval("SELECT preferences FROM users WHERE id = $1", user_id)
 
 
 async def write_preferences(
@@ -637,29 +826,52 @@ async def write_preferences(
         nothing is written.
 
     """
-    unknown = sorted(set(change) - set(Preferences.model_fields))
-    if unknown:
-        raise ValueError(f"No such preference: {', '.join(unknown)}")
     chosen = {key: value for key, value in change.items() if value is not None}
-    try:
-        checked = Preferences.model_validate(chosen)
-    except ValidationError as error:
-        problems = (
-            f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
-            for problem in error.errors()
-        )
-        raise ValueError("; ".join(problems)) from error
+    checked = checked_change(change)
     stored = await conn.fetchrow(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
-        checked.model_dump(mode="json", include=set(chosen)),
+        # Every field dumps alike in either mode today; "json" keeps a later
+        # non-JSON type (a datetime, a set) storable as jsonb.
+        checked.model_dump(mode="json", include=set(chosen)),  # pragma: no mutate
         # A retired key goes with the next write, so a stored value never lingers.
         [
             *sorted(key for key, value in change.items() if value is None),
             "chat_style",
             "chat_tool_calls",
+            "chat_provider",
+            "terminal_placement",
         ],
         user_id,
     )
     return None if stored is None else stored_preferences(stored["preferences"])
+
+
+def inline_refs(node: JsonValue, defs: Mapping[str, JsonValue]) -> JsonValue:
+    """Return ``node`` with every ``#/$defs/X`` reference replaced by ``X`` itself.
+
+    A tool's schema stands alone, so a reference into ``$defs`` cannot stay. A
+    definition referring to another is inlined too, and titles and the
+    ``x-setting`` mark go: a model reading the schema does not need them.
+
+    Args:
+      node: A JSON schema, or part of one.
+      defs: The schema's ``$defs``, by name.
+
+    Returns:
+      inlined: ``node`` with no ``$ref`` left.
+
+    """
+    if isinstance(node, list):
+        return [inline_refs(each, defs) for each in node]
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        return inline_refs(defs[ref.removeprefix("#/$defs/")], defs)
+    return {
+        key: inline_refs(value, defs)
+        for key, value in node.items()
+        if key not in _SCHEMA_NOISE
+    }

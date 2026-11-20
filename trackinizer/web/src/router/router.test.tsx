@@ -36,7 +36,9 @@ function renderRouter(): { navigate: ReturnType<typeof useRouter>["navigate"] } 
 /** Traverse history and wait for the router to hear about it. */
 async function traverse(step: () => void): Promise<void> {
   await act(async () => {
-    const heard = new Promise((resolve) => addEventListener("popstate", resolve, { once: true }));
+    const heard = new Promise((resolve) =>
+      addEventListener("popstate", resolve, { once: true }),
+    );
     step();
     await heard;
   });
@@ -82,7 +84,10 @@ test("replace swaps the entry; a plain navigate adds one", async () => {
 
 test("each route shown is logged by name, kind, seq and id, never search text, and a non-canonical hash once", async () => {
   const logged = watchEvents();
-  const shown = () => logged().filter(({ event }) => event === "navigate").map(({ fields }) => fields);
+  const shown = () =>
+    logged()
+      .filter(({ event }) => event === "navigate")
+      .map(({ fields }) => fields);
   history.replaceState(null, "", "#/recent");
   const { navigate } = renderRouter();
   act(() => navigate({ name: "ref", kind: "Issue", seq: 7 }));

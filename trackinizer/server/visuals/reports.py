@@ -1,4 +1,4 @@
-"""Immutable, team-readable Artifact content and its graph provenance."""
+"""Immutable Artifact content, read as its row is, and its graph provenance."""
 
 from __future__ import annotations
 
@@ -233,7 +233,9 @@ async def publish_artifact_content(
     """Append one Artifact revision and its graph row in one transaction.
 
     The source Issue and every cited row must be ones ``principal`` may read; any
-    other is refused as missing, so the frozen content copies nothing hidden.
+    other is refused as missing, so the frozen content copies nothing hidden. The
+    Artifact is filed from ``chat``, else from the chat its Issue or its previous
+    revision was filed from, and is then read as that chat is.
 
     Args:
       store: Shared graph store and database engine.
@@ -243,6 +245,8 @@ async def publish_artifact_content(
       body: Bounded Artifact content and graph references.
       key: Retry-safe publication key.
       principal: Request reader; None preserves trusted reads.
+      chat: The session that began the science chat the assistant publishes from;
+        None for none.
 
     Returns:
       revision: Published or identically replayed immutable revision.
@@ -399,43 +403,68 @@ async def publish_artifact_content(
 async def read_artifact_content(
     store: Store,
     artifact_id: uuid.UUID,
+    *,
+    principal: Principal | None = None,
 ) -> ArtifactContentRevision | None:
-    """Read the immutable content stored by one Artifact.
+    """Read the immutable content stored by one Artifact, if ``principal`` reads it.
 
     Args:
       store: Shared graph store and database engine.
       artifact_id: Canonical Artifact identity for this revision.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
-      revision: The requested content, or None when absent.
+      revision: The requested content, or None when absent or its Artifact is one
+        ``principal`` may not read.
 
     """
     async with store.engine.acquire() as conn:
-        return await read_artifact_content_on_conn(conn, artifact_id)
+        return await read_artifact_content_on_conn(
+            conn,
+            artifact_id,
+            policy=store.access_policy,
+            principal=principal,
+        )
 
 
 async def read_artifact_content_on_conn(
     conn: Conn,
     artifact_id: uuid.UUID,
+    *,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> ArtifactContentRevision | None:
     """Resolve one published Artifact on the caller's transaction connection.
 
     Args:
       conn: Connection holding the caller's canvas transaction.
       artifact_id: Canonical Artifact identity for this revision.
+      policy: Deployment policy; None preserves trusted reads.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
-      revision: The requested content, or None when absent.
+      revision: The requested content, or None when absent or its Artifact is one
+        ``principal`` may not read.
 
     """
+    params: list[object] = [artifact_id]
+    predicate = inquiry_read_filter(
+        "revisions.artifact_id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     row = await conn.fetchrow(
-        "SELECT revisions.report_id, revisions.revision, revisions.artifact_id, "
-        "revisions.content, revisions.created_at, "
-        "revisions.author_email AS author, "
-        "reports.issue_id FROM visual_report_revisions AS revisions "
-        "JOIN visual_reports AS reports ON reports.id = revisions.report_id "
-        "WHERE revisions.artifact_id = $1",
-        artifact_id,
+        vetted_sql(
+            "SELECT revisions.report_id, revisions.revision, revisions.artifact_id, "
+            "revisions.content, revisions.created_at, "
+            "revisions.author_email AS author, "
+            "reports.issue_id FROM visual_report_revisions AS revisions "
+            "JOIN visual_reports AS reports ON reports.id = revisions.report_id "
+            "WHERE revisions.artifact_id = $1",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
+        ),
+        *params,
     )
     if row is None:
         return None

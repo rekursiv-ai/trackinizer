@@ -772,6 +772,7 @@ async def test_a_session_cookie_never_opens_a_service_account(
     set_session_cookie(
         signed,
         user_id=str(account),
+        generation=0,
         secret="session-signing-secret",  # noqa: S106 -- test fixture.
         max_age_seconds=600,
     )

@@ -1,8 +1,21 @@
 import { legacyViewsKey, parseLegacyViews } from "../console/legacyViews";
 import { type Draft as CreateDraft, keptDraft, type Related } from "../create/draft";
 import type { Draft } from "../editors/drafts";
-import { choosePreferences, type Preferences, preferences, receivePreferences } from "../preferences";
-import { type BrowserState, EMPTY_STATE, mergeImport, parseState, sameJson, stateOf, storageKey } from "./value";
+import {
+  choosePreferences,
+  type Preferences,
+  preferences,
+  receivePreferences,
+} from "../preferences";
+import {
+  type BrowserState,
+  EMPTY_STATE,
+  mergeImport,
+  parseState,
+  sameJson,
+  stateOf,
+  storageKey,
+} from "./value";
 
 /**
  * What this browser holds for the user until the server can take it.
@@ -17,7 +30,10 @@ import { type BrowserState, EMPTY_STATE, mergeImport, parseState, sameJson, stat
 /** Keep `draft`, an open editor's, here for `adoptLocalUserData`; the session is ending. */
 export function keepFieldDraftHere(email: string, key: string, draft: Draft): void {
   try {
-    localStorage.setItem(draftsKey(email), JSON.stringify({ ...heldDrafts(email), [key]: draft }));
+    localStorage.setItem(
+      draftsKey(email),
+      JSON.stringify({ ...heldDrafts(email), [key]: draft }),
+    );
   } catch {
     // Storage off or full: the draft was written to the server as the user typed, up to the last pause.
   }
@@ -47,7 +63,12 @@ export function keepCreateDraftHere(email: string, draft: CreateDraft): void {
  * and a send that fails keeps everything for the next boot.
  */
 export async function adoptLocalUserData(email: string): Promise<void> {
-  let held: { state: string | null; drafts: string | null; create: string | null; console: string | null };
+  let held: {
+    state: string | null;
+    drafts: string | null;
+    create: string | null;
+    console: string | null;
+  };
   try {
     held = {
       state: localStorage.getItem(storageKey(email)),
@@ -79,7 +100,11 @@ export async function adoptLocalUserData(email: string): Promise<void> {
     if (state && movedOut(state)) {
       const tiles = state.ui.tiles;
       if (Object.keys(tiles).length === 0) localStorage.removeItem(storageKey(email));
-      else localStorage.setItem(storageKey(email), JSON.stringify({ ...EMPTY_STATE, ui: { ...EMPTY_STATE.ui, tiles } }));
+      else
+        localStorage.setItem(
+          storageKey(email),
+          JSON.stringify({ ...EMPTY_STATE, ui: { ...EMPTY_STATE.ui, tiles } }),
+        );
     }
   } catch {
     /* Storage can be unavailable; then there is nothing to forget either. */
@@ -116,7 +141,11 @@ function stateChange(state: BrowserState): Partial<Preferences> {
     collapsed: now.collapsed.length > 0 ? now.collapsed : state.ui.collapsed,
     lens: now.lens ?? state.ui.lens,
   };
-  return Object.fromEntries(Object.entries(wanted).filter(([key, value]) => !sameJson(value, now[key as keyof Preferences])));
+  return Object.fromEntries(
+    Object.entries(wanted).filter(
+      ([key, value]) => !sameJson(value, now[key as keyof Preferences]),
+    ),
+  );
 }
 
 function draftsChange(text: string): Partial<Preferences> {
@@ -128,7 +157,10 @@ function draftsChange(text: string): Partial<Preferences> {
 function consoleChange(text: string): Partial<Preferences> {
   const now = preferences().console_views;
   const known = new Set(now.map(({ id }) => id));
-  const merged = [...now, ...parseLegacyViews(text).filter(({ id }) => !known.has(id))].slice(0, MAX_CONSOLE_VIEWS);
+  const merged = [
+    ...now,
+    ...parseLegacyViews(text).filter(({ id }) => !known.has(id)),
+  ].slice(0, MAX_CONSOLE_VIEWS);
   return merged.length === now.length ? {} : { console_views: merged };
 }
 
@@ -174,15 +206,26 @@ function heldDraftsIn(text: string): { readonly [key: string]: Draft } {
   if (typeof parsed !== "object" || parsed === null) return {};
   return Object.fromEntries(
     Object.entries(parsed as { [key: string]: unknown })
-      .filter(([, draft]) => typeof draft === "object" && draft !== null && "text" in draft && typeof draft.text === "string")
-      .map(([key, draft]) => [key, { text: (draft as Draft).text, base: (draft as Draft).base ?? null }]),
+      .filter(
+        ([, draft]) =>
+          typeof draft === "object" &&
+          draft !== null &&
+          "text" in draft &&
+          typeof draft.text === "string",
+      )
+      .map(([key, draft]) => [
+        key,
+        { text: (draft as Draft).text, base: (draft as Draft).base ?? null },
+      ]),
   );
 }
 
 /** Whether `value` has the shape `keepCreateDraftHere` writes, down to what the form reads of each relation. */
 function isCreateDraft(value: unknown): value is CreateDraft {
   const draft = (value ?? {}) as { readonly [part in keyof CreateDraft]?: unknown };
-  const relations = Array.isArray(draft.relations) ? (draft.relations as readonly Partial<Related>[]) : null;
+  const relations = Array.isArray(draft.relations)
+    ? (draft.relations as readonly Partial<Related>[])
+    : null;
   return (
     typeof draft.kind === "string" &&
     typeof draft.title === "string" &&

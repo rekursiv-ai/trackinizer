@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from trackinizer.lib import zstd_compat
 from trackinizer.runs.adapters.codex import CodexAdapter
 from trackinizer.runs.adapters.custom_types import Subagent
 from trackinizer.sagent.session.types import UserMessage
@@ -230,6 +231,72 @@ class TestCodexSubagents:
 
         assert codex.subagent(torn) is None
         assert codex.subagent(torn.with_name("rollout-gone.jsonl")) is None
+
+    # Codex compresses its older rollouts in place, ``.jsonl`` to ``.jsonl.zst``.
+    @pytest.mark.parametrize("named", [True, False], ids=["rollout", "renamed"])
+    def test_a_compressed_rollout_is_read_and_named_as_it_was(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        named: bool,
+    ) -> None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        spawn = {"parent_thread_id": _ID, "agent_nickname": "Bohr"}
+        codex, path = self._rollout(tmp_path, {"subagent": {"thread_spawn": spawn}})
+        meta = {
+            "type": "session_meta",
+            "payload": {"source": {"subagent": {"thread_spawn": spawn}}},
+        }
+        text = path.read_text() if named else json.dumps(meta) + "\n"
+        packed = path.with_name(f"{path.name if named else 'kid.jsonl'}.zst")
+        _ = packed.write_bytes(zstd_compat.compress(text.encode()))
+
+        assert codex.session_id_from_path(packed) == (_THREAD if named else None)
+        assert codex.subagent(packed) == Subagent(
+            child=_THREAD if named else "kid",
+            parent=_ID,
+            note="Bohr",
+        )
+
+    def test_a_rollout_named_otherwise_takes_its_threads_id_from_its_first_line(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        spawn = {"parent_thread_id": _ID}
+        codex, path = self._rollout(tmp_path, {"subagent": {"thread_spawn": spawn}})
+        kid = path.rename(path.with_name("kid.jsonl"))
+
+        assert codex.subagent(kid) == Subagent(child=_THREAD, parent=_ID, note="")
+
+    def test_a_first_line_with_bytes_no_utf8_still_names_its_spawner(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        codex, path = self._rollout(tmp_path, "cli")
+        spawn = f'{{"parent_thread_id": "{_ID}", "agent_nickname": "B'.encode()
+        meta = b'{"type": "session_meta", "payload": {"source": {"subagent": {"thread_spawn": '
+        _ = path.write_bytes(meta + spawn + b'\xffohr"}}}}}\n')
+
+        assert codex.subagent(path) == Subagent(
+            child=_THREAD,
+            parent=_ID,
+            note=f"B{chr(0xFFFD)}ohr",
+        )
+
+    def test_a_first_line_that_is_no_object_is_no_subagent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        codex, path = self._rollout(tmp_path, "cli")
+        _ = path.write_text("[]\n")
+
+        assert codex.subagent(path) is None
 
 
 def test_the_scope_is_none_since_codex_shards_by_date() -> None:

@@ -8,9 +8,18 @@ import { createKindFor, creatableKinds } from "../create/draft";
 import { ListView } from "../lists";
 import { PaletteView } from "../palette";
 import { routeHref } from "../router/addressBar";
-import { type Route } from "../router/route";
+import type { Route } from "../router/route";
 import { useRouter } from "../router/router";
-import { ActivityView, AdminView, ConsoleView, CreateView, DetailView, GraphView, SearchView, SettingsView } from "../router/views";
+import {
+  ActivityView,
+  AdminView,
+  ConsoleView,
+  CreateView,
+  DetailView,
+  GraphView,
+  SearchView,
+  SettingsView,
+} from "../router/views";
 import { BarStack, OfflineBar, PausedBar } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { kindLook } from "../ui/kinds";
@@ -83,16 +92,35 @@ export function Shell() {
     })),
     ...settingsCommands(role, (name) => navigate({ name })),
     ...(writable
-      ? createCommands(creatable, createKindFor(background, creatable), (kind) => navigate({ name: "new", kind }))
+      ? createCommands(creatable, createKindFor(background, creatable), (kind) =>
+          navigate({ name: "new", kind }),
+        )
       : []),
     panelCommand(sidebar),
   ]);
+  // A layer of its own, mounted while the drawer is open, so its Escape outranks a view's.
+  useCommands(
+    drawerOpen
+      ? [
+          {
+            id: "drawer.close",
+            title: "Close navigation",
+            keys: ["Escape"],
+            run: closeDrawer,
+          },
+        ]
+      : [],
+  );
 
   return (
     <PaletteContext value={palette}>
       <OpenDrawerContext value={openDrawer}>
-        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}`}>
+        <div
+          className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}`}
+        >
           <Sidebar onNavigate={closeDrawer} panel={sidebar} />
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: the pointer's way out of the drawer; Escape closes it from the keyboard */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: the pointer's way out of the drawer; Escape closes it from the keyboard */}
           <div className="drawer-scrim" onClick={closeDrawer} />
           <main className="main">
             <BarStack>
@@ -107,7 +135,10 @@ export function Shell() {
         </div>
         {route.name === "new" ? (
           <Suspense>
-            <CreateView kind={route.kind} onClose={() => navigate(background, { replace: true })} />
+            <CreateView
+              kind={route.kind}
+              onClose={() => navigate(background, { replace: true })}
+            />
           </Suspense>
         ) : null}
         <PaletteView />
@@ -140,7 +171,10 @@ function RouteView({ route }: { route: ViewRoute }) {
       return (
         <div className="view">
           <ViewHeader icon={<Icon name="x" />} title="Not found" />
-          <EmptyState icon={<Icon name="x" size={24} />} title="Nothing lives at this address">
+          <EmptyState
+            icon={<Icon name="x" size={24} />}
+            title="Nothing lives at this address"
+          >
             <p>
               <code className="mono">{route.hash}</code> is not a {APP.name} link.
             </p>

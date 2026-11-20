@@ -6,8 +6,8 @@ chance: SIGKILL, an OOM kill, a crashed host. Its ``AgentSession`` then stayed
 a dead agent as running. Nothing else could close it: the run was the only
 party that would ever call ``end``.
 
-The server already hears from every live session: it polls its inbound queue, and
-its record uploads say the same. Each is noted in the ``session_liveness``
+The server already hears from every live session: its agent process's socket, or
+its poll of its inbound queue, and its record uploads say the same. Each is noted in the ``session_liveness``
 table, and this loop closes a session once nothing has been heard from it for
 :data:`STALE_AFTER`, stamping ``ended`` with the last time it was. A session
 that never polls -- a capture-only producer -- has no liveness row and is never
@@ -35,7 +35,6 @@ import logging
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from trackinizer.server.inbound import InboundQueue
     from trackinizer.server.store.core import Store
 
 
@@ -68,17 +67,13 @@ session closed too early is reopened when it next polls or uploads, so the cost
 of the window is how long a dead agent still shows as live."""
 
 
-async def reap_silent_sessions(
-    store: Store,
-    *,
-    inbound: InboundQueue,
-    now: datetime,
-) -> int:
+# A closed session's inbound queue is left as it is: a poller closed for silence was
+# busy, not dead, and takes what was queued for it when it polls again and is reopened.
+async def reap_silent_sessions(store: Store, *, now: datetime) -> int:
     """Close every session unheard from for :data:`STALE_AFTER` before ``now``.
 
     Args:
       store: Where the sessions and their liveness live.
-      inbound: The queue holding messages for them, released once they close.
       now: The current time.
 
     Returns:
@@ -96,9 +91,6 @@ async def reap_silent_sessions(
         if ended is None:
             # Heard from, or ended by its own run, since the list was read.
             continue
-        # No poller is left to drain what was queued for it.
-        inbound.forget_poller(session_id)
-        _ = inbound.drain(session_id)
         closed += 1
         _logger.info("closed silent session %s (last seen %s)", session_id, ended)
     return closed
@@ -124,14 +116,12 @@ async def revive_if_reaped(store: Store, *, session_id: UUID) -> bool:
 async def session_reaper_loop(
     store: Store,
     *,
-    inbound: InboundQueue,
     interval_sec: float = REAP_INTERVAL_SEC,
 ) -> None:
     """Close silent sessions forever, one pass per ``interval_sec``.
 
     Args:
       store: Where the sessions and their liveness live.
-      inbound: The queue holding messages for them.
       interval_sec: Seconds between passes.
 
     """
@@ -139,11 +129,7 @@ async def session_reaper_loop(
         # A periodic sweep; the interval is the schedule.
         await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- See above.
         try:
-            _ = await reap_silent_sessions(
-                store,
-                inbound=inbound,
-                now=datetime.now(UTC),
-            )
+            _ = await reap_silent_sessions(store, now=datetime.now(UTC))
         except Exception:
             # A failed pass must not end the loop: a database blip leaves dead
             # sessions showing as live a little longer, never forever.

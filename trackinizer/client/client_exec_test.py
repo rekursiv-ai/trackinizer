@@ -36,7 +36,7 @@ _RESULT = ExecResult(
 def _client(
     answer: Callable[[httpx2.Request], httpx2.Response],
 ) -> Client:
-    found = Client("http://exec.test")
+    found = Client("https://exec.test")
     found._http.close()
     found._http = httpx2.Client(
         base_url=found.base_url,

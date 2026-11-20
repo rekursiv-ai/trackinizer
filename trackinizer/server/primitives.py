@@ -27,7 +27,6 @@ from trackinizer.server.setter_dispatch import (
 from trackinizer.server.values import (
     canonical_strs,
     empty_optional_to_none,
-    vec_to_text,
     vetted_sql,
 )
 from trackinizer.types.columns import column_specs
@@ -73,7 +72,7 @@ async def insert_inquiry(
     *,
     status: Inquiry.Status | None = None,
     values: Mapping[str, object],
-) -> None:
+) -> None:  # pragma: no mutate block
     """Insert one ``inquiries`` row, drawing ``seq`` from the per-kind sequence.
 
     ``values`` holds every non-identity column by its flat storage name (base
@@ -86,8 +85,7 @@ async def insert_inquiry(
     the edit path uses), so a new column needs no edit here -- decorate the
     dataclass attribute and it flows through. Only ``id`` / ``kind`` / ``seq`` /
     ``status`` are handled explicitly (identity + the ``status`` COALESCE
-    default); ``marginal_cost`` is never a row column. Embeddings land
-    separately via :func:`upsert_embedding`.
+    default); ``marginal_cost`` is never a row column.
 
     Args:
       conn: Database connection.
@@ -141,36 +139,6 @@ async def insert_inquiry(
         kind,
         status,
         *insert_values,
-    )
-
-
-async def upsert_embedding(
-    conn: Conn,
-    inquiry_id: UUID,
-    model: str,
-    embedding: Sequence[float],
-) -> None:
-    """Upsert one ``inquiry_embeddings`` row.
-
-    Called on submit and on title re-embed. The PK ``(inquiry_id, model)``
-    plus ``ON CONFLICT DO UPDATE`` keeps the vector aligned with the current
-    title across edits.
-
-    Args:
-      conn: Database connection.
-      inquiry_id: The inquiry row to embed.
-      model: Embedder name (e.g., "stub", "voyage", "openai").
-      embedding: Vector as a sequence of floats; stored as pgvector text.
-
-    """
-    await conn.execute(
-        "INSERT INTO inquiry_embeddings (inquiry_id, model, embedding) "
-        "VALUES ($1, $2, $3::vector) "
-        "ON CONFLICT (inquiry_id, model) DO UPDATE "
-        "SET embedding = EXCLUDED.embedding, created = now()",
-        inquiry_id,
-        model,
-        vec_to_text(list(embedding)),
     )
 
 

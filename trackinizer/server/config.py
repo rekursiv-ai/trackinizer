@@ -1,11 +1,11 @@
-"""Runtime config + engine / embedder construction."""
+"""Runtime config + engine construction."""
 
 from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Final, Literal, Protocol, Self
 
 import os
 import re
@@ -16,7 +16,6 @@ import time
 import uuid
 
 from trackinizer.lib.userdirs import data_dir
-from trackinizer.server.embedders.stub import StubEmbedder
 
 
 # Registry only needs ConfigError; eager engines/wire models cost ~200 ms.
@@ -26,8 +25,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import substrate
     from trackinizer.lib.postgres.substrate import DatabaseEngine
     from trackinizer.server import notify
-    from trackinizer.types.embedder import Embedder
-    from trackinizer.wire import wire_service_accounts, wire_terminals
+    from trackinizer.wire import wire_service_accounts, wire_terminals, wire_tools
 else:
     from wrapt import lazy_import
 
@@ -35,24 +33,28 @@ else:
     notify = lazy_import("trackinizer.server.notify")
     wire_service_accounts = lazy_import("trackinizer.wire.wire_service_accounts")
     wire_terminals = lazy_import("trackinizer.wire.wire_terminals")
+    wire_tools = lazy_import("trackinizer.wire.wire_tools")
     json_loads = lazy_import("treekle", "json_loads")
 
 
 __all__ = [
+    "DEFAULT_TOOL_AGENT_SOCKETS",
+    "DEFAULT_TOOL_STREAMS",
     "Assistant",
     "ChatOrgs",
     "ComputeNote",
     "Config",
     "ConfigError",
     "ConfigFlags",
+    "RemoteAgentService",
     "ServiceKeys",
-    "build_embedder",
     "build_engine",
     "parse_assistant",
     "parse_chat_orgs",
-    "parse_chat_streaming",
     "parse_compute",
+    "parse_default_remote_agent_service",
     "parse_engine",
+    "parse_remote_agent_services",
     "parse_service_keys",
     "parse_staff",
     "parse_terminal_stun",
@@ -71,6 +73,9 @@ class ConfigError(Exception):
     process exit.
     """
 
+
+DEFAULT_TOOL_AGENT_SOCKETS: Final = 1024
+DEFAULT_TOOL_STREAMS: Final = 128
 
 _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
     30 * 24 * 60 * 60
@@ -126,6 +131,25 @@ class ServiceKeys:
     directory: Path
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RemoteAgentService:
+    """A service that runs remote agents: agents for accounts other than its own.
+
+    It is enrolled as a host, whose daemon confines each agent it starts.
+
+    Attributes:
+      name: The name it is enrolled under, as a host's.
+      account: The service account it is enrolled under, which owns it.
+      admits: Who may start an agent on it or use its login, as patterns of the kind
+        ``staff`` holds.
+
+    """
+
+    name: str
+    account: str
+    admits: tuple[str, ...] = ()
+
+
 class ConfigFlags(Protocol):
     """The parsed CLI flags :meth:`Config.from_args` reads."""
 
@@ -134,10 +158,6 @@ class ConfigFlags(Protocol):
     ephemeral: bool
     pglite_tcp: bool
     dsn: str
-    embedder: str
-    session_embedder: str
-    session_embedder_dim: int | None
-    session_embedders: str
     web: bool
     session_max_age_seconds: int
     auth: bool
@@ -159,9 +179,6 @@ class Config:
         the DB must be reached over a port -- a non-co-located client or a TCP
         healthcheck.
       dsn: Postgres DSN when ``engine == 'pg'``.
-      embedder: Embedder backend name (inquiry_embeddings, 384-dim).
-      session_embedder: Embedder backend name for session_embeddings
-        semantic search (1024-dim); empty disables the semantic arm.
       web: Mount the web routes: ``/api/web``, the login page and, with
         ``--app-dir``, the web app.
       session_secret: HMAC key for the session and OAuth-state cookies.
@@ -175,7 +192,7 @@ class Config:
       session_max_age_seconds: Session cookie TTL; defaults to 30 days.
       auth_disabled: Bypass auth -- every request becomes a synthetic
         admin. Local demos only; never in production.
-      assistant: The Chat partner of every canvas; none when unset.
+      assistant: The service account that acts for an ``asker``; none when unset.
       staff: Who holds the ``staff`` audience: patterns, each ``user@host`` or
         ``*@domain``, lowercase. A domain pattern also needs Google's ``hd`` claim
         to name the domain. Empty means nobody is staff and no staff session can
@@ -191,10 +208,6 @@ class Config:
         every caller reads every open session and every person every open chat;
         only a server whose users are all one organisation sets it. Environment
         only (``TRACKINIZER_CHAT_ORGS``).
-      chat_streaming: Hold the answer a chat's assistant is writing, in memory, for
-        the chat's readers to read as it grows. Off refuses its routes with 404
-        ``chat_partials_off``, and the assistant stops sending it. Environment
-        only (``TRACKINIZER_CHAT_STREAMING``, ``on`` or ``off``).
       terminal_stun: STUN servers the browser and a daemon use to reach each
         other direct, as ``stun:HOST[:PORT]`` URLs. Empty (the default) means a
         direct link forms on one network only. Environment only
@@ -207,16 +220,24 @@ class Config:
         at every start, and where the key files live; none when unset.
         Environment only (``TRACKINIZER_SERVICE_KEYS``, comma separated
         ``NAME:ROLE`` pairs, and ``TRACKINIZER_SERVICE_KEY_DIR``).
-      tool_connections_per_host: The most tool connections one host holds at once; the
-        next agent is refused.
-      tool_dial_back_sec: How long an offered tool connection waits for its host to dial
-        back before it ends.
+      tool_agent_sockets_per_host: The per-host agent WebSocket budget, including parked
+        clients. Environment: ``TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST``.
+      tool_streams_per_host: The per-host daemon stream budget, bounded by the wire limit.
+        Environment: ``TRACKINIZER_TOOL_STREAMS_PER_HOST``.
       tool_sweep_sec: How often each tool connection's rule is asked again, so a revoked
         key or a demoted asker loses the host within it.
       tool_line_bytes: The longest line the server reads from an agent's tool connection;
         a longer one ends the tool connection. The default fits a ``Write`` of 8 MiB. Each line
         is parsed inline, on the one process, so a line this long stalls it for a
-        moment; only the configured assistant's key can send one.
+        moment; only a writer's or an admin's key can send one.
+      remote_agent_services: The services that run agents for accounts other than
+        their own, and whom each admits. Environment only
+        (``TRACKINIZER_REMOTE_AGENT_SERVICES``, a JSON list of
+        ``{"name", "account", "admits"}`` objects).
+      default_remote_agent_service: The remote agent service an agent runs on when
+        its start names no host; empty when this server names none, and such a
+        start finds no place. Environment only
+        (``TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE``).
 
     """
 
@@ -225,29 +246,6 @@ class Config:
     ephemeral: bool = False
     pglite_tcp: bool = False
     dsn: str = ""
-    embedder: str = "stub"
-    # The session-search embedder used to embed QUERIES (the serving default),
-    # separate from ``embedder`` (inquiry_embeddings' 384-dim). Its value is the
-    # embedder's full stored identity (``qwen3-embedding-4b@1024``, not a bare
-    # ``qwen3-embedding-4b``) -- one canonical spelling that is the config knob,
-    # the registry key, ``session_embeddings.model``, and the partial-index
-    # WHERE, all at once. Empty degrades the route to full-text only rather than
-    # loading a model on a keyword search. See ``embedders.registry``.
-    session_embedder: str = ""
-    # An optional output-dim override for the serving embedder, applied when it is
-    # a bare slug (a dim that isn't a choice needn't be spelled). ``None`` uses the
-    # model's registered default. A Matryoshka model accepts any dim in its range;
-    # the registry validates and mints the ``slug@dim`` identity. Redundant when
-    # ``session_embedder`` already carries an ``@dim`` suffix (they must agree).
-    # Env: ``TRACKINIZER_SESSION_EMBEDDER_DIM``.
-    session_embedder_dim: int | None = None
-    # The set of embedders the sweep/backfill MAINTAINS (writes rows for), as
-    # opposed to the single one that serves queries. Several models coexist in
-    # ``session_embeddings`` (keyed by model), so the corpus can carry vectors
-    # for a challenger while ``session_embedder`` still serves the incumbent.
-    # Defaults to just the serving embedder; set a superset to backfill A/B
-    # candidates. Env: comma-separated ``TRACKINIZER_SESSION_EMBEDDERS``.
-    session_embedders: tuple[str, ...] = ()
     web: bool = False
     session_secret: str = ""
     secrets: str = "file"
@@ -256,14 +254,15 @@ class Config:
     assistant: Assistant | None = None
     staff: tuple[str, ...] = ()
     chat_orgs: ChatOrgs = "individual"
-    chat_streaming: bool = True
     terminal_stun: tuple[str, ...] = ()
     compute: tuple[ComputeNote, ...] = ()
     service_keys: ServiceKeys | None = None
-    tool_connections_per_host: int = 16
-    tool_dial_back_sec: float = 20.0
+    tool_agent_sockets_per_host: int = DEFAULT_TOOL_AGENT_SOCKETS
+    tool_streams_per_host: int = DEFAULT_TOOL_STREAMS
     tool_sweep_sec: float = 60.0
     tool_line_bytes: int = 16 << 20
+    remote_agent_services: tuple[RemoteAgentService, ...] = ()
+    default_remote_agent_service: str = ""
 
     @classmethod
     def from_env(cls) -> Self:
@@ -273,27 +272,22 @@ class Config:
           result: Config with settings from TRACKINIZER_* env vars.
 
         """
+        remote_agent_services = parse_remote_agent_services(
+            os.environ.get("TRACKINIZER_REMOTE_AGENT_SERVICES", ""),
+        )
         return cls(
             engine=parse_engine(os.environ.get("TRACKINIZER_ENGINE", "pglite")),
             datadir=Path(env_datadir)
             if (
-                env_datadir := os.environ.get(
+                env_datadir := os.environ.get(  # pragma: no mutate
                     "TRACKINIZER_DATADIR",
-                    "",  # pragma: no mutate -- unset and "" are both falsy.
+                    "",
                 )
             )
             else None,
             ephemeral=os.environ.get("TRACKINIZER_EPHEMERAL") == "1",
             pglite_tcp=os.environ.get("TRACKINIZER_PGLITE_TCP") == "1",
             dsn=os.environ.get("TRACKINIZER_DSN", ""),
-            embedder=os.environ.get("TRACKINIZER_EMBEDDER", "stub"),
-            session_embedder=os.environ.get("TRACKINIZER_SESSION_EMBEDDER", ""),
-            session_embedder_dim=_parse_optional_dim(
-                os.environ.get("TRACKINIZER_SESSION_EMBEDDER_DIM", ""),
-            ),
-            session_embedders=_parse_session_embedders(
-                os.environ.get("TRACKINIZER_SESSION_EMBEDDERS", ""),
-            ),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
             session_secret=session_secret_from_env(),
             secrets=secrets_from_env(),
@@ -302,9 +296,6 @@ class Config:
             assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
             staff=parse_staff(os.environ.get("TRACKINIZER_STAFF", "")),
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
-            chat_streaming=parse_chat_streaming(
-                os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
-            ),
             terminal_stun=parse_terminal_stun(
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
@@ -312,6 +303,20 @@ class Config:
             service_keys=parse_service_keys(
                 os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
                 os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
+            ),
+            tool_agent_sockets_per_host=_tool_cap(
+                "TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST",
+                default=DEFAULT_TOOL_AGENT_SOCKETS,
+            ),
+            tool_streams_per_host=_tool_cap(
+                "TRACKINIZER_TOOL_STREAMS_PER_HOST",
+                default=DEFAULT_TOOL_STREAMS,
+                maximum=wire_tools.MUX_STREAMS,
+            ),
+            remote_agent_services=remote_agent_services,
+            default_remote_agent_service=parse_default_remote_agent_service(
+                os.environ.get("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", ""),
+                services=remote_agent_services,
             ),
         )
 
@@ -327,16 +332,15 @@ class Config:
             environment only.
 
         """
+        remote_agent_services = parse_remote_agent_services(
+            os.environ.get("TRACKINIZER_REMOTE_AGENT_SERVICES", ""),
+        )
         return cls(
             engine=parse_engine(flags.engine),
             datadir=flags.datadir,
             ephemeral=flags.ephemeral,
             pglite_tcp=flags.pglite_tcp,
             dsn=flags.dsn,
-            embedder=flags.embedder,
-            session_embedder=flags.session_embedder,
-            session_embedder_dim=flags.session_embedder_dim,
-            session_embedders=_parse_session_embedders(flags.session_embedders),
             web=flags.web,
             # Secrets come from the environment only, never CLI flags.
             session_secret=session_secret_from_env(),
@@ -347,9 +351,6 @@ class Config:
             staff=parse_staff(flags.staff),
             # Like the secrets, deployment properties that no flag overrides.
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
-            chat_streaming=parse_chat_streaming(
-                os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
-            ),
             terminal_stun=parse_terminal_stun(
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
@@ -358,22 +359,35 @@ class Config:
                 os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
                 os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
             ),
+            tool_agent_sockets_per_host=_tool_cap(
+                "TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST",
+                default=DEFAULT_TOOL_AGENT_SOCKETS,
+            ),
+            tool_streams_per_host=_tool_cap(
+                "TRACKINIZER_TOOL_STREAMS_PER_HOST",
+                default=DEFAULT_TOOL_STREAMS,
+                maximum=wire_tools.MUX_STREAMS,
+            ),
+            remote_agent_services=remote_agent_services,
+            default_remote_agent_service=parse_default_remote_agent_service(
+                os.environ.get("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", ""),
+                services=remote_agent_services,
+            ),
         )
 
-    def maintained_embedders(self) -> tuple[str, ...]:
-        """Return the embedders the sweep/backfill should maintain.
 
-        An explicit :attr:`session_embedders` wins; otherwise the serving
-        :attr:`session_embedder` is the sole maintained model (and an unset
-        serving embedder maintains nothing).
-
-        Returns:
-          names: The stored embedder identities whose rows the sweep keeps.
-
-        """
-        if self.session_embedders:
-            return self.session_embedders
-        return (self.session_embedder,) if self.session_embedder else ()
+def _tool_cap(name: str, *, default: int, maximum: int = 65_536) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    message = f"{name} must be an integer between 1 and {maximum}, got {raw!r}"
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(message) from None
+    if value < 1 or value > maximum:
+        raise ConfigError(message)
+    return value
 
 
 def session_max_age_from_env() -> int:
@@ -424,7 +438,7 @@ def session_secret_from_env() -> str:
     """
     secret = os.environ.get(
         "TRACKINIZER_SESSION_SECRET",
-        "",  # pragma: no mutate -- unset and "" are both falsy.
+        "",  # pragma: no mutate[truthiness]
     )
     path = os.environ.get("TRACKINIZER_SESSION_SECRET_FILE", "")
     if secret and path.strip():
@@ -464,7 +478,7 @@ def session_secret_from_file(path: str) -> str:
         finally:
             Path(staged).unlink()
     return target.read_text(
-        encoding="utf-8",  # pragma: no mutate -- the secret is ASCII, read alike by any.
+        encoding="utf-8",  # pragma: no mutate[case-insensitive]
     ).strip()
 
 
@@ -623,6 +637,82 @@ def parse_compute(value: str) -> tuple[ComputeNote, ...]:
     return notes
 
 
+def parse_remote_agent_services(value: str) -> tuple[RemoteAgentService, ...]:
+    """Parse ``$TRACKINIZER_REMOTE_AGENT_SERVICES``: a JSON list of services.
+
+    Each is ``{"name", "account", "admits"}``, and is enrolled under a service
+    account, since a person's host that took other accounts' sessions would hand them
+    its owner. ``admits`` lists patterns of the kind ``$TRACKINIZER_STAFF`` holds,
+    read by :func:`parse_staff`.
+
+    Args:
+      value: The variable; blank means none.
+
+    Returns:
+      services: The services, in order, each name trimmed and each account
+        lowercase.
+
+    Raises:
+      ConfigError: The value is not such a list, a name or an account is blank or
+        names no service account, a name is given twice, or a pattern is malformed.
+
+    """
+    if not value.strip():
+        return ()
+    shape = (
+        "TRACKINIZER_REMOTE_AGENT_SERVICES must be a JSON list of "
+        '{"name", "account", "admits"} objects'
+    )
+    try:
+        read = json_loads(value, tuple[RemoteAgentService, ...])
+    except ValueError as error:
+        raise ConfigError(f"{shape}: {error}") from None
+    services = tuple(
+        RemoteAgentService(
+            name=each.name.strip(),
+            account=each.account.strip().lower(),
+            admits=parse_staff(",".join(each.admits)),
+        )
+        for each in read
+    )
+    for each in services:
+        if not each.name or not wire_service_accounts.is_service_address(each.account):
+            raise ConfigError(
+                f"{shape}, each named and enrolled under a service account, "
+                f"NAME@{wire_service_accounts.SERVICE_DOMAIN}: got {each!r}",
+            )
+    if len({each.name for each in services}) != len(services):
+        raise ConfigError("TRACKINIZER_REMOTE_AGENT_SERVICES names a service twice")
+    return services
+
+
+def parse_default_remote_agent_service(
+    value: str,
+    *,
+    services: tuple[RemoteAgentService, ...],
+) -> str:
+    """Parse ``$TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE``: where an agent runs by default.
+
+    Args:
+      value: The variable; blank means none.
+      services: The remote agent services the server names.
+
+    Returns:
+      name: The service's name, trimmed; empty for none.
+
+    Raises:
+      ConfigError: It names no remote agent service.
+
+    """
+    name = value.strip()
+    if name and name not in {each.name for each in services}:
+        raise ConfigError(
+            f"TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE names {name!r}, which "
+            "TRACKINIZER_REMOTE_AGENT_SERVICES does not name",
+        )
+    return name
+
+
 def parse_service_keys(accounts: str, directory: str) -> ServiceKeys | None:
     """Parse ``$TRACKINIZER_SERVICE_KEYS`` and ``$TRACKINIZER_SERVICE_KEY_DIR``.
 
@@ -660,30 +750,6 @@ def parse_service_keys(accounts: str, directory: str) -> ServiceKeys | None:
             "TRACKINIZER_SERVICE_KEYS names accounts; set TRACKINIZER_SERVICE_KEY_DIR",
         )
     return ServiceKeys(accounts=tuple(named.items()), directory=Path(directory.strip()))
-
-
-def parse_chat_streaming(value: str) -> bool:
-    """Parse ``$TRACKINIZER_CHAT_STREAMING``: ``on`` or ``off``; blank is ``on``.
-
-    Args:
-      value: The variable.
-
-    Returns:
-      streaming: Whether a chat's answer in writing is held for its readers.
-
-    Raises:
-      ConfigError: The value is neither.
-
-    """
-    match value.strip():
-        case "" | "on":
-            return True
-        case "off":
-            return False
-        case other:
-            raise ConfigError(
-                f"TRACKINIZER_CHAT_STREAMING must be on or off, got {other!r}",
-            )
 
 
 def parse_engine(value: str) -> Literal["pglite", "pg"]:
@@ -732,31 +798,6 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
         dsn=config.dsn,
         listen_channel=notify.NOTIFY_CHANNEL,
     )
-
-
-def build_embedder(name: str) -> Embedder:
-    """Build the embedder backend."""
-    if name == "stub":
-        return StubEmbedder()
-    raise ConfigError(f"unknown embedder {name!r}")
-
-
-def _parse_session_embedders(raw: str) -> tuple[str, ...]:
-    """Parse a comma-separated embedder list, trimming blanks."""
-    return tuple(name.strip() for name in raw.split(",") if name.strip())
-
-
-def _parse_optional_dim(raw: str) -> int | None:
-    """Parse an optional integer dim env value; empty/blank is ``None``."""
-    stripped = raw.strip()
-    if not stripped:
-        return None
-    try:
-        return int(stripped)
-    except ValueError:
-        raise ConfigError(
-            f"TRACKINIZER_SESSION_EMBEDDER_DIM must be an integer, got {raw!r}",
-        ) from None
 
 
 # ``stale_seconds``: an ephemeral workdir older than this is assumed abandoned by a

@@ -131,7 +131,7 @@ def isolate_user_dirs(
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path | None:
-    """Point every XDG base directory at a per-test tmp root; drop the last one.
+    """Point every XDG base directory, and ``~``, at a per-test tmp root; drop the last one.
 
     Sets the environment rather than patching the ``userdirs`` functions: the
     env var is the seam production reads, so a test exercises the real
@@ -153,7 +153,7 @@ def isolate_user_dirs(
       monkeypatch: Fixture for temporary environment modifications.
 
     Returns:
-      root: The tmp directory the four XDG variables point at, or ``None``
+      root: The tmp directory the XDG variables and ``HOME`` point into, or ``None``
         when the test opted out. Assertions normally do not need it; call the
         ``userdirs`` helper instead.
 
@@ -186,6 +186,18 @@ def isolate_user_dirs(
         (root / leaf).mkdir(mode=0o700)
         variable = f"XDG_{leaf.upper()}_HOME"  # house-ignore[xdg-literal] -- This IS the fixture that repoints userdirs, so it spells the variables.
         monkeypatch.setenv(variable, str(root / leaf))
+    # Vendors keep logins at fixed paths under ``~`` (``~/.claude``,
+    # ``~/.codex``), which no XDG variable moves: a test that forgot its own
+    # moved a user's real Claude logins (2026-11-17).
+    # Toolchains are not logins: rustup's ``cargo`` proxy finds its toolchain
+    # under ``~`` unless told where, so a tmp ``~`` failed every Rust wheel
+    # build (treekle CI, 2026-11-17). Pinned before ``HOME`` moves.
+    for variable, leaf in (("RUSTUP_HOME", ".rustup"), ("CARGO_HOME", ".cargo")):
+        real = os.environ.get(variable) or str(Path("~", leaf).expanduser())
+        monkeypatch.setenv(variable, real)
+    (root / "home").mkdir(mode=0o700)
+    monkeypatch.setenv("HOME", str(root / "home"))
+    monkeypatch.setenv("USERPROFILE", str(root / "home"))
     request.config.stash[_LAST_ROOT] = root
     return root
 

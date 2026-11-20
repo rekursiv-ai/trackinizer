@@ -3,6 +3,7 @@ import { type Sent, stubFetch } from "../api/testing";
 import { detailQueries } from "../detail/queries";
 import { testClient, uuid } from "../live/testing";
 import { DetailWarmer } from "./prefetch";
+import { must } from "../must";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -16,15 +17,22 @@ afterEach(() => {
 /** A warmer over a fresh cache, and the detail reads it makes, by id. */
 function warmer() {
   const sent = stubFetch((request) => {
-    const id = new URL(request.url).pathname.split("/").at(-1)!;
-    return Response.json({ self: { id, kind: "Issue", seq: 1, title: "", status: "active" }, edges: {}, backlinks: {}, changes: [] });
+    const id = must(new URL(request.url).pathname.split("/").at(-1));
+    return Response.json({
+      self: { id, kind: "Issue", seq: 1, title: "", status: "active" },
+      edges: {},
+      backlinks: {},
+      changes: [],
+    });
   });
   const client = testClient();
   return { client, warm: new DetailWarmer(client), reads: () => reads(sent) };
 }
 
 function reads(sent: readonly Sent[]): string[] {
-  return sent.filter((request) => request.path.startsWith("/api/web/get/")).map((request) => request.path.split("/").at(-1)!);
+  return sent
+    .filter((request) => request.path.startsWith("/api/web/get/"))
+    .map((request) => must(request.path.split("/").at(-1)));
 }
 
 test("a row rested on for 150 ms has its detail read, into the detail's own query", async () => {
@@ -34,7 +42,9 @@ test("a row rested on for 150 ms has its detail read, into the detail's own quer
   expect(reads()).toEqual([]);
   await vi.advanceTimersByTimeAsync(1);
   expect(reads()).toEqual([uuid(1)]);
-  expect(client.getQueryData(detailQueries.detail(uuid(1)).queryKey)).toMatchObject({ self: { id: uuid(1) } });
+  expect(client.getQueryData(detailQueries.detail(uuid(1)).queryKey)).toMatchObject({
+    self: { id: uuid(1) },
+  });
 });
 
 test("a row passed over sooner, or left, is not read", async () => {

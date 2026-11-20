@@ -13,7 +13,6 @@ import pytest
 
 from trackinizer.conftest import FakeEngine, executed_sql, make_store
 from trackinizer.lib import zstd_compat
-from trackinizer.server.semantic_mapper_footprint import HEAD_CHARS
 from trackinizer.server.store.session_bodies import (
     HEAD_TEXT_CHARS,
     HEAVY_KINDS,
@@ -217,13 +216,7 @@ def test_the_stub_is_valid_json() -> None:
     assert json.loads(STUB_PAYLOAD) == {"$body": "offloaded"}
 
 
-def test_heads_agree_with_the_footprint_mapper() -> None:
-    """Storage heads and search heads are one decision (by test, not import)."""
-    assert HEAD_TEXT_CHARS == HEAD_CHARS
-
-
-def test_heavy_kinds_cover_the_footprint_headed_set() -> None:
-    """Every kind the mapper heads is offloaded; FileRead adds the unindexed."""
+def test_heavy_kinds_are_tool_output_and_file_bodies() -> None:
     assert {
         "BashResult",
         "UncategorizedToolResult",

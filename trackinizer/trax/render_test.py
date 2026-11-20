@@ -1561,6 +1561,29 @@ def test_session_hit_rendering_all_branches() -> None:
     )
 
 
+def test_inquiry_hits_name_their_row_and_a_note_its_edge() -> None:
+    hit: dict[str, object] = {
+        "kind": "Issue",
+        "seq": 7,
+        "field": "text",
+        "score": 0.5,
+        "source": "both",
+        "title": "lock bug",
+        "snippet": " held ",
+    }
+
+    assert render.format_inquiry_hits(
+        {"hits": [hit, hit | {"field": "edge:narrows:abc"}], "degraded": True},
+    ) == (
+        "(semantic search unavailable; showing full-text results only)\n"
+        "0.5000  both      Issue#7  lock bug\n"
+        "  held\n"
+        "0.5000  both      Issue#7 edge:narrows:abc  lock bug\n"
+        "  held\n"
+    )
+    assert render.format_inquiry_hits({"hits": []}) == "(no matches)\n"
+
+
 def test_label_resolution_splits_and_trims() -> None:
     assert render.resolve_labels(None) == []
     empty: list[str] = []

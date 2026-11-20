@@ -1,10 +1,18 @@
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { renderDetail, row } from "../detail/testing";
 import { stubLayout } from "../editors/testing";
 import { currentRoute } from "../router/addressBar";
 import { cacheWith, serveGraph } from "./testing";
+import { must } from "../must";
 
 const OLD = row("Issue", 1, { title: "Old plan" });
 const NEWER = row("Paper", 2, { title: "A newer paper" });
@@ -32,7 +40,13 @@ async function open(server = serveGraph([OLD, NEWER])) {
  */
 function more(action: string) {
   fireEvent.click(screen.getByLabelText("Issue#1 actions", { selector: "button" }));
-  fireEvent.click([...document.querySelectorAll("[role=option]")].find((option) => option.textContent!.startsWith(action))!);
+  fireEvent.click(
+    must(
+      [...document.querySelectorAll("[role=option]")].find((option) =>
+        must(option.textContent).startsWith(action),
+      ),
+    ),
+  );
 }
 
 test("the ⋯ menu adds a relation or supersedes both ways, and R opens the picker, which gives focus back", async () => {
@@ -51,8 +65,14 @@ test("the ⋯ menu adds a relation or supersedes both ways, and R opens the pick
   const button = screen.getByRole("button", { name: "Add parent" });
   button.focus();
   await userEvent.keyboard("r");
-  expect(within(screen.getByRole("dialog", { name: "Add relation" })).getByRole("combobox", { name: "Relation" })).toBeTruthy();
-  fireEvent.keyDown(screen.getByRole("combobox", { name: "Relation" }), { key: "Escape" });
+  expect(
+    within(screen.getByRole("dialog", { name: "Add relation" })).getByRole("combobox", {
+      name: "Relation",
+    }),
+  ).toBeTruthy();
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "Relation" }), {
+    key: "Escape",
+  });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(document.activeElement).toBe(button);
 });
@@ -61,34 +81,54 @@ test("Supersede with an existing inquiry is one supersedes POST from the inquiry
   const server = await open();
   more("Supersede with an existing inquiry");
   const dialog = screen.getByRole("dialog", { name: "Superseded by…" });
-  expect(dialog.querySelector(".pal-ctx")!.textContent).toMatch(/^Issue#1Superseded bypick one or more issues, /);
+  expect(must(dialog.querySelector(".pal-ctx")).textContent).toMatch(
+    /^Issue#1Superseded bypick one or more issues, /,
+  );
   const search = within(dialog).getByRole("combobox");
   fireEvent.keyDown(search, { key: "Enter" });
   fireEvent.click(within(dialog).getByRole("button", { name: /Add 1 relation/ }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  expect(server.writes()).toEqual([{ call: `POST /api/edges/${NEWER.id}/supersedes/${OLD.id}`, body: {} }]);
+  expect(server.writes()).toEqual([
+    { call: `POST /api/edges/${NEWER.id}/supersedes/${OLD.id}`, body: {} },
+  ]);
   expect(await screen.findByText("Linked: Issue#1 superseded by Paper#2")).toBeTruthy();
-  await within(screen.getByRole("region", { name: "Children" })).findByText("superseded_by", { selector: ".edge-name" });
+  await within(screen.getByRole("region", { name: "Children" })).findByText(
+    "superseded_by",
+    { selector: ".edge-name" },
+  );
 });
 
 test("Supersede with a new inquiry is one batch of the new row and its edge, then opens the new one", async () => {
   const server = await open();
   more("Supersede with a new inquiry");
-  const dialog = screen.getByRole("dialog", { name: "Supersede Issue#1 with a new issue" });
+  const dialog = screen.getByRole("dialog", {
+    name: "Supersede Issue#1 with a new issue",
+  });
   const title = within(dialog).getByRole("textbox", { name: "Title" });
   expect(title).toHaveProperty("value", "Old plan");
   fireEvent.change(title, { target: { value: "New plan" } });
-  fireEvent.change(within(dialog).getByRole("textbox", { name: "Description" }), { target: { value: "Replaces the old plan." } });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Description" }), {
+    target: { value: "Replaces the old plan." },
+  });
   fireEvent.keyDown(title, { key: "Enter", metaKey: true });
-  await waitFor(() => expect(currentRoute()).toBe(`#/lookup/${server.rows.at(-1)!.id}`));
+  await waitFor(() =>
+    expect(currentRoute()).toBe(`#/lookup/${must(server.rows.at(-1)).id}`),
+  );
   expect(screen.getByText("Created a new issue that supersedes Issue#1")).toBeTruthy();
   const [write] = server.writes();
-  const items = (write!.body as { items: { idempotency_key: string }[] }).items;
+  const items = (must(write).body as { items: { idempotency_key: string }[] }).items;
   expect(server.writes()).toEqual([
     {
       call: "POST /api/inquiries/batch",
       body: {
-        items: [{ kind: "Issue", title: "New plan", description: "Replaces the old plan.", idempotency_key: items[0]!.idempotency_key }],
+        items: [
+          {
+            kind: "Issue",
+            title: "New plan",
+            description: "Replaces the old plan.",
+            idempotency_key: must(items[0]).idempotency_key,
+          },
+        ],
         edges: [{ edge_kind: "supersedes", from_index: 0, to_id: OLD.id }],
       },
     },
@@ -97,7 +137,8 @@ test("Supersede with a new inquiry is one batch of the new row and its edge, the
 
 test("a batch the server keeps failing is retried with the same keys, then offers Retry and Discard", async () => {
   const server = serveGraph([OLD, NEWER]);
-  const unavailable = () => Response.json({ detail: "database unavailable" }, { status: 503 });
+  const unavailable = () =>
+    Response.json({ detail: "database unavailable" }, { status: 503 });
   server.answers.push(unavailable, unavailable, unavailable, unavailable);
   await open(server);
   more("Supersede with a new inquiry");
@@ -107,12 +148,18 @@ test("a batch the server keeps failing is retried with the same keys, then offer
   fireEvent.click(within(dialog).getByRole("button", { name: /Create and supersede/ }));
   await act(() => vi.runAllTimersAsync());
   vi.useRealTimers();
-  expect(within(dialog).getByText("Not saved: the server failed (database unavailable).")).toBeTruthy();
+  expect(
+    within(dialog).getByText("Not saved: the server failed (database unavailable)."),
+  ).toBeTruthy();
   expect(server.writes()).toHaveLength(4);
   fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(currentRoute()).toBe(`#/lookup/${server.rows.at(-1)!.id}`));
+  await waitFor(() =>
+    expect(currentRoute()).toBe(`#/lookup/${must(server.rows.at(-1)).id}`),
+  );
   // Every send is the same request: the same row key.
-  expect(new Set(server.writes().map((write) => JSON.stringify(write.body))).size).toBe(1);
+  expect(new Set(server.writes().map((write) => JSON.stringify(write.body))).size).toBe(
+    1,
+  );
 });
 
 test("an AgentSession is not superseded by a new one, which only the agent runner records (CR-W03)", async () => {
@@ -138,7 +185,9 @@ test("a supersede dialog closed while its batch is sent opens nothing once it la
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   release();
-  expect(await screen.findByText("Created a new issue that supersedes Issue#1")).toBeTruthy();
+  expect(
+    await screen.findByText("Created a new issue that supersedes Issue#1"),
+  ).toBeTruthy();
   expect(currentRoute()).toBe("#/ref/Issue/1");
   expect(server.rows).toHaveLength(3);
 });

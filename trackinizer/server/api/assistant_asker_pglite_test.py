@@ -3,8 +3,8 @@
 The configured assistant reads ``open`` only, so a ``staff`` session is beyond it. It
 may still be sent a line the assistant relays for a signed-in user, on that user's
 rights and none of its own: the user must be a writer whose account holds the
-session. Each send test goes through the real routes, by direct enqueue and by name,
-and reads what reached the session's queue. The assistant reads a session's
+session. Each send test goes through the real route, by name, and reads what reached
+the session's agent process. The assistant reads a session's
 transcript for a user into the chat it answers them in, through each route that reads
 one by id, exactly when the user reads both; a ``staff`` session only once the chat
 is ``staff`` too, so no member who lacks staff reads what it read, which only the
@@ -15,19 +15,19 @@ it. The server is one organisation, as alpha is, unless a test says otherwise.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
 import httpx2
 import pytest
 import pytest_asyncio
 
-from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
     patch_state,
 )
+from trackinizer.server.api.session_test_support import ServingRelay
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.store.core import Store
 from trackinizer.wire.audience import AUDIENCES
@@ -38,13 +38,10 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from trackinizer.server.auth import Role
-    from trackinizer.server.inbound import InboundQueue
 
 
 pytestmark = [pytest.mark.db_pglite, pytest.mark.asyncio(loop_scope="session")]
 
-type _Route = Literal["inbound", "messages"]
-_ROUTES: Final[tuple[_Route, ...]] = ("inbound", "messages")
 _READS: Final = ("parts", "records", "turns")
 
 _ASSISTANT: Final = "scout@example.com"
@@ -88,6 +85,7 @@ class _Served:
 
     http: httpx2.AsyncClient
     store: Store
+    relay: ServingRelay
     others: _Live
     wes_own: _Live
     vi_own: _Live
@@ -110,27 +108,20 @@ class _Served:
 
     async def send(
         self,
-        route: _Route,
         to: _Live,
         *,
         asker: str | None = None,
     ) -> httpx2.Response:
-        """Send ``hi`` to ``to`` by ``route``, naming ``asker`` when there is one."""
+        """Send ``hi`` to ``to`` by name, naming ``asker`` when there is one."""
         named = {} if asker is None else {"asker": asker}
-        if route == "inbound":
-            return await self.http.post(
-                f"/api/sessions/{to.id}/inbound",
-                json={"text": "hi", **named},
-            )
         return await self.http.post(
             "/api/messages",
             json={"actor": to.actor, "room": "ops", "text": "hi", **named},
         )
 
-    @classmethod
-    def queued(cls, to: _Live) -> int:
-        """Return how many lines wait for ``to``."""
-        return cast("InboundQueue", app.state.inbound).pending(to.id)
+    def queued(self, to: _Live) -> int:
+        """Return how many lines reached ``to``'s agent process."""
+        return [sent[0] for sent in self.relay.sent].count(to.id)
 
     async def reads(
         self,
@@ -217,7 +208,7 @@ class _Chat:
 
 
 async def _live(store: Store, *, actor: str, account: str, audience: str) -> _Live:
-    """Insert a live session of ``account`` in ``audience`` that is being polled."""
+    """Insert a live session of ``account`` in ``audience``."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -230,7 +221,6 @@ async def _live(store: Store, *, actor: str, account: str, audience: str) -> _Li
             actor,
             audience,
         )
-    cast("InboundQueue", app.state.inbound).mark_poller(session_id)
     return _Live(id=session_id, actor=actor)
 
 
@@ -242,6 +232,8 @@ async def served(
     """Serve with the assistant and the staff configured, over four live sessions."""
     client, store = pglite_route_client
     patch_state(monkeypatch, "config", _CONFIG)
+    relay = ServingRelay()
+    patch_state(monkeypatch, "session_relay", relay)
     async with store.engine.acquire() as conn:
         for email, role, status in _USERS:
             await conn.execute(
@@ -255,6 +247,7 @@ async def served(
     yield _Served(
         http=client,
         store=store,
+        relay=relay,
         others=await _live(
             store,
             actor="lead",
@@ -288,14 +281,12 @@ def _refusal(response: httpx2.Response) -> object:
     return response.json()
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 async def test_it_is_refused_a_staff_session_when_it_names_no_asker(
     served: _Served,
-    route: _Route,
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    refused = await served.send(route, served.others)
+    refused = await served.send(served.others)
 
     assert _refusal(refused) == {
         "detail": {"code": "session_audience", "audience": "staff"},
@@ -303,42 +294,36 @@ async def test_it_is_refused_a_staff_session_when_it_names_no_asker(
     assert served.queued(served.others) == 0
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 async def test_it_refuses_an_asker_who_only_holds_the_audience(
     served: _Served,
-    route: _Route,
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    refused = await served.send(route, served.others, asker=_STAFF)
+    refused = await served.send(served.others, asker=_STAFF)
 
     assert refused.status_code == 403, refused.text
     assert served.queued(served.others) == 0
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 async def test_an_admin_asker_does_not_control_someone_elses_session(
     served: _Served,
-    route: _Route,
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    refused = await served.send(route, served.others, asker=_STAFF_ADMIN)
+    refused = await served.send(served.others, asker=_STAFF_ADMIN)
 
     assert refused.status_code == 403, refused.text
     assert served.queued(served.others) == 0
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 async def test_it_relays_for_the_user_whose_session_it_is(
     served: _Served,
-    route: _Route,
 ) -> None:
     """An open writer steers the staff session attributed to them, and no one else's."""
     served.act_as(_ASSISTANT)
 
-    own = await served.send(route, served.wes_own, asker=_OPEN_WRITER)
-    others = await served.send(route, served.others, asker=_OPEN_WRITER)
+    own = await served.send(served.wes_own, asker=_OPEN_WRITER)
+    others = await served.send(served.others, asker=_OPEN_WRITER)
 
     assert own.status_code == 200, own.text
     assert served.queued(served.wes_own) == 1
@@ -348,7 +333,6 @@ async def test_it_relays_for_the_user_whose_session_it_is(
     assert served.queued(served.others) == 0
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 @pytest.mark.parametrize(
     ("asker", "session"),
     [
@@ -360,14 +344,13 @@ async def test_it_relays_for_the_user_whose_session_it_is(
 )
 async def test_it_is_refused_for_an_asker_who_may_not_write_there(
     served: _Served,
-    route: _Route,
     asker: str,
     session: str,
 ) -> None:
     served.act_as(_ASSISTANT)
     target = {"others": served.others, "vi_own": served.vi_own}[session]
 
-    refused = await served.send(route, target, asker=asker)
+    refused = await served.send(target, asker=asker)
 
     assert _refusal(refused) == {
         "detail": {"code": "session_audience", "audience": "staff"},
@@ -375,26 +358,22 @@ async def test_it_is_refused_for_an_asker_who_may_not_write_there(
     assert served.queued(target) == 0
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 async def test_it_finds_the_asker_whatever_the_case_it_writes_the_account_in(
     served: _Served,
-    route: _Route,
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    sent = await served.send(route, served.wes_own, asker=_OPEN_WRITER.upper())
+    sent = await served.send(served.wes_own, asker=_OPEN_WRITER.upper())
 
     assert sent.status_code == 200, sent.text
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 async def test_naming_an_asker_gives_another_sender_nothing(
     served: _Served,
-    route: _Route,
 ) -> None:
     served.act_as(_OPEN_WRITER)
 
-    refused = await served.send(route, served.others, asker=_STAFF)
+    refused = await served.send(served.others, asker=_STAFF)
 
     assert _refusal(refused) == {
         "detail": {"code": "session_audience", "audience": "staff"},
@@ -402,27 +381,23 @@ async def test_naming_an_asker_gives_another_sender_nothing(
     assert served.queued(served.others) == 0
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 async def test_reading_an_open_session_grants_the_assistant_no_input_rights(
     served: _Served,
-    route: _Route,
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    refused = await served.send(route, served.public)
+    refused = await served.send(served.public)
 
     assert refused.status_code == 403, refused.text
     assert served.queued(served.public) == 0
 
 
-@pytest.mark.parametrize("route", _ROUTES)
 async def test_a_blank_asker_is_not_a_request(
     served: _Served,
-    route: _Route,
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    refused = await served.send(route, served.others, asker="  ")
+    refused = await served.send(served.others, asker="  ")
 
     assert refused.status_code == 422, refused.text
     assert served.queued(served.others) == 0

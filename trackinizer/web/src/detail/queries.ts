@@ -14,13 +14,15 @@ export const detailQueries = {
   ref: (kind: string, seq: number) =>
     queryOptions({
       queryKey: ["ref", kind, seq],
-      queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => findRef(kind, seq, { signal })),
+      queryFn: ({ queryKey, signal }) =>
+        prefetched(queryKey, () => findRef(kind, seq, { signal })),
       staleTime: Infinity,
     }),
   detail: (id: string) =>
     queryOptions({
       queryKey: ["detail", id],
-      queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => getDetail(id, { signal })),
+      queryFn: ({ queryKey, signal }) =>
+        prefetched(queryKey, () => getDetail(id, { signal })),
     }),
   confidence: (id: string) =>
     queryOptions({
@@ -31,7 +33,8 @@ export const detailQueries = {
   neighbourhood: (id: string, hops: 1 | 2 | 3) =>
     queryOptions({
       queryKey: ["graph", "focus", id, hops],
-      queryFn: ({ signal }) => getGraphFocus({ focus: id, hops, limit: NEIGHBOURHOOD_LIMIT }, { signal }),
+      queryFn: ({ signal }) =>
+        getGraphFocus({ focus: id, hops, limit: NEIGHBOURHOOD_LIMIT }, { signal }),
     }),
 };
 

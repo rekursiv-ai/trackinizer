@@ -52,9 +52,9 @@ _T0 = datetime(2026, 10, 2, 12, tzinfo=UTC)
     "url",
     [
         "https://tracker.example",
-        "http://10.0.0.5:8765",
+        "https://10.0.0.5:8765",
         "http://127.0.0.2:8765",
-        "http://localhost.example:8765",
+        "https://localhost.example:8765",
     ],
 )
 def test_target_refuses_a_host_that_is_not_local(url: str) -> None:
@@ -86,18 +86,19 @@ def test_token_goes_only_to_the_profile_server() -> None:
     assert source_token("https://tracker.example.evil", profile) == ""
 
 
-@pytest.mark.parametrize(("scheme", "port"), [("http", 80), ("https", 443)])
+# Plain http reaches only this computer, so its default port is a loopback server's.
+@pytest.mark.parametrize(
+    ("server", "port"),
+    [("http://127.0.0.1", 80), ("https://tracker.example", 443)],
+)
 def test_token_matches_default_ports_but_not_other_endpoints(
-    scheme: str,
+    server: str,
     port: int,
 ) -> None:
-    profile = Profile(url=f"{scheme}://tracker.example/api", api_key="trax_secret")
-    assert (
-        source_token(f"{scheme}://tracker.example:{port}/api/", profile)
-        == "trax_secret"
-    )
-    assert source_token(f"{scheme}://tracker.example:{port + 1}/api", profile) == ""
-    assert source_token(f"{scheme}://tracker.example:{port}/other", profile) == ""
+    profile = Profile(url=f"{server}/api", api_key="trax_secret")
+    assert source_token(f"{server}:{port}/api/", profile) == "trax_secret"
+    assert source_token(f"{server}:{port + 1}/api", profile) == ""
+    assert source_token(f"{server}:{port}/other", profile) == ""
 
 
 def test_key_is_stable_and_distinct_per_source_row() -> None:

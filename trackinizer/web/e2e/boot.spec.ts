@@ -1,4 +1,5 @@
 import { expect, failedResource, test, route } from "./fixtures";
+import { must } from "../src/must";
 
 // The server runs with --no-auth, so every request is the synthetic admin.
 test("the shell boots and shows the signed-in profile", async ({ page }) => {
@@ -8,7 +9,7 @@ test("the shell boots and shows the signed-in profile", async ({ page }) => {
   await expect(me.getByText("no-auth@localhost")).toBeVisible();
   await expect(me.getByText("admin", { exact: true })).toBeVisible();
   const favicon = await page.locator('link[rel="icon"]').getAttribute("href");
-  expect((await page.request.get(favicon!)).status()).toBe(200);
+  expect((await page.request.get(must(favicon))).status()).toBe(200);
 });
 
 test("a 401 sends the browser to the login page, whose next is the page it was on", async ({
@@ -28,7 +29,7 @@ test("a 401 sends the browser to the login page, whose next is the page it was o
 
   // Signed in again: the login page returns to its next.
   await page.unroute("**/api/me/profile");
-  await page.goto(new URL(page.url()).searchParams.get("next")!);
+  await page.goto(must(new URL(page.url()).searchParams.get("next")));
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Papers");
   expect(route(page)).toBe("#/list/Paper");
 });

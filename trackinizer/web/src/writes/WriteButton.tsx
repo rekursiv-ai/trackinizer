@@ -11,7 +11,11 @@ import "./writes.css";
  * Not `disabled` while pending: a closing menu or dialog hands focus back to
  * its button, and a disabled one would drop it. Offline, pass `disabled`.
  */
-export function WriteButton({ pending, onClick, ...props }: ComponentProps<"button"> & { pending: boolean }) {
+export function WriteButton({
+  pending,
+  onClick,
+  ...props
+}: ComponentProps<"button"> & { pending: boolean }) {
   return (
     <button
       type="button"

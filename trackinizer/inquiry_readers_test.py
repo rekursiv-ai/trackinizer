@@ -23,17 +23,26 @@ if TYPE_CHECKING:
 _CWD: Final[Path] = Path(__file__).resolve().parent
 
 _READERS: Final[dict[str, tuple[Class, str]]] = {
+    "addons/embedding/search.py": (
+        "audience",
+        "the vector arm: session and inquiry units, under the test core hands it",
+    ),
+    "addons/embedding/sweep.py": (
+        "trusted",
+        "background embedding worker: the texts it embeds reach no caller",
+    ),
     "server/access_policy.py": ("policy", "inquiry_read_filter: the filter itself"),
     "server/api/locks.py": ("trusted", "lock authorization lookups"),
     "server/api/host_runs_routes.py": (
         "policy",
         "the seq and chat of the owner's own sessions its host's runs drain",
     ),
-    "server/api/query.py": ("policy", "by-seq lookup"),
     "server/api/session_access.py": ("audience", "session authorization"),
-    "server/api/sessions_routes.py": ("audience", "session rows by audience"),
-    "server/asks.py": ("audience", "asks on sessions the caller reads"),
     "server/audience.py": ("audience", "the audience test itself"),
+    "server/auth.py": (
+        "trusted",
+        "process-key authorization checks only the descendant session's account",
+    ),
     "server/authority_sweep.py": ("trusted", "background authority worker"),
     "server/primitives.py": (
         "policy",
@@ -66,22 +75,23 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
     ),
     "server/store/graph_focus.py": ("policy", "the focus walk"),
     "server/store/metrics.py": ("policy", "the experiment checks and selection"),
+    "server/store/named.py": ("policy", "records named by id or Kind/seq"),
     "server/store/read.py": (
         "policy",
         (
-            "every request read; what_changed_for_me and _for_anyone serve the "
-            "subscriber worker, which has no request principal"
+            "every request read, the by-seq lookup (inquiry_id) among them; "
+            "what_changed_for_me and _for_anyone serve the subscriber worker, which "
+            "has no request principal"
         ),
     ),
     "server/store/session.py": ("audience", "session lifecycle and listing"),
     "server/store/session_feed.py": ("audience", "the session record feed"),
     "server/store/session_ir.py": ("trusted", "write-path session locks and copies"),
-    "server/store/session_search.py": ("audience", "transcript search"),
-    "server/store/submit.py": ("trusted", "write path"),
-    "server/tools/archive_embeddings.py": (
-        "trusted",
-        "operator CLI: a restore keeps only rows whose session still exists",
+    "server/store/search.py": (
+        "audience",
+        "transcript search, and inquiry search under inquiry_read_filter",
     ),
+    "server/store/submit.py": ("trusted", "write path"),
     "server/visuals/reports.py": (
         "policy",
         "source Issue and citations; the created-audit lookup is a write",

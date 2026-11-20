@@ -14,7 +14,7 @@ from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.config import Config
-from trackinizer.server.store.session_ir import SessionManifest
+from trackinizer.server.store.session_ir import AppendedPart, SessionManifest
 from trackinizer.server.visuals.session_usage import SessionUsage
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
@@ -43,14 +43,16 @@ async def test_ended_append_revives_before_writing(
     monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
     monkeypatch.setattr(session_ir_routes, "require_session_access", AsyncMock())
     revive = AsyncMock(return_value=True)
-    append = AsyncMock(return_value=(0, 0, 0))
+    append = AsyncMock(
+        return_value=AppendedPart(part=None, written=(), skipped=0),
+    )
     seen = AsyncMock()
     order = MagicMock()
     order.attach_mock(revive, "revive")
     order.attach_mock(append, "append")
     order.attach_mock(seen, "seen")
     monkeypatch.setattr(session_ir_routes, "revive_if_reaped", revive)
-    monkeypatch.setattr(store, "append_session_records", append)
+    monkeypatch.setattr(store, "append_session_part", append)
     monkeypatch.setattr(store, "record_session_seen", seen)
     response = await session_ir_routes.append_session_records_route(
         session.id,
@@ -58,19 +60,14 @@ async def test_ended_append_revives_before_writing(
         AppendRecordsRequest(),
         identity,
     )
-    assert (
-        response.part,
-        response.written,
-        response.skipped,
-        response.slash_commands,
-    ) == (
-        None,
-        0,
-        0,
-        0,
-    )
+    assert (response.part, response.written, response.skipped) == (None, 0, 0)
     revive.assert_awaited_once_with(store, session_id=session.id)
-    append.assert_awaited_once_with(session.id, [], restart=False, slash_commands=[])
+    append.assert_awaited_once_with(
+        session.id,
+        file=None,
+        rows=[],
+        api_key_id=identity.api_key_id,
+    )
     seen.assert_awaited_once()
     assert [entry[0] for entry in order.mock_calls] == ["revive", "append", "seen"]
 

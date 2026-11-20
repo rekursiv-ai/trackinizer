@@ -7,8 +7,7 @@ steps:
 
 - :func:`read_segments` reads each part, oldest first.
 - :func:`placed` orders every record by when it happened rather than by part number.
-- ``context_window.window`` cuts that order at the last compaction, and :func:`neutral`
-  turns what is left into one provider-neutral list.
+- :func:`neutral` turns that order into one provider-neutral list.
 - :func:`projected` or :func:`lines` projects that list for a CLI file or for the bot.
 
 A person's line is the bot's own ``AgentToAgentMessage``, or a ``UserMessage`` that the
@@ -47,6 +46,7 @@ from trackinizer.sagent.session.types import (
     WriteResult,
 )
 from trackinizer.types.streams import Stderr, Stdin, Stdout
+from trackinizer.wire.wire_sessions import CONTEXT_TRAILER
 
 
 if TYPE_CHECKING:
@@ -86,9 +86,6 @@ _PROVIDER_OF_FORMAT: Final = {
 # The kind of a switch marker, which is a SystemMessage in the neutral conversation.
 _SWITCH: Final = "trax_provider_switch"
 
-# What ``render_inbound`` puts between a delivered message and its context block.
-_TRAILER: Final = "\nTrackinizer context (verify with trax): "
-
 # What a CLI writes as a user turn that no person typed.
 _HARNESS: Final = (
     "<environment_context>",
@@ -105,7 +102,8 @@ _HARNESS: Final = (
     "<turn_aborted>",
 )
 
-# Results whose tool is named by what they DID, so they cross to another CLI as structure.
+# The result classes of tools named by what they DID; a call with one of these results
+# crosses to another CLI as structure.
 _TYPED: Final = (
     BashResult,
     ReadResult,
@@ -175,12 +173,15 @@ class Placed:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Delivery:
-    """The sender and room the bot attested when it delivered a person's message."""
+    """The sender and room the bot attested when it delivered a person's message.
 
-    source: str
+    ``Delivery()`` is a line delivered with neither, so no prefix was rendered on it.
+    """
+
+    source: str = ""
     """The route-attested sender, empty when none was attested."""
 
-    room: str
+    room: str = ""
     """The room the message was sent to, empty when none."""
 
 
@@ -308,7 +309,8 @@ def neutral(
 ) -> list[Placed]:
     """Turn placed records into one provider-neutral conversation.
 
-    Kept: people's lines as :class:`AgentToAgentMessage`, with the box paths of the
+    Kept: people's lines as :class:`AgentToAgentMessage`, their words without the
+    context their agent was told (``CONTEXT_TRAILER`` on), with the box paths of the
     files their sender attached (``extra["attachments"]``), and answers and tool records
     each tagged with the provider that gave them. A switch between answering providers
     becomes a :class:`SystemMessage` marker, placed where the record that switched is.
@@ -371,7 +373,9 @@ def projected(
 
     """
     typed_calls = {
-        record.call_id for record in conversation if isinstance(record, _TYPED)
+        record.call_id
+        for record in conversation
+        if isinstance(record, ToolResult) and isinstance(record.result, _TYPED)
     }
     names: dict[str, str] = {}
     out: list[SessionRecord] = list(opening)
@@ -480,7 +484,7 @@ def delivered_text(content: str, delivery: Delivery) -> str:
     """
     room = f"[{delivery.room}] " if delivery.room else ""
     sender = f"{delivery.source}: " if delivery.source else ""
-    return content.removeprefix(room).removeprefix(sender).split(_TRAILER, 1)[0]
+    return content.removeprefix(room).removeprefix(sender).split(CONTEXT_TRAILER, 1)[0]
 
 
 # A record with no stamp takes the one before it in its own part, and a leading one takes
@@ -519,7 +523,8 @@ def _neutral(
         attached = record.extra.get("attachments")
         return AgentToAgentMessage(
             timestamp=record.timestamp,
-            content=record.content,
+            # Unprefixed, but the agent process put the line's canvas after the words.
+            content=delivered_text(record.content or "", Delivery()),
             sender=record.sender or "unknown",
             extra=tag
             if attached is None

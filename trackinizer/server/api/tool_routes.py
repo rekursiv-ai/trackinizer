@@ -1,12 +1,10 @@
-"""Routes for tool connections: the assistant's socket, the daemon's wait, and the daemon's socket.
+"""Authenticated WebSockets for tool clients and each host's shared daemon mux.
 
-Only the configured assistant opens a tool connection, for an attested writer or admin ``asker``
-who owns the host, whose host reports ``tools: true`` in its facts: the rule of
-``tool_access``, which each sweep asks again. Its socket asks the relay
-(``server/tool_relay.py``) to queue an offer. The daemon holds a ``GET`` on the
-wait route, which returns the moment an offer is queued, and dials the daemon socket. The relay
-relays between the two. A person's own browser, an API key of anyone else, a service
-account and a server with authentication off open nothing here.
+A writer's or admin's key opens a tool connection to a host of its own account;
+the configured assistant may act for an attested writer or admin who owns the host.
+A writer or admin may also open one from this server's own pages. The host must
+report ``tools: true`` and have a connected tools mux. Each sweep asks the
+``tool_access`` rule again.
 
 Every line the agent sends is read by a ``ToolLines`` before it is relayed, and each
 ``Call`` is logged with the gate's verdict, its arguments by their size alone. What the
@@ -15,22 +13,19 @@ a refusal, a line that ends a tool connection and a dropped line each log a line
 logs each tool connection's end.
 
 A WebSocket cannot answer 404 or 410 after the handshake, so both sockets accept, and then
-refuse with a close code and a reason saying what happened (``wire_tools``).
+refuse with a close code and a reason saying what happened.
 
-``/exec/wait`` stays one release, for a daemon from before tool connections: it answers ``null``,
-so that daemon gets no error and no offer. A daemon that reports no ``tools`` fact is refused
-at once with a reason saying to update its host, rather than left to miss the dial-back.
 """
 
 from __future__ import annotations
 
 from functools import partial
-from typing import TYPE_CHECKING, Annotated, Final, cast
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
+from fastapi import APIRouter, HTTPException, WebSocket
 
 from trackinizer.server import auth
 from trackinizer.server.api._deps import (
@@ -39,36 +34,29 @@ from trackinizer.server.api._deps import (
     get_tool_line_bytes,
     get_tool_relay,
 )
-from trackinizer.server.api._routes_shared import (
-    refusal,
-    request_engine,
-    require_instance,
-)
+from trackinizer.server.api._origin import is_strictly_same_origin
+from trackinizer.server.api._routes_shared import request_engine, require_instance
 from trackinizer.server.api.terminal_routes import StarletteSocket
 from trackinizer.server.api.tool_access import tool_access
-from trackinizer.server.host_auth import (
-    current_host,
-    host_revoked,
-    request_host,
-)
+from trackinizer.server.host_auth import request_host
+from trackinizer.server.terminals import SocketClosedError
 from trackinizer.server.tool_lines import GatedCall, ToolLines, authorize
 from trackinizer.server.tool_relay import (
     Inbound,
     ToolConnection,
     ToolConnectionBusyError,
     ToolConnectionEndError,
-    ToolConnectionRevokedError,
+    ToolConnectionUnavailableError,
     ToolRelay,
     close_reason,
 )
 from trackinizer.types.errors import NotFoundError
-from trackinizer.wire import wire_exec, wire_terminals, wire_tools
-from trackinizer.wire.wire_exec import HOST_EXEC_WAIT_PATH
+from trackinizer.wire import wire_terminals
+from trackinizer.wire.wire_service_accounts import is_service_address
 from trackinizer.wire.wire_tools import (
-    HOST_TOOLS_WAIT_PATH,
-    HOST_TOOLS_WS_PATH,
+    HOST_TOOLS_MUX_PATH,
     TOOLS_WS_PATH,
-    ToolOffer,
+    ToolMux,
 )
 
 
@@ -79,11 +67,9 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "exec_wait_route",
     "router",
     "tools_agent_socket",
-    "tools_daemon_socket",
-    "tools_wait_route",
+    "tools_daemon_mux",
 ]
 
 router = APIRouter()
@@ -99,19 +85,22 @@ async def tools_agent_socket(
 ) -> None:
     """Relay an agent's tool calls to the asker's host, until either socket drops.
 
-    Only the configured assistant's key opens this, naming an attested writer or admin
-    ``asker`` who owns the host, which must not be revoked, be confirmed by its owner,
-    and report ``tools: true``; whether it is up is for its daemon's dial-back to say. A
-    host that does not is refused at once with a reason saying why. It holds a key
-    and no cookie, so it needs no same-origin check.
+    A writer's or admin's key opens this for a host of its own account; the
+    configured assistant's names an attested writer or admin ``asker`` who owns the
+    host. A person's own browser opens it for a host of their own: signed in, from
+    this server's pages, as no service account, naming no other ``asker``. The host
+    must not be revoked, be confirmed by its owner, report ``tools: true``, and
+    have a connected daemon mux.
 
     Each ``Call`` the agent sends is logged as the gate judges it, before it is
     forwarded; a line that cannot be read ends the tool connection.
 
     Args:
-      websocket: The agent's socket; it carries the assistant's key as a bearer.
+      websocket: The agent's socket; it carries the key as a bearer, or a browser's
+        session cookie and ``Origin``.
       name: The host's name.
-      asker: The person the assistant acts for.
+      asker: The person the assistant acts for; any other key is its own, and a
+        browser names its own or none.
 
     """
     await websocket.accept()
@@ -127,12 +116,30 @@ async def tools_agent_socket(
             host=name,
         )
         return
+    if identity.api_key_id is None and not _own_browser(
+        websocket,
+        email=identity.email,
+        asker=asker,
+    ):
+        await _refuse(
+            socket,
+            wire_terminals.CLOSE_REFUSED,
+            _FORBIDDEN,
+            socket_name="agent",
+            host=name,
+        )
+        return
+    assistant = get_assistant(websocket)
+    # A key that names nobody acts for its own account, as a browser does.
+    owner = (identity.email if asker is None else asker).lower()
     async with request_engine(websocket).acquire() as conn:
         access = await tool_access(
             conn,
-            assistant=get_assistant(websocket),
-            api_key_id=identity.api_key_id,
-            asker=asker,
+            assistant=assistant,
+            api_key_id="browser"
+            if identity.api_key_id is None
+            else identity.api_key_id,
+            asker=owner,
             host=name,
         )
     if access.failed is not None:
@@ -145,15 +152,9 @@ async def tools_agent_socket(
             check=access.failed,
         )
         return
-    # The rule holds only of a key, an asker, and a host of theirs.
+    # The rule holds only of a key or a browser, an asker, and a host of theirs.
     assert isinstance(access.host_id, UUID)
-    assert isinstance(identity.api_key_id, UUID)
-    assert isinstance(asker, str)
-    host_id, owner, api_key_id = (
-        access.host_id,
-        asker.lower(),
-        identity.api_key_id,
-    )
+    host_id, api_key_id = access.host_id, identity.api_key_id
     relay = get_tool_relay(websocket)
     try:
         connection = relay.join(
@@ -168,94 +169,58 @@ async def tools_agent_socket(
                 relay=relay,
             ),
         )
-    except ToolConnectionBusyError as busy:
+    except ToolConnectionUnavailableError:
         await _refuse(
             socket,
-            wire_terminals.CLOSE_REFUSED,
-            f"{name} holds its {busy.limit} tool connections",
+            wire_terminals.CLOSE_DAEMON_LOST,
+            close_reason(
+                f"{name} has no connected tools daemon; connect or upgrade its host",
+            ),
             socket_name="agent",
             host=name,
         )
         return
-    assistant = get_assistant(websocket)
+    except ToolConnectionBusyError as busy:
+        await _refuse(
+            socket,
+            wire_terminals.CLOSE_REFUSED,
+            f"{name} holds its {busy.limit} tool clients",
+            socket_name="agent",
+            host=name,
+        )
+        return
+    if api_key_id is None:
+        # Before the first await: the sweep may ask it from then on.
+        connection.signed_in = partial(_still_signed_in, websocket, asker=owner)
     _logger.info(
         "tool connection opened: connection=%s host=%s host_id=%s asker=%s key=%s assistant=%s",
         connection.id,
         name,
         host_id,
         owner,
-        api_key_id,
+        "browser" if api_key_id is None else api_key_id,
         "-" if assistant is None else assistant.actor,
     )
     await relay.serve_agent(connection, partial(_read_bytes, socket))
 
 
-# Unlike the terminal wait, it keeps no receipt: a response lost on its way loses its
-# offer, the agent's tool connection waits out its dial-back, and the agent dials again.
-@router.get(
-    HOST_TOOLS_WAIT_PATH,
-    response_model_exclude_none=True,
-    include_in_schema=False,
-)
-async def tools_wait_route(
-    host_id: UUID,
-    request: Request,
-    instance: UUID,
-    wait_sec: Annotated[float, Query(ge=0)] = wire_tools.WAIT_MAX_SEC,
-) -> ToolOffer | None:
-    """Hold until an agent asks for this host, then return its offer; else ``null``.
-
-    The host's own credential authenticates, as for a heartbeat. The wait is held
-    at most 25 seconds.
-
-    Args:
-      host_id: The host.
-      request: Request carrying the database engine and the tool connection relay.
-      instance: The daemon instance, which must be the host's current one when the
-        wait starts; its socket is refused if it is not by then.
-      wait_sec: How long to hold, clamped to 25 seconds.
-
-    Returns:
-      offer: The tool connection to dial back for, or ``None`` when none came in time.
-
-    Raises:
-      HTTPException: 403 on a server with authentication off, or when another daemon
-        took the host over; 410 when the host is revoked, including while its
-        daemon waits.
-
-    """
-    if auth_is_disabled(request):
-        raise _forbidden()
-    await current_host(request, host_id)
-    await require_instance(request, host_id, instance=instance)
-    try:
-        return await get_tool_relay(request).wait(
-            host_id,
-            wait_sec=min(wait_sec, wire_tools.WAIT_MAX_SEC),
-        )
-    except ToolConnectionRevokedError as error:
-        raise host_revoked() from error
-
-
-@router.websocket(HOST_TOOLS_WS_PATH)
-async def tools_daemon_socket(
+@router.websocket(HOST_TOOLS_MUX_PATH)
+async def tools_daemon_mux(
     websocket: WebSocket,
     host_id: UUID,
-    connection_id: UUID,
     instance: UUID,
 ) -> None:
-    """Relay a tool connection's other end: the daemon dials here with its host credential.
+    """Serve the current daemon's shared tools socket.
 
     Args:
-      websocket: The daemon's socket; it carries the credential as a bearer.
-      host_id: The host.
-      connection_id: The tool connection the daemon was offered.
-      instance: The daemon's instance, which must be the host's current one.
+      websocket: The outbound link, authenticated by its host bearer.
+      host_id: Which host the bearer authenticates.
+      instance: The registered daemon instance.
 
     """
     await websocket.accept()
     socket = StarletteSocket(websocket)
-    refuse = partial(_refuse, socket, socket_name="daemon", host=str(host_id))
+    refuse = partial(_refuse, socket, socket_name="daemon-mux", host=str(host_id))
     if auth_is_disabled(websocket):
         await refuse(wire_terminals.CLOSE_REFUSED, "tools are not available here")
         return
@@ -265,57 +230,38 @@ async def tools_daemon_socket(
     except (HTTPException, NotFoundError) as error:
         await refuse(_close_code(error), _close_reason(error))
         return
-    relay = get_tool_relay(websocket)
-    connection = relay.attach(host_id, connection_id, socket, instance=instance)
-    if connection is None:
-        await refuse(
-            wire_terminals.CLOSE_REFUSED,
-            "no such tool connection waits for this host",
-        )
-        return
-    await relay.serve_daemon(connection, partial(_read_bytes, socket))
 
+    async def send(data: bytes) -> None:
+        try:
+            await socket.send_bytes(data)
+        except SocketClosedError as error:
+            raise ConnectionError("the daemon left") from error
 
-# Held and not answered at once: this daemon asks again the moment it hears back. It stops
-# on the 410, as it always has.
-@router.get(HOST_EXEC_WAIT_PATH, include_in_schema=False)
-async def exec_wait_route(
-    host_id: UUID,
-    request: Request,
-    instance: UUID,
-    wait_sec: Annotated[float, Query(ge=0)] = wire_exec.WAIT_MAX_SEC,
-) -> None:
-    """Hold a daemon from before tool connections, and answer ``null``: it is offered nothing.
-
-    Args:
-      host_id: The host.
-      request: Request carrying the database engine and the tool connection relay.
-      instance: The daemon instance, which must be the host's current one.
-      wait_sec: How long to hold, clamped to 25 seconds.
-
-    Raises:
-      HTTPException: 403 on a server with authentication off, or from a stale daemon;
-        410 when the host is revoked, including while its daemon waits.
-
-    """
-    if auth_is_disabled(request):
-        raise _forbidden()
-    await current_host(request, host_id)
-    await require_instance(request, host_id, instance=instance)
     try:
-        await get_tool_relay(request).hold(
+        served = await get_tool_relay(websocket).serve_mux(
             host_id,
-            wait_sec=min(wait_sec, wire_exec.WAIT_MAX_SEC),
+            instance,
+            ToolMux(send),
+            partial(_read_bytes, socket),
         )
-    except ToolConnectionRevokedError as error:
-        raise host_revoked() from error
+    except ValueError:
+        await refuse(wire_terminals.CLOSE_REFUSED, "invalid daemon tool frame")
+    else:
+        if served:
+            await socket.close(wire_terminals.CLOSE_ENDED)
+        else:
+            await refuse(
+                wire_terminals.CLOSE_REFUSED,
+                "this host already has a daemon tools socket",
+            )
 
 
 # The assistant is trusted to say whom it acts for, as for a chat's settings, and the
-# server reads that person's role itself. Nobody else may name an asker, and there is no
-# route for a person's own session: a tool runs as the host's user, which only the
-# assistant, acting for that user, may ask for. A refusal of who is asking says no more
-# than the forbidden one; one of the host says what to do about it.
+# server reads that person's role itself. Any other key, and a browser, acts for its own
+# account alone: a tool runs as the host's user, which only that user's key or browser, or
+# the assistant acting for them, may ask for, as only they may open a terminal there. A
+# refusal of who is asking says no more than the forbidden one; one of the host says
+# what to do about it.
 _FORBIDDEN: Final = "tools are not available here"
 _REFUSED: Final[Mapping[Check, str]] = {
     "host": "no host {name} of yours",
@@ -365,7 +311,6 @@ def _gated(
             )
         for call in calls:
             _log_call(connection, call)
-        for call in calls:
             if call.outcome == "allow":
                 relay.called(connection, call.call_id)
         for call_id in routed.acks:
@@ -443,6 +388,30 @@ def _close_reason(error: HTTPException | NotFoundError) -> str:
     return close_reason(str(detail))
 
 
-def _forbidden() -> HTTPException:
-    """Return the one refusal of a caller that may not reach tools here."""
-    return refusal(403, code="tools_forbidden", message=_FORBIDDEN)
+# A browser sends its session cookie with every page's socket, so only this server's own
+# pages may open one, as for a terminal; with authentication off every caller is one admin.
+# A key may name another asker, which the rule checks; a browser names its own or none.
+# Whether its account may write is the rule's ``asker`` check, read fresh from the users.
+def _own_browser(websocket: WebSocket, *, email: str, asker: str | None) -> bool:
+    """Whether a caller with no key is a person's browser, from this server's pages."""
+    return (
+        not auth_is_disabled(websocket)
+        and is_strictly_same_origin(websocket)
+        and not is_service_address(email)
+        and (asker is None or asker.lower() == email.lower())
+    )
+
+
+# Asked by each sweep of a browser's tool connection, as a key's is asked whether the key
+# still lives: its cookie, read again, may have expired or be another person's now.
+async def _still_signed_in(websocket: WebSocket, *, asker: str) -> bool:
+    """Whether the socket's browser, authenticated again, is still the asker's own."""
+    try:
+        identity = await auth.request_user(websocket)
+    except HTTPException:
+        return False
+    return identity.api_key_id is None and _own_browser(
+        websocket,
+        email=identity.email,
+        asker=asker,
+    )

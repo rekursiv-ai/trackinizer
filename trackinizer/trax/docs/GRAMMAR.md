@@ -469,7 +469,7 @@ flags documented here.
 verb_name   ::= "help" | "profile" | "env" | "host" | "job" | "next"
              |  "recent" | "cost" | "confidence" | "authority" | "blocked"
              |  "board" | "graph" | "id" | "version" | "export" | "send" | "run"
-             |  "search-sessions"
+             |  "search"
 ```
 
 A leading token that is neither a verb nor a kind is a FILTER FIELD, and the
@@ -503,12 +503,16 @@ kinds resolve first, so a field can never shadow a command.
 - `trax version` -- print the CLI version.
 - `trax export` -- write the whole graph as JSON lines to stdout, for
   backup or a mirror (`trax export > graph.jsonl`). Read-only.
-- `trax search-sessions "QUERY" [--limit INT] [--no-semantic] [--format
-  text|json]` -- search captured sessions by meaning (embeddings) and keyword
-  (full text), RRF-merged. Semantic is on by default; the server degrades to
-  full-text-only when no session embedder is configured. `--no-semantic` opts
-  out. (Named `search-sessions`, not `search`: the bare `search` verb was
-  retired when the filter grammar subsumed inquiry search.)
+- `trax search "QUERY" [--kind KIND] [--mode fused|keyword|vector] [--limit INT]
+  [--format text|json]` -- search by meaning (embeddings) and keyword (full
+  text). `fused`, the default, RRF-merges both; `keyword` and `vector` run one
+  alone. The server degrades to keyword hits when its vector arm is absent or
+  its model not loaded. Without `--kind`, or with any kind but `agentsession`,
+  it searches inquiry texts and edge notes: a hit is a row's text or a note of
+  an edge it starts from (a session's text is not searched, its notes are), and
+  a note is shown only to a reader of both its ends. `--kind agentsession`
+  searches captured session transcripts instead. Filters match fields by
+  pattern; `search` ranks by both arms, which no filter spells.
 - `trax send @actor[:room] TEXT...` -- inject a message into a live agent
   session addressed by its routing name (the `--as` owner of its run).
 - `trax run|host|job [ARGS...]` -- moved out of trax: wrapping an agent CLI,
@@ -1016,11 +1020,15 @@ trax recent --limit 20
 ```
 
 ```trax
-trax search-sessions "advisory lock deadlock"
+trax search "advisory lock deadlock" --kind agentsession
 ```
 
 ```trax
-trax search-sessions "retry backoff" --limit 5 --no-semantic
+trax search "retry backoff" --kind agentsession --limit 5 --mode keyword
+```
+
+```trax
+trax search "lock order" --kind belief --mode vector
 ```
 
 ```trax

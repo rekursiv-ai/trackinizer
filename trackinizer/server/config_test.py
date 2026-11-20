@@ -1,8 +1,9 @@
-"""Tests for engine/embedder construction helpers."""
+"""Tests for runtime config and engine construction."""
 
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -20,38 +21,27 @@ from trackinizer.server.config import (
     Config,
     ConfigError,
     ConfigFlags,
+    RemoteAgentService,
     ServiceKeys,
     _prune_stale_ephemeral_dirs,
     auth_disabled_from_env,
-    build_embedder,
     build_engine,
     parse_assistant,
     parse_chat_orgs,
-    parse_chat_streaming,
     parse_compute,
+    parse_default_remote_agent_service,
     parse_engine,
+    parse_remote_agent_services,
     parse_service_keys,
     parse_staff,
     parse_terminal_stun,
     session_secret_from_file,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.wire.wire_terminals import MAX_ICE_SERVERS
 
 
 class TestPureFunctions:
-    def testbuild_embedder_stub(self) -> None:
-        emb = build_embedder("stub")
-        assert isinstance(emb, StubEmbedder)
-
-    def testbuild_embedder_unknown(self) -> None:
-        # A bad config value raises ConfigError (a plain Exception), not
-        # SystemExit: these helpers run inside the app lifespan, where a
-        # BaseException would bypass normal error handling (API-18).
-        with pytest.raises(ConfigError):
-            build_embedder("nope")
-
     def testbuild_engine_pglite(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -172,6 +162,34 @@ class TestPureFunctions:
         assert parse_engine(name) == name
 
 
+@pytest.mark.parametrize("raw", ["0", "-1", "257", "not-a-number"])
+def test_tool_stream_cap_rejects_invalid_or_above_wire_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", raw)
+    with pytest.raises(
+        ConfigError,
+        match="TRACKINIZER_TOOL_STREAMS_PER_HOST must be an integer between 1 and 256",
+    ):
+        _ = Config.from_env()
+
+
+def test_tool_capacity_uses_the_same_env_for_both_config_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", raising=False)
+    monkeypatch.delenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", raising=False)
+    default = Config.from_env()
+    assert default.tool_agent_sockets_per_host == 1024
+    assert default.tool_streams_per_host == 128
+    monkeypatch.setenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", "2048")
+    monkeypatch.setenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", "256")
+    for config in (Config.from_env(), Config.from_args(_server_args())):
+        assert config.tool_agent_sockets_per_host == 2048
+        assert config.tool_streams_per_host == 256
+
+
 class TestSessionMaxAge:
     """``session_max_age_seconds`` is configurable from env and CLI."""
 
@@ -214,31 +232,6 @@ class TestSessionMaxAge:
             Config.from_env()
 
 
-class TestSessionEmbedderDim:
-    """``session_embedder_dim`` is an optional int from env and CLI."""
-
-    def test_from_env_reads_the_dim(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "512")
-        assert Config.from_env().session_embedder_dim == 512
-
-    def test_from_env_absent_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER_DIM", raising=False)
-        assert Config.from_env().session_embedder_dim is None
-
-    def test_from_env_non_integer_raises(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
-        with pytest.raises(ConfigError):
-            Config.from_env()
-
-    def test_from_args_reads_the_dim(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER_DIM", raising=False)
-        config = Config.from_args(_server_args(session_embedder_dim=256))
-        assert config.session_embedder_dim == 256
-
-
 class TestFromEnv:
     """Every environment variable reaches its own field, and each has its default."""
 
@@ -248,16 +241,13 @@ class TestFromEnv:
         "TRACKINIZER_EPHEMERAL",
         "TRACKINIZER_PGLITE_TCP",
         "TRACKINIZER_DSN",
-        "TRACKINIZER_EMBEDDER",
-        "TRACKINIZER_SESSION_EMBEDDER",
-        "TRACKINIZER_SESSION_EMBEDDER_DIM",
-        "TRACKINIZER_SESSION_EMBEDDERS",
         "TRACKINIZER_WEB",
         "TRACKINIZER_SESSION_SECRET",
         "TRACKINIZER_SESSION_MAX_AGE_SECONDS",
         "TRACKINIZER_NO_AUTH",
         "TRACKINIZER_ASSISTANT",
-        "TRACKINIZER_CHAT_STREAMING",
+        "TRACKINIZER_REMOTE_AGENT_SERVICES",
+        "TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE",
     )
 
     def test_unset_environment_is_the_default_config(
@@ -266,6 +256,19 @@ class TestFromEnv:
     ) -> None:
         for name in self._VARIABLES:
             monkeypatch.delenv(name, raising=False)
+        assert Config.from_env() == Config()
+
+    def test_the_variables_of_no_setting_change_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An environment file still naming these boots as one that does not."""
+        for name in self._VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("TRACKINIZER_EMBEDDER", "other")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER", "m@1024")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDERS", "a@8,b@8")
         assert Config.from_env() == Config()
 
     def test_every_variable_reaches_its_field(
@@ -279,16 +282,11 @@ class TestFromEnv:
             "TRACKINIZER_EPHEMERAL": "1",
             "TRACKINIZER_PGLITE_TCP": "1",
             "TRACKINIZER_DSN": "postgresql://h/db",
-            "TRACKINIZER_EMBEDDER": "other",
-            "TRACKINIZER_SESSION_EMBEDDER": "m@1024",
-            "TRACKINIZER_SESSION_EMBEDDER_DIM": "7",
-            "TRACKINIZER_SESSION_EMBEDDERS": "a, b ,,c",
             "TRACKINIZER_WEB": "1",
             "TRACKINIZER_SESSION_SECRET": "s3cret",
             "TRACKINIZER_SESSION_MAX_AGE_SECONDS": "99",
             "TRACKINIZER_NO_AUTH": "1",
             "TRACKINIZER_ASSISTANT": "kb=KB@Service.Invalid",
-            "TRACKINIZER_CHAT_STREAMING": "off",
         }
         for name, value in values.items():
             monkeypatch.setenv(name, value)
@@ -300,15 +298,10 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            embedder="other",
-            session_embedder="m@1024",
-            session_embedder_dim=7,
-            session_embedders=("a", "b", "c"),
             web=True,
             session_max_age_seconds=99,
             auth_disabled=True,
             assistant=Assistant(actor="kb", email="kb@service.invalid"),
-            chat_streaming=False,
         )
 
     def test_every_flag_reaches_its_field(
@@ -326,10 +319,6 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            embedder="other",
-            session_embedder="m@1024",
-            session_embedder_dim=7,
-            session_embedders="a, b ,,c",
             web=True,
             session_max_age_seconds=99,
             auth=False,
@@ -344,10 +333,6 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            embedder="other",
-            session_embedder="m@1024",
-            session_embedder_dim=7,
-            session_embedders=("a", "b", "c"),
             web=True,
             session_max_age_seconds=99,
             auth_disabled=True,
@@ -362,26 +347,6 @@ class TestParsers:
         assert parse_engine("pg") == "pg"
         with pytest.raises(ConfigError, match="unknown engine 'mysql'"):
             parse_engine("mysql")
-
-    def test_blank_dim_is_none_and_padding_is_trimmed(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "   ")
-        assert Config.from_env().session_embedder_dim is None
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", " 5 ")
-        assert Config.from_env().session_embedder_dim == 5
-
-    def test_a_bad_dim_says_which_variable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
-        with pytest.raises(
-            ConfigError,
-            match="TRACKINIZER_SESSION_EMBEDDER_DIM must be an integer, got 'big'",
-        ):
-            Config.from_env()
 
     def test_no_auth_is_read_from_its_own_variable(
         self,
@@ -447,18 +412,6 @@ class TestParsers:
         assert owned.is_dir()
 
 
-class TestMaintainedEmbedders:
-    def test_an_explicit_list_wins_over_the_serving_embedder(self) -> None:
-        config = Config(session_embedder="a@1024", session_embedders=("b", "c"))
-        assert config.maintained_embedders() == ("b", "c")
-
-    def test_the_serving_embedder_alone_is_maintained_by_default(self) -> None:
-        assert Config(session_embedder="a@1024").maintained_embedders() == ("a@1024",)
-
-    def test_no_serving_embedder_maintains_nothing(self) -> None:
-        assert Config().maintained_embedders() == ()
-
-
 class TestChatOrgs:
     """``$TRACKINIZER_CHAT_ORGS`` says who else continues a science chat."""
 
@@ -491,35 +444,6 @@ class TestChatOrgs:
         monkeypatch.setenv("TRACKINIZER_CHAT_ORGS", "single")
         assert Config.from_env().chat_orgs == "single"
         assert Config.from_args(_server_args(assistant="")).chat_orgs == "single"
-
-
-class TestChatStreaming:
-    """``$TRACKINIZER_CHAT_STREAMING`` holds a chat's answer in writing; on unless off."""
-
-    @pytest.mark.parametrize(("raw", "streaming"), [("", True), (" on ", True)])
-    def test_a_server_streams_unless_it_says_off(
-        self,
-        raw: str,
-        streaming: bool,
-    ) -> None:
-        assert parse_chat_streaming(raw) is streaming
-        assert parse_chat_streaming("off") is False
-        assert Config().chat_streaming is True
-
-    @pytest.mark.parametrize("raw", ["no", "1", "On", "false"])
-    def test_anything_else_is_a_config_error(self, raw: str) -> None:
-        with pytest.raises(ConfigError, match="CHAT_STREAMING must be on or off"):
-            parse_chat_streaming(raw)
-
-    def test_both_ways_to_build_a_config_read_the_environment(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_CHAT_STREAMING", "off")
-        assert Config.from_env().chat_streaming is False
-        assert Config.from_args(_server_args()).chat_streaming is False
-        monkeypatch.delenv("TRACKINIZER_CHAT_STREAMING")
-        assert Config.from_args(_server_args()).chat_streaming is True
 
 
 class TestAssistant:
@@ -693,10 +617,6 @@ def _server_args(**overrides: object) -> ConfigFlags:
         "ephemeral": False,
         "pglite_tcp": False,
         "dsn": "",
-        "embedder": "stub",
-        "session_embedder": "",
-        "session_embedder_dim": None,
-        "session_embedders": "",
         "web": False,
         "auth": True,
         "session_max_age_seconds": 30 * 24 * 60 * 60,
@@ -802,6 +722,113 @@ class TestCompute:
         monkeypatch.setenv("TRACKINIZER_COMPUTE", "not json")
         with pytest.raises(ConfigError, match="TRACKINIZER_COMPUTE"):
             Config.from_env()
+
+
+class TestRemoteAgentServices:
+    """Where agents run: ``$TRACKINIZER_REMOTE_AGENT_SERVICES`` and its default."""
+
+    _SERVICE = (
+        '{"name": " remote-agents ", "account": "Agents@Service.Invalid", "admits": %s}'
+    )
+
+    def test_unset_means_no_service_and_no_default(self) -> None:
+        assert parse_remote_agent_services(" ") == ()
+        assert parse_default_remote_agent_service(" ", services=()) == ""
+        assert (
+            Config().remote_agent_services,
+            Config().default_remote_agent_service,
+        ) == ((), "")
+
+    def test_each_service_reads_trimmed_with_its_admits_read_as_staff_patterns(
+        self,
+    ) -> None:
+        raw = "[" + self._SERVICE % '["*@X.Y", " ada@z.w ", "*@x.y"]' + ","
+        raw += '{"name": "lab", "account": "lab@service.invalid"}]'
+
+        assert parse_remote_agent_services(raw) == (
+            RemoteAgentService(
+                name="remote-agents",
+                account="agents@service.invalid",
+                admits=("*@x.y", "ada@z.w"),
+            ),
+            RemoteAgentService(name="lab", account="lab@service.invalid"),
+        )
+
+    _SHAPE = (
+        "TRACKINIZER_REMOTE_AGENT_SERVICES must be a JSON list of "
+        '{"name", "account", "admits"} objects'
+    )
+    _NAMED = (
+        f"{_SHAPE}, each named and enrolled under a service account, "
+        "NAME@service.invalid: got "
+    )
+
+    @pytest.mark.parametrize(
+        ("raw", "says"),
+        [
+            ("remote-agents", f"{_SHAPE}: "),
+            ('[{"name": "remote-agents"}]', f"{_SHAPE}: "),
+            ('[{"name": "c", "account": "a@service.invalid", "x": 1}]', f"{_SHAPE}: "),
+            ('[{"name": " ", "account": "a@service.invalid"}]', _NAMED),
+            ('[{"name": "c", "account": "ada@x.y"}]', _NAMED),
+            (
+                '[{"name": "c", "account": "a@service.invalid", "admits": ["*"]}]',
+                "--staff",
+            ),
+            (
+                (
+                    '[{"name": "c", "account": "a@service.invalid"},'
+                    ' {"name": "c", "account": "b@service.invalid"}]'
+                ),
+                "TRACKINIZER_REMOTE_AGENT_SERVICES names a service twice",
+            ),
+        ],
+    )
+    def test_anything_else_is_a_config_error(self, raw: str, says: str) -> None:
+        """Each refusal names the variable and the shape it wants."""
+        with pytest.raises(ConfigError, match=f"^{re.escape(says)}"):
+            _ = parse_remote_agent_services(raw)
+
+    def test_the_default_must_be_a_service_the_server_names(self) -> None:
+        services = (
+            RemoteAgentService(name="remote-agents", account="a@service.invalid"),
+        )
+
+        assert (
+            parse_default_remote_agent_service(" remote-agents ", services=services)
+            == "remote-agents"
+        )
+        with pytest.raises(ConfigError) as refused:
+            _ = parse_default_remote_agent_service("lab", services=services)
+        assert str(refused.value) == (
+            "TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE names 'lab', which "
+            "TRACKINIZER_REMOTE_AGENT_SERVICES does not name"
+        )
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(
+            "TRACKINIZER_REMOTE_AGENT_SERVICES",
+            "[" + self._SERVICE % "[]" + "]",
+        )
+        monkeypatch.setenv("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", "remote-agents")
+        services = (
+            RemoteAgentService(name="remote-agents", account="agents@service.invalid"),
+        )
+        for config in (Config.from_env(), Config.from_args(_server_args())):
+            assert (
+                config.remote_agent_services,
+                config.default_remote_agent_service,
+            ) == (services, "remote-agents")
+        monkeypatch.setenv("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", "lab")
+        for build in (Config.from_env, partial(Config.from_args, _server_args())):
+            with pytest.raises(
+                ConfigError,
+                match="TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE",
+            ):
+                _ = build()
 
 
 class TestServiceKeys:
@@ -947,14 +974,8 @@ class TestSessionSecretFile:
         assert not (tmp_path / "s").exists()
 
 
-def test_a_host_holds_16_tool_connections_each_dialed_back_in_20_seconds() -> None:
-    config = Config()
-
-    assert (
-        config.tool_connections_per_host,
-        config.tool_dial_back_sec,
-        config.tool_sweep_sec,
-    ) == (16, 20.0, 60.0)
+def test_tools_default_to_a_minute_between_access_sweeps() -> None:
+    assert Config().tool_sweep_sec == 60.0
 
 
 if __name__ == "__main__":

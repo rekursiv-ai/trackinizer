@@ -14,7 +14,7 @@ from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, connection
 from trackinizer.trax.client_cache import Target, close_clients
 from trackinizer.trax.conftest import FakeClient, run
-from trackinizer.trax.verbs import Recent
+from trackinizer.trax.verbs import Kind, Recent
 
 
 if TYPE_CHECKING:
@@ -230,25 +230,14 @@ def test_unknown_verb(client: FakeClient) -> None:
         run(["wtf"], client)
 
 
-def test_search_verb_is_gone(client: FakeClient) -> None:
-    """``trax search`` no longer dispatches.
-
-    The filter grammar subsumes it (``trax issue title re foo``), so the verb
-    was removed rather than extended. ``search`` is not a filter field either,
-    so the leading token no longer resolves to anything.
-    """
-    with pytest.raises(ClientError, match="unknown"):
-        run(["search", "retry"], client)
-
-
 def test_kindless_filter_lists_every_kind(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A filter with no leading kind queries every kind.
 
-    This is what replaces ``trax search``: the leading token is a FIELD, so the
-    query widens to all kinds instead of naming one. ``row`` matches the Issue
+    The leading token is a FIELD, so the query widens to all kinds instead of
+    naming one. ``row`` matches the Issue
     fixture and ``experiment row`` matches the Experiment one, so a result from
     two different kinds proves the query was not narrowed to one.
     """
@@ -286,6 +275,50 @@ def test_verb_beats_a_same_spelled_field(
     run(["version"], client)
 
     assert "unknown filter field" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("argv", "name"),
+    [
+        (["send", "lead#1", "hi"], "send"),
+        (["belief"], "belief"),
+        (["Belief", "7", "judgement", "to", "proven"], "belief"),
+        (["title", "re", "row"], "title"),
+        (["--port", "1", "--help"], "help"),
+        ([], "trax"),
+    ],
+)
+def test_a_command_outside_allowed_is_refused_by_name(
+    client: FakeClient,
+    argv: list[str],
+    name: str,
+) -> None:
+    """A refused verb or kind is named as such, never read as a filter field."""
+    with pytest.raises(ClientError) as refused:
+        cli.parse_and_run(
+            argv,
+            client_factory=lambda: cast(Client, client),
+            allowed=(Recent,),
+        )
+
+    assert str(refused.value) == f"{name} is not available here"
+    assert client.calls == []
+
+
+def test_a_command_inside_allowed_runs(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A kindless filter runs through ``Kind``, so allowing ``Kind`` allows it."""
+    for argv in (["recent"], ["title", "re", "row"], ["belief", "3"]):
+        cli.parse_and_run(
+            argv,
+            client_factory=lambda: cast(Client, client),
+            allowed=(Kind, Recent),
+        )
+
+    assert "Belief#3" in capsys.readouterr().out
+    assert [call[0] for call in client.calls][:1] == ["recent_changes"]
 
 
 def test_kind_help_shows_local_forms(

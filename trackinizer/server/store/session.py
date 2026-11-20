@@ -50,6 +50,7 @@ from trackinizer.server.visuals.session_runs import opener_email
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
+from trackinizer.types.session_records import served_payload
 from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_sessions import FeedEvent
 
@@ -63,12 +64,10 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunPlace:
-    """Where a polling run said it ran, each part the run's own word, or ``None``."""
+    """Where a session's agent process runs: its host and its CLI, or ``None``."""
 
     host: str | None = None
-    run: str | None = None
     cli: str | None = None
-    cwd: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -101,19 +100,17 @@ _SEEN_WRITE_EVERY: Final = timedelta(minutes=1)
 
 # ``$3`` is the newest ``last_seen`` still worth rewriting. A poll starts watching a
 # session; any other sign of life only refreshes a session already watched. A poll also
-# keeps where the run said it ran (``$4``..``$7``), each kept until a poll names another:
-# the assistant drains a chat switched to it naming no host, and the chat's run stays
-# among its host's past runs. A poll that names another host is written at once, so
-# a run whose session was polled in the last minute without one, and that ends within
-# the minute, still is.
+# keeps where its agent process runs (``$4``, ``$5``), each kept until a poll names
+# another; an inbound drain names neither. A poll that names another host is written at
+# once, so a process whose session was polled in the last minute without one, and that
+# ends within the minute, still is. The ``run`` and ``cwd`` columns keep what older
+# drains said and take no new value.
 _SEEN_SQL: Final = (
-    "INSERT INTO session_liveness (session_id, last_seen, host, run, cli, cwd) "
-    "VALUES ($1, $2, $4, $5, $6, $7) "
+    "INSERT INTO session_liveness (session_id, last_seen, host, cli) "
+    "VALUES ($1, $2, $4, $5) "
     "ON CONFLICT (session_id) DO UPDATE SET last_seen = EXCLUDED.last_seen, "
     "host = COALESCE(EXCLUDED.host, session_liveness.host), "
-    "run = COALESCE(EXCLUDED.run, session_liveness.run), "
-    "cli = COALESCE(EXCLUDED.cli, session_liveness.cli), "
-    "cwd = COALESCE(EXCLUDED.cwd, session_liveness.cwd) "
+    "cli = COALESCE(EXCLUDED.cli, session_liveness.cli) "
     "WHERE session_liveness.last_seen < $3 OR (EXCLUDED.host IS NOT NULL "
     "AND session_liveness.host IS DISTINCT FROM EXCLUDED.host)"
 )
@@ -181,6 +178,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         audience: str,
         api_key_id: UUID | None = None,
         attach: UUID | None = None,
+        keep_audience: bool = False,
         max_reserve_attempts: int = 16,
         principal: Principal | None = None,
     ) -> tuple[UUID, str, int]:
@@ -199,7 +197,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         re-open it if ended (clear ``ended``, status back to ``active``), so the
         resumed run continues the original log. A resume asked to be ``private``
         hides the ``open`` session it re-attaches, as the key that opened it may,
-        and refuses one in any other audience before touching it. ``next_seq`` is
+        and refuses one in any other audience before touching it; ``keep_audience``
+        leaves the session in the audience it has instead. ``next_seq`` is
         always 0: record keys derive from their position in the source file, so a
         resumed run re-derives the same keys and needs no continuation point.
 
@@ -221,6 +220,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             ``private`` hides one it resumes too.
           api_key_id: API key that opened this session; used in resume correlation.
           attach: The session to re-open by its id, or ``None`` to open or resume.
+          keep_audience: Whether a session this call resumes or attaches keeps the
+            audience it has, so ``audience`` is for one it mints alone.
           max_reserve_attempts: Max retries on live-owner unique constraint.
           principal: The caller the access policy records as a new session's
             creator, or hears hide one it resumes; None for the system.
@@ -234,16 +235,17 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         Raises:
           ConflictError: Max reserve attempts exhausted; cannot acquire a name. Or
             a ``private`` resume or attach of a session in an audience other than
-            ``open``.
+            ``open``, unless ``keep_audience``.
           NotFoundError: ``attach`` names no session.
 
         """
+        hide = audience == PRIVATE and not keep_audience
         if attach is not None:
             attached = await self._resume_session(
                 req,
                 api_key_id=api_key_id,
                 actor=requested_actor,
-                hide=audience == PRIVATE,
+                hide=hide,
                 attach=attach,
                 principal=principal,
             )
@@ -258,7 +260,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 req,
                 api_key_id=api_key_id,
                 actor=requested_actor,
-                hide=audience == PRIVATE,
+                hide=hide,
                 principal=principal,
             )
             if resumed is not None:
@@ -514,8 +516,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           polled: Whether it polled its inbound queue. A poll starts watching the
             session; anything else only refreshes one already watched, so a
             session that never polls is never closed for silence.
-          place: Where a polling run said it ran; ``None`` for a sign of life that
-            names no place.
+          place: Where the session's agent process runs; ``None`` for a sign of life
+            that names no place, as an inbound drain is.
 
         """
         async with self.engine.acquire() as conn:
@@ -534,9 +536,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 at,
                 at - _SEEN_WRITE_EVERY,
                 where.host,
-                where.run,
                 where.cli,
-                where.cwd,
             )
 
     async def past_runs(
@@ -581,6 +581,62 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             )
             for row in rows
         ]
+
+    async def spawned_session(
+        self,
+        spawner: UUID,
+        *,
+        cli_session_id: str,
+    ) -> UUID | None:
+        """Return the session ``produced_by`` ``spawner`` under ``cli_session_id``, if any.
+
+        Args:
+          spawner: The session whose agent spawned it.
+          cli_session_id: Its CLI's own id.
+
+        Returns:
+          session_id: The first such session opened; ``None`` when there is none.
+
+        """
+        async with self.engine.acquire() as conn:
+            found = await conn.fetchval(
+                "SELECT child.id FROM edges "
+                "JOIN inquiries AS child ON child.id = edges.from_id "
+                "WHERE edges.to_id = $1 AND edges.edge_kind = 'produced_by' "
+                "AND child.kind = 'AgentSession' "
+                "AND child.agentsession_cli_session_id = $2 "
+                "ORDER BY child.seq LIMIT 1",
+                spawner,
+                cli_session_id,
+            )
+        return None if found is None else _uuid(found)
+
+    # ``UNION`` drops a session seen before, so a cycle of edges ends the walk.
+    async def is_spawned_below(self, session_id: UUID, *, root: UUID) -> bool:
+        """Return whether ``session_id`` was spawned by ``root``'s session, at any depth.
+
+        Args:
+          session_id: The session asked about.
+          root: The session at the top.
+
+        Returns:
+          below: Whether a chain of ``produced_by`` edges between sessions leads
+            from ``session_id`` up to ``root``; ``False`` for ``root`` itself.
+
+        """
+        async with self.engine.acquire() as conn:
+            below = await conn.fetchval(
+                "WITH RECURSIVE up(id) AS ("
+                "SELECT to_id FROM edges WHERE from_id = $1 "
+                "AND edge_kind = 'produced_by' AND to_kind = 'AgentSession' "
+                "UNION SELECT edges.to_id FROM edges JOIN up ON edges.from_id = up.id "
+                "WHERE edges.edge_kind = 'produced_by' "
+                "AND edges.to_kind = 'AgentSession') "
+                "SELECT EXISTS (SELECT 1 FROM up WHERE id = $2)",
+                session_id,
+                root,
+            )
+        return from_plain(below, bool)
 
     async def silent_sessions(self, *, before: datetime) -> list[UUID]:
         """Return each live session last heard from at or before ``before``.
@@ -1296,6 +1352,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
 
 def _feed_event(row: asyncpg.Record) -> FeedEvent:
     """Build one feed item from a ``session_records`` join row."""
+    kind = from_plain(row["kind"], str)
     return FeedEvent(
         session_id=_uuid(row["session_id"]),
         actor=from_plain(row.get("owner"), str, default=""),
@@ -1303,11 +1360,16 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
         cli=_optional_str(row["agentsession_cli"]),
         part=from_plain(row["part"], int),
         seq=from_plain(row["idx"], int),
-        kind=from_plain(row["kind"], str),
+        kind=kind,
         created=_datetime(row["created"]),
         timestamp=_optional_datetime(row["timestamp"]),
         model=_optional_str(row["model"]),
-        message=_decoded_payload(from_plain(row["payload"], str)),
+        # The console reads only the current ``ToolResult`` shape, so a legacy
+        # tool-call payload is converted here, as the records route converts it.
+        message=served_payload(
+            kind,
+            _decoded_payload(from_plain(row["payload"], str)),
+        ),
         text=from_plain(row["text"], str),
     )
 

@@ -16,16 +16,37 @@ def test_the_ring_keeps_the_tail_and_reads_from_an_offset() -> None:
     assert ring.since(0) == (b"cde", 2, True)
 
 
-def test_a_reset_restarts_the_stream_at_an_offset_with_nothing_kept() -> None:
+def test_a_seek_past_the_end_continues_the_stream_there_with_nothing_kept() -> None:
     ring = Ring(capacity=8)
     ring.append(b"abc")
 
-    ring.reset(10)
+    ring.seek(10)
     ring.append(b"xy")
 
     assert (ring.start, ring.end) == (10, 12)
     assert ring.since(10) == (b"xy", 10, False)
     assert ring.since(0) == (b"xy", 10, True)
+
+
+def test_a_seek_within_the_ring_keeps_every_byte_before_the_offset() -> None:
+    ring = Ring(capacity=8)
+    ring.append(b"abcdef")
+
+    ring.seek(6)
+    assert ring.since(0) == (b"abcdef", 0, False)
+    ring.seek(4)
+    ring.append(b"xy")
+
+    assert ring.since(0) == (b"abcdxy", 0, False)
+
+
+def test_a_seek_before_the_start_keeps_nothing() -> None:
+    ring = Ring(capacity=3)
+    ring.append(b"abcde")
+
+    ring.seek(1)
+
+    assert (ring.start, ring.end) == (1, 1)
 
 
 if __name__ == "__main__":

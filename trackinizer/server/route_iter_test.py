@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, FastAPI, WebSocket
-from starlette.routing import Host, Mount
+from fastapi import APIRouter, Depends, FastAPI, Request, Response, WebSocket
+from fastapi.routing import APIRoute, APIWebSocketRoute
+from fastapi.testclient import TestClient
+from starlette.requests import HTTPConnection
+from starlette.routing import Host, Mount, Route, WebSocketRoute
+
+import httpx2
+import pytest
 
 from trackinizer.server.route_iter import (
     iter_api_routes,
+    iter_route_leaves,
     iter_routes,
+    matched_route_path,
     registered_path_methods,
     registered_paths,
 )
@@ -50,7 +58,8 @@ def test_every_leaf_carries_its_full_prefix_and_verbs() -> None:
 
 def test_a_host_route_has_no_path_and_is_skipped() -> None:
     app = FastAPI()
-    app.router.routes.append(Host("docs.example.com", app=FastAPI()))
+    # First: the routes after it are still walked.
+    app.router.routes.insert(0, Host("docs.example.com", app=FastAPI()))
 
     assert [path for path, _ in iter_routes(app)] == [
         "/openapi.json",
@@ -86,6 +95,19 @@ def test_api_routes_are_the_http_leaves_with_what_their_includes_add() -> None:
     assert leaves["/health"].include_dependencies == ()
 
 
+def test_each_leaf_is_the_route_a_request_reaches_with_its_full_prefix() -> None:
+    leaves = dict(iter_route_leaves(_app()))
+
+    socket = leaves["/ws"]
+    leaf = leaves["/api/inner/leaf"]
+    assert isinstance(socket, APIWebSocketRoute)
+    assert socket.endpoint is _socket
+    assert isinstance(leaf, APIRoute)
+    # The route keeps the path within its router; the leaf names it in full.
+    assert (leaf.path, leaf.endpoint) == ("/leaf", _ok)
+    assert isinstance(leaves["/static"], Mount)
+
+
 def test_registered_paths_are_the_distinct_templates() -> None:
     paths = registered_paths(_app())
 
@@ -98,6 +120,64 @@ def test_registered_path_methods_pair_each_path_with_each_verb() -> None:
 
     assert {("/api/items", "POST"), ("/api/items", "PUT")} <= pairs
     assert not any(path == "/ws" for path, _ in pairs)
+
+
+@pytest.mark.asyncio
+async def test_matched_path_uses_the_requested_inclusion() -> None:
+    async def path(request: Request) -> Response:
+        return Response(content=matched_route_path(request))
+
+    inner = APIRouter()
+    inner.add_api_route("/hosts/{host_id}", path)
+    outer = APIRouter()
+    outer.include_router(inner, prefix="/knowhost")
+    app = FastAPI()
+    app.include_router(outer, prefix="/api/addons")
+    app.include_router(outer, prefix="/unlisted")
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        for prefix in ("/api/addons", "/unlisted"):
+            answer = await client.get(f"{prefix}/knowhost/hosts/7")
+            assert answer.status_code == 200
+            assert answer.text == f"{prefix}/knowhost/hosts/{{host_id}}"
+
+
+@pytest.mark.parametrize("prefix", ["", "/api"])
+def test_matched_path_of_a_websocket_is_its_full_template(prefix: str) -> None:
+    """FastAPI's include context names no path for a socket; its route names it in full."""
+    seen: list[str | None] = []
+
+    async def socket(websocket: WebSocket, session_id: str) -> None:
+        del session_id
+        seen.append(matched_route_path(websocket))
+        await websocket.accept()
+        await websocket.close()
+
+    inner = APIRouter()
+    inner.add_api_websocket_route("/sessions/{session_id}/process/ws", socket)
+    app = FastAPI()
+    app.include_router(inner, prefix=prefix)
+    with TestClient(app).websocket_connect(f"{prefix}/sessions/s1/process/ws"):
+        pass
+
+    assert seen == [f"{prefix}/sessions/{{session_id}}/process/ws"]
+
+
+@pytest.mark.parametrize("kind", ["http", "websocket", "missing"])
+def test_matched_path_without_an_include_context(kind: str) -> None:
+    if kind == "missing":
+        connection = Request({"type": "http"})
+        assert matched_route_path(connection) is None
+    elif kind == "websocket":
+        connection = HTTPConnection(
+            {"type": "websocket", "route": WebSocketRoute("/ws", _socket)},
+        )
+        assert matched_route_path(connection) == "/ws"
+    else:
+        connection = Request({"type": "http", "route": Route("/health", _ok)})
+        assert matched_route_path(connection) == "/health"
 
 
 if __name__ == "__main__":

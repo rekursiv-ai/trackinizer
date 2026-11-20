@@ -10,6 +10,7 @@ import { StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { buildOutline, type Outline, type OutlineLine, type OutlineNode } from "./tree";
 import "./outline.css";
+import { must } from "../must";
 
 /** An Issue list's rows as an outline, with what the list's keys and selection need. */
 export type OutlineView = Outline & {
@@ -31,10 +32,19 @@ export type OutlineView = Outline & {
  * null, reading nothing, when `rows` is. `collapsed` is the list's stored
  * collapse keys, as `onToggle` hands them over.
  */
-export function useOutline(rows: readonly InquiryRow[] | null, collapsed: readonly string[]): OutlineView | null {
-  const { ancestry, pending, error, retry } = useAncestry(rows && rows.map((row) => row.id));
+export function useOutline(
+  rows: readonly InquiryRow[] | null,
+  collapsed: readonly string[],
+): OutlineView | null {
+  const { ancestry, pending, error, retry } = useAncestry(
+    rows && rows.map((row) => row.id),
+  );
   if (!rows) return null;
-  const folded = new Set(collapsed.flatMap((key) => (key.startsWith(KEY_PREFIX) ? [key.slice(KEY_PREFIX.length)] : [])));
+  const folded = new Set(
+    collapsed.flatMap((key) =>
+      key.startsWith(KEY_PREFIX) ? [key.slice(KEY_PREFIX.length)] : [],
+    ),
+  );
   const outline = buildOutline(rows, ancestry, folded);
   const orphansOpen = !collapsed.includes(NO_PARENT_KEY);
   const orphans = orphansOpen ? outline.orphans : [];
@@ -50,16 +60,33 @@ export function useOutline(rows: readonly InquiryRow[] | null, collapsed: readon
 }
 
 /** ← collapses the focused line and → expands it, while the list is an outline. */
-export function useOutlineKeys(outline: OutlineView | null, focusedId: string | null, toggle: (key: string) => void): void {
+export function useOutlineKeys(
+  outline: OutlineView | null,
+  focusedId: string | null,
+  toggle: (key: string) => void,
+): void {
   const fold = (expanded: boolean) => {
-    const line = outline?.lines.find((candidate) => lineNode(candidate).id === focusedId);
-    if (line?.parent && line.expanded === expanded) toggle(outlineKey(lineNode(line).id));
+    const line = outline?.lines.find(
+      (candidate) => lineNode(candidate).id === focusedId,
+    );
+    if (line?.parent && line.expanded === expanded)
+      toggle(outlineKey(lineNode(line).id));
   };
   useCommands(
     outline
       ? [
-          { id: "outline.collapse", title: "Collapse", keys: ["ArrowLeft"], run: () => fold(true) },
-          { id: "outline.expand", title: "Expand", keys: ["ArrowRight"], run: () => fold(false) },
+          {
+            id: "outline.collapse",
+            title: "Collapse",
+            keys: ["ArrowLeft"],
+            run: () => fold(true),
+          },
+          {
+            id: "outline.expand",
+            title: "Expand",
+            keys: ["ArrowRight"],
+            run: () => fold(false),
+          },
         ]
       : [],
   );
@@ -86,10 +113,21 @@ export function OutlineRows({
   selection: Selection;
 }) {
   const empty = outline.lines.length === 0 && outline.orphans.length === 0;
-  if (outline.error && empty) return <ReadFailure error={outline.error} retry={outline.retry} />;
+  if (outline.error && empty)
+    return <ReadFailure error={outline.error} retry={outline.retry} />;
   if (outline.pending) return <p className="list-loading">Loading…</p>;
-  const rowLine = (row: InquiryRow, depth: number, twisty: ReactNode, note: ReactNode) => (
-    <div key={row.id} className="o-line" data-depth={depth} style={{ "--depth": depth } as CSSProperties}>
+  const rowLine = (
+    row: InquiryRow,
+    depth: number,
+    twisty: ReactNode,
+    note: ReactNode,
+  ) => (
+    <div
+      key={row.id}
+      className="o-line"
+      data-depth={depth}
+      style={{ "--depth": depth } as CSSProperties}
+    >
       {twisty}
       <Row
         row={row}
@@ -116,7 +154,12 @@ export function OutlineRows({
             const twisty = <Twisty line={line} onToggle={toggle} />;
             if (node.row) return rowLine(node.row, line.depth, twisty, lineNote(line));
             return (
-              <div key={node.id} className="o-line" data-depth={line.depth} style={{ "--depth": line.depth } as CSSProperties}>
+              <div
+                key={node.id}
+                className="o-line"
+                data-depth={line.depth}
+                style={{ "--depth": line.depth } as CSSProperties}
+              >
                 {twisty}
                 <Older line={line} focused={node.id === focusedId} onFocus={onFocus} />
               </div>
@@ -128,7 +171,9 @@ export function OutlineRows({
         <section aria-label="No parent">
           <button
             type="button"
-            className={outline.orphansOpen ? "group-h o-group" : "group-h o-group is-collapsed"}
+            className={
+              outline.orphansOpen ? "group-h o-group" : "group-h o-group is-collapsed"
+            }
             aria-expanded={outline.orphansOpen}
             onClick={() => onToggle(NO_PARENT_KEY)}
           >
@@ -136,7 +181,10 @@ export function OutlineRows({
             <span>No parent</span>
             <span className="count">{outline.orphans.length}</span>
           </button>
-          {outline.orphansOpen && outline.orphans.map((row) => rowLine(row, 0, <span className="o-twisty" />, null))}
+          {outline.orphansOpen &&
+            outline.orphans.map((row) =>
+              rowLine(row, 0, <span className="o-twisty" />, null),
+            )}
         </section>
       )}
     </>
@@ -161,7 +209,15 @@ function Twisty({ line, onToggle }: { line: OutlineLine; onToggle: () => void })
 }
 
 /** A line of parents outside the page, dimmed: one, or a compressed chain, opening the last. */
-function Older({ line, focused, onFocus }: { line: OutlineLine; focused: boolean; onFocus: (id: string) => void }) {
+function Older({
+  line,
+  focused,
+  onFocus,
+}: {
+  line: OutlineLine;
+  focused: boolean;
+  onFocus: (id: string) => void;
+}) {
   const node = lineNode(line);
   return (
     <a
@@ -173,8 +229,12 @@ function Older({ line, focused, onFocus }: { line: OutlineLine; focused: boolean
       onClick={() => onFocus(node.id)}
     >
       <StatusGlyph status={node.status} />
-      <span className="row-ref">{line.nodes.map(({ seq }) => `#${seq}`).join(" › ")}</span>
-      <span className="row-title">{line.nodes.map(({ title }) => title).join(" › ")}</span>
+      <span className="row-ref">
+        {line.nodes.map(({ seq }) => `#${seq}`).join(" › ")}
+      </span>
+      <span className="row-title">
+        {line.nodes.map(({ title }) => title).join(" › ")}
+      </span>
       <span className="o-tag" title="Not among the rows this list loaded">
         older
       </span>
@@ -191,14 +251,18 @@ function lineNote(line: OutlineLine): ReactNode {
   return (
     <>
       {also && <span className="o-also">also under {also}</span>}
-      {folded && <span className="o-below">{line.below === 1 ? "1 issue" : `${line.below} issues`}</span>}
+      {folded && (
+        <span className="o-below">
+          {line.below === 1 ? "1 issue" : `${line.below} issues`}
+        </span>
+      )}
     </>
   );
 }
 
 /** The Issue a line ends with: the one it opens, and the one its children narrow. */
 function lineNode(line: OutlineLine): OutlineNode {
-  return line.nodes.at(-1)!;
+  return must(line.nodes.at(-1));
 }
 
 /** The list's stored key for a collapsed line, by the Issue it ends with. */
@@ -207,7 +271,14 @@ function outlineKey(id: string): string {
 }
 
 function rowNode(row: InquiryRow): OutlineNode {
-  return { id: row.id, kind: row.kind, seq: row.seq, title: row.title, status: row.status, row };
+  return {
+    id: row.id,
+    kind: row.kind,
+    seq: row.seq,
+    title: row.title,
+    status: row.status,
+    row,
+  };
 }
 
 const KEY_PREFIX = "outline:";

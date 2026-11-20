@@ -37,8 +37,8 @@ from trackinizer.sagent.session.types import (
     UserMessage,
 )
 from trackinizer.trax import render
-from trackinizer.trax.commands import Command, HelpPage
-from trackinizer.trax.context import cwd, env
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
+from trackinizer.trax.context import check_local_input, cwd, env
 from trackinizer.trax.forward import RUN_CLIS, moved
 from trackinizer.trax.grammar import (
     COST_FIELDS,
@@ -95,6 +95,7 @@ from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
+from trackinizer.wire.wire_sessions import SearchMode, SessionAgent
 
 
 if TYPE_CHECKING:
@@ -192,7 +193,7 @@ class Kind(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax <kind>",
             description=(
                 "List, show, edit, or add an outbound edge on an inquiry. "
@@ -1992,7 +1993,7 @@ class Recent(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax recent", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax recent", description=cls.__doc__)
         parser.add_argument("--limit", type=_positive_int, default=50)
         parser.add_argument(
             "--format",
@@ -2021,50 +2022,48 @@ class Recent(Command):
 
 
 class Search(Command):
-    """Search captured sessions: embeddings + full text, RRF-merged."""
+    """Search by meaning and by keyword: embeddings + full text, RRF-merged.
 
-    # NOT ``search``: that verb was retired (the filter grammar subsumed
-    # inquiry search; ``cli_test.test_search_verb_is_gone`` pins its removal).
-    # Session search is a distinct surface over ``session_records``, so it takes
-    # its own, previously-unused name rather than resurrecting the retired one.
-    names = ("search-sessions",)
+    Inquiry texts and edge notes, or with ``--kind agentsession`` session
+    transcripts. The filter grammar matches fields by pattern; this ranks by both
+    arms, which no filter spells.
+    """
+
+    names = ("search",)
     help = HelpPage(
-        usage='trax search-sessions "QUERY" [OPTIONS]',
-        summary="Search captured agent sessions by meaning and by keyword.",
+        usage='trax search "QUERY" [OPTIONS]',
+        summary="Search inquiries and edge notes, or session transcripts, by meaning "
+        "and by keyword.",
         arguments=(("QUERY", "The search text (quote multi-word queries)."),),
         options=(
-            ("--limit INT", "Maximum hits to return (default 20)."),
+            ("--kind KIND", "One kind; --kind agentsession searches transcripts."),
             (
-                "--no-semantic",
-                "Full-text only; skip the embedding arm even if available.",
+                "--mode TEXT",
+                "fused|keyword|vector: both arms (default), or one alone.",
             ),
+            ("--limit INT", "Maximum hits to return (default 20)."),
             ("--format TEXT", "text|json."),
         ),
         examples=(
-            'trax search-sessions "advisory lock deadlock"',
-            'trax search-sessions "retry backoff" --limit 5',
-            'trax search-sessions "postgres" --no-semantic',
-            'trax search-sessions "deploy" --format json',
+            'trax search "retry backoff"',
+            'trax search "lock order" --kind belief --mode vector',
+            'trax search "advisory lock deadlock" --kind agentsession',
+            'trax search "deploy" --kind agentsession --format json',
         ),
     )
 
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
-            prog="trax search-sessions",
-            description=cls.__doc__,
-        )
+        parser = TraxArgumentParser(prog="trax search", description=cls.__doc__)
         parser.add_argument("query", metavar="QUERY", help="search text")
         parser.add_argument("--limit", type=_positive_int, default=20)
-        # Semantic on by default; the server degrades to full-text-only when no
-        # session embedder is configured, so this flag is a caller opt-OUT.
         parser.add_argument(
-            "--semantic",
-            dest="semantic",
-            default=True,
-            action=argparse.BooleanOptionalAction,
+            "--mode",
+            default="fused",
+            choices=get_args(cast(object, SearchMode.__value__)),
         )
+        parser.add_argument("--kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument(
             "--format",
             dest="format_",
@@ -2082,15 +2081,22 @@ class Search(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        body = client_factory().search_sessions(
-            _arg_str(args, "query"),
-            semantic=bool(getattr(args, "semantic", True)),
-            limit=from_plain(_arg_values(args).get("limit"), int, default=0),
-        )
-        if _arg_str(args, "format_") == "json":
-            echo(render.format_json(body), nl=False)
+        query = _arg_str(args, "query")
+        mode = cast("SearchMode", _arg_str(args, "mode"))
+        limit = from_plain(_arg_values(args).get("limit"), int, default=0)
+        word = _arg_str(args, "kind")
+        kind = KIND_LOWER[word] if word else None
+        client = client_factory()
+        if kind == "AgentSession":
+            body = client.search_sessions(query, mode=mode, limit=limit)
+            text = render.format_session_hits(body)
         else:
-            echo(render.format_session_hits(body), nl=False)
+            body = client.search_inquiries(query, mode=mode, kind=kind, limit=limit)
+            text = render.format_inquiry_hits(body)
+        echo(
+            render.format_json(body) if _arg_str(args, "format_") == "json" else text,
+            nl=False,
+        )
 
 
 class Id(Command):
@@ -2123,7 +2129,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax id", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax id", description=cls.__doc__)
         parser.add_argument("uuid", metavar="UUID", help="the row's global id")
         parser.add_argument(
             "--format",
@@ -2179,7 +2185,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax next", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax next", description=cls.__doc__)
         parser.add_argument(
             "--format",
             dest="format_",
@@ -2257,7 +2263,7 @@ Examples:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        return argparse.ArgumentParser(prog="trax blocked", description=cls.__doc__)
+        return TraxArgumentParser(prog="trax blocked", description=cls.__doc__)
 
     @classmethod
     @override
@@ -2346,7 +2352,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax graph", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax graph", description=cls.__doc__)
         parser.add_argument("--open-only", dest="open_only", action="store_true")
         return parser
 
@@ -2487,7 +2493,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax board", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax board", description=cls.__doc__)
         parser.add_argument("--width", type=int, default=None)
         return parser
 
@@ -2571,7 +2577,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax cost", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax cost", description=cls.__doc__)
         parser.add_argument("kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument("seq", type=int)
         parser.add_argument("--deep", action="store_true")
@@ -2637,7 +2643,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax confidence",
             description=cls.__doc__,
         )
@@ -2696,7 +2702,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax authority", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax authority", description=cls.__doc__)
         parser.add_argument("kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument("seq", type=int)
         parser.add_argument(
@@ -2734,28 +2740,35 @@ Options:
 
 
 class Send(Command):
-    """Send a message into a live agent session by routing name."""
+    """Send a message to one agent of a live session, or to sessions by routing name."""
 
     names = ("send",)
     help = """\
-Usage: trax send @ACTOR[:ROOM] TEXT...
+Usage: trax send LABEL#SESSION TEXT...
+       trax send @ACTOR[:ROOM] TEXT...
 
 Examples:
-  trax send @scientist "check the logs"         message a live session
+  trax send lead#412 "status?"                  the agent lead of session 412
+  trax send lead#0b1c...-uuid "status?"         the same session, by its UUID
+  trax send @scientist "check the logs"         every live session of a name
   trax send @scientist:sear "status?"           scope to a room
   trax send scientist hello                      the @ is optional
 
 Notes:
-  The target is an AgentSession's routing name (its --as owner). The message
-  is injected into the live CLI's input. Delivery is drop-if-absent: if no
-  live session matches, nothing is sent and the receipt says so.
+  LABEL#SESSION names one agent by its label in a session, the session by
+  its number or its UUID: what follows the last #. A bare name#N is
+  always a session's number; write @name#N for the routing name name#N.
+  @ACTOR is an AgentSession's routing name (its --as owner). The message
+  goes to the agent process serving each session, or into its live CLI's
+  input. Delivery is drop-if-absent: if no live session takes it, nothing
+  is sent and the receipt says so.
 """
 
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax send", description=cls.__doc__)
-        parser.add_argument("target", help="@actor or @actor:room")
+        parser = TraxArgumentParser(prog="trax send", description=cls.__doc__)
+        parser.add_argument("target", help="label#session, @actor or @actor:room")
         parser.add_argument("text", nargs="+", help="message body")
         return parser
 
@@ -2768,15 +2781,17 @@ Notes:
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        actor, room = _parse_target(_arg_str(args, "target"))
-        delivered = client_factory().send_message(
-            actor,
-            " ".join(_arg_text(args)),
-            room=room,
-        )
+        target, room = _parse_target(_arg_str(args, "target"))
+        text = " ".join(_arg_text(args))
+        client = client_factory()
+        if isinstance(target, SessionAgent):
+            delivered = client.message_agent(target, text)
+            scope = str(target)
+        else:
+            delivered = client.send_message(target, text, room=room)
+            scope = f"@{target}" if room is None else f"@{target}:{room}"
         if not delivered:
-            scope = f"@{actor}:{room}" if room is not None else f"@{actor}"
-            echo(f"undelivered: no live session matches {scope}")
+            echo(f"undelivered: no agent is connected to a live session {scope} names")
             return
         echo(f"sent to {len(delivered)} session(s)")
 
@@ -2800,7 +2815,7 @@ Notes:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        return argparse.ArgumentParser(prog="trax version", description=cls.__doc__)
+        return TraxArgumentParser(prog="trax version", description=cls.__doc__)
 
     @classmethod
     @override
@@ -2845,7 +2860,7 @@ Notes:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax export",
             description=cls.__doc__,
         )
@@ -2866,9 +2881,16 @@ Notes:
             echo(line)
 
 
-# The leading ``@`` is optional; a single ``:`` separates an optional room.
-def _parse_target(target: str) -> tuple[str, str | None]:
-    """Split a ``@actor[:room]`` target into ``(actor, room)``."""
+# Without ``@``, a ``#`` makes the target an agent of a session; with it, or with no
+# ``#``, a routing name, which may itself hold ``#`` (``scientist#2``). A single ``:``
+# separates a routing name's optional room.
+def _parse_target(target: str) -> tuple[str | SessionAgent, str | None]:
+    """Split a target into an agent of a session, or an actor and its room."""
+    if not target.startswith("@") and "#" in target:
+        try:
+            return SessionAgent.parse(target), None
+        except ValueError as error:
+            raise ClientError(str(error)) from None
     spec = target.removeprefix("@")
     actor, sep, room = spec.partition(":")
     if not actor:
@@ -3008,6 +3030,7 @@ def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField
     """Resolve one field value: ``-`` is stdin, ``@path`` a file, else verbatim."""
     if not isinstance(field.value, str):
         return field, False
+    check_local_input(field.value)
     if field.value == "-":
         if used_stdin:
             raise ClientError("stdin value can only be used once per command")
@@ -3210,18 +3233,13 @@ def _split_records_tail(
 
 def _records_parser() -> argparse.ArgumentParser:
     """Return the parser of the ``records`` action's own flags."""
-    parser = argparse.ArgumentParser(
+    parser = TraxArgumentParser(
         prog="trax agentsession SEQ records",
-        exit_on_error=False,
+        exit_on_error=False,  # pragma: no mutate[truthiness]
     )
-    parser.add_argument("--part", type=int, default=None)
-    parser.add_argument("--to", default="", metavar="PART:IDX")
-    parser.add_argument(
-        "--format",
-        dest="format_",
-        choices=("text", "json"),
-        default="text",
-    )
+    parser.add_argument("--part", type=int)
+    parser.add_argument("--to", metavar="PART:IDX")
+    parser.add_argument("--format", dest="format_", choices=("text", "json"))
     return parser
 
 

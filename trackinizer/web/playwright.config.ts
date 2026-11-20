@@ -40,7 +40,10 @@ export default defineConfig({
       TRACKINIZER_BOOTSTRAP_ADMIN: "e2e-admin@example.com",
       // The bootstrap writes that user's token here, not into the real
       // per-user data directory.
-      TRACKINIZER_BOOTSTRAP_TOKEN_FILE: join(tmpdir(), `trackinizer-web-e2e-${port}-bootstrap-token`),
+      TRACKINIZER_BOOTSTRAP_TOKEN_FILE: join(
+        tmpdir(),
+        `trackinizer-web-e2e-${port}-bootstrap-token`,
+      ),
     },
     url: `http://127.0.0.1:${port}/trax/`,
     // Another checkout's server on this port would serve a different build.

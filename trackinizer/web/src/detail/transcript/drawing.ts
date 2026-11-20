@@ -32,7 +32,10 @@ export function useDrawnFrom(first: number, last: number): number {
   const [from, setFrom] = useState(Infinity);
   const start = Math.min(from, last - FIRST_DRAWN + 1);
   useEffect(() => {
-    if (from > first) startTransition(() => setFrom(Math.max(first, from === Infinity ? start : start - CHUNK_DRAWN)));
+    if (from > first)
+      startTransition(() =>
+        setFrom(Math.max(first, from === Infinity ? start : start - CHUNK_DRAWN)),
+      );
   }, [from, start, first]);
   return from === Infinity ? Infinity : start;
 }
@@ -51,7 +54,12 @@ export function useDrawnFrom(first: number, last: number): number {
  * nothing.
  */
 export function placeholderHeight(text: string, folded: boolean): number {
-  const rows = text.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / ROW_CHARACTERS)), 0);
+  const rows = text
+    .split("\n")
+    .reduce(
+      (sum, line) => sum + Math.max(1, Math.ceil(line.length / ROW_CHARACTERS)),
+      0,
+    );
   return HEADER_PX + Math.min(rows * ROW_PX, folded ? FOLDED_PX : Infinity);
 }
 

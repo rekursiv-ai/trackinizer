@@ -10,7 +10,9 @@ did, at the call sites that already check them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import (
+    dataclass,
+)
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
@@ -61,6 +63,9 @@ class Principal:
         request by :meth:`AccessPolicy.groups`; empty under the default policy.
       api_key_id: The API key the request used; ``None`` for a browser session or
         the system.
+      reader: How the transcript test reads them, which a row filed from a science
+        chat is read by as its chat is; ``None`` reads as a person who holds no
+        ``staff`` and belongs to no organisation.
 
     """
 
@@ -68,6 +73,7 @@ class Principal:
     role: Role
     groups: frozenset[str] = frozenset()
     api_key_id: UUID | None = None
+    # Derived from who asks, so two principals for one caller compare equal.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -230,7 +236,8 @@ def inquiry_read_filter(
         params=params,
         principal=principal,
     )
-    if predicate == "TRUE":
+    # The chat test above leaves no ``TRUE`` here; the export, which strips it, does.
+    if predicate == "TRUE":  # pragma: no cover  # pragma: no mutate
         return predicate
     return vetted_sql(
         "EXISTS (SELECT 1 FROM inquiries readable_inquiry WHERE readable_inquiry.id = ",

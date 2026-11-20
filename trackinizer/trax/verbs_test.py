@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, override
+from unittest.mock import Mock
 
 import argparse
 import io
@@ -18,11 +20,13 @@ from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ToolCall,
+    ToolResult,
     UncategorizedToolResult,
     UserMessage,
 )
 from trackinizer.trax import verbs
 from trackinizer.trax.conftest import FakeClient, run
+from trackinizer.trax.context import CWD, LOCAL_INPUT
 from trackinizer.trax.grammar import (
     VALID_KINDS,
     WRITE_FIELDS_CLI,
@@ -34,6 +38,7 @@ from trackinizer.trax.verbs import (
     Board,
     Graph,
     Kind,
+    Send,
     _query_rows,
     resolve_actor,
 )
@@ -48,10 +53,11 @@ from trackinizer.wire.wire_metrics_query import (
     MetricRankRow,
 )
 from trackinizer.wire.wire_session_ir import PartBody, RecordBody
+from trackinizer.wire.wire_sessions import SessionAgent
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Generator, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from trackinizer.types.inquiries import Inquiry
@@ -421,6 +427,44 @@ def test_kind_verb_field_edit_reads_stdin_value(
 
     edit_calls = [c for c in client.calls if c[0] == "edit"]
     assert edit_calls[0][1][1:] == ("description", "## Problem\nDetails.\n")
+
+
+def test_kind_verb_refuses_local_input_where_it_is_off(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An agent's tool reads neither its process's stdin nor the files around it."""
+    stdin = io.StringIO("body")
+    monkeypatch.setattr("sys.stdin", stdin)
+    with _bound(_local_sources(tmp_path), local_input=False):
+        refusals: list[str] = []
+        for source in _sources(tmp_path):
+            with pytest.raises(ClientError) as refused:
+                run(["issue", "1", "description", "to", source], client)
+            refusals.append(str(refused.value))
+
+    assert refusals == [
+        "- reads no local input here",
+        *["@FILE reads no local input here"] * 3,
+    ]
+    assert stdin.tell() == 0
+    assert [c for c in client.calls if c[0] == "edit"] == []
+
+
+def test_kind_verb_reads_local_input_where_it_is_on(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO("body"))
+    with _bound(_local_sources(tmp_path), local_input=True):
+        for source in _sources(tmp_path):
+            run(["issue", "1", "description", "to", source], client)
+
+    assert [c[1][1:] for c in client.calls if c[0] == "edit"] == [
+        ("description", "body"),
+    ] * 4
 
 
 def test_kind_verb_mixes_read_write_left_to_right(
@@ -2026,8 +2070,8 @@ def test_a_malformed_export_selector_is_refused_before_the_request(
 def test_kindless_filter_queries_every_kind(client: FakeClient) -> None:
     """A leading filter field lists across every kind.
 
-    Replaces the ``search`` verb: the query reaches the same rows through the
-    ordinary list path, one ``list_kind`` call per kind.
+    The query reaches every kind's rows through the ordinary list path, one
+    ``list_kind`` call per kind.
     """
     run(["title", "re", "row"], client)
 
@@ -2149,60 +2193,83 @@ def test_whole_collection_views_never_exceed_server_cap(client: FakeClient) -> N
             assert from_plain(kwargs["limit"], int) <= MAX_LIST_LIMIT, verb
 
 
-def test_search_dispatches_semantic_by_default(client: FakeClient) -> None:
-    run(["search-sessions", "advisory lock"], client)
-    calls = [c for c in client.calls if c[0] == "search_sessions"]
-    assert calls
-    query, kwargs = calls[0][1][0], calls[0][2]
-    assert query == "advisory lock"
-    assert kwargs["semantic"] is True
-    assert kwargs["limit"] == 20
+def test_search_without_a_kind_searches_inquiries(client: FakeClient) -> None:
+    run(["search", "lock"], client)
+    run(
+        ["search", "lock", "--kind", "belief", "--mode", "vector", "--limit", "5"],
+        client,
+    )
+
+    assert [c[1:] for c in client.calls if c[0].startswith("search_")] == [
+        (("lock",), {"mode": "fused", "kind": None, "limit": 20}),
+        (("lock",), {"mode": "vector", "kind": "Belief", "limit": 5}),
+    ]
+    assert {c[0] for c in client.calls if c[0].startswith("search_")} == {
+        "search_inquiries",
+    }
 
 
-def test_search_no_semantic_flag_opts_out(client: FakeClient) -> None:
-    run(["search-sessions", "lock", "--no-semantic"], client)
-    calls = [c for c in client.calls if c[0] == "search_sessions"]
-    assert calls
-    assert calls[0][2]["semantic"] is False
+def test_search_of_agentsession_searches_transcripts(client: FakeClient) -> None:
+    run(["search", "lock", "--kind", "agentsession"], client)
+    run(["search", "lock", "--kind", "agentsession", "--mode", "vector"], client)
+    run(["search", "lock", "--kind", "agentsession", "--limit", "5"], client)
+
+    assert [c[1:] for c in client.calls if c[0].startswith("search_")] == [
+        (("lock",), {"mode": "fused", "limit": 20}),
+        (("lock",), {"mode": "vector", "limit": 20}),
+        (("lock",), {"mode": "fused", "limit": 5}),
+    ]
+    assert {c[0] for c in client.calls if c[0].startswith("search_")} == {
+        "search_sessions",
+    }
 
 
-def test_search_limit_is_passed_through(client: FakeClient) -> None:
-    run(["search-sessions", "lock", "--limit", "5"], client)
-    calls = [c for c in client.calls if c[0] == "search_sessions"]
-    assert calls
-    assert calls[0][2]["limit"] == 5
-
-
-def test_search_text_output_shows_hit_and_position(
+def test_search_prints_inquiry_hits_or_the_body(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run(["search-sessions", "advisory lock"], client)
-    out = capsys.readouterr().out
-    assert "deploy log" in out  # The hit's session title.
-    assert "#0/3" in out  # part/idx position the console opens at.
-    assert "advisory lock acquired" in out  # The snippet.
+    run(["search", "lock"], client)
+    text = capsys.readouterr().out
+    run(["search", "lock", "--format", "json"], client)
+
+    assert text == "0.0164  both      Issue#7 edge:narrows:x  lock bug\n  held lock\n"
+    assert json_loads(capsys.readouterr().out, dict[str, object]) == client.inquiry_hits
 
 
-def test_search_text_output_flags_degradation(
+def test_search_prints_transcript_hits_or_the_body(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    run(["search", "advisory lock", "--kind", "agentsession"], client)
+    text = capsys.readouterr().out
     client.session_hits = {"hits": [], "semantic": False, "degraded": True}
-    run(["search-sessions", "lock"], client)
-    out = capsys.readouterr().out
-    assert "semantic search unavailable" in out
+    run(["search", "lock", "--kind", "agentsession"], client)
+    degraded = capsys.readouterr().out
+    run(["search", "lock", "--kind", "agentsession", "--format", "json"], client)
+
+    assert "deploy log" in text  # The hit's session title.
+    assert "#0/3" in text  # The part/idx position the console opens at.
+    assert "advisory lock acquired" in text  # The snippet.
+    assert "semantic search unavailable" in degraded
+    assert json_loads(capsys.readouterr().out, dict[str, object]) == client.session_hits
 
 
-def test_search_json_output_is_the_raw_body(
+@pytest.mark.parametrize("verb", ["search-sessions", "search-inquiries"])
+def test_the_old_search_verbs_are_unknown(client: FakeClient, verb: str) -> None:
+    with pytest.raises(ClientError, match="unknown verb"):
+        run([verb, "lock"], client)
+
+
+def test_search_help_names_the_kind_that_searches_transcripts(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run(["search-sessions", "lock", "--format", "json"], client)
+    run(["help", "search"], client)
     out = capsys.readouterr().out
-    body = json_loads(out, dict[str, object])
-    assert "hits" in body
-    assert body["semantic"] is True
+
+    assert 'Usage: trax search "QUERY" [OPTIONS]' in out
+    assert "--kind agentsession" in out
+    assert not client.calls
 
 
 # Folded in from former crasher_test.py.
@@ -2600,6 +2667,102 @@ def test_send_at_prefix_is_optional(client: FakeClient) -> None:
     run(["send", "scientist", "hi"], client)
     sends = [c for c in client.calls if c[0] == "send_message"]
     assert sends[0][1][0] == "scientist"
+
+
+_LEAD_UUID = uuid.UUID("0b1c2d3e-0000-4000-8000-000000000412")
+
+
+@pytest.mark.parametrize(
+    ("target", "agent"),
+    [
+        ("lead#412", SessionAgent(label="lead", session=412)),
+        (f"lead#{_LEAD_UUID}", SessionAgent(label="lead", session=_LEAD_UUID)),
+        ("lead#a#412", SessionAgent(label="lead#a", session=412)),
+    ],
+    ids=["a number", "a uuid", "a label that holds #"],
+)
+def test_send_messages_the_agent_of_a_session_a_bare_hash_names(
+    client: FakeClient,
+    target: str,
+    agent: SessionAgent,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["send", target, "status?"], client)
+
+    sends = [c for c in client.calls if c[0] in {"send_message", "message_agent"}]
+    unnamed = {"from_session": None, "from_label": "", "booked": None, "key": None}
+    assert sends == [("message_agent", (agent, "status?"), unnamed)]
+    assert capsys.readouterr().out == "sent to 1 session(s)\n"
+
+
+def test_send_takes_an_at_name_with_a_hash_as_a_routing_name(
+    client: FakeClient,
+) -> None:
+    run(["send", "@scientist#2", "status?"], client)
+    sends = [c for c in client.calls if c[0] == "send_message"]
+    assert sends == [("send_message", ("scientist#2", "status?"), {"room": None})]
+
+
+@pytest.mark.parametrize("target", ["#412", "lead#", "lead#abc", "lead#0"])
+def test_send_refuses_a_target_that_names_no_agent_of_a_session(
+    client: FakeClient,
+    target: str,
+) -> None:
+    with pytest.raises(ClientError, match=r"label|session|greater|names no agent"):
+        run(["send", target, "hi"], client)
+    assert [c for c in client.calls if c[0] == "message_agent"] == []
+
+
+@pytest.mark.parametrize(
+    ("target", "said"),
+    [
+        ("@", "send target must name an actor (e.g. @scientist)"),
+        (
+            "@scientist:",
+            (
+                "empty room after ':' in target '@scientist:'; drop the ':' or name a "
+                "room (e.g. @scientist:sear)"
+            ),
+        ),
+    ],
+    ids=["no actor", "an empty room"],
+)
+def test_send_refuses_a_routing_name_with_no_actor_or_an_empty_room(
+    client: FakeClient,
+    target: str,
+    said: str,
+) -> None:
+    with pytest.raises(ClientError) as refused:
+        run(["send", target, "hi"], client)
+    assert str(refused.value) == said
+    assert [c for c in client.calls if c[0] == "send_message"] == []
+
+
+def test_send_s_help_names_both_forms_of_target() -> None:
+    page = Send.help
+    assert isinstance(page, str)
+    assert "Usage: trax send LABEL#SESSION TEXT...\n" in page
+    assert "A bare name#N is\n  always a session's number" in page
+    assert "label#session, @actor or @actor:room" in Send.make_parser().format_help()
+
+
+@pytest.mark.parametrize(
+    ("target", "said"),
+    [("lead#412", "lead#412"), ("@ghost", "@ghost"), ("@ghost:sear", "@ghost:sear")],
+)
+def test_send_says_which_target_took_nothing(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    said: str,
+) -> None:
+    monkeypatch.setattr(client, "send_message", Mock(return_value=[]))
+    monkeypatch.setattr(client, "message_agent", Mock(return_value=[]))
+    run(["send", target, "hi"], client)
+    assert capsys.readouterr().out == (
+        f"undelivered: no agent is connected to a live session {said} names\n"
+    )
 
 
 def test_send_undelivered_when_no_match(
@@ -3695,7 +3858,12 @@ class _StoredClient(FakeClient):
             [
                 UserMessage(content="typed"),
                 ToolCall(call_id="t1", name="Grep"),
-                UncategorizedToolResult(call_id="t1", content="r" * 300),
+                ToolResult(
+                    call_id="t1",
+                    state="done",
+                    stdout=("r" * 300,),
+                    result=UncategorizedToolResult(),
+                ),
                 AssistantMessage(content="a\nb"),
                 AssistantMessage(content="after the cut"),
             ],
@@ -3784,6 +3952,29 @@ def test_records_of_one_part_print_as_the_stored_json(
 def test_records_refuses_a_flag_it_does_not_read(tail: list[str]) -> None:
     with pytest.raises(ClientError, match=r"records|--to"):
         run(["agentsession", "7", "records", *tail], _StoredClient())
+
+
+def test_records_help_names_its_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        run(["agentsession", "7", "records", "--help"], _StoredClient())
+
+    assert exited.value.code == 0
+    assert capsys.readouterr().out.startswith(
+        "usage: trax agentsession SEQ records [-h] [--part PART] [--to PART:IDX]\n"
+        "                                     [--format {text,json}]\n",
+    )
+
+
+def test_records_in_text_is_the_default(capsys: pytest.CaptureFixture[str]) -> None:
+    run(["agentsession", "7", "records", "--part", "0"], _StoredClient())
+    default = capsys.readouterr().out
+    run(
+        ["agentsession", "7", "records", "--part", "0", "--format", "text"],
+        _StoredClient(),
+    )
+
+    assert capsys.readouterr().out == default
+    assert default.startswith("p0#0 ")
 
 
 def test_noop_metadata_link_echoes_exists(
@@ -4423,6 +4614,31 @@ def test_a_relation_listing_takes_its_width(
     # The wide table is the natural one; the narrow one is cut to fit.
     assert "…" in "".join(narrow)
     assert "…" not in "".join(wide)
+
+
+def _local_sources(root: Path) -> Path:
+    """Write ``body`` to ``root/work/here.md`` and ``root/up.md``; return ``work``."""
+    folder = root / "work"
+    folder.mkdir()
+    (folder / "here.md").write_text("body")
+    (root / "up.md").write_text("body")
+    return folder
+
+
+def _sources(root: Path) -> list[str]:
+    """Return stdin, then a relative, an absolute and an upward ``@path``."""
+    return ["-", "@here.md", f"@{root / 'up.md'}", "@../up.md"]
+
+
+@contextmanager
+def _bound(folder: Path, *, local_input: bool) -> Generator[None]:
+    """Run the body as an invocation in ``folder``, with local input on or off."""
+    cwd_token, input_token = CWD.set(str(folder)), LOCAL_INPUT.set(local_input)
+    try:
+        yield
+    finally:
+        CWD.reset(cwd_token)
+        LOCAL_INPUT.reset(input_token)
 
 
 if __name__ == "__main__":

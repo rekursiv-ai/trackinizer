@@ -34,10 +34,9 @@ from trackinizer.wire.wire_session_ir import (
     ManifestBody,
     PartBody,
     RecordBody,
-    SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import (
-    InboundDrainItem,
+    SearchMode,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
@@ -55,6 +54,7 @@ if TYPE_CHECKING:
         MetricMaskClause,
         MetricRankRow,
     )
+    from trackinizer.wire.wire_sessions import MessageKind, SessionAgent
     from trackinizer.wire.wire_terminals import OpenTerminal
 
 
@@ -265,6 +265,22 @@ class FakeClient:
                     "source": "both",
                     "snippet": "advisory lock acquired",
                     "title": "deploy log",
+                },
+            ],
+            "semantic": True,
+            "degraded": False,
+        }
+        self.inquiry_hits: dict[str, object] = {
+            "hits": [
+                {
+                    "inquiry_id": str(self.target_id),
+                    "kind": "Issue",
+                    "seq": 7,
+                    "title": "lock bug",
+                    "field": "edge:narrows:x",
+                    "score": 0.0164,
+                    "source": "both",
+                    "snippet": "held lock",
                 },
             ],
             "semantic": True,
@@ -646,14 +662,32 @@ class FakeClient:
         self,
         query: str,
         *,
-        semantic: bool = True,
+        mode: SearchMode = "fused",
         limit: int = 20,
     ) -> dict[str, PlainTree]:
         """Search sessions."""
         self.calls.append(
-            ("search_sessions", (query,), {"semantic": semantic, "limit": limit}),
+            ("search_sessions", (query,), {"mode": mode, "limit": limit}),
         )
         return cast("dict[str, PlainTree]", cast(object, dict(self.session_hits)))
+
+    def search_inquiries(
+        self,
+        query: str,
+        *,
+        mode: SearchMode = "fused",
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, PlainTree]:
+        """Search inquiries."""
+        self.calls.append(
+            (
+                "search_inquiries",
+                (query,),
+                {"mode": mode, "kind": kind, "limit": limit},
+            ),
+        )
+        return cast("dict[str, PlainTree]", cast(object, dict(self.inquiry_hits)))
 
     def inquiry_cost(
         self,
@@ -843,8 +877,6 @@ class FakeClient:
         name: str = "",
         manifest: ManifestBody | None = None,
         records: Sequence[RecordBody] = (),
-        restart: bool = False,
-        slash_commands: Sequence[SlashCommandBody] = (),
     ) -> AppendRecordsResponse:
         """Record an IR append; resolve a part per file, as the server does.
 
@@ -860,8 +892,6 @@ class FakeClient:
                     "name": name,
                     "manifest": manifest,
                     "records": records,
-                    "restart": restart,
-                    "slash_commands": slash_commands,
                 },
             ),
         )
@@ -870,7 +900,6 @@ class FakeClient:
             part=part,
             written=len(list(records)),
             skipped=0,
-            slash_commands=len(list(slash_commands)),
         )
 
     def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
@@ -1005,45 +1034,6 @@ class FakeClient:
         self.calls.append(("session_end", (session_id, body), {}))
         return SessionEndResponse(id=session_id)
 
-    def enqueue_inbound(
-        self,
-        session_id: uuid.UUID,
-        text: str,
-    ) -> int:
-        """Enqueue inbound."""
-        self.calls.append(("enqueue_inbound", (session_id, text), {}))
-        return 1
-
-    def drain_inbound(
-        self,
-        session_id: uuid.UUID,
-        *,
-        wait_sec: float = 0.0,
-        run: str | None = None,
-        host: str | None = None,
-        cwd: str | None = None,
-        cli: str | None = None,
-        instance: str | None = None,
-        runs: bool = False,
-    ) -> list[InboundDrainItem]:
-        """Drain inbound."""
-        self.calls.append(
-            (
-                "drain_inbound",
-                (session_id,),
-                {
-                    "wait_sec": wait_sec,
-                    "run": run,
-                    "host": host,
-                    "cwd": cwd,
-                    "cli": cli,
-                    "instance": instance,
-                    "runs": runs,
-                },
-            ),
-        )
-        return []
-
     def terminal_hosts(
         self,
         *,
@@ -1071,6 +1061,31 @@ class FakeClient:
     ) -> list[uuid.UUID]:
         """Send message."""
         self.calls.append(("send_message", (actor, text), {"room": room}))
+        return [self.target_id]
+
+    def message_agent(
+        self,
+        to: SessionAgent,
+        text: str,
+        *,
+        from_session: uuid.UUID | None = None,
+        from_label: str = "",
+        booked: MessageKind | None = None,
+        key: uuid.UUID | None = None,
+    ) -> list[uuid.UUID]:
+        """Message agent."""
+        self.calls.append(
+            (
+                "message_agent",
+                (to, text),
+                {
+                    "from_session": from_session,
+                    "from_label": from_label,
+                    "booked": booked,
+                    "key": key,
+                },
+            ),
+        )
         return [self.target_id]
 
     def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
@@ -1135,6 +1150,31 @@ class FakeClient:
             ("set_preferences", (canvas_id,), {"change": dict(change)}),
         )
         return {"id": str(canvas_id), "revision": 0, "visuals": []}
+
+    def list_canvases(self) -> list[dict[str, PlainTree]]:
+        """List canvases."""
+        self.calls.append(("list_canvases", (), {}))
+        return []
+
+    def rename_canvas(self, canvas_id: uuid.UUID, *, name: str) -> dict[str, PlainTree]:
+        """Rename a canvas."""
+        self.calls.append(("rename_canvas", (canvas_id,), {"name": name}))
+        return {"name": name}
+
+    def list_workspaces(self) -> list[dict[str, PlainTree]]:
+        """List workspaces."""
+        self.calls.append(("list_workspaces", (), {}))
+        return []
+
+    def rename_workspace(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        title: str,
+    ) -> dict[str, PlainTree]:
+        """Rename a workspace."""
+        self.calls.append(("rename_workspace", (workspace_id,), {"title": title}))
+        return {"id": str(workspace_id), "title": title}
 
     def add_subscriber(
         self,

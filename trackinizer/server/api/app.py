@@ -61,27 +61,24 @@ from trackinizer.server.api._deps import (
     host_changes,
     host_closed,
     host_idle_sec,
+    session_relay,
     terminal_relay,
     tool_relay,
 )
 from trackinizer.server.api.addons_routes import app_deployment
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
-from trackinizer.server.asks import ask_release_loop
+from trackinizer.server.api.session_relay_routes import ProcessKeySweep
 from trackinizer.server.auth import seed_no_auth_user
 from trackinizer.server.authority_sweep import authority_sweep_loop
 from trackinizer.server.config import (
     Config,
     ConfigError,
-    build_embedder,
     build_engine,
 )
-from trackinizer.server.embedders import registry
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.secrets import parse_secrets
 from trackinizer.server.service_keys import ensure_service_keys
 from trackinizer.server.session_reaper import session_reaper_loop
 from trackinizer.server.store.core import Store
-from trackinizer.server.subscriber import push_changes_to_live_subscribers
 from trackinizer.server.terminals import sweep_loop
 from trackinizer.server.visuals.catalog import default_canvas
 from trackinizer.types.errors import (
@@ -100,7 +97,6 @@ if TYPE_CHECKING:
     from starlette.types import ASGIApp, Message, Receive, Scope
 
     from trackinizer.server.secrets import SecretSchemes
-    from trackinizer.types.embedder import QueryEmbedder
 
 
 _logger = logging.getLogger(__name__)
@@ -190,14 +186,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     async with build_engine(config) as engine:
         app.state.engine = engine
         app.state.access_policy = app_deployment(app).access_policy
-        app.state.store = Store(
-            engine,
-            embed=build_embedder(config.embedder),
-            access_policy=app.state.access_policy,
-        )
-        # Process-local routing buffer for inbound (world -> session) messages;
-        # separate from event capture. The sessions routes read it off state.
-        app.state.inbound = InboundQueue()
+        app.state.agent_policy = app_deployment(app).agent_policy
+        app.state.vector_search = app_deployment(app).vector_search
+        app.state.store = Store(engine, access_policy=app.state.access_policy)
         # Keep the resolved config on app.state so the session-cookie path in
         # current_user, and any sign-in routes, can read the signing secret.
         # main() mounts the SPA separately.
@@ -219,47 +210,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     keys=config.service_keys,
                     policy=app.state.access_policy,
                 )
-        # Resolve the session-search embedder ONCE at startup and cache it on
-        # app.state (web.py reads it there). A real model is degraded to None
-        # when its weights are absent -- never downloaded in-band -- and warmed
-        # in the background when present, so the first query pays inference
-        # only.
         tasks: list[asyncio.Task[None]] = []
         try:
-            warm_task = _resolve_session_embedder(app, config)
-            if warm_task is not None:
-                tasks.append(warm_task)
-            # Subscriber push: copies committed change rows into subscribers'
-            # live-session inbound queues (doorbell-driven; see subscriber_push).
-            tasks.append(
-                asyncio.create_task(
-                    push_changes_to_live_subscribers(
-                        app.state.store,
-                        app.state.inbound,
-                    ),
-                ),
-            )
             # Authority sweep: recomputes the derived load-bearing (PageRank)
             # columns off the request path, coalescing edge-change bursts.
             tasks.append(asyncio.create_task(authority_sweep_loop(app.state.store)))
             # Session reaper: closes sessions whose run went silent (killed, host
             # crashed), so a dead agent stops showing as live.
-            tasks.append(
-                asyncio.create_task(
-                    session_reaper_loop(app.state.store, inbound=app.state.inbound),
-                ),
-            )
-            # Ask release: a run that went offline can answer no card, so the asks it
-            # held are ended and none stays open for good.
-            tasks.append(
-                asyncio.create_task(
-                    ask_release_loop(app.state.store, inbound=app.state.inbound),
-                ),
-            )
+            tasks.append(asyncio.create_task(session_reaper_loop(app.state.store)))
             tasks.append(asyncio.create_task(sweep_loop(terminal_relay(app))))
             tasks.append(
                 asyncio.create_task(
                     sweep_loop(tool_relay(app), interval_sec=config.tool_sweep_sec),
+                ),
+            )
+            tasks.append(
+                asyncio.create_task(
+                    sweep_loop(
+                        ProcessKeySweep(
+                            relay=session_relay(app),
+                            store=app.state.store,
+                        ),
+                    ),
                 ),
             )
             tasks.extend(
@@ -267,7 +239,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     app_deployment(app),
                     context=ServerContext(
                         store=app.state.store,
-                        inbound=app.state.inbound,
                         host_idle_sec=partial(host_idle_sec, app),
                         hosts_changed=host_changes(app).bump,
                         host_closed=partial(host_closed, app),
@@ -296,48 +267,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # server log alongside uvicorn's own "Shutting down" lines.
         _logger.info("shutdown: closing engine")
     _logger.info("shutdown: engine closed")
-
-
-# ``registry.weights_present`` is torch-free: a stub / unset name returns True
-# without importing anything heavy, and a real model imports only its own module
-# (transitively torch) to probe the HF cache -- so a full-text-only server never
-# pays the import.
-# Returns the warm-up task when one was scheduled (weights present), else ``None`` (no
-# model, or degraded because weights are absent).
-def _resolve_session_embedder(
-    app: FastAPI,
-    config: Config,
-) -> asyncio.Task[None] | None:
-    """Cache the session embedder on ``app.state``; degrade or warm as needed."""
-    name = config.session_embedder
-    embedder = registry.build_cached_session_embedder(
-        name,
-        dim=config.session_embedder_dim,
-    )
-    if embedder is None:
-        if name:
-            _logger.error(
-                "session embedder %r configured but its weights are NOT in the HF "
-                "cache; semantic session search is DISABLED (full-text only). "
-                "Run `python -m trackinizer.server.prep_models` on this host "
-                "to download them, then restart. A request will NEVER download "
-                "them in-band.",
-                name,
-            )
-        app.state.session_embedder = None
-        return None
-    if registry.is_weightless(name):
-        # A stub has no weights to load, so it is ready immediately and needs no
-        # background warm.
-        app.state.session_embedder = embedder
-        return None
-    app.state.session_embedder = embedder
-    return asyncio.create_task(_warm_session_embedder(embedder))
-
-
-async def _warm_session_embedder(embedder: QueryEmbedder) -> None:
-    """Trigger the embedder's lazy weight load once, in the background."""
-    _ = await embedder.embed_query("warm")
 
 
 # Each addon service is supervised on its own: a crash is logged and the service

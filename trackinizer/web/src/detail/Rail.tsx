@@ -20,8 +20,18 @@ export function Rail({ detail }: { detail: Detail }) {
   const groups = relationGroups(detail, edges);
   return (
     <>
-      <Section detail={detail} title="Parents" add="Add parent" peers={railPeers(groups, "out")} />
-      <Section detail={detail} title="Children" add="Add child" peers={railPeers(groups, "in")} />
+      <Section
+        detail={detail}
+        title="Parents"
+        add="Add parent"
+        peers={railPeers(groups, "out")}
+      />
+      <Section
+        detail={detail}
+        title="Children"
+        add="Add child"
+        peers={railPeers(groups, "in")}
+      />
     </>
   );
 }
@@ -31,7 +41,17 @@ export function Rail({ detail }: { detail: Detail }) {
  * background render React can interrupt, as a relation group's are: the largest
  * hub has 731 relations.
  */
-function Section({ detail, title, add, peers }: { detail: Detail; title: string; add: string; peers: readonly RailPeer[] }) {
+function Section({
+  detail,
+  title,
+  add,
+  peers,
+}: {
+  detail: Detail;
+  title: string;
+  add: string;
+  peers: readonly RailPeer[];
+}) {
   const mode = useWriteMode();
   const adding = useRelationActions().find((action) => action.id === "relation.add");
   const [all, setAll] = useState(false);
@@ -78,7 +98,15 @@ function Section({ detail, title, add, peers }: { detail: Detail; title: string;
  * joining it, each a relation row with its own actions. A child's priority under
  * this inquiry is its edge's priority glyph (COLD-17).
  */
-function PeerRow({ detail, rail: { peer, edges }, mode }: { detail: Detail; rail: RailPeer; mode: WriteMode }) {
+function PeerRow({
+  detail,
+  rail: { peer, edges },
+  mode,
+}: {
+  detail: Detail;
+  rail: RailPeer;
+  mode: WriteMode;
+}) {
   const ref = `${peer.kind}#${peer.seq}`;
   const href = routeHref({ name: "ref", kind: peer.kind, seq: peer.seq });
   return (
@@ -93,9 +121,17 @@ function PeerRow({ detail, rail: { peer, edges }, mode }: { detail: Detail; rail
         {edges.map(({ group, peer: edged }) => {
           const inbound = group.direction === "in";
           return (
-            <RelationRow key={group.edgeKind} detail={detail} group={group} peer={edged} mode={mode}>
+            <RelationRow
+              key={group.edgeKind}
+              detail={detail}
+              group={group}
+              peer={edged}
+              mode={mode}
+            >
               <a className="rel-link" href={href}>
-                {inbound && edged.priority !== undefined ? <PriorityGlyph priority={edged.priority} /> : null}
+                {inbound && edged.priority !== undefined ? (
+                  <PriorityGlyph priority={edged.priority} />
+                ) : null}
                 <span className="edge-name">{group.name}</span>
                 <span className="sr-only"> {ref}</span>
                 <EdgeMarks peer={edged} inbound={inbound} />

@@ -82,7 +82,7 @@ column       type         notes
 session_id   UUID         NOT NULL; FK -> inquiries(id) ON DELETE CASCADE
 part         INTEGER      NOT NULL DEFAULT 0; which SOURCE FILE (§3.5)
 idx          INTEGER      NOT NULL; CHECK >= 0; DERIVED position (§3.6)
-kind         TEXT         NOT NULL; the record class's name
+kind         TEXT         NOT NULL; the record class's name (a tool call: below)
 context_id   INTEGER      nullable; idx of the applying TurnContext, same part
 timestamp    TIMESTAMPTZ  nullable; when the act happened (CLI clock)
 created      TIMESTAMPTZ  NOT NULL DEFAULT clock_timestamp(); DB write time
@@ -101,6 +101,35 @@ session file differs from the one the CLI wrote. That breaks byte-exact
 round-trip, which resume depends on. Nothing queries inside the column (it is
 written whole and read whole), so jsonb's indexing buys nothing to pay for it.
 `session_manifests.metadata` is `JSON` for the same reason.
+
+`kind` is the record's class name, except for the record of a tool call. That
+record is always a `ToolResult`:
+
+- `state`: `pending`, `done`, `failed` or `cancelled`.
+- `stdout`, `stderr`: the items the tool wrote, text and typed items.
+- `result`: the tool's result, such as `BashResult(command, exit_code)` or
+  `ReadResult(path, status, exit_code)`. A tool with no result class of its own
+  returns `UncategorizedToolResult(exit_code)`.
+
+Each tool once had a record class of its own, and SQL policy is keyed on those
+class names: which bodies offload, what search indexes, the filter fields of
+§8. SQL cannot read a payload once its body is offloaded. So a tool-call row is
+stored under its tool's legacy class name
+(`types/session_records.py::record_kind`):
+
+```
+result has a class of its own        that class's name: BashResult, ReadResult, ...
+no result, or an UncategorizedToolResult:
+  state = done                       UncategorizedToolResult
+  state = failed                     ToolErrorResult
+  state = pending | cancelled        ToolResult
+```
+
+A legacy row, stored before `ToolResult` replaced those classes, still holds
+the old class's payload. A read returns each row under its stored kind and
+converts only a legacy payload, to the `ToolResult` payload ingest writes today
+(`served_payload`). The records route (§5.5) and the console feed both convert
+on the way out, so a client reads one payload shape. Neither rewrites a row.
 
 `context_id` uses `<=`, not `<`: a claude `TurnContext` is appended at its own
 index and names ITSELF, where a codex stream has none until its first
@@ -133,8 +162,8 @@ serializes part assignment: two appends racing on an unseen file both compute
 `records` is a live prefix bound -- every reader takes `idx < records` -- so a
 file that SHRANK leaves its tail rows inert rather than deleted.
 
-`metadata` is not decoration: claude's ascii-escaping convention (a majority
-flag plus its exception bitmap) rides in `SessionMetadata.extra`, and the
+`metadata` is not decoration: which claude lines escaped their Unicode (a
+bitmap of those lines) rides in `SessionMetadata.extra`, and the
 codex launch line is rebuilt from it. Rewriting without it yields a file that
 differs from the captured one while every record matches.
 
@@ -172,8 +201,10 @@ PRIMARY KEY (session_id, seq)
 ```
 
 A slash command (`/exit`, `/model gpt-5`) is handled inside the CLI's TUI and
-never written to its session log, so it is captured by observing the human's
-keystrokes on the PTY (the runner's `slash.py`). It is **not a record**: a record
+never written to its session log, so the old agent runner captured it by
+observing the human's keystrokes on the PTY. Nothing writes this table any more:
+the runner is gone and the append takes no commands, and its rows stay readable
+and exported. A command is **not a record**: a record
 has an `idx`, its position in a file's normalized stream, and a command that
 was never written to any file has none. Consuming an `idx` for one would
 renumber every record after it, and a replay -- which re-derives positions
@@ -233,8 +264,8 @@ idx_session_records_kind              (session_id, kind)
 ### 3.9 Properties
 
 ```
-append-only           records are never edited/superseded/cited; a restart
-                      OVERWRITES a part (§5.4), which is replacement, not edit
+append-only           records are never edited/superseded/cited; a stored
+                      record is final (§5.4)
 dedup key             (session_id, part, idx); re-append is ON CONFLICT
 adjacent universe     deliberately outside change_log; records are not Change
                       rows by design (see design.md "Everything is provenance"):
@@ -267,7 +298,11 @@ ciphertext  str?       Thinking.encrypted verbatim, base64 ASCII
 
 `RecordBody.of(row)` / `.row(session_id, part)` convert to and from
 `SessionRecordRow`. `kind` is open TEXT, not a closed Literal: the IR has 21
-concrete members and gains more.
+concrete members and gains more. A tool-call record has the kind its row is
+stored under (§3.1), on write and on read. The read route keeps that kind and
+returns the payload `served_payload` converts: a `ToolResult` payload, even for
+a legacy row. An offloaded row's stub (`{"$body": "offloaded"}`) is returned
+unchanged, so its `kind` is the only field that names the tool.
 
 Two fields the client never decides. `part` is absent entirely -- it is
 resolved server-side from the file's basename, so a restarted or resumed
@@ -290,21 +325,9 @@ PartBody       part int (-1 is the legacy backfill, §3.5), name, format,
 `ManifestBody` is re-sent with EVERY append batch, not written once, because
 it CHANGES as the file grows: `records` counts what has arrived, and the
 metadata a normalizer reports is only correct for the prefix it consumed --
-claude's ascii-escaping convention is a majority not decided until the stream
-ends.
+claude's escaped lines keep arriving.
 
-### 4.3 `SlashCommandBody`
-
-```
-field      type       notes
-timestamp  datetime   required; the only clock a typed command has
-command    str        min_length 1; the verb without its slash
-args       str        default ''
-```
-
-No `seq`: the server assigns one (§3.4).
-
-### 4.4 `SessionStart` / `SessionEnd` (`wire/wire_sessions.py`)
+### 4.3 `SessionStart` / `SessionEnd` (`wire/wire_sessions.py`)
 
 ```
 SessionStart     cli (min_length 1), cli_session_id?, title?, started?,
@@ -317,12 +340,11 @@ stored verbatim, so `"   "` can never match and is a client bug. A `rooms`
 element additionally rejects a comma -- the runner exports rooms comma-joined
 into `TRAX_ROOMS`, so a room `'a,b'` is indistinguishable from two rooms.
 
-### 4.5 Response types
+### 4.4 Response types
 
 ```
 SessionStartResponse   {id: uuid, seq: int, cli_session_id: str?, actor: str?}
-AppendRecordsResponse  {part: int?, written: int, skipped: int,
-                        slash_commands: int}
+AppendRecordsResponse  {part: int?, written: int, skipped: int}
 ReadPartsResponse      {parts: [PartBody]}
 ReadRecordsResponse    {part: int, records: [RecordBody]}
 SessionEndResponse     {id: uuid, ended: datetime?}
@@ -364,26 +386,19 @@ POST /api/sessions/<id>/end         writer  SessionEnd            SessionEndResp
 
 ```
 {
-  "name": "<basename>",         // '' only on a slash-command-only append
+  "name": "<basename>",         // '' only on an append of nothing
   "manifest": <ManifestBody>,   // null exactly when name is ''
-  "restart": false,
-  "records": [<RecordBody>, ...],        // max 1000
-  "slash_commands": [<SlashCommandBody>] // max 1000
+  "records": [<RecordBody>, ...] // max 1000
 }
 ```
 
 ONE part per request. A model validator enforces the pairing: records need a
 part, and a part needs a named file with its manifest. A body naming no file
-carries only slash commands -- a command typed before the CLI has written a
-transcript belongs to the SESSION, not to any file.
+stores nothing.
 
 `MAX_RECORD_BATCH` is 1000. A tailer batches whatever a wake delivered and a
 claude compaction re-feeds a whole file at once, so the natural batch is
 unbounded unless the wire caps it.
-
-Slash commands ride the record append rather than a route of their own, so a
-run interrupted mid-flush cannot leave a command stored without the turns
-around it, or the reverse.
 
 ### 5.4 Semantics
 
@@ -392,11 +407,9 @@ start            mints an AgentSession row (server id); dedups on
                  idempotency_key; resumes an existing row when
                  cli_session_id matches one (§9.2)
 records (POST)   upserts the manifest FIRST (it assigns the part and bounds
-                 every reader), then appends. Normal batch: ON CONFLICT DO
-                 NOTHING -- the runner re-feeds routinely and the stored row
-                 is already correct. restart=true: ON CONFLICT DO UPDATE,
-                 because a compaction is a REPLACEMENT and disk is truth.
-                 Records and ciphertext share one transaction, so a record
+                 every reader), then appends: ON CONFLICT DO NOTHING -- a
+                 stored record is final, and a writer that sends one again
+                 sends the same record. Records and ciphertext share one transaction, so a record
                  can never be readable while its ciphertext is missing.
 end              backfills ended/cli_session_id; sets status=complete
 unknown session  any <id> not an AgentSession row -> 404
@@ -422,6 +435,9 @@ part grew.
 
 `plaintext_only` is what a VIEWER wants -- only a replay needs the encrypted
 half, and it is the largest thing on the row.
+
+A tool-call record is returned under its row's stored kind, with a `ToolResult`
+payload even when the row is a legacy one (§3.1, §4.1).
 
 ### 5.6 Divergence from api.md
 
@@ -450,8 +466,7 @@ ciphertext       the ONE exception: split to its own table so retention can
 
 ```
 submit_agentsession(SubmitAgentSession, *, api_key_id=, actor=) -> UUID
-append_session_records(session_id, rows, *, restart=False,
-                       slash_commands=()) -> (written, skipped, slash)
+append_session_records(session_id, rows) -> (written, skipped)
 read_session_records(session_id, *, part, after_idx=-1, limit=500,
                      plaintext_only=False) -> list[SessionRecordRow]
 upsert_session_manifest(session_id, *, name, metadata, ir_id, format,
@@ -484,10 +499,11 @@ trax agentsession bash_result has "pg_advisory_lock"
 
 Each lowers to a correlated `EXISTS` over `session_records` with the kind
 BAKED INTO the template, never passed as an operand. Which kinds qualify is
-DERIVED, not listed: a class is a filter field iff its `search_text`
+DERIVED, not listed: a kind is a filter field iff its `search_text`
 projection can be non-empty (`wire/session_record_fields.py`), so a filter on
 `TurnContext` -- which indexes nothing -- does not exist rather than silently
-never matching.
+never matching. A field names a STORED kind (§3.1), so `bash_result` matches
+shell calls in legacy rows and current ones alike.
 
 ## 9. Capture and resume (the agent runner)
 
@@ -499,7 +515,7 @@ RUNNER <cli> [--no-sync] [--out PATH] -- <cli args>
 
 ```
 adapters         claude, gemini, codex (file-tailers); iostream (PTY scrape)
-normalizer       one per FILE, from trackinizer.lib.agent.sessions; a session spans
+normalizer       one per FILE, from trackinizer.sagent.scripts.convert_session; a session spans
                  several files, and sharing one would number the second
                  file's records after the first's
 in-memory type   the IR record itself -> wire RecordBody at the sink
@@ -603,8 +619,8 @@ the guard can run.
 
 ```
 session_start(SessionStart) -> SessionStartResponse
-append_records(session_id, *, name='', manifest=None, records=(),
-               restart=False, slash_commands=()) -> AppendRecordsResponse
+append_records(session_id, *, name='', manifest=None, records=())
+    -> AppendRecordsResponse
 read_session_parts(session_id) -> list[PartBody]
 read_session_records(session_id, *, part=0, after_idx=-1, limit=1000,
                      plaintext_only=False) -> list[RecordBody]

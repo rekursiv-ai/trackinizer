@@ -40,7 +40,6 @@ from trackinizer.server.config import (
     auth_disabled_from_env,
     session_max_age_from_env,
 )
-from trackinizer.server.embedders.registry import EMBEDDERS
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
@@ -51,10 +50,10 @@ logger = logging.getLogger(__name__)
 def main() -> int:
     """Parse args, configure the app, and run uvicorn in THIS process.
 
-    One process serves everything. The inbound message queue
-    (:mod:`trackinizer.server.inbound`) and the subscriber sweep
-    (:mod:`trackinizer.server.subscriber`) are in-process state, so
-    uvicorn's fork-based fan-out would lose and duplicate messages; the app
+    One process serves everything. The relays that pair a session's agent process,
+    a host's tools and a terminal with their viewers
+    (:mod:`trackinizer.server.session_relay`) are in-process state, so
+    uvicorn's fork-based fan-out would split one session's sockets; the app
     object is handed to uvicorn directly rather than through a re-import
     factory.
 
@@ -154,7 +153,7 @@ def _packaged_app(package: Path) -> Path | None:
 def _parse_args(
     parser: argparse.ArgumentParser,
     argv: list[str] | None = None,
-) -> tuple[_Flags, list[str]]:
+) -> tuple[_Flags, list[str]]:  # pragma: no mutate block
     """Register this layer's flags; return ``(parsed, leftover)``."""
     parser.add_argument(
         "--engine",
@@ -211,44 +210,6 @@ def _parse_args(
             "Seconds an idle keep-alive connection is held open before the "
             "server closes it. Must exceed the upstream proxy's idle timeout "
             "(caddy default 120s) so the proxy controls eviction (default: 240)."
-        ),
-    )
-    parser.add_argument(
-        "--embedder",
-        default="stub",
-        choices=["stub"],
-        help="Embedding backend (default: stub).",
-    )
-    parser.add_argument(
-        "--session-embedder",
-        dest="session_embedder",
-        default="",
-        choices=_session_embedder_choices(),
-        help=(
-            "Session-search embedder that serves QUERIES, named by its full "
-            "stored identity (e.g. qwen3-embedding-0.6b@1024); empty = "
-            "full-text-only search (default)."
-        ),
-    )
-    parser.add_argument(
-        "--session-embedder-dim",
-        dest="session_embedder_dim",
-        type=int,
-        default=None,
-        help=(
-            "Optional output-dim override for --session-embedder when it is a bare "
-            "slug (a Matryoshka model accepts any dim in its range). Omit to use "
-            "the model's registered default; must agree with any @dim suffix."
-        ),
-    )
-    parser.add_argument(
-        "--session-embedders",
-        dest="session_embedders",
-        default="",
-        help=(
-            "Comma-separated embedders the sweep/backfill MAINTAINS (writes rows "
-            "for), a superset of --session-embedder for A/B backfill. Empty = "
-            "just the serving embedder."
         ),
     )
     parser.add_argument(
@@ -314,9 +275,9 @@ def _parse_args(
         default=os.environ.get("TRACKINIZER_ASSISTANT", ""),
         metavar="ACTOR=EMAIL",
         help=(
-            "The shared Chat partner: a live session whose granted actor is "
-            "ACTOR (or ACTOR#N) and whose API key belongs to the account EMAIL "
-            "is the Chat partner of every canvas. EMAIL is a service account's, "
+            "The assistant: the account EMAIL, whose keys act for an asker, and "
+            "whose live session with the granted actor ACTOR (or ACTOR#N) is its "
+            "service session. EMAIL is a service account's, "
             "NAME@service.invalid "
             "(default: $TRACKINIZER_ASSISTANT; empty means none)."
         ),
@@ -371,16 +332,6 @@ def _session_ttl_default() -> int:
         # Same translation _configure_app performs: library code raises
         # ConfigError, and the CLI is the one place that turns it into an exit.
         raise SystemExit(str(err)) from err
-
-
-# Derived from the registry so a new model in ``EMBEDDERS`` becomes selectable without
-# editing this list. ``stub`` / ``stub-1024`` are the test embedders; then both the
-# full stored identities (``slug@dim``) and the bare slugs (a bare slug resolves to
-# the registered default dim, or pairs with ``--session-embedder-dim``).
-def _session_embedder_choices() -> list[str]:
-    """Return the ``--session-embedder`` choices: empty, stubs, models, bare slugs."""
-    slugs = {key.partition("@")[0] for key in EMBEDDERS}
-    return ["", "stub", "stub-1024", *sorted(EMBEDDERS), *sorted(slugs)]
 
 
 def _positive_session_ttl(value: str) -> int:

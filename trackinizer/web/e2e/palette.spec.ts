@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 import { expect, failedResource, test, route } from "./fixtures";
+import { must } from "../src/must";
 
 // The server is ephemeral and shared with the other spec files, so this file seeds
 // its own rows, with words no other spec uses: a hub with three children, a Belief
@@ -12,7 +13,8 @@ const ITEMS = [
   { kind: "Issue", title: "C4rx 4242 regex target" },
   { kind: "Issue", title: "C4rx abc no digits" },
 ];
-const BUDGET = "query exceeded the time budget; narrow the filters or add more specific terms";
+const BUDGET =
+  "query exceeded the time budget; narrow the filters or add more specific terms";
 let ids: string[] = [];
 
 test.beforeAll(async ({ request }) => {
@@ -20,8 +22,14 @@ test.beforeAll(async ({ request }) => {
     ...item,
     idempotency_key: `c4e2e000-0000-4000-8000-${String(n).padStart(12, "0")}`,
   }));
-  const edges = [1, 2, 3].map((n) => ({ from_index: n, to_index: 0, edge_kind: "narrows" }));
-  const response = await request.post("/api/inquiries/batch", { data: { items, edges } });
+  const edges = [1, 2, 3].map((n) => ({
+    from_index: n,
+    to_index: 0,
+    edge_kind: "narrows",
+  }));
+  const response = await request.post("/api/inquiries/batch", {
+    data: { items, edges },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   ids = (await response.json()).ids;
 });
@@ -29,8 +37,10 @@ test.beforeAll(async ({ request }) => {
 const heading = (page: Page) => page.getByRole("heading", { level: 1 });
 const palette = (page: Page) => page.getByRole("dialog", { name: "Command menu" });
 const input = (page: Page) => palette(page).getByRole("combobox", { name: "Command" });
-const section = (page: Page, name: RegExp | string) => palette(page).getByRole("group", { name });
-const activeOption = (page: Page) => palette(page).locator('[role="option"][aria-selected="true"]');
+const section = (page: Page, name: RegExp | string) =>
+  palette(page).getByRole("group", { name });
+const activeOption = (page: Page) =>
+  palette(page).locator('[role="option"][aria-selected="true"]');
 
 test("focus lands in the input, keys typed at once are kept, one Escape closes, and focus returns", async ({
   page,
@@ -83,13 +93,15 @@ test("loaded rows show while typing, the server's after a pause with their time;
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowUp");
   await expect(activeOption(page)).toContainText("C4 local child");
-  const title = (await activeOption(page).locator(".lbl").textContent())!;
+  const title = must(await activeOption(page).locator(".lbl").textContent());
   await page.keyboard.press("Enter");
   await expect(palette(page)).toBeHidden();
   await expect(heading(page)).toHaveText(title);
 });
 
-test("a regex search keeps its backslashes, and a server result opens", async ({ page }) => {
+test("a regex search keeps its backslashes, and a server result opens", async ({
+  page,
+}) => {
   await page.goto("/trax/activity");
   await expect(heading(page)).toHaveText("Activity");
   await page.keyboard.press("ControlOrMeta+k");
@@ -100,21 +112,32 @@ test("a regex search keeps its backslashes, and a server result opens", async ({
   await expect(heading(page)).toHaveText("C4rx 4242 regex target");
 });
 
-test("a search link opens the search page on its query and searches at once", async ({ page }) => {
+test("a search link opens the search page on its query and searches at once", async ({
+  page,
+}) => {
   await page.goto("/trax/search/zebra");
-  await expect(page.getByRole("searchbox", { name: "Search query" })).toHaveValue("zebra");
-  await expect(page.getByRole("table").getByRole("row").filter({ hasText: "C4 server-only belief zebra" })).toHaveCount(1);
+  await expect(page.getByRole("searchbox", { name: "Search query" })).toHaveValue(
+    "zebra",
+  );
+  await expect(
+    page
+      .getByRole("table")
+      .getByRole("row")
+      .filter({ hasText: "C4 server-only belief zebra" }),
+  ).toHaveCount(1);
 });
 
 test("typing on cancels the searches still in flight", async ({ page }) => {
   const held: Route[] = [];
   await page.route("**/api/web/search?*", (route) => {
-    if (new URL(route.request().url()).searchParams.get("q") === "held") held.push(route);
+    if (new URL(route.request().url()).searchParams.get("q") === "held")
+      held.push(route);
     else void route.continue();
   });
   const aborted: string[] = [];
   page.on("requestfailed", (request) => {
-    if (request.url().includes("/api/web/search")) aborted.push(request.failure()?.errorText ?? "");
+    if (request.url().includes("/api/web/search"))
+      aborted.push(request.failure()?.errorText ?? "");
   });
   await page.goto("/trax/activity");
   await expect(heading(page)).toHaveText("Activity");
@@ -134,7 +157,8 @@ test("a search over the server's time budget shows the server's message, and Ret
   let budget = true;
   await page.route("**/api/web/search?*", (route) => {
     const kind = new URL(route.request().url()).searchParams.get("kind");
-    if (budget && kind === "Issue") void route.fulfill({ status: 400, json: { detail: BUDGET } });
+    if (budget && kind === "Issue")
+      void route.fulfill({ status: 400, json: { detail: BUDGET } });
     else void route.continue();
   });
   await page.goto("/trax/activity");

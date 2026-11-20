@@ -9,14 +9,17 @@ const GRAPH = {
 };
 const ALL = { skipEdges: new Set<string>(), keep: () => true };
 /** Each reached node's number, with its hops from the start. */
-const hops = (reached: ReadonlyMap<string, number>) => Object.fromEntries([...reached].map(([id, far]) => [Number(id.slice(-3)), far]));
+const hops = (reached: ReadonlyMap<string, number>) =>
+  Object.fromEntries([...reached].map(([id, far]) => [Number(id.slice(-3)), far]));
 
 test("reach walks edges both ways and counts each node's hops from the start, the start at 0", () => {
   expect(hops(reach(GRAPH, uuid(2), ALL))).toEqual({ 2: 0, 1: 1, 3: 1, 5: 1, 4: 2 });
 });
 
 test("reach walks only the edge kinds not skipped", () => {
-  expect(hops(reach(GRAPH, uuid(3), { ...ALL, skipEdges: new Set(["produced_by"]) }))).toEqual({ 3: 0, 2: 1, 4: 1, 1: 2 });
+  expect(
+    hops(reach(GRAPH, uuid(3), { ...ALL, skipEdges: new Set(["produced_by"]) })),
+  ).toEqual({ 3: 0, 2: 1, 4: 1, 1: 2 });
 });
 
 test("reach neither counts nor walks through a node it does not keep", () => {

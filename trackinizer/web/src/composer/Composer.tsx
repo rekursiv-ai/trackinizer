@@ -1,14 +1,30 @@
 import { useMutation } from "@tanstack/react-query";
-import { type ChangeEvent, type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { newUuid } from "../api/idempotency";
 import { type InputHistory, useInputHistory } from "./history";
 import "./composer.css";
 
 /** A draft as sent: its text, the idempotency key it went under, and where it went. */
-type Sent = { readonly text: string; readonly key: string; readonly target: string; readonly clear: () => void };
+type Sent = {
+  readonly text: string;
+  readonly key: string;
+  readonly target: string;
+  readonly clear: () => void;
+};
 
 /** An externally kept draft; clear belongs to this text's edit revision, not the latest render. */
-export type ComposerDraft = { readonly text: string; readonly edit: (text: string) => void; readonly clear: () => void };
+export type ComposerDraft = {
+  readonly text: string;
+  readonly edit: (text: string) => void;
+  readonly clear: () => void;
+};
 
 /** The textarea as the composer sets it up, for a `field` that draws it. */
 export type FieldProps = {
@@ -81,9 +97,17 @@ export function Composer({
   const inFlight = useRef(false);
   const draft = kept?.text ?? localDraft;
   const [sent, setSent] = useState<Sent | null>(null);
-  const [receipt, setReceipt] = useState<{ readonly text: string; readonly target: string } | null>(null);
-  const [refused, setRefused] = useState<{ readonly problem: string; readonly draft: string; readonly target: string } | null>(null);
-  if (refused && (refused.draft !== draft || refused.target !== target)) setRefused(null);
+  const [receipt, setReceipt] = useState<{
+    readonly text: string;
+    readonly target: string;
+  } | null>(null);
+  const [refused, setRefused] = useState<{
+    readonly problem: string;
+    readonly draft: string;
+    readonly target: string;
+  } | null>(null);
+  if (refused && (refused.draft !== draft || refused.target !== target))
+    setRefused(null);
   const currentTarget = useRef(target);
   currentTarget.current = target;
   const sending = useMutation({
@@ -93,9 +117,12 @@ export function Composer({
       // one was on its way stays.
       message.clear();
       setSent((current) => (current?.key === message.key ? null : current));
-      if (message.target === currentTarget.current) setReceipt({ text, target: message.target });
+      if (message.target === currentTarget.current)
+        setReceipt({ text, target: message.target });
     },
-    onSettled: () => { inFlight.current = false; },
+    onSettled: () => {
+      inFlight.current = false;
+    },
   });
   /** Change the draft as typing does: a changed draft goes under a new key, and the receipt goes. */
   const edit = (text: string) => {
@@ -123,10 +150,15 @@ export function Composer({
         setRefused(problem ? { problem, draft, target } : null);
         if (problem) return;
         const revision = localRevision.current;
-        const clear = kept?.clear ?? (() => {
-          if (localRevision.current === revision) setDraft("");
-        });
-        const message = sent?.text === draft && sent.target === target ? sent : { text: draft, key: newUuid(), target, clear };
+        const clear =
+          kept?.clear ??
+          (() => {
+            if (localRevision.current === revision) setDraft("");
+          });
+        const message =
+          sent?.text === draft && sent.target === target
+            ? sent
+            : { text: draft, key: newUuid(), target, clear };
         recall.reset();
         setSent(message);
         setReceipt(null);
@@ -145,7 +177,13 @@ export function Composer({
           onChange: (event) => edit(event.currentTarget.value),
           onKeyDown: (event) => {
             if (event.defaultPrevented || recall.take(event)) return;
-            if (event.key !== "Enter" || event.shiftKey || event.altKey || event.nativeEvent.isComposing) return;
+            if (
+              event.key !== "Enter" ||
+              event.shiftKey ||
+              event.altKey ||
+              event.nativeEvent.isComposing
+            )
+              return;
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
           },
@@ -153,7 +191,11 @@ export function Composer({
         edit,
       )}
       <div className="composer-actions">
-        <button className="btn composer-send" type="submit" disabled={!enabled || !draft.trim() || sending.isPending || pending}>
+        <button
+          className="btn composer-send"
+          type="submit"
+          disabled={!enabled || !draft.trim() || sending.isPending || pending}
+        >
           Send message
         </button>
         {failed && retryable(sending.error) ? (

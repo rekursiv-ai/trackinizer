@@ -6,7 +6,9 @@
 import { openStream, type StreamListener } from "../api/stream";
 
 /** A stream listener that hears, on an open it heard of late, when the stream opened. */
-export type OpenListener = Omit<StreamListener, "open"> & { readonly open: (at?: number) => void };
+export type OpenListener = Omit<StreamListener, "open"> & {
+  readonly open: (at?: number) => void;
+};
 
 /**
  * Open the live stream now, for the app's live layer to take when it mounts
@@ -20,9 +22,15 @@ export function openEarlyStream(): void {
   let listener: OpenListener | null = null;
   let openedAt: number | null = null;
   const close = openStream({
-    open: () => (listener ? listener.open() : (openedAt = Date.now())),
+    open: () => {
+      if (listener) listener.open();
+      else openedAt = Date.now();
+    },
     change: (id) => listener?.change(id),
-    drop: () => (listener ? listener.drop() : (openedAt = null)),
+    drop: () => {
+      if (listener) listener.drop();
+      else openedAt = null;
+    },
     refuse: () => listener?.refuse(),
   });
   early = {
@@ -32,6 +40,15 @@ export function openEarlyStream(): void {
       if (openedAt !== null) attached.open(openedAt);
     },
   };
+}
+
+/**
+ * Close the stream main.tsx opened, for a page whose live layer will not take
+ * it: one that shows `AccountChanged` in place of the app.
+ */
+export function closeEarlyStream(): void {
+  early?.close();
+  early = null;
 }
 
 /**
@@ -48,4 +65,7 @@ export function attachStream(listener: OpenListener): () => void {
 }
 
 /** The stream main.tsx opened, until the live layer takes it. */
-let early: { readonly close: () => void; readonly attach: (listener: OpenListener) => void } | null = null;
+let early: {
+  readonly close: () => void;
+  readonly attach: (listener: OpenListener) => void;
+} | null = null;

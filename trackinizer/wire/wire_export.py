@@ -106,10 +106,8 @@ EXPORT_TABLES: Final = (
 
 Left out on purpose, and why:
 
-* ``inquiry_embeddings``, ``session_embeddings`` -- derived from each row's
-  text by the embedder, and specific to the model that produced them.
-* ``session_index_state`` -- embedding-progress bookkeeping, derived from
-  ``session_embeddings``.
+* The embedding add-on's ``embedding.vectors`` -- derived from each row's text by
+  its model, and specific to the settings that produced them.
 * ``session_ciphertext``, ``session_bodies`` -- encrypted / cold replay-only
   blobs, which retention exists to drop.
 * ``users``, ``api_keys``, ``allowlist`` -- credentials and access control, not
@@ -124,6 +122,8 @@ Left out on purpose, and why:
   AgentSession, so its lines export with the sessions.
 * ``science_chat_shares``, ``science_chat_tombstones`` -- who may post into which
   science chat, and which chats were deleted: access control, like ``allowlist``.
+  A row's ``filed_from_chat`` is a column of ``inquiries`` and is exported, so a
+  row filed from a chat still names it wherever the file is read back.
 * ``visual_reports``, ``visual_report_revisions`` -- shared report presentation
   and author identity; the linked Artifact and graph citations export above.
 * ``session_liveness`` -- when each live session was last heard from, which

@@ -101,7 +101,15 @@ export const EMPTY_STATE: BrowserState = {
 /** The state `kept` preferences and this browser's `tiles` make. */
 export function stateOf(kept: Preferences, tiles: UiState["tiles"]): BrowserState {
   const { stars, views, aliases, people, read, collapsed, lens } = kept;
-  return { ...EMPTY_STATE, stars, views, aliases, people, read, ui: { collapsed, lens, tiles } };
+  return {
+    ...EMPTY_STATE,
+    stars,
+    views,
+    aliases,
+    people,
+    read,
+    ui: { collapsed, lens, tiles },
+  };
 }
 
 /**
@@ -115,7 +123,9 @@ export function parseState(value: unknown): BrowserState {
     throw new Error(`This is not an export of ${APP.name}'s browser state.`);
   }
   if (value.version > VERSION || value.version < OLDEST_READABLE) {
-    throw new Error(`This export is version ${value.version}; this build reads version ${VERSION}. Reload for the latest build.`);
+    throw new Error(
+      `This export is version ${value.version}; this build reads version ${VERSION}. Reload for the latest build.`,
+    );
   }
   const read = record(value.read ?? {}, "read");
   const ui = record(value.ui ?? {}, "ui");
@@ -124,13 +134,24 @@ export function parseState(value: unknown): BrowserState {
     stars: strings(value.stars ?? [], "stars"),
     views: list(value.views ?? [], "views").map(savedView),
     aliases: strings(value.aliases ?? [], "aliases"),
-    people: Object.fromEntries(Object.entries(record(value.people ?? {}, "people")).map(([actor, person]) => [actor, personOf(person, actor)])),
-    read: { boundary: boundaryOf(read.boundary ?? null), marks: strings(read.marks ?? [], "read.marks") },
+    people: Object.fromEntries(
+      Object.entries(record(value.people ?? {}, "people")).map(([actor, person]) => [
+        actor,
+        personOf(person, actor),
+      ]),
+    ),
+    read: {
+      boundary: boundaryOf(read.boundary ?? null),
+      marks: strings(read.marks ?? [], "read.marks"),
+    },
     ui: {
       collapsed: strings(ui.collapsed ?? [], "ui.collapsed"),
       lens: nullableString(ui.lens ?? null, "ui.lens"),
       tiles: Object.fromEntries(
-        Object.entries(record(ui.tiles ?? {}, "ui.tiles")).map(([type, tile]) => [type, tileOf(tile, type)]),
+        Object.entries(record(ui.tiles ?? {}, "ui.tiles")).map(([type, tile]) => [
+          type,
+          tileOf(tile, type),
+        ]),
       ),
     },
   };
@@ -166,7 +187,11 @@ export function mergeImport(
   };
 }
 
-function mergeViews(current: readonly SavedView[], imported: readonly SavedView[], newId: () => string): SavedView[] {
+function mergeViews(
+  current: readonly SavedView[],
+  imported: readonly SavedView[],
+  newId: () => string,
+): SavedView[] {
   const merged = [...current];
   for (const view of imported) {
     const holder = merged.find((kept) => kept.id === view.id);
@@ -176,7 +201,8 @@ function mergeViews(current: readonly SavedView[], imported: readonly SavedView[
     }
     if (sameJson(holder, view)) continue;
     const copy = { ...view, name: `${view.name} (imported)` };
-    if (merged.some((kept) => sameJson({ ...kept, id: "" }, { ...copy, id: "" }))) continue;
+    if (merged.some((kept) => sameJson({ ...kept, id: "" }, { ...copy, id: "" })))
+      continue;
     merged.push({ ...copy, id: newId() });
   }
   return merged;
@@ -196,9 +222,13 @@ function later(a: string | null, b: string | null): string | null {
 /** Whether two JSON values are equal, whatever order their keys are in. */
 export function sameJson(a: unknown, b: unknown): boolean {
   if (a === b) return true;
-  if (!isRecord(a) || !isRecord(b) || Array.isArray(a) !== Array.isArray(b)) return false;
+  if (!isRecord(a) || !isRecord(b) || Array.isArray(a) !== Array.isArray(b))
+    return false;
   const keys = Object.keys(a);
-  return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && sameJson(a[key], b[key]));
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.hasOwn(b, key) && sameJson(a[key], b[key]))
+  );
 }
 
 function savedView(value: unknown, index: number): SavedView {
@@ -210,7 +240,9 @@ function savedView(value: unknown, index: number): SavedView {
     name: text(view.name, `${where}.name`),
     request: {
       kinds: strings(request.kinds, `${where}.request.kinds`),
-      filters: list(request.filters, `${where}.request.filters`).map((filter, at) => filterOf(filter, `${where}.request.filters[${at}]`)),
+      filters: list(request.filters, `${where}.request.filters`).map((filter, at) =>
+        filterOf(filter, `${where}.request.filters[${at}]`),
+      ),
     },
   };
 }
@@ -218,8 +250,15 @@ function savedView(value: unknown, index: number): SavedView {
 function filterOf(value: unknown, where: string): Filter {
   const filter = record(value, where);
   const op = text(filter.op, `${where}.op`);
-  if (!isFilterOp(op)) throw new Error(`${where}.op must be one of ${Object.keys(FILTER_OPS).join(", ")}.`);
-  return { field: text(filter.field, `${where}.field`), op, value: text(filter.value, `${where}.value`) };
+  if (!isFilterOp(op))
+    throw new Error(
+      `${where}.op must be one of ${Object.keys(FILTER_OPS).join(", ")}.`,
+    );
+  return {
+    field: text(filter.field, `${where}.field`),
+    op,
+    value: text(filter.value, `${where}.value`),
+  };
 }
 
 /** A read boundary: a time `Date.parse` reads, since the merge keeps the later of two. */
@@ -235,21 +274,30 @@ function personOf(value: unknown, actor: string): Person {
   const where = `people.${actor}`;
   const person = record(value, where);
   const type = text(person.type, `${where}.type`);
-  if (type !== "person" && type !== "agent") throw new Error(`${where}.type must be person or agent.`);
+  if (type !== "person" && type !== "agent")
+    throw new Error(`${where}.type must be person or agent.`);
   return { name: text(person.name, `${where}.name`), type };
 }
 
 function tileOf(value: unknown, type: string): TileMemory {
   const where = `ui.tiles.${type}`;
   const tile = record(value, where);
-  if (typeof tile.collapsed !== "boolean") throw new Error(`${where}.collapsed must be true or false.`);
+  if (typeof tile.collapsed !== "boolean")
+    throw new Error(`${where}.collapsed must be true or false.`);
   if ((tile.place ?? null) === null) return { collapsed: tile.collapsed, place: null };
   const place = record(tile.place, `${where}.place`);
-  return { collapsed: tile.collapsed, place: { left: pixels(place.left, `${where}.place.left`), top: pixels(place.top, `${where}.place.top`) } };
+  return {
+    collapsed: tile.collapsed,
+    place: {
+      left: pixels(place.left, `${where}.place.left`),
+      top: pixels(place.top, `${where}.place.top`),
+    },
+  };
 }
 
 function pixels(value: unknown, where: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${where} must be a number.`);
+  if (typeof value !== "number" || !Number.isFinite(value))
+    throw new Error(`${where} must be a number.`);
   return value;
 }
 
@@ -276,7 +324,8 @@ function isRecord(value: unknown): value is { readonly [key: string]: unknown } 
 }
 
 function record(value: unknown, where: string): { readonly [key: string]: unknown } {
-  if (!isRecord(value) || Array.isArray(value)) throw new Error(`${where} must be an object.`);
+  if (!isRecord(value) || Array.isArray(value))
+    throw new Error(`${where} must be an object.`);
   return value;
 }
 

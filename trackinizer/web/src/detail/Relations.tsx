@@ -8,6 +8,7 @@ import { LabelChip, PriorityGlyph, StateGlyphs } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon } from "../ui/kinds";
 import { isRailEdge, type RelationGroup, relationGroups } from "./relationGroups";
+import { must } from "../must";
 
 /**
  * The inquiry's other relations: those the rail does not show (citations),
@@ -21,7 +22,9 @@ export function Relations({ detail }: { detail: Detail }) {
   const { edges } = useMeta();
   const mode = useWriteMode();
   const add = useRelationActions().find((action) => action.id === "relation.add");
-  const groups = relationGroups(detail, edges).filter((group) => !isRailEdge(group.edgeKind));
+  const groups = relationGroups(detail, edges).filter(
+    (group) => !isRailEdge(group.edgeKind),
+  );
   const id = useId();
   if (!groups.length) return null;
   const count = groups.reduce((total, group) => total + group.peers.length, 0);
@@ -56,7 +59,13 @@ export function Relations({ detail }: { detail: Detail }) {
       </div>
       <div className="rel-list">
         {groups.map((group, index) => (
-          <Group key={`${group.edgeKind}:${group.direction}`} detail={detail} group={group} first={firsts[index]!} mode={mode} />
+          <Group
+            key={`${group.edgeKind}:${group.direction}`}
+            detail={detail}
+            group={group}
+            first={must(firsts[index])}
+            mode={mode}
+          />
         ))}
       </div>
     </section>
@@ -71,7 +80,17 @@ export function Relations({ detail }: { detail: Detail }) {
  * 50 ms. The first screen's rows fill the tallest window, so the rows that follow
  * land below the fold and shift nothing in view.
  */
-function Group({ detail, group, first, mode }: { detail: Detail; group: RelationGroup; first: number; mode: WriteMode }) {
+function Group({
+  detail,
+  group,
+  first,
+  mode,
+}: {
+  detail: Detail;
+  group: RelationGroup;
+  first: number;
+  mode: WriteMode;
+}) {
   const [all, setAll] = useState(false);
   const id = useId();
   const limit = all ? group.peers.length : SHOWN;
@@ -107,13 +126,30 @@ function Group({ detail, group, first, mode }: { detail: Detail; group: Relation
  * that parent, a tag rather than the parent's glyph. The server sends no
  * neighbour's own priority, so a child without one shows its kind.
  */
-function Row({ detail, group, peer, mode }: { detail: Detail; group: RelationGroup; peer: Peer; mode: WriteMode }) {
+function Row({
+  detail,
+  group,
+  peer,
+  mode,
+}: {
+  detail: Detail;
+  group: RelationGroup;
+  peer: Peer;
+  mode: WriteMode;
+}) {
   const inbound = group.direction === "in";
   const priority = peer.priority ?? null;
   return (
     <RelationRow detail={detail} group={group} peer={peer} mode={mode}>
-      <a className="rel-link" href={routeHref({ name: "ref", kind: peer.kind, seq: peer.seq })}>
-        {inbound && priority !== null ? <PriorityGlyph priority={priority} /> : <KindIcon kind={peer.kind} />}
+      <a
+        className="rel-link"
+        href={routeHref({ name: "ref", kind: peer.kind, seq: peer.seq })}
+      >
+        {inbound && priority !== null ? (
+          <PriorityGlyph priority={priority} />
+        ) : (
+          <KindIcon kind={peer.kind} />
+        )}
         <span className="rel-ref">{`${peer.kind}#${peer.seq}`}</span>
         <StateGlyphs status={peer.status} judgement={peer.judgement} />
         <span className="rel-title">{peer.title}</span>
@@ -142,7 +178,9 @@ export function EdgeMarks({ peer, inbound }: { peer: Peer; inbound: boolean }) {
           {peer.note}
         </span>
       ) : null}
-      {peer.labels?.map((label) => <LabelChip key={label} label={label} />)}
+      {peer.labels?.map((label) => (
+        <LabelChip key={label} label={label} />
+      ))}
     </span>
   );
 }

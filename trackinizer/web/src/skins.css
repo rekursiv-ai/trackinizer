@@ -95,7 +95,10 @@
   --panel-radius: 4px;
   color-scheme: dark;
 }
-:root[data-skin="scifi"] .view-h .ttl { letter-spacing: .1em; text-transform: uppercase; }
+:root[data-skin="scifi"] .view-h .ttl {
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
 
 /* DOS: an 80s text-mode program. Blue panels, bright CGA colours, hard black shadows, no curves. */
 :root[data-skin="dos"] {
@@ -136,7 +139,9 @@
   --code-keyword: #ff5555;
   --diff-add: #00aa0040;
   --diff-del: #aa000060;
-  --sans: "Px437 IBM VGA 8x16", "Perfect DOS VGA 437", "Lucida Console", ui-monospace, "Courier New", monospace;
+  --sans:
+    "Px437 IBM VGA 8x16", "Perfect DOS VGA 437", "Lucida Console", ui-monospace,
+    "Courier New", monospace;
   --mono: var(--sans);
   --radius: 0;
   --panel-radius: 0;
@@ -188,7 +193,9 @@
   --panel-radius: 0;
   color-scheme: light;
 }
-:root[data-skin="console"] .view-h .ttl { text-transform: uppercase; }
+:root[data-skin="console"] .view-h .ttl {
+  text-transform: uppercase;
+}
 
 /* Matrix: black glass and code green. */
 :root[data-skin="matrix"] {
@@ -234,7 +241,9 @@
   --panel-radius: 4px;
   color-scheme: dark;
 }
-:root[data-skin="matrix"] .view-h .ttl { text-shadow: 0 0 8px #00ff4180; }
+:root[data-skin="matrix"] .view-h .ttl {
+  text-shadow: 0 0 8px #00ff4180;
+}
 
 /* Hacker: a tmux and vim session in Tomorrow Night. */
 :root[data-skin="hacker"] {
@@ -370,5 +379,10 @@
   --panel-radius: 0;
   color-scheme: light;
 }
-:root[data-skin="brutal"] .main { border: 3px solid #000000; }
-:root[data-skin="brutal"] .view-h .ttl { font-family: "Arial Black", Impact, sans-serif; text-transform: uppercase; }
+:root[data-skin="brutal"] .main {
+  border: 3px solid #000000;
+}
+:root[data-skin="brutal"] .view-h .ttl {
+  font-family: "Arial Black", Impact, sans-serif;
+  text-transform: uppercase;
+}

@@ -5,10 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, ClassVar, cast, override
 
-import argparse
-
 from trackinizer.client.errors import ClientError
-from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
 from trackinizer.trax.profile import (
     LOCALHOST_FALLBACK_URL,
     Profile,
@@ -24,6 +22,8 @@ from trackinizer.trax.render import echo
 
 
 if TYPE_CHECKING:
+    import argparse
+
     from trackinizer.client.client import Client
     from trackinizer.trax import login
 else:
@@ -75,7 +75,7 @@ Fields: url actor token
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax profile",
             description="Show or mutate saved server profiles.",
         )

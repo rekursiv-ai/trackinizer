@@ -18,7 +18,7 @@ from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.trax import connection
 from trackinizer.trax.cli import parse_and_run
 from trackinizer.trax.client_cache import Target
-from trackinizer.trax.context import cwd, env
+from trackinizer.trax.context import LOCAL_INPUT, cwd, env
 from trackinizer.trax.daemon import server
 from trackinizer.trax.daemon.client import STALE_EXIT_CODE
 from trackinizer.trax.daemon.protocol import (
@@ -113,12 +113,23 @@ class TestHandle:
         False there; without injection every table renders unbounded.
         """
         seen: list[int] = []
+        for isatty in (True, False):
+            handle(
+                make_request(["x"], isatty=isatty, columns=100),
+                run=lambda _argv: seen.append(table_width()),
+            )
+
+        assert seen == [100, 0]
+
+    def test_reads_the_callers_local_input(self) -> None:
+        """A caller at its own shell sends ``-`` and ``@path`` values, as in-process."""
+        seen: list[tuple[bool, str]] = []
         handle(
-            make_request(["x"], isatty=True, columns=100),
-            run=lambda _argv: seen.append(table_width()),
+            make_request(["x"], cwd="/work"),
+            run=lambda _argv: seen.append((LOCAL_INPUT.get(), str(cwd()))),
         )
 
-        assert seen == [100]
+        assert seen == [(True, "/work")]
 
     def test_applies_the_client_environment(
         self,
@@ -170,12 +181,11 @@ class TestHandle:
 
 
 class TestStreamCapture:
-    """Not every writer can be taught the ContextVars.
+    """A response carries what the command wrote through ``echo``, and only that.
 
-    ``argparse`` prints usage and errors straight to ``sys.stderr`` before
-    raising ``SystemExit``. Under the daemon those are ``/dev/null``, so
-    without a redirect an invalid flag returns exit 2 and NOTHING else -- the
-    user sees a bare failure with no reason.
+    ``argparse`` would print usage and errors straight to ``sys.stderr``, the
+    daemon's ``/dev/null``, so every trax parser writes through ``echo``; without
+    that an invalid flag returns exit 2 and NOTHING else.
     """
 
     def test_captures_an_argparse_error(self) -> None:
@@ -190,11 +200,18 @@ class TestStreamCapture:
             "daemon's /dev/null; the user would see an exit code and no message"
         )
 
-    def test_captures_a_direct_stdout_write(self) -> None:
-        """Any stray ``print`` must land in the response, not the daemon's fd 1."""
-        response = handle(make_request(["x"]), run=lambda _argv: print("direct"))  # noqa: T201 -- exercising the capture of a direct write.
+    def test_leaves_a_direct_stdout_write_out(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A stray ``print`` reaches the daemon's own stdout, never a caller.
 
-        assert response.stdout == "direct\n"
+        No process-wide redirect: under one, a concurrent request could capture
+        another's stray write.
+        """
+        response = handle(make_request(["x"]), run=lambda _argv: print("direct"))  # noqa: T201 -- exercising a direct write past ``echo``.
+
+        assert (response.stdout, capsys.readouterr().out) == ("", "direct\n")
 
     def test_reports_a_string_exit_payload(self) -> None:
         """``sys.exit("message")`` prints the message and exits 1.
@@ -268,7 +285,7 @@ class TestTokenIsNeverTheDaemons:
         monkeypatch.setenv("TRACKINIZER_TOKEN", "daemon-shell-token")
         seen: list[str | None] = []
         handle(
-            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            make_request(["x"], env={"TRACKINIZER_URL": "https://caller:1"}),
             run=lambda _argv: seen.append(env("TRACKINIZER_TOKEN")),
         )
 
@@ -280,7 +297,7 @@ class TestTokenIsNeverTheDaemons:
         handle(
             make_request(
                 ["x"],
-                env={"TRACKINIZER_URL": "http://caller:1", "TRACKINIZER_TOKEN": "k"},
+                env={"TRACKINIZER_URL": "https://caller:1", "TRACKINIZER_TOKEN": "k"},
             ),
             run=lambda _argv: seen.append(env("TRACKINIZER_TOKEN")),
         )
@@ -294,11 +311,11 @@ class TestTokenIsNeverTheDaemons:
         monkeypatch.setenv("TRACKINIZER_TOKEN", "daemon-shell-token")
         targets: list[Target] = []
         handle(
-            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            make_request(["x"], env={"TRACKINIZER_URL": "https://caller:1"}),
             run=lambda _argv: targets.append(connection.resolve_target(Namespace())),
         )
 
-        assert targets == [Target(url="http://caller:1", author="", api_key="")]
+        assert targets == [Target(url="https://caller:1", author="", api_key="")]
 
     def test_the_daemons_key_file_is_never_read(
         self,
@@ -311,11 +328,11 @@ class TestTokenIsNeverTheDaemons:
         monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(key_file))
         targets: list[Target] = []
         handle(
-            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            make_request(["x"], env={"TRACKINIZER_URL": "https://caller:1"}),
             run=lambda _argv: targets.append(connection.resolve_target(Namespace())),
         )
 
-        assert targets == [Target(url="http://caller:1", author="", api_key="")]
+        assert targets == [Target(url="https://caller:1", author="", api_key="")]
 
 
 class TestConcurrentRequests:

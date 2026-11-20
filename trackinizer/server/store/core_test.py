@@ -1,11 +1,11 @@
-"""Tests for ``Store`` construction, embedders, bootstrap, and pure helpers."""
+"""Tests for ``Store`` construction, bootstrap, and pure helpers."""
 
 from __future__ import annotations
 
-from typing import Protocol, cast, override
+from dataclasses import replace
+from typing import Protocol, cast
 from unittest.mock import AsyncMock
 
-import asyncio
 import uuid
 
 import asyncpg
@@ -16,32 +16,13 @@ from trackinizer.conftest import (
     executed_sql,
     make_conn,
     make_store,
-    new_uuid,
 )
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server import auth
-from trackinizer.server.auth import AuthIdentity, generate_token
-from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.auth import AuthIdentity, ProcessKey, generate_token
 from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import Store
-from trackinizer.wire.bodies import SubmitIssue
-
-
-class _NamedStub(StubEmbedder):
-    """StubEmbedder variant with a configurable ``name`` so multiple embedders.
-
-    Coexist per ``inquiry_embeddings`` PK ``(inquiry_id, model)``.
-    """
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-
-    # Override the base's computed ``name`` property with the fixed value.
-    @property
-    @override
-    def name(self) -> str:
-        return self._name
 
 
 def _identity(*, user_id: uuid.UUID | None = None) -> AuthIdentity:
@@ -59,7 +40,7 @@ class TestVerifiedBearerCache:
     def test_cache_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A flood of distinct keys must not pin unbounded memory.
         engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "VERIFIED_BEARER_MAX_ENTRIES", 4)
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
@@ -78,7 +59,7 @@ class TestVerifiedBearerCache:
         # The cache key is a digest: a heap dump of a live server must not
         # yield replayable tokens.
         engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         secret, _ = generate_token()
         store.remember_bearer_identity(secret, _identity())
         assert all(secret.encode("utf-8") not in key for key in store._verified_bearers)
@@ -118,6 +99,29 @@ class TestVerifiedBearerCache:
         store.forget_bearer_identities(user)
         assert [store.cached_bearer_identity(s) for s in "abc"] == [None, None, other]
 
+    def test_forgetting_a_host_drops_its_process_keys_entries_alone(self) -> None:
+        """A device login's key bound to it, and other hosts' processes, stay."""
+        store, _engine = make_store()
+        host, elsewhere = uuid.uuid4(), uuid.uuid4()
+        mine, theirs = (
+            replace(
+                _identity(),
+                process=ProcessKey(
+                    process_id=uuid.uuid4(),
+                    session_id=uuid.uuid4(),
+                    host_id=bound,
+                ),
+            )
+            for bound in (host, elsewhere)
+        )
+        login = _identity()
+        for secret, identity in (("a", mine), ("b", theirs), ("c", login)):
+            store.remember_bearer_identity(secret, identity)
+
+        store.forget_bearer_identities_for_host(host)
+
+        assert [store.cached_bearer_identity(s) for s in "abc"] == [None, theirs, login]
+
     def test_a_key_bumps_once_per_interval(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -154,101 +158,6 @@ class TestVerifiedBearerCache:
         assert set(store._last_used_bumped_at) == {middle, newest}
 
 
-class TestStoreEmbedders:
-    def test_single_embedder_normalized_to_tuple(self) -> None:
-        store, _ = make_store()
-        assert len(store.embedders) == 1
-        assert store.embedders[0].name == "stub"
-
-    def test_sequence_of_embedders_preserved(self) -> None:
-        engine = FakeEngine()
-        store = Store(
-            cast(DatabaseEngine, engine),
-            embed=[_NamedStub("a"), _NamedStub("b")],
-        )
-        assert [e.name for e in store.embedders] == ["a", "b"]
-
-    def test_empty_embedders_rejected(self) -> None:
-        engine = FakeEngine()
-        with pytest.raises(ValueError, match="at least one embedder"):
-            Store(cast(DatabaseEngine, engine), embed=[])
-
-    def test_duplicate_embedder_names_rejected(self) -> None:
-        engine = FakeEngine()
-        with pytest.raises(ValueError, match=r"duplicates.*'dup'"):
-            Store(
-                cast(DatabaseEngine, engine),
-                embed=[_NamedStub("dup"), _NamedStub("dup")],
-            )
-
-    def test_dim_mismatch_rejected(self) -> None:
-        class _WrongDim:
-            name = "wrong"
-            dim = 17
-
-            async def embed(self, text: str) -> list[float]:
-                del text
-                return [0.0] * self.dim
-
-        engine = FakeEngine()
-        with pytest.raises(ValueError, match=r"dim=384"):
-            Store(cast(DatabaseEngine, engine), embed=[_NamedStub("ok"), _WrongDim()])
-
-    @pytest.mark.asyncio
-    async def test_submit_writes_one_embedding_row_per_embedder(self) -> None:
-        conn = make_conn()
-        engine = FakeEngine(conn)
-        store = Store(
-            cast(DatabaseEngine, engine),
-            embed=[_NamedStub("a"), _NamedStub("b")],
-        )
-        await store.submit_issue(SubmitIssue(title="t", account="tester@example.com"))
-        emb_upserts = [
-            c
-            for c in conn.execute.call_args_list
-            if "INSERT INTO inquiry_embeddings" in _sql(c.args)
-        ]
-        assert len(emb_upserts) == 2
-        assert {c.args[2] for c in emb_upserts} == {"a", "b"}
-        # Upsert (re-runs on title edit) implies ON CONFLICT clause.
-        assert all("ON CONFLICT" in _sql(c.args) for c in emb_upserts)
-
-    @pytest.mark.asyncio
-    async def test_embed_all_runs_concurrently(self) -> None:
-        """``_embed_all`` issues every ``embed`` call before awaiting any.
-
-        The previous sequential ``[await e.embed(...) for ...]`` form
-        scaled latency as sum-of-embed-times. The current implementation
-        uses ``asyncio.gather`` -- proven here by parking each embedder on a
-        shared :class:`asyncio.Barrier`, which only releases once all three
-        have arrived. A serial implementation deadlocks and the timeout fires.
-        """
-        # Three embedders plus this test: the barrier trips only when all
-        # three are parked inside ``embed`` simultaneously.
-        barrier = asyncio.Barrier(4)
-
-        class _GatedEmbedder:
-            def __init__(self, name: str) -> None:
-                self.name = name
-                self.dim = StubEmbedder.dim
-
-            async def embed(self, text: str) -> list[float]:
-                del text
-                _ = await barrier.wait()
-                return [0.0] * self.dim
-
-        engine = FakeEngine()
-        store = Store(
-            cast(DatabaseEngine, engine),
-            embed=[_GatedEmbedder("a"), _GatedEmbedder("b"), _GatedEmbedder("c")],
-        )
-        task = asyncio.create_task(store._embed_all("x"))
-        async with asyncio.timeout(5):
-            _ = await barrier.wait()
-            result = await task
-        assert [name for name, _ in result] == ["a", "b", "c"]
-
-
 class TestStoreBootstrap:
     @pytest.mark.asyncio
     async def test_bootstrap_applies_fresh_baseline_and_marks_migrations(self) -> None:
@@ -274,8 +183,7 @@ class TestStoreBootstrap:
     async def test_bootstrap_skips_baseline_for_existing_db(self) -> None:
         conn = make_conn()
 
-        # Only the applied_migrations probe reports a prior schema; the
-        # embedding-backfill scan keeps the default empty result.
+        # Only the applied_migrations probe reports a prior schema.
         async def fetch(sql: str, *_args: object) -> list[dict[str, str]]:
             return [{"name": "schema.sql"}] if "applied_migrations" in sql else []
 
@@ -453,41 +361,6 @@ class TestStoreBootstrap:
         await store.bootstrap()
         assert not any(
             "setval" in _sql(c.args) for c in engine.conn.execute.call_args_list
-        )
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_backfills_missing_embeddings(self) -> None:
-        """Inquiries lacking an embedding row are re-embedded at boot."""
-        conn = make_conn()
-        missing_id = new_uuid()
-
-        # Only the NOT EXISTS backfill query returns rows; other fetches stay [].
-        async def fetch(sql: str, *_args: object) -> list[dict[str, object]]:
-            return (
-                [{"id": missing_id, "title": "needs embedding"}]
-                if "NOT EXISTS" in sql and "inquiry_embeddings" in sql
-                else []
-            )
-
-        conn.fetch.side_effect = fetch
-        store, engine = make_store(conn)
-        await store.bootstrap()
-        inserts = [
-            c.args[1:]
-            for c in engine.conn.execute.call_args_list
-            if "INSERT INTO inquiry_embeddings" in _sql(c.args)
-        ]
-        assert len(inserts) == 1
-        assert inserts[0][0] == missing_id  # inquiry_id positional arg.
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_skips_backfill_when_fully_embedded(self) -> None:
-        """No embedding inserts fire when every inquiry already has a row."""
-        store, engine = make_store()  # `fetch` defaults to [] (nothing missing).
-        await store.bootstrap()
-        assert not any(
-            "INSERT INTO inquiry_embeddings" in _sql(c.args)
-            for c in engine.conn.execute.call_args_list
         )
 
     @pytest.mark.asyncio
