@@ -168,8 +168,8 @@ wheels = [
 
 [[package]]
 name = "codedoctor"
-version = "0.1.12"
-source = { git = "https://github.com/rekursiv-ai/codedoctor?branch=main#8affe2089af29d0d0aed95ae84047f6f2ab85b15" }
+version = "0.1.13.dev1+g024b6b88d"
+source = { git = "https://github.com/rekursiv-ai/codedoctor?branch=main#024b6b88d265ec1498f505e56c7b7119a283e543" }
 dependencies = [
     { name = "pyyaml" },
     { name = "rignore" },
@@ -207,15 +207,15 @@ wheels = [
 
 [[package]]
 name = "configgle"
-version = "1.4.7"
+version = "1.4.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "treekle" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/36/df/748476dffe526e1a4f0d4029a1ca07823a840706ea63441b60b827131566/configgle-1.4.7.tar.gz", hash = "sha256:0e914cc0cdbeee20e34c1141472875d92708b952ec2aba5abf3557a9fb1aa9bf", size = 386732, upload-time = "2026-11-19T18:59:41.323Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ec/88/94c8ecabfc758145ce3c404468b98d554c2ef47680e2dbb7045bcedc4614/configgle-1.4.8.tar.gz", hash = "sha256:b41f40b4ffc741ddf21db5c393d71d5c21edf070a5a51ea0779adc959bfa12a7", size = 388920, upload-time = "2026-11-21T08:52:11.21Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/f4/7483bc7718b5847ebec74ce372c04ce6b1964ab0722c8a5ccf661400a4fd/configgle-1.4.7-py3-none-any.whl", hash = "sha256:6bb9259f2df12a106e045295ae4bc06a1b5277fb52f536e8321f84bf9f7ca59c", size = 91677, upload-time = "2026-11-19T18:59:39.771Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/6a/4081477fbb648b2a066ad18ae24d7d1baa245bbe4eab9a09c98968ca188b/configgle-1.4.8-py3-none-any.whl", hash = "sha256:0aa4448c327c9f7ddff6bf5aeef2a3d23668325dc80c64c77d476d73fe977cdf", size = 91676, upload-time = "2026-11-21T08:52:09.966Z" },
 ]
 
 [[package]]
@@ -1750,8 +1750,8 @@ wheels = [
 
 [[package]]
 name = "rekursiv-ai-typings"
-version = "0.1.25"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#edeec087c52fdeae5528d37da42af1c508fa324c" }
+version = "0.1.26.dev1+g01085ffec"
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#01085ffec8a33ede39f3ad7a963e61f959f64a41" }
 
 [[package]]
 name = "rich"
