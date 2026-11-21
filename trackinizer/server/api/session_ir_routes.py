@@ -26,7 +26,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain, immutable
 
 from trackinizer.server.api._deps import (
@@ -335,6 +337,89 @@ async def read_session_records_route(
         plaintext_only=plaintext_only,
     )
     return ReadRecordsResponse(part=part, records=[_served(row) for row in rows])
+
+
+@router.get("/api/sessions/{session_id}/download")
+async def download_session_route(
+    session_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    asker: str | None = None,
+    chat: UUID | None = None,
+) -> Response:
+    """Answer every part's records as one JSON-lines file, for a person to keep.
+
+    The first line names the session and its parts; each later line is one record
+    as ``GET .../records`` serves it, with its ``part``. Bodies are read as a replay
+    reads them, so an offloaded body comes back whole; the ciphertext is left out,
+    since no person can use it.
+
+    Args:
+      session_id: AgentSession ID to download.
+      request: FastAPI request (carries auth and store).
+      identity: Authenticated reader.
+      asker: The account the configured assistant reads for.
+      chat: The conversation the configured assistant reads into.
+
+    Returns:
+      response: The file, as an attachment named for the session's number.
+
+    """
+    store = get_store(request)
+    session = await require_session(store, session_id)
+    await require_session_access(
+        request,
+        identity,
+        session=session,
+        mode="read",
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
+    )
+    # Read here, beside the check, as the usage route reads: a helper returning a
+    # session's records is one more reader a later route could call unchecked.
+    manifests = await store.read_session_manifests(session_id)
+    header = {
+        "session_id": str(session_id),
+        "seq": session.seq,
+        "parts": [
+            {"part": m.part, "name": m.name, "format": m.format, "records": m.records}
+            for m in manifests
+        ],
+    }
+    lines = [json.dumps(header)]
+    for manifest in manifests:
+        after_idx = -1
+        while page := await store.read_session_records(
+            session_id,
+            part=manifest.part,
+            after_idx=after_idx,
+            limit=MAX_LIST_LIMIT,
+            plaintext_only=False,
+        ):
+            lines.extend(
+                json.dumps(
+                    {
+                        "part": manifest.part,
+                        **_served(row).model_dump(
+                            mode="json",
+                            exclude={"ciphertext"},
+                        ),
+                    },
+                )
+                for row in page
+            )
+            if len(page) < MAX_LIST_LIMIT:
+                break
+            after_idx = page[-1].idx
+    return Response(
+        content="".join(f"{line}\n" for line in lines),
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="AgentSession-{session.seq}.jsonl"'
+            ),
+        },
+    )
 
 
 @router.get("/api/sessions/{session_id}/turns")

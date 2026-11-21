@@ -18179,6 +18179,78 @@
     "summary": "Set Session Audience Route"
    }
   },
+  "/api/sessions/{session_id}/download": {
+   "get": {
+    "description": "Answer every part's records as one JSON-lines file, for a person to keep.\n\nThe first line names the session and its parts; each later line is one record\nas ``GET .../records`` serves it, with its ``part``. Bodies are read as a replay\nreads them, so an offloaded body comes back whole; the ciphertext is left out,\nsince no person can use it.\n\nArgs:\n  session_id: AgentSession ID to download.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  response: The file, as an attachment named for the session's number.",
+    "operationId": "download_session_route_api_sessions__session_id__download_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "asker",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Asker"
+      }
+     },
+     {
+      "in": "query",
+      "name": "chat",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "uuid",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Chat"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Download Session Route"
+   }
+  },
   "/api/sessions/{session_id}/end": {
    "post": {
     "description": "Close a session atomically, and stop the agent process serving it.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal. Then its agent process, if one serves it, is stopped as\n``DELETE .../process`` stops one: its socket closes and its key is revoked a\nminute later, so an ended session keeps no agent, tools or key. A process that\nattaches to it again reopens it. A second end on an already-closed session is a 409. A\nsession the caller neither opened nor holds the account of is 403\n``session_audience``. A science chat is closed by a key that may run on it: its\nopening key, the assistant's or its starter's (403 otherwise); its starter may also\nclose it from a browser, which has no key.\n\nArgs:\n  session_id: UUID of the session to close.\n  body: When the session ended, an optional cli_session_id backfill and the\n    audit actor.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",

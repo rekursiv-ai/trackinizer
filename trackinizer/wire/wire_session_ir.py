@@ -34,6 +34,7 @@ __all__ = [
     "ReadRecordsResponse",
     "RecentTurnBody",
     "RecordBody",
+    "session_download_path",
     "session_parts_path",
     "session_records_path",
 ]
@@ -274,3 +275,8 @@ def session_records_path(session_id: UUID) -> str:
 def session_parts_path(session_id: UUID) -> str:
     """Return the path listing one session's parts."""
     return f"/api/sessions/{session_id}/parts"
+
+
+def session_download_path(session_id: UUID) -> str:
+    """Return the path of one session's every record, as one file."""
+    return f"/api/sessions/{session_id}/download"
