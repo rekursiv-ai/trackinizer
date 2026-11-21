@@ -1050,6 +1050,15 @@
       "title": "Times",
       "type": "boolean"
      },
+     "tool_groups": {
+      "default": "open",
+      "enum": [
+       "open",
+       "folded"
+      ],
+      "title": "Tool Groups",
+      "type": "string"
+     },
      "view": {
       "default": "chat",
       "enum": [
@@ -5363,9 +5372,10 @@
        "output_lines": "tool",
        "thinking": false,
        "times": false,
+       "tool_groups": "open",
        "view": "chat"
       },
-      "description": "How Chat draws a chat: its own lines or the terminal's rows (view), how much of the tool calls shows (density), whether reasoning shows (thinking), how much of a tool's output shows (output_lines), and when each line was written (times).",
+      "description": "How Chat draws a chat: its own lines or the terminal's rows (view), how much of the tool calls shows (density), whether reasoning shows (thinking), how much of a tool's output shows (output_lines), when each line was written (times), and whether each group of tool calls starts open or folded (tool_groups).",
       "x-setting": true
      },
      "cli_folder": {

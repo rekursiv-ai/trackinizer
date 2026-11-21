@@ -33,6 +33,7 @@
           "output_lines": "tool",
           "thinking": false,
           "times": false,
+          "tool_groups": "open",
           "view": "chat"
         },
         "cli_folder": "",

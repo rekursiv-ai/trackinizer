@@ -102,6 +102,7 @@ _DEFAULTS: dict[str, object] = {
         "thinking": False,
         "output_lines": "tool",
         "times": False,
+        "tool_groups": "open",
     },
     "autofix": True,
     "automerge": False,
