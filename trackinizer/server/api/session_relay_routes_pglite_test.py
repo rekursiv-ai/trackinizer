@@ -613,6 +613,32 @@ async def test_flags_go_to_the_callers_own_host(world: _World) -> None:
 
 
 @pytest.mark.parametrize(
+    ("stored", "watcher"),
+    [({"watcher": False}, False), ({}, True)],
+    ids=["setting off", "setting on by default"],
+)
+async def test_a_start_says_whether_the_persons_watcher_setting_is_on(
+    world: _World,
+    *,
+    stored: dict[str, bool],
+    watcher: bool,
+) -> None:
+    headers = await _places(world)
+    laptop = await world.host("lab", owner="ada@x.y", facts=_RUNS)
+    async with world.store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET preferences = $1::jsonb WHERE email = $2",
+            stored,
+            "ada@x.y",
+        )
+
+    started = await world.start(headers, await world.session("ada@x.y"), host="lab")
+
+    assert started.status_code == 200, started.text
+    assert (await world.served(laptop)).watcher is watcher
+
+
+@pytest.mark.parametrize(
     ("host", "remote"),
     [("", True), ("laptop", False)],
     ids=["the remote agent service", "ada's own"],
@@ -2241,6 +2267,7 @@ async def test_a_viewer_reads_each_frame_as_a_server_sent_event(world: _World) -
         host="lab",
         token=f"key-{session_id.hex}",
         remote=False,
+        watcher=False,
     )
     second = await anext(body)
 

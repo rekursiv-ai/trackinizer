@@ -106,6 +106,7 @@ _DEFAULTS: dict[str, object] = {
     },
     "autofix": True,
     "automerge": False,
+    "watcher": True,
     "hide_closed_pulls": True,
     "stars": [],
     "views": [],
