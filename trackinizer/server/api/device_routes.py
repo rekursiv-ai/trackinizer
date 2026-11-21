@@ -27,6 +27,7 @@ from uuid import UUID
 
 import hashlib
 import os
+import re
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -290,7 +291,8 @@ async def device_approve_route(
 
     Raises:
       HTTPException: As ``lookup``, and 403 ``device_host_needs_writer`` for a
-        viewer and 403 for a host that is not theirs.
+        viewer and 403 ``device_host_owned`` for a host that is not theirs, which
+        says how to connect under a name of their own.
 
     """
     _require_person(request, identity)
@@ -303,15 +305,23 @@ async def device_approve_route(
                     code="device_host_needs_writer",
                     message="enrolling a host needs the writer role",
                 )
-            await claim_host(
-                conn,
-                name=login.host,
-                email=identity.email,
-                admin=False,
-                # The person is at their browser and has seen the host's name: this
-                # is the confirmation a key could not give.
-                confirmed=True,
-            )
+            try:
+                await claim_host(
+                    conn,
+                    name=login.host,
+                    email=identity.email,
+                    admin=False,
+                    # The person is at their browser and has seen the host's name:
+                    # this is the confirmation a key could not give.
+                    confirmed=True,
+                )
+            # Its one refusal: the name is another person's host.
+            except HTTPException as refused:
+                raise _host_taken(
+                    login.host,
+                    hostname=login.hostname,
+                    email=identity.email,
+                ) from refused
         await _decide(conn, login=login, status="approved", identity=identity)
     if login.host is not None:
         hosts_changed(request, owner=identity.email)
@@ -516,6 +526,25 @@ class _Login:
 # A public route that inserts a row per request needs a ceiling. Codes live ten
 # minutes, so this bounds the table at a few thousand even under a flood.
 _MAX_OPEN_CODES: Final = 1_000
+
+
+def _host_taken(host: str, *, hostname: str, email: str) -> HTTPException:
+    """Return the refusal of a login whose host is another person's, saying what to do."""
+    # The person's login name on that computer is unknown here; their email's is not.
+    # The program that asked says the command itself once the login is denied.
+    local = re.sub(r"[^a-z0-9]+", "-", email.partition("@")[0].lower()).strip("-")
+    suggested = f"{host}-{local}"[:63].rstrip("-")
+    return _refused(
+        403,
+        code="device_host_owned",
+        message=(
+            f"Host {host} belongs to another person on this server, so it cannot "
+            "become yours. If it is yours under another account, sign in as that "
+            "account and approve again. Otherwise deny this login, then connect "
+            f"{hostname or 'that computer'} again under a name of your own, such as "
+            f"{suggested}."
+        ),
+    )
 
 
 def _refused(status_code: int, *, code: str, message: str) -> HTTPException:

@@ -899,6 +899,15 @@ async def test_a_host_another_person_owns_is_refused_and_the_code_stays_open(
     refused = await _decide(client, code)
 
     assert refused.status_code == 403
+    assert from_plain(refused.json(), dict[str, dict[str, str]])["detail"] == {
+        "code": "device_host_owned",
+        "message": (
+            "Host other-box belongs to another person on this server, so it cannot "
+            "become yours. If it is yours under another account, sign in as that "
+            "account and approve again. Otherwise deny this login, then connect devbox "
+            "again under a name of your own, such as other-box-test-user."
+        ),
+    }
     async with store.engine.acquire() as conn:
         host = await conn.fetchrow(
             "SELECT owner, confirmed_at FROM hosts WHERE name = 'other-box'",

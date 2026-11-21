@@ -30,7 +30,7 @@ from trackinizer.server.api._deps import (
     get_tool_relay,
     hosts_changed,
 )
-from trackinizer.server.api._routes_shared import request_engine
+from trackinizer.server.api._routes_shared import refusal, request_engine
 from trackinizer.server.api.hosts_routes import (
     HostName,
     absent_host,
@@ -431,7 +431,10 @@ async def revoke_host(
         if identity.role != "admin" and owner != identity.email:
             raise HTTPException(
                 status_code=403,
-                detail="host belongs to another user",
+                detail=(
+                    f"host {name!r} belongs to another person; only its owner or an "
+                    "admin may disconnect it"
+                ),
             )
         host_id = from_plain(host["id"], UUID)
         await _out_of_service(conn, host_id)
@@ -502,7 +505,8 @@ async def claim_host(
 
     Raises:
       HostOwnedError: An admin names a host another person owns.
-      HTTPException: 403 when a non-admin names a host that is not theirs.
+      HTTPException: 403 ``host_owned`` when a non-admin names a host that is not
+        theirs.
 
     """
     # One statement registers the host or, through the no-op update, locks its
@@ -532,14 +536,20 @@ async def claim_host(
         # Nobody adopts a name another person holds: the host under it, and any
         # shell opened on it, stay that person's. Raised inside the transaction, so
         # nothing is kept.
+        # A revoke keeps the host and its owner, so only a delete frees the name.
         if admin:
             raise HostOwnedError(
-                f"host {name!r} is owned by {owner}; "
-                "choose another name, or have them revoke it first",
+                f"host {name!r} belongs to {owner}; enroll this computer under "
+                "another name, or delete that host first",
             )
-        raise HTTPException(
-            status_code=403,
-            detail="host belongs to another user",
+        # The owner stays unnamed: a personal host is seen by its owner alone.
+        raise refusal(
+            403,
+            code=HostOwnedError.code,
+            message=(
+                f"host {name!r} belongs to another person; enroll this computer "
+                "under another name"
+            ),
         )
     return from_plain(host["id"], UUID)
 

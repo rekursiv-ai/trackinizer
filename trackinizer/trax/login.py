@@ -165,7 +165,7 @@ def _await_key(
         if token.status == "slow_down":
             interval += DEVICE_POLL_SEC
         elif token.status == "denied":
-            raise ClientError("the login was denied in the browser")
+            raise ClientError("the login was denied in the browser", code="denied")
         elif token.status == "expired_token":
             raise ClientError("the code expired before it was approved; log in again")
         elif token.issued is not None:

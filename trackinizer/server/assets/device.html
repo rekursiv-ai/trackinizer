@@ -97,7 +97,7 @@
       <dt>Code</dt><dd id="r-code" class="code"></dd>
       <dt>Account</dt><dd id="r-account"></dd>
       <dt>Program</dt><dd id="r-client"></dd>
-      <dt>Computer</dt><dd id="r-host"></dd>
+      <dt>Computer</dt><dd id="r-hostname"></dd>
       <dt>Host</dt><dd id="r-host"></dd>
       <dt>Role</dt><dd id="r-role"></dd>
     </dl>
@@ -161,7 +161,7 @@
     // in as someone else sees it before they click.
     el("r-as").textContent = el("r-account").textContent = view.account;
     el("r-client").textContent = view.client;
-    el("r-host").textContent = view.host || "not given";
+    el("r-hostname").textContent = view.hostname || "not given";
     el("r-host").textContent = view.host ? `${view.host} (becomes your host)` : "none";
     el("r-role").textContent = view.role;
     say("");
