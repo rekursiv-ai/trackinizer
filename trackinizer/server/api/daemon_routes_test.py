@@ -1009,10 +1009,12 @@ async def test_unregister_takes_the_owners_host_out_of_service_then_deletes_it(
         (_HOST_ID,),
         (_HOST_ID,),
     ]
-    revoked = engine.conn.fetch.call_args
-    assert revoked is not None
-    assert PROCESS_KEY_SQL in cast("str", revoked.args[0])
-    assert revoked.args[1:] == (_HOST_ID,)
+    # Its processes' keys, then every other key bound to it, which the delete would
+    # leave live and bound to nothing.
+    processes, logins = engine.conn.fetch.call_args_list
+    assert PROCESS_KEY_SQL in cast("str", processes.args[0])
+    assert f"NOT {PROCESS_KEY_SQL}" in cast("str", logins.args[0])
+    assert [processes.args[1:], logins.args[1:]] == [(_HOST_ID,), (_HOST_ID,)]
     assert all(
         isinstance(call.args[1], uuid.UUID)
         for call in [
@@ -1032,6 +1034,7 @@ async def test_unregister_takes_the_owners_host_out_of_service_then_deletes_it(
         "UPDATE api_keys AS credential",
         "UPDATE host_enrollments",
         "UPDATE hosts",
+        "UPDATE api_keys AS credential",
         "DELETE FROM hosts WHERE id = $1",
     ]
 

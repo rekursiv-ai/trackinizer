@@ -105,6 +105,13 @@ def profile_for_server(server: str) -> str | None:
     )
 
 
+def server_profile(url: str) -> str:
+    """Return the profile name a login to ``url`` saves: its host, and its port if any."""
+    parts = urlsplit(url)
+    host = re.sub(r"[^A-Za-z0-9._-]", "-", parts.hostname or "")
+    return host if parts.port is None else f"{host}-{parts.port}"
+
+
 def unmatched_server_hint() -> str | None:
     """Return what to run when a terminal's server has no saved profile, else ``None``.
 

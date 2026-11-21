@@ -77,6 +77,7 @@ from trackinizer.server.auth import (
     request_user,
     require_role,
     revoke_api_key,
+    revoke_host_login_keys,
     revoke_host_process_keys,
     revoke_process_key,
     seed_no_auth_user,
@@ -3731,6 +3732,30 @@ class TestProcessKeys:
             assert await revoke_host_process_keys(conn, host_id=host) == keys[:1]
 
         assert await self._live(store, keys) == [False, True, True, True]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_hosts_logins_are_revoked_and_its_process_keys_kept(
+        self,
+        store: Store,
+    ) -> None:
+        host, other = await self._hosts(store, 2)
+        keys = await self._keys(
+            store,
+            ("a device login", host),
+            ("client@h0", host),
+            (process_key_name(uuid.UUID(int=1), session_id=_OWN_SESSION), host),
+            ("a device login", other),
+            ("laptop", None),
+        )
+
+        async with store.engine.acquire() as conn:
+            revoked = await revoke_host_login_keys(conn, host_id=host)
+            again = await revoke_host_login_keys(conn, host_id=host)
+
+        assert (sorted(revoked), again) == (sorted(keys[:2]), [])
+        assert await self._live(store, keys) == [False, False, True, True, True]
 
 
 def _sql(call: MockCall) -> str:
