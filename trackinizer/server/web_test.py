@@ -2763,8 +2763,7 @@ _AGENT: Final = "claude-opus"
 """The actor of a change the reader's agent made through one of the reader's keys."""
 
 # (title, actor, change kind, days ago) of each change the reader's records list reads;
-# ``session`` is an AgentSession, ``workspace`` a workspace's Issue and ``hidden`` filed
-# from another person's private chat, which the reader may not read.
+# ``session`` is an AgentSession and ``workspace`` a workspace's Issue.
 _WORK: Final = (
     ("agents", _AGENT, "created", 0),
     ("older", _TEST_IDENTITY.email, "created", 3),
@@ -2776,7 +2775,6 @@ _WORK: Final = (
     ("theirs", _ACCOUNT, "created", 0),
     ("session", _TEST_IDENTITY.email, "created", 0),
     ("workspace", _TEST_IDENTITY.email, "created", 0),
-    ("hidden", _TEST_IDENTITY.email, "created", 0),
 )
 
 
@@ -2818,20 +2816,6 @@ async def test_worked_on_lists_what_the_reader_changed_last_each_once(
         await conn.execute(
             "UPDATE inquiries SET labels = ARRAY['workspace'] WHERE id = $1",
             ids["workspace"],
-        )
-        private = uuid.uuid4()
-        await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title,"
-            " agentsession_audience, agentsession_cli)"
-            " VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', $2,"
-            " 'private', 'private', 'sagent')",
-            private,
-            _ACCOUNT,
-        )
-        await conn.execute(
-            "UPDATE inquiries SET filed_from_chat = $1 WHERE id = $2",
-            private,
-            ids["hidden"],
         )
         seqs = {
             from_plain(row["id"], uuid.UUID): from_plain(row["seq"], int)

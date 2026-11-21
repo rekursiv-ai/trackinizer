@@ -112,12 +112,15 @@ async def test_the_next_hop_walks_on_from_what_every_share_took() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("gated", [False, True])
 async def test_the_foci_are_read_in_one_query_gated_by_the_readers_access(
+    monkeypatch: pytest.MonkeyPatch,
     gated: bool,
 ) -> None:
     conn = make_conn()
     conn.fetchval.return_value = []
     store, _ = make_store(conn)
     focus = new_uuid()
+    # A gate of its own, so every build has one to send: the export has no chat filing.
+    monkeypatch.setattr(RecordingPolicy, "read_filter", Mock(return_value="FALSE"))
     policy = RecordingPolicy() if gated else None
     reader = Principal(email="ada@example.com", role="writer")
     async with store.engine.acquire() as held:
@@ -146,12 +149,15 @@ async def test_the_foci_are_read_in_one_query_gated_by_the_readers_access(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("gated", [False, True])
 async def test_a_hop_reads_its_neighbours_gated_by_the_readers_access(
+    monkeypatch: pytest.MonkeyPatch,
     gated: bool,
 ) -> None:
     conn = make_conn()
     focus = new_uuid()
     conn.fetchval.side_effect = [[focus], []]
     store, _ = make_store(conn)
+    # A gate of its own, so every build has one to send: the export has no chat filing.
+    monkeypatch.setattr(RecordingPolicy, "read_filter", Mock(return_value="FALSE"))
     policy = RecordingPolicy() if gated else None
     reader = Principal(email="ada@example.com", role="writer")
     async with store.engine.acquire() as held:

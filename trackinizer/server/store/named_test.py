@@ -69,11 +69,13 @@ async def test_a_record_read_is_found_by_its_id_and_its_number_through_access(
         Mock(return_value="FALSE" if restricted else "TRUE"),
     )
 
+    reader = Principal(email="ada@example.com", role="writer")
+
     found = await read_named(
         cast("Conn", conn),
         wanted=[_ID, SeqRef(kind="Issue", seq=12)],
         policy=RecordingPolicy(),
-        principal=Principal(email="ada@example.com", role="writer"),
+        principal=reader,
     )
 
     assert found[_ID] is found[SeqRef(kind="Issue", seq=12)]
@@ -81,16 +83,27 @@ async def test_a_record_read_is_found_by_its_id_and_its_number_through_access(
     sent = conn.fetch.await_args
     assert sent is not None
     assert sent.args[1:4] == ([_ID], ["Issue"], [12])
-    assert ("((FALSE) AND (readable_inquiry." in str(sent.args[0])) is restricted
+    gate = inquiry_read_filter(
+        "inquiries.id",
+        policy=RecordingPolicy(),
+        principal=reader,
+        params=[[_ID], ["Issue"], [12]],
+    )
+    assert ("(FALSE)" in gate) is restricted
+    if gate != "TRUE":
+        assert str(sent.args[0]).endswith(f" AND ({gate})")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("gated", [False, True])
 async def test_the_records_are_read_in_one_query_gated_by_the_readers_access(
+    monkeypatch: pytest.MonkeyPatch,
     gated: bool,
 ) -> None:
     conn = make_conn()
     conn.fetch.return_value = []
+    # A gate of its own, so every build has one to send: the export has no chat filing.
+    monkeypatch.setattr(RecordingPolicy, "read_filter", Mock(return_value="FALSE"))
     policy = RecordingPolicy() if gated else None
     reader = Principal(email="ada@example.com", role="writer")
 
