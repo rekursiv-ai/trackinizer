@@ -114,7 +114,7 @@ ACP streams deltas (`agent_message_chunk`, `agent_thought_chunk`,
 translator accumulates chunks per session and flushes a typed
 `AssistantMessage` (text + thinking + tool_calls) at turn boundaries:
 the `session/prompt` response arriving (stop reason), a tool-call
-transition, or adapter exit. `ToolMessage`s emit per
+transition, or adapter exit. `ToolResult`s emit per
 `tool_call_update` completion, pairing `call_id` exactly as
 `codex_appserver.py` does. Unrecognized update kinds fall back to
 `UnknownMessage` — never dropped.

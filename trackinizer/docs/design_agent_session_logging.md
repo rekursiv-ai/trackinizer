@@ -129,7 +129,7 @@ Two layers, one DB today:
 
   *As written:* `agent_session_events`, turn-grain, whose `kind` named one
   of six `Message` members (`UserMessage`, `AgentSendMessage`,
-  `AssistantMessage`, `ToolMessage`, `Compaction`, `UnknownMessage`).
+  `AssistantMessage`, `ToolResult`, `Compaction`, `UnknownMessage`).
 
 ## Empirical findings (2026-05-31)
 
@@ -195,7 +195,7 @@ append-only. One top-level `type` per line:
 | `type` | discriminator | maps to |
 |---|---|---|
 | `user` (`message.content` is a string) | user prompt | `UserMessage` |
-| `user` (`content=[{type:"tool_result"}]`) | tool output | `ToolMessage` |
+| `user` (`content=[{type:"tool_result"}]`) | tool output | `ToolResult` |
 | `assistant` (`content[].type` in `thinking`/`text`/`tool_use`) | model turn | `AssistantMessage` (tool_use → nested `ToolCall`) |
 | `attachment`, `ai-title`, `queue-operation`, `last-prompt` | bookkeeping | (skip) |
 
@@ -232,7 +232,7 @@ provider-unified model interface (`sagent/types/runtime.py`).
 - **Typed columns** (cross-CLI queryable): `session_id`, `seq`, `kind`,
   `timestamp`, `model`.
 - **`message` JSONB**: one typed `Message` value (`UserMessage` /
-  `AgentSendMessage` / `AssistantMessage` / `ToolMessage` / `Compaction` /
+  `AgentSendMessage` / `AssistantMessage` / `ToolResult` / `Compaction` /
   `UnknownMessage`), selected by `kind` (the member's class name). It is
   encoded by the member's own `to_json` and decoded via
   `message_for_kind(kind).from_json(...)`. `AssistantMessage` aggregates a
