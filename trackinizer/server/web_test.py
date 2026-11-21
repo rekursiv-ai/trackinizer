@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 import asyncio
 import json
 import os
+import re
 import struct
 import time
 import uuid
@@ -2076,6 +2077,17 @@ class TestDevicePage:
         assert page.count("look(") == 2  # The definition, and the form's submit.
         for path in ("lookup", "approve", "deny"):
             assert f'"/auth/device/{path}"' in page
+
+    def test_the_shipped_page_shows_the_computer_and_the_host_each_in_its_own_row(
+        self,
+    ) -> None:
+        """Two rows sharing an id left one blank and put the other's text in the first."""
+        page = (Path(web.__file__).parent / "assets" / "device.html").read_text()
+        ids = re.findall(r'\bid="([^"]+)"', page)
+
+        assert len(ids) == len(set(ids))
+        assert 'el("r-hostname").textContent = view.hostname' in page
+        assert 'el("r-host").textContent = view.host ?' in page
 
 
 class TestAppDir:

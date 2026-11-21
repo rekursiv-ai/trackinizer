@@ -200,9 +200,10 @@ def test_claim_host_refuses_an_admin_a_name_another_person_owns() -> None:
         )
 
     assert str(refused.value) == (
-        "host 'dev-1' is owned by mal@x.y; "
-        "choose another name, or have them revoke it first"
+        "host 'dev-1' belongs to mal@x.y; enroll this computer under another name, "
+        "or delete that host first"
     )
+    assert refused.value.code == "host_owned"
 
 
 @pytest.mark.parametrize("owner", ["mal@x.y", None])
@@ -220,7 +221,13 @@ def test_claim_host_refuses_anyone_else_a_host_that_is_not_theirs(
 
     assert (refused.value.status_code, refused.value.detail) == (
         403,
-        "host belongs to another user",
+        {
+            "code": "host_owned",
+            "message": (
+                "host 'dev-1' belongs to another person; enroll this computer under "
+                "another name"
+            ),
+        },
     )
 
 
@@ -982,7 +989,12 @@ def test_a_writer_revokes_their_own_host_and_not_another_users(
 
     assert (refused.status_code, refused.json()) == (
         403,
-        {"detail": "host belongs to another user"},
+        {
+            "detail": (
+                "host 'dev-1' belongs to another person; only its owner or an admin "
+                "may disconnect it"
+            ),
+        },
     )
     assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
 
