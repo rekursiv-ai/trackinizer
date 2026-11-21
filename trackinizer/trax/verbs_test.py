@@ -3857,6 +3857,7 @@ class _StoredClient(FakeClient):
             "claude",
             [
                 UserMessage(content="typed"),
+                UserMessage(content="mine", sender="bob@example.com"),
                 ToolCall(call_id="t1", name="Grep"),
                 ToolMessage(
                     call_id="t1",
@@ -3909,7 +3910,7 @@ def test_records_prints_the_parts_up_to_the_record_named(
     """``--to 1:3`` is the last record a window left out; nothing after it prints."""
     client = _StoredClient()
 
-    run(["agentsession", "7", "records", "--to", "1:3"], client)
+    run(["agentsession", "7", "records", "--to", "1:4"], client)
 
     printed = capsys.readouterr().out.splitlines()
     assert [line.split(" ", 1)[0] for line in printed] == [
@@ -3918,12 +3919,15 @@ def test_records_prints_the_parts_up_to_the_record_named(
         "p1#1",
         "p1#2",
         "p1#3",
+        "p1#4",
     ]
     assert printed[0].endswith("user ada: q0")
     assert printed[5].endswith("user terminal: typed")
-    assert printed[6].endswith("call claude: Grep")
-    assert printed[7].endswith("result claude: " + "r" * 200)
-    assert printed[8].endswith("assistant claude: a b")
+    # A typed line that names who typed it is theirs.
+    assert printed[6].endswith("user bob@example.com: mine")
+    assert printed[7].endswith("call claude: Grep")
+    assert printed[8].endswith("result claude: " + "r" * 200)
+    assert printed[9].endswith("assistant claude: a b")
     assert {call[0] for call in client.calls} == {
         "resolve_id",
         "read_session_parts",
