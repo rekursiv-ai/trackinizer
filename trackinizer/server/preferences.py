@@ -356,6 +356,10 @@ class ChatView(_Strict):
     times: bool = False
     """Whether each line shows when it was written."""
 
+    tool_groups: Literal["open", "folded"] = "open"
+    """Whether each run of tool calls Chat groups under one line starts open, its
+    calls listed under it, or folded to that line."""
+
 
 _CHAT_VIEW: Final = ChatView()
 """Chat's own lines, with each option at its default."""
@@ -589,8 +593,9 @@ class Preferences(_Strict):
         description=(
             "How Chat draws a chat: its own lines or the terminal's rows (view), how "
             "much of the tool calls shows (density), whether reasoning shows "
-            "(thinking), how much of a tool's output shows (output_lines), and when "
-            "each line was written (times)."
+            "(thinking), how much of a tool's output shows (output_lines), when "
+            "each line was written (times), and whether each group of tool calls "
+            "starts open or folded (tool_groups)."
         ),
         json_schema_extra=SETTING,
     )

@@ -66,6 +66,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
     thinking: false,
     output_lines: "tool",
     times: false,
+    tool_groups: "open",
   },
   autofix: true,
   automerge: false,
