@@ -65,18 +65,19 @@ ASSISTANT_KEYS: Final = frozenset(
         "chat_view",
         "autofix",
         "automerge",
+        "watcher",
     },
 )
 """The preferences a canvas's assistant may read and change for its owner: the
 UI's, each marked ``SETTING`` below. Every other key (the user's own data) stays
 the user's alone."""
 
-AGENT_KEYS: Final = ASSISTANT_KEYS - {"cli_folder", "autofix", "automerge"}
+AGENT_KEYS: Final = ASSISTANT_KEYS - {"cli_folder", "autofix", "automerge", "watcher"}
 """The settings an agent's own tool may change for the person, with the key a start
 minted for its process: how the app looks and reads. Not the folder an agent starts
 in, whose skills and AGENTS.md the next agent loads, nor what agents do to pull
-requests: an agent a line in a shared chat steered would change what every later
-agent of the person does."""
+requests, nor their watcher: an agent a line in a shared chat steered would change
+what every later agent of the person does."""
 
 SETTING: Final[JsonDict] = {"x-setting": True}
 """Marks a field as one of the UI's settings: Settings shows it in the
@@ -615,6 +616,15 @@ class Preferences(_Strict):
             "push: GitHub merges it once its required checks pass and its reviews "
             "allow, a draft once it is marked ready. Chat switches it for each pull "
             "request."
+        ),
+        json_schema_extra=SETTING,
+    )
+    watcher: bool = Field(
+        default=True,
+        description=(
+            "Give each new chat's cloud agent a watcher, on the agent's own model, "
+            "that keeps it to your instructions. A chat's next start follows a "
+            "change."
         ),
         json_schema_extra=SETTING,
     )

@@ -484,6 +484,7 @@ def _started(
         host="box",
         token=token,
         remote=False,
+        watcher=False,
     )
 
 

@@ -1241,6 +1241,7 @@ async def test_a_give_up_revokes_the_key_of_the_start_it_detached_alone(
         host="lab",
         token=f"key-{process_id.hex}",
         remote=False,
+        watcher=False,
     )
     if taken:
         _ = await relay.wait(host_id, wait_sec=0, dropped=AsyncMock(return_value=False))
@@ -1287,6 +1288,7 @@ async def test_a_stop_detaches_the_process_and_revokes_its_key_a_minute_later(
         host="lab",
         token=f"key-{process_id.hex}",
         remote=False,
+        watcher=False,
     )
     request = cast("Request", SimpleNamespace(app=app))
 
@@ -1350,7 +1352,12 @@ async def test_process_control_requires_the_descendants_own_account(
     served.state.later = _Later()
     session = replace(live_session(opened_by_api_key_id=_CALLERS), account=account)
     monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
-    engine.conn.fetchval.return_value = True
+
+    async def fetchval(sql: str, *_: object) -> object:
+        # The caller stored no preferences; any other read finds a key.
+        return None if "preferences" in sql else True
+
+    engine.conn.fetchval = AsyncMock(side_effect=fetchval)
     engine.conn.fetchrow = AsyncMock(return_value={"account": account})
     identity = AuthIdentity(
         user_id=UUID(int=9),
@@ -1372,6 +1379,7 @@ async def test_process_control_requires_the_descendants_own_account(
         host="lab",
         token=f"key-{UUID(int=5).hex}",
         remote=False,
+        watcher=False,
     )
     if stopped:
         current = await served.state.session_relay.stop(session.id)

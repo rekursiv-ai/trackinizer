@@ -5657,6 +5657,13 @@
       "title": "Views",
       "type": "array"
      },
+     "watcher": {
+      "default": true,
+      "description": "Give each new chat's cloud agent a watcher, on the agent's own model, that keeps it to your instructions. A chat's next start follows a change.",
+      "title": "Watcher",
+      "type": "boolean",
+      "x-setting": true
+     },
      "workspaces": {
       "$ref": "#/components/schemas/WorkspacesPreference",
       "description": "Your tab bar: its groups, their tabs' order, and the last opened."

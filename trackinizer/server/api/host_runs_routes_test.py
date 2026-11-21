@@ -437,6 +437,7 @@ def _start(
         host="box",
         token=f"key-{process_id.hex}",
         remote=remote,
+        watcher=False,
     )
 
 

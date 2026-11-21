@@ -600,6 +600,7 @@ class TestProfile:
             },
             "autofix": True,
             "automerge": False,
+            "watcher": True,
             "hide_closed_pulls": True,
             **_EMPTY_USER_DATA,
         }
@@ -806,6 +807,7 @@ class TestPreferences:
             },
             "autofix": True,
             "automerge": False,
+            "watcher": True,
             "hide_closed_pulls": True,
             **_EMPTY_USER_DATA,
         }
