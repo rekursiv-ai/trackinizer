@@ -6,10 +6,12 @@ from uuid import UUID
 
 import pytest
 
+from trackinizer.wire.routes import edge_field_path, inquiry_field_path
 from trackinizer.wire.wire_capture import CAPTURES_PATH
 from trackinizer.wire.wire_job import JOBS_PATH
 from trackinizer.wire.wire_process_keys import (
     PROCESS_KEY_ROUTES,
+    RECORD_WRITE_ROUTES,
     RECORDS_ROUTES,
     WEBSOCKET,
     _route_union,
@@ -86,7 +88,7 @@ def test_each_route_is_the_one_its_client_dials() -> None:
         ("GET", "/api/web/search_sessions"),
         ("GET", "/api/web/search_inquiries"),
         ("GET", "/api/version"),
-    } == PROCESS_KEY_ROUTES.keys() - {
+    } == PROCESS_KEY_ROUTES.keys() - RECORD_WRITE_ROUTES.keys() - {
         (method, path) for method, path in PROCESS_KEY_ROUTES if "{session_id}" in path
     }
     assert {
@@ -107,6 +109,54 @@ def test_the_records_routes_keep_their_scope_in_the_one_list() -> None:
     )
     assert RECORDS_ROUTES[("GET", _records_template())] == "tree"
     assert {method for method, _ in RECORDS_ROUTES} == {"GET"}
+
+
+def test_the_record_writes_are_the_routes_trax_s_write_verbs_call_and_no_more() -> None:
+    """Spelt as the wire's field and edge routes are, each scoped by its own route."""
+    edge = "/api/edges/{from_id}/{edge_kind}/{to_id}"
+
+    assert dict(RECORD_WRITE_ROUTES) == dict.fromkeys(
+        {
+            ("POST", "/api/inquiries/batch"),
+            ("POST", "/api/inquiries/lookup"),
+            ("POST", "/api/inquiries/next_issue"),
+            ("DELETE", "/api/inquiries/{target_id}"),
+            *(
+                ("PUT", inquiry_field_path(field))
+                for field in (
+                    "title",
+                    "status",
+                    "owner",
+                    "description",
+                    "app",
+                    "priority",
+                    "validation",
+                    "judgement",
+                )
+            ),
+            ("PATCH", inquiry_field_path("labels")),
+            ("PATCH", inquiry_field_path("marginal_cost_agent_usd")),
+            ("POST", edge),
+            ("DELETE", edge),
+            ("PUT", edge_field_path("labels")),
+        },
+        "account",
+    )
+    assert {route: PROCESS_KEY_ROUTES.get(route) for route in RECORD_WRITE_ROUTES} == (
+        dict(RECORD_WRITE_ROUTES)
+    )
+
+
+def test_the_record_writes_reach_no_admin_or_org_route() -> None:
+    """A row's account and session id, and the org's settings, stay off."""
+    reached = [
+        route
+        for route in PROCESS_KEY_ROUTES
+        if route[1].startswith(("/api/variables", "/api/export", "/api/admin"))
+        or route[1].endswith(("/account", "/cli_session_id", "/metrics/write"))
+    ]
+
+    assert reached == []
 
 
 def test_joining_a_list_that_scopes_a_route_apart_raises() -> None:

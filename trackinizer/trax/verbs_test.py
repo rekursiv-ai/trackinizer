@@ -4514,6 +4514,28 @@ def test_backfill_on_a_command_that_creates_nothing_is_refused(
     assert client.calls == []
 
 
+def test_a_backfilled_inline_create_under_an_existing_row_carries_its_time(
+    client: FakeClient,
+) -> None:
+    """``run_actions`` lets ``--backfill`` through for the row an edge creates."""
+    run(
+        [
+            "issue",
+            "1",
+            "requires",
+            "issue",
+            "title",
+            "to",
+            "child",
+            "--backfill",
+            "2020-01-01T00:00:00+00:00",
+        ],
+        client,
+    )
+
+    assert _batch_items(client)[0][1]["created"] == "2020-01-01T00:00:00+00:00"
+
+
 def test_a_backfilled_create_carries_its_time_and_reason(client: FakeClient) -> None:
     run(
         [
