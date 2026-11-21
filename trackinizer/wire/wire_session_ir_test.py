@@ -24,6 +24,7 @@ from trackinizer.wire.wire_session_ir import (
     ManifestBody,
     PartBody,
     RecordBody,
+    session_download_path,
     session_parts_path,
     session_records_path,
 )
@@ -171,11 +172,12 @@ def test_an_append_of_nothing_names_no_file_and_one_of_records_names_it() -> Non
     assert named.manifest.name == "s.jsonl"
 
 
-def test_a_sessions_records_and_parts_have_paths_of_its_own() -> None:
+def test_a_sessions_records_parts_and_download_have_paths_of_its_own() -> None:
     session_id = uuid4()
 
     assert session_records_path(session_id) == f"/api/sessions/{session_id}/records"
     assert session_parts_path(session_id) == f"/api/sessions/{session_id}/parts"
+    assert session_download_path(session_id) == f"/api/sessions/{session_id}/download"
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ import asyncio
 import uuid
 
 from fastapi import FastAPI
-from treekle import from_plain, immutable
+from treekle import from_plain, immutable, json_loads
 
 import httpx2
 import pytest
@@ -705,6 +705,131 @@ class TestViewerOwnedCapture:
 
         assert response.status_code == (200 if owns_session else 403), response.text
         assert append.await_count == int(owns_session)
+
+
+class TestDownload:
+    def test_every_part_downloads_as_one_file_without_ciphertext(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Bodies come from the replay read; the ciphertext no person can use stays."""
+        client, store, _engine = route_client
+        session_id = uuid.uuid4()
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    seq=412,
+                    cli="sagent",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            store,
+            "read_session_manifests",
+            AsyncMock(
+                return_value=[
+                    SessionManifest(
+                        part=part,
+                        name=f"p{part}.jsonl",
+                        metadata=immutable({}),
+                        ir_id=uuid.uuid4(),
+                        format="sagent",
+                        records=1,
+                    )
+                    for part in (0, 1)
+                ],
+            ),
+        )
+        read = AsyncMock(
+            side_effect=[
+                [_row(0, Thinking(content="visible", encrypted=_CIPHERTEXT))],
+                [_row(0)],
+            ],
+        )
+        monkeypatch.setattr(store, "read_session_records", read)
+
+        response = client.get(f"/api/sessions/{session_id}/download")
+
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"] == "application/x-ndjson"
+        assert response.headers["content-disposition"] == (
+            'attachment; filename="AgentSession-412.jsonl"'
+        )
+        header, *lines = [
+            from_plain(json_loads(line), dict[str, object])
+            for line in response.text.splitlines()
+        ]
+        assert header["session_id"] == str(session_id)
+        assert header["seq"] == 412
+        assert [
+            from_plain(p, _Part)["part"]
+            for p in from_plain(header["parts"], list[object])
+        ] == [0, 1]
+        assert [(line["part"], line["kind"]) for line in lines] == [
+            (0, "Thinking"),
+            (1, "UserMessage"),
+        ]
+        assert "ciphertext" not in lines[0]
+        assert _CIPHERTEXT not in response.text
+        assert [c.kwargs["plaintext_only"] for c in read.await_args_list] == [
+            False,
+            False,
+        ]
+
+    def test_a_full_page_reads_on_after_its_last_record(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="sagent",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            store,
+            "read_session_manifests",
+            AsyncMock(
+                return_value=[
+                    SessionManifest(
+                        part=0,
+                        name="p0",
+                        metadata=immutable({}),
+                        ir_id=uuid.uuid4(),
+                        format="sagent",
+                        records=MAX_LIST_LIMIT + 1,
+                    ),
+                ],
+            ),
+        )
+        read = AsyncMock(
+            side_effect=[
+                [_row(idx) for idx in range(MAX_LIST_LIMIT)],
+                [_row(MAX_LIST_LIMIT)],
+            ],
+        )
+        monkeypatch.setattr(store, "read_session_records", read)
+
+        response = client.get(f"/api/sessions/{uuid.uuid4()}/download")
+
+        assert response.status_code == 200, response.text
+        assert len(response.text.splitlines()) == 1 + MAX_LIST_LIMIT + 1
+        assert [c.kwargs["after_idx"] for c in read.await_args_list] == [
+            -1,
+            MAX_LIST_LIMIT - 1,
+        ]
 
 
 def _user_message(module: str) -> dict[str, object]:

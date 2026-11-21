@@ -623,6 +623,11 @@ class FakeClient:
         yield '{"format":"trackinizer-export","version":1,"migrations":[]}'
         yield '{"table":"inquiries","row":{"title":"canned"}}'
 
+    def download_session(self, session_id: uuid.UUID) -> Iterator[str]:
+        """Yield a canned download: its header, and no record."""
+        self.calls.append(("download_session", (session_id,), {}))
+        yield f'{{"session_id":"{session_id}","seq":0,"parts":[]}}'
+
     def wait_until_ready(
         self,
         *,

@@ -4381,6 +4381,39 @@ def test_export_keeps_selector_order_and_returns_the_streamed_lines() -> None:
     ]
 
 
+def test_download_session_returns_the_streamed_lines_of_its_route() -> None:
+    session_id = uuid.UUID(int=412)
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, content=b'{"seq":412}\n{"part":0,"idx":0}\n')
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        lines = list(client.download_session(session_id))
+
+    assert lines == ['{"seq":412}', '{"part":0,"idx":0}']
+    [request] = sent
+    assert (request.method, request.url.path) == (
+        "GET",
+        f"/api/sessions/{session_id}/download",
+    )
+
+
+def test_download_session_a_refusal_raises_with_its_status() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(403, json={"detail": {"code": "session_audience"}})
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        pytest.raises(ClientError, match="-> 403") as raised,
+    ):
+        list(client.download_session(uuid.UUID(int=412)))
+
+    assert raised.value.status_code == 403
+
+
 class _BatchItemBody(TypedDict):
     kind: str
     title: str

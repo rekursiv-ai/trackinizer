@@ -715,32 +715,54 @@ class Client:
           line: One JSON object, without its trailing newline.
 
         """
-        self._check_route("GET", EXPORT_API_PATH)
-        params = {
-            EXPORT_FILTER_PARAM: [
-                json.dumps(
-                    {"field": filt.field, "op": filt.op, "value": filt.value},
-                    separators=(",", ":"),
-                )
-                for filt in selector
-            ],
-        }
+        yield from self._stream_lines(
+            EXPORT_API_PATH,
+            params={
+                EXPORT_FILTER_PARAM: [
+                    json.dumps(
+                        {"field": filt.field, "op": filt.op, "value": filt.value},
+                        separators=(",", ":"),
+                    )
+                    for filt in selector
+                ],
+            },
+        )
+
+    def download_session(self, session_id: uuid.UUID) -> Iterator[str]:
+        """Stream one session's every record as one file, one line at a time.
+
+        Args:
+          session_id: The AgentSession to download.
+
+        Yields:
+          line: The file's header, then one record per line, each without its
+            trailing newline.
+
+        """
+        yield from self._stream_lines(wire_session_ir.session_download_path(session_id))
+
+    # Not retried, unlike :meth:`_request`: a failure part-way would restart the
+    # stream and hand the caller its first lines twice.
+    def _stream_lines(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, list[str]] | None = None,
+    ) -> Iterator[str]:
+        """Yield each non-empty line ``GET path`` answers, as it arrives."""
+        self._check_route("GET", path)
         try:
-            with self._http.stream(
-                "GET",
-                EXPORT_API_PATH,
-                params=params,
-            ) as response:
+            with self._http.stream("GET", path, params=params) as response:
                 if response.status_code >= 400:
                     _ = response.read()
                     raise ClientError(
-                        f"GET {EXPORT_API_PATH} -> {response.status_code}: "
+                        f"GET {path} -> {response.status_code}: "
                         f"{_truncate(response.text)}",
                         status_code=response.status_code,
                     )
                 yield from (line for line in response.iter_lines() if line)
         except httpx2.TransportError as err:
-            raise ClientError(f"GET {EXPORT_API_PATH} failed: {err}") from err
+            raise ClientError(f"GET {path} failed: {err}") from err
 
     def wait_until_ready(
         self,
