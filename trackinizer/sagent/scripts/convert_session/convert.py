@@ -22,6 +22,7 @@ from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, fields, is_dataclass
+from datetime import UTC, datetime
 from difflib import unified_diff
 from io import StringIO
 from itertools import islice, repeat
@@ -53,7 +54,7 @@ from trackinizer.sagent.scripts.convert_session.fuse import (
     part_names,
     unfuse,
 )
-from trackinizer.sagent.session.types import IncompleteRecord, ToolResult, former_kind
+from trackinizer.sagent.session.types import IncompleteRecord, ToolMessage, former_kind
 
 
 if TYPE_CHECKING:
@@ -1150,14 +1151,16 @@ def _ordered(paths: Iterable[Path]) -> list[Path]:
 # The FIRST stamp, not the last: a claude session outlives the subagents it spawns, so
 # by latest write every subagent came before its parent (147 of 147 captured; mtime
 # agrees), while by first stamp the parent opened before each of them.
-def _opened(records: Sequence[SessionRecord]) -> str:
-    """Return the provider's stamp on a part's first dated record, or ``""``."""
-    stamps = (
-        record.timestamp or ""
-        for record in records
-        if not isinstance(record, IncompleteRecord)
+def _opened(records: Sequence[SessionRecord]) -> datetime:
+    """Return the time of a part's first dated record; the earliest there is for none."""
+    return next(
+        (
+            record.timestamp
+            for record in records
+            if not isinstance(record, IncompleteRecord) and record.timestamp is not None
+        ),
+        datetime.min.replace(tzinfo=UTC),
     )
-    return next((stamp for stamp in stamps if stamp), "")
 
 
 # Measured, not predicted: the converted text is normalized again and its semantic
@@ -1184,7 +1187,9 @@ def _dropped(
 def _semantic_record(record: object) -> tuple[str, str]:
     """Return a comparable record identity without provider-native metadata."""
     kind = (
-        former_kind(record) if isinstance(record, ToolResult) else type(record).__name__
+        former_kind(record)
+        if isinstance(record, ToolMessage)
+        else type(record).__name__
     )
     return kind, repr(_semantic_value(record))
 
@@ -1201,7 +1206,7 @@ def _semantic_value(value: object) -> object:
             )
             for field in fields(value)
             # ``context_id`` is an INDEX into the record stream (axiom 5), not
-            # a value: a session carrying no ``TurnContext`` gains one when
+            # a value: a session carrying no ``SessionContext`` gains one when
             # written as claude, so every record's moves ``None`` -> ``0`` and
             # the comparison read a renumbering as the whole session lost.
             if field.name not in {"extra", "context_id"}

@@ -10,7 +10,7 @@ steps:
 - :func:`neutral` turns that order into one provider-neutral list.
 - :func:`projected` or :func:`lines` projects that list for a CLI file or for the bot.
 
-A person's line is the bot's own ``AgentToAgentMessage``, or a ``UserMessage`` that the
+A person's line is the bot's own ``AgentMessage``, or a ``UserMessage`` that the
 bot delivered, which carries the ``$inbound`` stamp; so is a ``queued_command``
 ``ContextState`` with the stamp, which is how claude records a line sent while it was
 mid-turn (one without it is claude's own notice). The sender is read from that stamp
@@ -29,7 +29,7 @@ import json
 from treekle import from_plain, immutable, mutable
 
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     AssistantMessage,
     BashResult,
     ContextState,
@@ -39,7 +39,7 @@ from trackinizer.sagent.session.types import (
     SessionRecord,
     SystemMessage,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UserMessage,
     WebFetchResult,
     WebSearchResult,
@@ -309,7 +309,7 @@ def neutral(
 ) -> list[Placed]:
     """Turn placed records into one provider-neutral conversation.
 
-    Kept: people's lines as :class:`AgentToAgentMessage`, their words without the
+    Kept: people's lines as :class:`AgentMessage`, their words without the
     context their agent was told (``CONTEXT_TRAILER`` on), with the box paths of the
     files their sender attached (``extra["attachments"]``), and answers and tool records
     each tagged with the provider that gave them. A switch between answering providers
@@ -320,7 +320,8 @@ def neutral(
 
     Args:
       records: The records to keep from, from :func:`placed`, oldest first.
-      terminal_user: Who a typed line with no attested sender is credited to.
+      terminal_user: Who a typed line that names no sender, attested or its
+        own, is credited to.
       answerer: The provider that answered just before ``records``, if any.
 
     Returns:
@@ -375,7 +376,7 @@ def projected(
     typed_calls = {
         record.call_id
         for record in conversation
-        if isinstance(record, ToolResult) and isinstance(record.result, _TYPED)
+        if isinstance(record, ToolMessage) and isinstance(record.result, _TYPED)
     }
     names: dict[str, str] = {}
     out: list[SessionRecord] = list(opening)
@@ -423,7 +424,7 @@ def lines(conversation: Sequence[SessionRecord], *, bot: str) -> list[Line]:
     """
     out: list[Line] = []
     for record in conversation:
-        if isinstance(record, AgentToAgentMessage):
+        if isinstance(record, AgentMessage):
             out.append(
                 Line(
                     role="user",
@@ -491,24 +492,16 @@ def delivered_text(content: str, delivery: Delivery) -> str:
 # the first stamp in the part, so a part's own order holds whatever the other parts did.
 def _moments(records: Sequence[SessionRecord]) -> list[datetime]:
     """Return when each record of one part happened, filled in from its neighbours."""
-    stamped = [_moment(record) for record in records]
+    stamped = [
+        None if isinstance(record, IncompleteRecord) else record.timestamp
+        for record in records
+    ]
     last = next((m for m in stamped if m is not None), datetime.min.replace(tzinfo=UTC))
     out: list[datetime] = []
     for moment in stamped:
         last = last if moment is None else moment
         out.append(last)
     return out
-
-
-def _moment(record: SessionRecord) -> datetime | None:
-    """Return the record's stamp as an aware datetime, or None when unstamped or unreadable."""
-    if isinstance(record, IncompleteRecord) or record.timestamp is None:
-        return None
-    try:
-        found = datetime.fromisoformat(record.timestamp)
-    except ValueError:
-        return None
-    return found if found.tzinfo is not None else found.replace(tzinfo=UTC)
 
 
 def _neutral(
@@ -519,9 +512,9 @@ def _neutral(
 ) -> SessionRecord | None:
     """Return the provider-neutral form of one record, or None when only its CLI can state it."""
     tag = immutable({"provider": provider})
-    if isinstance(record, AgentToAgentMessage):
+    if isinstance(record, AgentMessage):
         attached = record.extra.get("attachments")
-        return AgentToAgentMessage(
+        return AgentMessage(
             timestamp=record.timestamp,
             # Unprefixed, but the agent process put the line's canvas after the words.
             content=delivered_text(record.content or "", Delivery()),
@@ -544,7 +537,7 @@ def _neutral(
         )
     if isinstance(record, ToolCall):
         return replace(record, context_id=None, extra=tag)
-    if isinstance(record, ToolResult):
+    if isinstance(record, ToolMessage):
         failed = from_plain(record.extra.get("is_error"), bool, default=False)
         return replace(
             record,
@@ -559,20 +552,20 @@ def _person(
     *,
     tag: Mapping[str, PlainTree],
     terminal_user: str,
-) -> AgentToAgentMessage | None:
+) -> AgentMessage | None:
     """Return a typed user turn as a person's line, or None for a line the CLI wrote."""
     content = record.content or ""
     if _is_meta(record) or _is_harness(content):
         return None
     delivery = attested_delivery(record.extra)
     if delivery is None:
-        return AgentToAgentMessage(
+        return AgentMessage(
             timestamp=record.timestamp,
             content=content,
-            sender=terminal_user,
+            sender=record.sender or terminal_user,
             extra=tag,
         )
-    return AgentToAgentMessage(
+    return AgentMessage(
         timestamp=record.timestamp,
         content=delivered_text(content, delivery),
         sender=delivery.source or "unknown",
@@ -584,12 +577,12 @@ def _queued_person(
     record: ContextState,
     *,
     tag: Mapping[str, PlainTree],
-) -> AgentToAgentMessage | None:
+) -> AgentMessage | None:
     """Return a stamped queued line as a person's line, or None for claude's own notice."""
     delivery = attested_delivery(record.extra)
     if delivery is None:
         return None
-    return AgentToAgentMessage(
+    return AgentMessage(
         timestamp=record.timestamp,
         content=delivered_text(record.content or "", delivery),
         sender=delivery.source or "unknown",
@@ -632,7 +625,7 @@ def _projected(
     """Return the records one neutral record becomes in the target's own file."""
     provider = _provider(record)
     own = provider == target
-    if isinstance(record, AgentToAgentMessage):
+    if isinstance(record, AgentMessage):
         # Spelled as ``render_inbound`` spells a sender with no room and no context,
         # which is how a line typed live reads. The client package cannot import the
         # agent runner's package that owns that function.
@@ -657,7 +650,7 @@ def _projected(
                 content=f"[{provider} called its tool {record.name}({args})]",
             ),
         ]
-    if isinstance(record, ToolResult):
+    if isinstance(record, ToolMessage):
         failed = from_plain(record.extra.get("is_error"), bool, default=False)
         # An own result crosses as structure only where its call was projected too: a
         # bare result with no tool_use is dropped by the writer that wrote it. A typed
@@ -702,7 +695,7 @@ def _own_lines(records: Sequence[SessionRecord]) -> list[SessionRecord]:
     out: list[SessionRecord] = []
     for record in records:
         marked = record
-        if isinstance(record, UserMessage) and out and isinstance(out[-1], ToolResult):
+        if isinstance(record, UserMessage) and out and isinstance(out[-1], ToolMessage):
             marked = replace(record, extra=immutable({"userType": "external"}))
         out.append(marked)
     return out
@@ -737,14 +730,14 @@ def _folded(records: Sequence[SessionRecord]) -> list[SessionRecord]:
 # session ID``, and the same conversation with them resumed.
 def _stamped(records: Sequence[SessionRecord]) -> list[SessionRecord]:
     """Give every record a timestamp, filled in from the one before it."""
-    last = datetime.now(UTC).isoformat()
+    last = datetime.now(UTC)
     out: list[SessionRecord] = []
     for record in records:
         if isinstance(record, IncompleteRecord):
             out.append(record)
             continue
         stamp = record.timestamp
-        if stamp is None or not stamp:
+        if stamp is None:
             out.append(replace(record, timestamp=last))
             continue
         last = stamp

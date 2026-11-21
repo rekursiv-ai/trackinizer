@@ -806,7 +806,7 @@ async def test_an_input_nobody_serves_is_not_live(
         "POST",
         SESSION_INPUTS_PATH.format(session_id=session_id),
         headers=headers,
-        body={"kind": "Halt", "payload": {}},
+        body={"kind": "ModelHalt", "payload": {}},
     )
 
     assert sent.status_code == 409
@@ -1651,7 +1651,7 @@ async def test_the_wait_takes_the_hosts_own_credential_and_current_instance(
         ("GET", SESSION_PROCESS_PATH, None),
         ("PUT", SESSION_PROCESS_PATH, {}),
         ("DELETE", SESSION_PROCESS_PATH, None),
-        ("POST", SESSION_INPUTS_PATH, {"kind": "Halt", "payload": {}}),
+        ("POST", SESSION_INPUTS_PATH, {"kind": "ModelHalt", "payload": {}}),
     ],
 )
 async def test_a_reader_who_is_not_a_writer_writes_nothing(
@@ -1684,7 +1684,7 @@ async def test_a_session_that_is_none_is_404_on_every_route(world: _World) -> No
         ("GET", SESSION_PROCESS_PATH, None),
         ("PUT", SESSION_PROCESS_PATH, {}),
         ("DELETE", SESSION_PROCESS_PATH, None),
-        ("POST", SESSION_INPUTS_PATH, {"kind": "Halt", "payload": {}}),
+        ("POST", SESSION_INPUTS_PATH, {"kind": "ModelHalt", "payload": {}}),
         ("GET", SESSION_LINES_PATH, None),
     ]
 
@@ -1718,7 +1718,7 @@ async def test_a_server_with_authentication_off_serves_none_of_it(
         (
             "POST",
             SESSION_INPUTS_PATH.format(session_id=session_id),
-            {"kind": "Halt", "payload": {}},
+            {"kind": "ModelHalt", "payload": {}},
         ),
         (
             "GET",
@@ -1767,7 +1767,7 @@ async def test_a_process_a_person_started_holds_the_session_on_their_host(
     viewer = world.relay.lines(session_id, allowed=_always)
     _ = await anext(viewer)
     attached = await asyncio.wait_for(anext(viewer), 5)
-    peer.push(EventLine(kind="ModelCallStarted", payload={}).model_dump_json())
+    peer.push(EventLine(kind="ModelResponseStarted", payload={}).model_dump_json())
     line = await asyncio.wait_for(anext(viewer), 5)
 
     assert isinstance(attached, ProcessLine)
@@ -1775,7 +1775,7 @@ async def test_a_process_a_person_started_holds_the_session_on_their_host(
         process_id,
         "laptop",
     )
-    assert line == EventLine(kind="ModelCallStarted", payload={})
+    assert line == EventLine(kind="ModelResponseStarted", payload={})
     if prior in {"disconnected", "exited"}:
         peer.leave(1006 if prior == "disconnected" else 1000)
         await asyncio.wait_for(asyncio.gather(*world.tasks), 5)

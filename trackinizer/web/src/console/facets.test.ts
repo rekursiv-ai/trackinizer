@@ -78,7 +78,7 @@ test("the feed reads the view's agents, rooms and CLIs by name, and its level's 
     actor: ["lead_atlas-a1", "lead_atlas-b"],
     room: [],
     cli: ["codex"],
-    kind: ["AgentToAgentMessage", "AssistantMessage", "ContextState", "UserMessage"],
+    kind: ["AgentMessage", "AssistantMessage", "ContextState", "UserMessage"],
   });
   expect(
     feedFilter({ agents: [], rooms: ["atlas-*"], clis: [], level: 4 }, AGENTS),

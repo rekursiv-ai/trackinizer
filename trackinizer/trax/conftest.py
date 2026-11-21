@@ -660,14 +660,19 @@ class FakeClient:
 
     def search_sessions(
         self,
-        query: str,
+        query: str | uuid.UUID,
         *,
+        spawned: str = "",
         mode: SearchMode = "fused",
         limit: int = 20,
     ) -> dict[str, PlainTree]:
         """Search sessions."""
         self.calls.append(
-            ("search_sessions", (query,), {"mode": mode, "limit": limit}),
+            (
+                "search_sessions",
+                (query,),
+                {"spawned": spawned, "mode": mode, "limit": limit},
+            ),
         )
         return cast("dict[str, PlainTree]", cast(object, dict(self.session_hits)))
 

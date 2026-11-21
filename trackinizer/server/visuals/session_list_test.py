@@ -15,7 +15,7 @@ import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, RecordingPolicy
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     AssistantMessage,
     ContextState,
     ToolCall,
@@ -195,7 +195,7 @@ async def _list(
 
 def _turn(at: datetime) -> AssistantMessage:
     """One answer written at ``at``."""
-    return AssistantMessage(content="Done.", timestamp=at.isoformat())
+    return AssistantMessage(content="Done.", timestamp=at)
 
 
 @pytest.mark.db_pglite
@@ -340,7 +340,7 @@ async def test_the_last_line_is_the_last_said_on_one_line_by_whom_and_no_tool_ou
     )
     asked = await _session(
         store,
-        records=[AgentToAgentMessage(content="x" * 300, sender=_EMAIL)],
+        records=[AgentMessage(content="x" * 300, sender=_EMAIL)],
     )
     quiet = await _session(store)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -29,7 +30,7 @@ from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
 )
 from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff, render_udiff
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     AssistantMessage,
     Attachment,
     BashResult,
@@ -39,16 +40,17 @@ from trackinizer.sagent.session.types import (
     EditResult,
     GrepResult,
     IncompleteRecord,
+    McpResult,
     ReadResult,
+    SessionContext,
     SessionRecord,
     Splice,
     SystemMessage,
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     TranscriptItem,
-    TurnContext,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -57,11 +59,14 @@ from trackinizer.sagent.session.types import (
     WebSearchResult,
     WriteResult,
     former_kind,
+    stored_plain,
 )
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping, Sequence
+
+    from treekle import PlainTree
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
@@ -95,14 +100,14 @@ def _transcript(records: Iterable[SessionRecord]) -> tuple[TranscriptItem, ...]:
         for record in records
         if isinstance(
             record,
-            UserMessage | AssistantMessage | Thinking | ToolCall | ToolResult,
+            UserMessage | AssistantMessage | Thinking | ToolCall | ToolMessage,
         )
     )
 
 
-def _result(record: object) -> ToolResult:
-    """Return ``record`` after asserting it is a ``ToolResult``."""
-    assert isinstance(record, ToolResult)
+def _result(record: object) -> ToolMessage:
+    """Return ``record`` after asserting it is a ``ToolMessage``."""
+    assert isinstance(record, ToolMessage)
     return record
 
 
@@ -116,17 +121,17 @@ def _typed_result[T](record: object, kind: type[T]) -> T:
 def test_a_session_declares_its_context_and_identity() -> None:
     records = list(codex.normalize(StringIO(META + CONTEXT)))
 
-    # The launch line IS settings, so it opens the stream as a ``TurnContext``
+    # The launch line IS settings, so it opens the stream as a ``SessionContext``
     # rather than as metadata beside it, and the ``ContextClear`` it opens
     # follows. The per-turn settings then supersede it.
     launch = records[0]
-    assert isinstance(launch, TurnContext)
+    assert isinstance(launch, SessionContext)
     declaration = from_plain(launch.extra.get("payload"), dict[str, object])
     assert declaration["cwd"] == "/workspace"
     assert declaration["session_id"] == "s1"
     assert isinstance(records[1], ContextClear)
     context = records[2]
-    assert isinstance(context, TurnContext)
+    assert isinstance(context, SessionContext)
     assert context.model == "gpt-5.6-sol"
     assert context.effort == "medium"
     assert context.summary_kind == "auto"
@@ -247,7 +252,7 @@ def test_a_record_names_the_context_that_applied() -> None:
     # Index 2: the launch settings open the stream and the ``ContextClear``
     # they open follows, so the turn's own context sits third.
     assert message.context_id == 2
-    assert isinstance(records[2], TurnContext)
+    assert isinstance(records[2], SessionContext)
 
 
 def test_reasoning_normalizes_to_a_summary_beside_its_sealed_half() -> None:
@@ -278,7 +283,7 @@ def test_a_record_before_any_turn_names_the_opening_context() -> None:
 
     [message] = [record for record in records if isinstance(record, UserMessage)]
     assert message.context_id is not None
-    assert isinstance(records[message.context_id], TurnContext)
+    assert isinstance(records[message.context_id], SessionContext)
 
 
 def test_an_empty_rollout_reads_as_no_records() -> None:
@@ -459,7 +464,9 @@ def test_an_event_maps_to_its_own_record_type(
     # a compaction is FOLLOWED by the window it opened, and that trailing
     # ``ContextClear`` is a derived record, not what the event mapped to.
     record = records[2]
-    assert type(record.result if isinstance(record, ToolResult) else record) is expected
+    assert (
+        type(record.result if isinstance(record, ToolMessage) else record) is expected
+    )
 
 
 def test_a_peer_message_is_a_message_not_a_tool_result() -> None:
@@ -474,7 +481,7 @@ def test_a_peer_message_is_a_message_not_a_tool_result() -> None:
     records = list(codex.normalize(StringIO(native)))
 
     message = records[-1]
-    assert isinstance(message, AgentToAgentMessage)
+    assert isinstance(message, AgentMessage)
     assert message.content == "Take a look."
     assert message.sender == "/root"
     assert message.recipient == "/root/reviewer"
@@ -490,7 +497,7 @@ def test_a_constructed_peer_message_keeps_prose_and_routing() -> None:
 
     codex.denormalize(
         [
-            AgentToAgentMessage(
+            AgentMessage(
                 sender="root",
                 recipient="reviewer",
                 content="review this",
@@ -502,7 +509,7 @@ def test_a_constructed_peer_message_keeps_prose_and_routing() -> None:
     (message,) = (
         record
         for record in codex.normalize(StringIO(output.getvalue()))
-        if isinstance(record, AgentToAgentMessage)
+        if isinstance(record, AgentMessage)
     )
     assert (message.sender, message.recipient, message.content) == (
         "root",
@@ -815,7 +822,7 @@ def test_a_first_line_launch_after_a_release_is_refused() -> None:
     _ = list(reader.read(META))
     reader._base = 1
 
-    with pytest.raises(ValueError, match="_base == 0"):
+    with pytest.raises(ValueError, match=r"^Expected self\._base == 0\.$"):
         reader._launch(({}, None), {}, 0)
 
 
@@ -831,7 +838,7 @@ def test_a_record_without_a_session_writes_nothing() -> None:
     ("record", "expected"),
     [
         (
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("u", WebSearchHit(url="u")),
@@ -841,7 +848,7 @@ def test_a_record_without_a_session_writes_nothing() -> None:
             '"results":[{"url":"u"}]',
         ),
         (
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("u", WebSearchHit(url="u")),
@@ -884,6 +891,16 @@ def test_an_uncategorized_line_state_without_an_outer_line_stays_payload() -> No
     assert (state, restored) == ({}, record)
 
 
+def test_a_record_s_line_state_is_taken_out_of_what_it_keeps() -> None:
+    state = {"outer": {"type": "response_item", "x": 1}}
+    record = UserMessage(content="hi", extra={"k": 1, "$codex_line": state})
+
+    assert codex._pop_line_state(record) == (
+        state,
+        UserMessage(content="hi", extra={"k": 1}),
+    )
+
+
 def test_content_without_native_order_is_not_dropped() -> None:
     records = (
         SystemMessage(content="instructions", subtype="developer"),
@@ -906,11 +923,11 @@ def test_content_without_native_order_is_not_dropped() -> None:
 
 def test_a_synthesized_session_denormalizes_to_codex_records() -> None:
     records = (
-        TurnContext(context_id=0, extra={"turn_id": "t1"}),
+        SessionContext(context_id=0, extra={"turn_id": "t1"}),
         UserMessage(context_id=0, content="Hi."),
         AssistantMessage(context_id=0, content="Here."),
         ToolCall(context_id=0, call_id="c1", name="Read", arguments={"p": "/a"}),
-        ToolResult(
+        ToolMessage(
             context_id=0,
             call_id="c1",
             state="done",
@@ -924,7 +941,7 @@ def test_a_synthesized_session_denormalizes_to_codex_records() -> None:
 
     rebuilt = _transcript(codex.normalize(StringIO(out.getvalue())))
     assert [
-        former_kind(r) if isinstance(r, ToolResult) else type(r).__name__
+        former_kind(r) if isinstance(r, ToolMessage) else type(r).__name__
         for r in rebuilt
     ] == [
         "UserMessage",
@@ -1022,8 +1039,8 @@ def test_foreign_provider_residuals_do_not_enter_codex_wire() -> None:
 
 def test_another_cli_s_session_becomes_a_rollout_codex_resumes() -> None:
     """Launch line first, every line stamped, the other CLI's bookkeeping left out."""
-    claude_context = TurnContext(
-        cwd="/w",
+    claude_context = SessionContext(
+        cwd=Path("/w"),
         encoding={"newline_terminated": True, "ascii_escaped": False},
     )
     output = StringIO()
@@ -1033,7 +1050,12 @@ def test_another_cli_s_session_becomes_a_rollout_codex_resumes() -> None:
             claude_context,
             UncategorizedRecord(kind="queue-operation", payload={"queued": 1}),
             IncompleteRecord(text="{torn\n"),
-            UserMessage(timestamp="2026-01-01T00:00:00Z", content="hi"),
+            # As claude's reader keeps a line's time: the instant, and its spelling.
+            UserMessage(
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                content="hi",
+                extra={"$timestamp_as_written": "2026-01-01T00:00:00Z"},
+            ),
             Thinking(content="plan", encrypted="claude-signature"),
             AssistantMessage(content="yo"),
         ],
@@ -1122,11 +1144,7 @@ def test_reasoning_reads_each_field_codex_states_and_keeps_the_rest(
     payload: dict[str, object],
     thinking: Thinking,
 ) -> None:
-    assert codex._read_thinking(payload, 3, "t") == replace(
-        thinking,
-        context_id=3,
-        timestamp="t",
-    )
+    assert codex._read_thinking(payload, 3) == replace(thinking, context_id=3)
 
 
 @pytest.mark.parametrize(
@@ -1205,7 +1223,7 @@ def test_a_message_writes_its_role_s_text_blocks_in_codex_s_order(
 
 
 def test_a_patch_without_its_event_marker_takes_each_path_from_its_record() -> None:
-    edited = ToolResult(
+    edited = ToolMessage(
         call_id="c",
         state="done",
         stdout=(Splice(before="a", after="b"),),
@@ -1230,7 +1248,7 @@ def test_a_patch_without_its_event_marker_takes_each_path_from_its_record() -> N
 
 
 def test_an_edit_naming_no_file_is_only_what_the_model_read() -> None:
-    edited = ToolResult(
+    edited = ToolMessage(
         call_id="c",
         state="done",
         stdout=("ok", Splice(before="a", after="b")),
@@ -1252,7 +1270,7 @@ def test_an_edit_naming_no_file_is_only_what_the_model_read() -> None:
 
 
 def test_a_fetch_writes_all_its_text_in_codex_s_order() -> None:
-    fetched = ToolResult(
+    fetched = ToolMessage(
         call_id="c",
         state="done",
         stdout=("a", "b"),
@@ -1270,10 +1288,11 @@ def test_a_fetch_writes_all_its_text_in_codex_s_order() -> None:
     ]
 
 
-def _launch_line(named: str, opened: str) -> TurnContext:
+def _launch_line(named: str, opened: str) -> SessionContext:
     """Return the launch line a rollout from another CLI opens with."""
-    return TurnContext(
-        timestamp=opened,
+    when = datetime.fromisoformat(opened)
+    return SessionContext(
+        timestamp=when,
         encoding={"newline_terminated": True},
         extra={
             "ordinal": 0,
@@ -1289,6 +1308,7 @@ def _launch_line(named: str, opened: str) -> TurnContext:
                 "thread_source": "user",
                 "model_provider": "openai",
             },
+            **({} if when.isoformat() == opened else {"$timestamp_as_written": opened}),
         },
     )
 
@@ -1300,9 +1320,9 @@ def test_another_cli_s_records_are_stamped_unsealed_and_opened_by_a_launch() -> 
         UncategorizedRecord(kind="queue-operation"),
         task,
         UserMessage(),
-        UserMessage(timestamp="t1", content="hi"),
+        UserMessage(timestamp=datetime(2026, 1, 1, tzinfo=UTC), content="hi"),
         Thinking(content="plan", encrypted="claude-signature"),
-        UserMessage(timestamp="t2", content="more"),
+        UserMessage(timestamp=datetime(2026, 1, 2, tzinfo=UTC), content="more"),
         Thinking(encrypted="gAAA", reasoning_id="rs_1"),
     ]
 
@@ -1313,14 +1333,19 @@ def test_another_cli_s_records_are_stamped_unsealed_and_opened_by_a_launch() -> 
         cli_version="9.9",
     )
 
+    opened = "2026-01-01T00:00:00+00:00"
     assert rollout == [
-        _launch_line(str(uuid5(NAMESPACE_URL, "t1/6/hi")), "t1"),
-        replace(task, timestamp="t1"),
-        UserMessage(timestamp="t1"),
-        UserMessage(timestamp="t1", content="hi"),
-        Thinking(timestamp="t1", content="plan"),
-        UserMessage(timestamp="t2", content="more"),
-        Thinking(timestamp="t2", encrypted="gAAA", reasoning_id="rs_1"),
+        _launch_line(str(uuid5(NAMESPACE_URL, f"{opened}/6/hi")), opened),
+        replace(task, timestamp=datetime(2026, 1, 1, tzinfo=UTC)),
+        UserMessage(timestamp=datetime(2026, 1, 1, tzinfo=UTC)),
+        UserMessage(timestamp=datetime(2026, 1, 1, tzinfo=UTC), content="hi"),
+        Thinking(timestamp=datetime(2026, 1, 1, tzinfo=UTC), content="plan"),
+        UserMessage(timestamp=datetime(2026, 1, 2, tzinfo=UTC), content="more"),
+        Thinking(
+            timestamp=datetime(2026, 1, 2, tzinfo=UTC),
+            encrypted="gAAA",
+            reasoning_id="rs_1",
+        ),
     ]
 
 
@@ -1345,7 +1370,11 @@ def test_a_session_stating_no_time_opens_at_the_epoch_under_its_id(
 
     assert rollout == [
         _launch_line(named, "1970-01-01T00:00:00.000Z"),
-        AssistantMessage(timestamp="1970-01-01T00:00:00.000Z", content="yo"),
+        AssistantMessage(
+            timestamp=datetime(1970, 1, 1, tzinfo=UTC),
+            content="yo",
+            extra={"$timestamp_as_written": "1970-01-01T00:00:00.000Z"},
+        ),
     ]
 
 
@@ -1362,7 +1391,7 @@ def test_a_read_crosses_as_the_command_codex_reads_with() -> None:
 
     codex.denormalize(
         [
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("x",),
@@ -1384,7 +1413,7 @@ def test_a_read_crosses_as_the_command_codex_reads_with() -> None:
 
 
 def test_a_read_that_names_no_file_crosses_without_a_command() -> None:
-    read = ToolResult(call_id="c", state="done", stdout=("x",), result=ReadResult())
+    read = ToolMessage(call_id="c", state="done", stdout=("x",), result=ReadResult())
 
     assert codex._write_completed(read, {}) == {
         "type": "item_completed",
@@ -1399,7 +1428,7 @@ def test_a_read_that_names_no_file_crosses_without_a_command() -> None:
 
 
 def test_a_command_is_written_with_every_text_item_of_each_stream() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c",
         state="done",
         stdout=("a", "b"),
@@ -1432,7 +1461,7 @@ def test_a_command_is_written_with_every_text_item_of_each_stream() -> None:
     ("record", "expected"),
     [
         (
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("out",),
@@ -1449,14 +1478,14 @@ def test_a_command_is_written_with_every_text_item_of_each_stream() -> None:
             },
         ),
         (
-            ToolResult(call_id="c", state="done", result=WebSearchResult(query="q")),
+            ToolMessage(call_id="c", state="done", result=WebSearchResult(query="q")),
             {"type": "WebSearch", "id": "c", "query": "q"},
         ),
     ],
     ids=["command", "web-search"],
 )
 def test_a_completed_item_states_each_value_its_line_did_not(
-    record: ToolResult,
+    record: ToolMessage,
     expected: dict[str, object],
 ) -> None:
     """A key the line lacked is left out only while its value says nothing."""
@@ -1467,7 +1496,7 @@ def test_a_completed_item_states_each_value_its_line_did_not(
 
 
 def test_a_legacy_command_end_states_each_value_its_line_did_not() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c",
         state="done",
         stdout=("out",),
@@ -1499,7 +1528,7 @@ def test_a_write_with_no_stored_entry_states_the_whole_content(
     content: str | None,
     expected: str,
 ) -> None:
-    written = ToolResult(
+    written = ToolMessage(
         call_id="c",
         state="done",
         stdout=("Wrote a.py.",),
@@ -1525,19 +1554,19 @@ def test_each_patch_entry_is_filled_from_the_record_of_its_own_path() -> None:
         "d.py": {"type": "add", "content": None, "$filled": "content"},
     }
     by_path = {
-        "a.py": ToolResult(
+        "a.py": ToolMessage(
             call_id="c",
             state="done",
             stdout=("Wrote a.py.",),
             result=WriteResult(path="a.py"),
         ),
-        "b.py": ToolResult(
+        "b.py": ToolMessage(
             call_id="c",
             state="done",
             stdout=("Edited b.py.", *parse_udiff("-old\n")),
             result=EditResult(path="b.py"),
         ),
-        "c.py": ToolResult(
+        "c.py": ToolMessage(
             call_id="c",
             state="done",
             stdout=("Edited c.py.",),
@@ -1558,7 +1587,7 @@ def test_file_edit_diff_is_emitted_when_path_is_known() -> None:
 
     codex.denormalize(
         [
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("Edited a.py.", *parse_udiff("@@ -1 +1 @@\n-old\n+new\n")),
@@ -1708,8 +1737,12 @@ def test_a_line_timestamp_is_stored_once() -> None:
     record = records[-1]
     assert isinstance(record, UserMessage)
 
-    assert record.timestamp == "2026-07-13T00:34:02.346Z"
+    assert record.timestamp == datetime(2026, 7, 13, 0, 34, 2, 346_000, UTC)
     assert "$codex_line" not in record.extra, "the stamp is on the record already"
+    # Its spelling is kept beside it, and stored as the time itself.
+    stored = stored_plain(record)
+    assert stored["timestamp"] == "2026-07-13T00:34:02.346Z"
+    assert "2026-07-13T00:34:02.346Z" not in json.dumps(stored["extra"])
 
     output = StringIO()
     codex.denormalize(records, output)
@@ -1760,7 +1793,7 @@ def test_the_launch_payload_is_stored_once() -> None:
     )
     records = list(codex.normalize(StringIO(native)))
     launch = records[0]
-    assert isinstance(launch, TurnContext)
+    assert isinstance(launch, SessionContext)
     extra = dict(launch.extra)
 
     assert "payload" not in from_plain(extra.get("$outer"), dict[str, object])
@@ -1889,16 +1922,22 @@ def test_an_added_file_is_a_write_not_an_edit() -> None:
     assert output.getvalue() == native
 
 
-def test_a_multi_path_patch_names_every_file_it_changed() -> None:
+@pytest.mark.parametrize(
+    "stamp",
+    ["", '"timestamp":"2026-08-02T16:26:08.534Z",'],
+    ids=["unstamped", "stamped"],
+)
+def test_a_multi_path_patch_names_every_file_it_changed(stamp: str) -> None:
     """One event, several files: one record each, per axiom 10.
 
     ``changes`` is keyed by path, and folding every path's splices into ONE
     record left it naming no file at all -- 44 of 451 captured events touch
     more than one. The line's residual rides on the FIRST record, which is the
-    same rule ``_read_user`` follows when one line carries several acts.
+    same rule ``_read_user`` follows when one line carries several acts. Each
+    record keeps the line's time, which is no residual of its own.
     """
     native = META + (
-        '{"type":"event_msg","payload":{"type":"item_completed","item":'
+        "{" + stamp + '"type":"event_msg","payload":{"type":"item_completed","item":'
         '{"type":"FileChange","id":"c1","changes":'
         '{"/w/a.py":{"type":"update","unified_diff":"@@ -1 +1 @@\\n-a\\n+A\\n"},'
         '"/w/b.py":{"type":"update","unified_diff":"@@ -5 +5 @@\\n-b\\n+B\\n"}'
@@ -1912,7 +1951,8 @@ def test_a_multi_path_patch_names_every_file_it_changed() -> None:
             len(tuple(item for item in r.stdout if isinstance(item, Splice))),
         )
         for r in records
-        if isinstance(r, ToolResult) and isinstance(tool_result := r.result, EditResult)
+        if isinstance(r, ToolMessage)
+        and isinstance(tool_result := r.result, EditResult)
     ]
     assert edits == [("/w/a.py", 1), ("/w/b.py", 1)]
 
@@ -1959,7 +1999,7 @@ def test_a_mixed_patch_harvests_the_add_beside_the_update() -> None:
     acts = [
         tool_result
         for r in records
-        if isinstance(r, ToolResult)
+        if isinstance(r, ToolMessage)
         and isinstance(tool_result := r.result, EditResult | WriteResult)
     ]
 
@@ -2161,6 +2201,69 @@ def test_an_opening_clear_costs_no_bytes() -> None:
     assert out.getvalue() == native
 
 
+def test_a_launch_line_reads_as_its_settings_and_the_clear_it_opens() -> None:
+    spelled = "2026-08-24T19:34:39.215Z"
+    native = (
+        '{"timestamp":"' + spelled + '","type":"session_meta",'
+        '"payload":{"session_id":"s1","forked_from_id":"s0",'
+        '"base_instructions":"XYZZY"}}\n'
+    )
+
+    launch, clear = codex.normalize(StringIO(native))
+
+    when = datetime(2026, 8, 24, 19, 34, 39, 215_000, tzinfo=UTC)
+    assert isinstance(launch, SessionContext)
+    assert (launch.timestamp, launch.encoding) == (when, {"newline_terminated": True})
+    assert launch.extra["$timestamp_as_written"] == spelled
+    assert clear == ContextClear(
+        timestamp=when,
+        cleared_session_id="s0",
+        system_prompt="XYZZY",
+        extra={"$opens": True, "$declared": 5, "$timestamp_as_written": spelled},
+    )
+
+
+def test_a_launch_the_file_did_not_open_with_is_the_context_of_what_follows() -> None:
+    native = (
+        "\n"
+        + META
+        + _item(
+            '{"type":"message","role":"user",'
+            '"content":[{"type":"input_text","text":"hi"}]}',
+        )
+    )
+
+    records = list(codex.normalize(StringIO(native)))
+
+    # The opening context, the blank line, the launch settings, their clear.
+    message = records[4]
+    assert isinstance(records[2], SessionContext)
+    assert isinstance(message, UserMessage)
+    assert message.context_id == 2
+
+
+def test_an_opening_clear_states_what_was_sent_before_the_first_act() -> None:
+    native = (
+        '{"type":"session_meta","payload":{"session_id":"s1",'
+        '"base_instructions":"XYZZY"}}\n'
+        + _item(
+            '{"type":"message","role":"developer",'
+            '"content":[{"type":"input_text","text":"skills"}]}',
+        )
+        + _item(
+            '{"type":"message","role":"user",'
+            '"content":[{"type":"input_text","text":"hi"}]}',
+        )
+    )
+
+    records = list(codex.normalize(StringIO(native)))
+
+    opening = records[1]
+    assert isinstance(opening, ContextClear)
+    assert opening.system_prompt == "XYZZY\nskills"
+    assert opening.extra == {"$opens": True, "$declared": 5}
+
+
 def test_a_compaction_carries_the_context_that_replaced_the_history() -> None:
     """``history`` is the POST-compaction context, and the field exists for it.
 
@@ -2185,6 +2288,27 @@ def test_a_compaction_carries_the_context_that_replaced_the_history() -> None:
     kept = window.history[0]
     assert isinstance(kept, UserMessage)
     assert kept.content == "keep me"
+
+
+def test_the_turns_a_compaction_kept_are_stored_at_its_line_s_time_as_spelled() -> None:
+    spelled = "2026-08-24T19:34:39.215Z"
+    native = META + _COMPACTED.replace("{", '{"timestamp":"' + spelled + '",', 1)
+
+    records = list(codex.normalize(StringIO(native)))
+    output = StringIO()
+    codex.denormalize(records, output)
+
+    assert output.getvalue() == native
+    *_, event, window = records
+    assert isinstance(window, ContextClear)
+    opened = stored_plain(window)
+    kept = from_plain(opened["history"], list[dict[str, object]])
+    assert [record["timestamp"] for record in (stored_plain(event), opened, *kept)] == [
+        spelled,
+        spelled,
+        spelled,
+        spelled,
+    ]
 
 
 def test_a_compaction_states_the_summary_the_next_turn_reads() -> None:
@@ -2282,20 +2406,20 @@ def test_grouping_still_joins_a_patch_that_touched_several_paths() -> None:
     writer rebuilds ONE event from them -- so the followers still have to
     arrive with the record that led their line.
     """
-    lead = ToolResult(
+    lead = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("Edited /w/a.py.",),
         result=EditResult(path="/w/a.py"),
         extra={"$echoes": "x"},
     )
-    follower = ToolResult(
+    follower = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("Edited /w/b.py.",),
         result=EditResult(path="/w/b.py"),
     )
-    other = ToolResult(
+    other = ToolMessage(
         call_id="c2",
         state="done",
         stdout=("Edited /w/c.py.",),
@@ -2319,7 +2443,7 @@ def test_codex_small_helpers_preserve_edge_shapes() -> None:
     assert codex._ordered("x", {"z": 1}) == {"z": 1}
     assert (
         codex._write_rows(
-            ToolResult(call_id="c", state="done", result=WebSearchResult()),
+            ToolMessage(call_id="c", state="done", result=WebSearchResult()),
             {},
         )
         is None
@@ -2347,19 +2471,17 @@ def test_codex_writer_handles_unmapped_and_special_records() -> None:
     assert codex._write_record(UncategorizedRecord(kind="foreign/type"))
     assert codex._write_record(UncategorizedRecord(kind="foreign")) == []
     assert codex._write_record(ContextClear()) == []
-    assert (
-        codex._write_record(AgentToAgentMessage(content="hi"))[0][0] == "response_item"
-    )
+    assert codex._write_record(AgentMessage(content="hi"))[0][0] == "response_item"
     error = SystemMessage(content="oops", extra={"$event": True})
     assert codex._write_record(error)[0][0] == "event_msg"
     assert codex._write_record(SystemMessage(content="ok"))[0][0] == "response_item"
     assert [
         line_type
         for line_type, _ in codex._write_result(
-            ToolResult(call_id="c", state="done", result=WebSearchResult(query="q")),
+            ToolMessage(call_id="c", state="done", result=WebSearchResult(query="q")),
         )
     ] == ["event_msg", "response_item"]
-    fetched = ToolResult(
+    fetched = ToolMessage(
         call_id="c",
         state="done",
         stdout=("x",),
@@ -2373,7 +2495,7 @@ def test_codex_writer_handles_unmapped_and_special_records() -> None:
     ]
     assert (
         codex._write_completed(
-            ToolResult(call_id="c", state="done", result=WebFetchResult()),
+            ToolMessage(call_id="c", state="done", result=WebFetchResult()),
             {},
         )
         is None
@@ -2393,7 +2515,6 @@ def test_codex_reader_handles_multiblock_and_malformed_shapes() -> None:
             ],
         },
         0,
-        None,
     )
     assert thinking.summary == "a\nb"
     assert codex._declared_instructions({"base_instructions": "prompt"}) == "prompt"
@@ -2423,7 +2544,7 @@ def test_codex_patch_and_usage_helpers_report_exact_values() -> None:
 
 
 def test_codex_completed_result_preserves_missing_edit_path() -> None:
-    result = ToolResult(
+    result = ToolMessage(
         call_id="c",
         state="done",
         stdout=("Edited the file.", Splice(before="a", after="b")),
@@ -2433,7 +2554,7 @@ def test_codex_completed_result_preserves_missing_edit_path() -> None:
 
 
 def test_another_cli_s_shell_result_states_what_codex_s_model_reads() -> None:
-    ran = ToolResult(
+    ran = ToolMessage(
         call_id="c",
         state="done",
         stdout=("boom",),
@@ -2448,7 +2569,7 @@ def test_another_cli_s_shell_result_states_what_codex_s_model_reads() -> None:
 
 
 def test_a_result_codex_has_no_event_for_is_written_as_what_the_model_read() -> None:
-    grepped = ToolResult(
+    grepped = ToolMessage(
         call_id="c",
         state="done",
         stdout=("a.py:1:x",),
@@ -2465,17 +2586,17 @@ def test_a_result_codex_has_no_event_for_is_written_as_what_the_model_read() -> 
 @pytest.mark.parametrize(
     ("record", "output"),
     [
-        (ToolResult(call_id="c", state="pending", shown="[running]"), "[running]"),
+        (ToolMessage(call_id="c", state="pending", shown="[running]"), "[running]"),
         (
-            ToolResult(call_id="c", state="failed", stderr=("ValueError: no",)),
+            ToolMessage(call_id="c", state="failed", stderr=("ValueError: no",)),
             "ValueError: no",
         ),
-        (ToolResult(call_id="c", state="done", result=UncategorizedToolResult()), ""),
+        (ToolMessage(call_id="c", state="done", result=UncategorizedToolResult()), ""),
     ],
     ids=["pending-shown", "failed", "done-empty"],
 )
 def test_a_pending_failed_or_uncategorized_result_is_written_as_its_text(
-    record: ToolResult,
+    record: ToolMessage,
     output: str,
 ) -> None:
     assert codex._write_result(record) == [
@@ -2490,7 +2611,7 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
     assert codex._with_instructions({"base_instructions": None}, []) == {
         "base_instructions": None,
     }
-    assert codex._write_context(TurnContext(effort="high"))["effort"] == "high"
+    assert codex._write_context(SessionContext(effort="high"))["effort"] == "high"
     assert codex._write_record(ContextCompaction(extra={"$echoes": "compact"})) == [
         ("event_msg", {"type": "compact"}),
     ]
@@ -2500,18 +2621,18 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
     codex.denormalize(
         [
             IncompleteRecord(text="first\n"),
-            TurnContext(extra={"payload": {}, "line": 2}),
+            SessionContext(extra={"payload": {}, "line": 2}),
         ],
         launch,
     )
     assert launch.getvalue() == (
         'first\n{"timestamp":null,"type":"session_meta","payload":{}}\n'
     )
-    assert codex._write_result(ToolResult(call_id="c", state="pending")) == []
-    assert codex._write_result(ToolResult(call_id="c", state="cancelled")) == []
+    assert codex._write_result(ToolMessage(call_id="c", state="pending")) == []
+    assert codex._write_result(ToolMessage(call_id="c", state="cancelled")) == []
     assert (
         codex._write_output(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 result=UncategorizedToolResult(),
@@ -2521,7 +2642,7 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
         )["type"]
         == "x"
     )
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c",
         state="done",
         stdout=("out",),
@@ -2540,7 +2661,7 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
     assert (
         codex._write_changes(
             {
-                "a": ToolResult(
+                "a": ToolMessage(
                     call_id="c",
                     state="done",
                     stdout=("Wrote a.",),
@@ -2553,7 +2674,7 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
     )
     assert (
         codex._write_rows(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 result=WebSearchResult(),
@@ -2587,7 +2708,7 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
 
 def test_codex_reader_preserves_residual_and_multiline_shapes() -> None:
     assert (
-        codex._read_thinking({"encrypted_content": "sealed"}, 0, None).extra[
+        codex._read_thinking({"encrypted_content": "sealed"}, 0).extra[
             "$summary_absent"
         ]
         is True
@@ -2600,7 +2721,6 @@ def test_codex_reader_preserves_residual_and_multiline_shapes() -> None:
             ],
         },
         0,
-        None,
     ).extra["$parts"] == (1, 1)
     parsed_call = codex._read_tool_call(
         {
@@ -2610,7 +2730,6 @@ def test_codex_reader_preserves_residual_and_multiline_shapes() -> None:
             "arguments": '{"a": 1, "a": 2}',
         },
         0,
-        None,
     )
     assert isinstance(parsed_call, ToolCall)
     assert parsed_call.extra["$raw"] == '{"a": 1, "a": 2}'
@@ -2622,10 +2741,7 @@ def test_codex_reader_preserves_residual_and_multiline_shapes() -> None:
         "type",
         "command",
     ]
-    assert (
-        codex._read_context({"effort": "ultra", "summary": "auto"}, None).effort
-        == "max"
-    )
+    assert codex._read_context({"effort": "ultra", "summary": "auto"}).effort == "max"
     message = codex._read_response_item(
         "agent_message",
         {
@@ -2637,9 +2753,8 @@ def test_codex_reader_preserves_residual_and_multiline_shapes() -> None:
             ],
         },
         0,
-        None,
     )
-    assert isinstance(message, AgentToAgentMessage)
+    assert isinstance(message, AgentMessage)
     assert message.extra["$parts"] == (1, 1)
 
 
@@ -2743,19 +2858,19 @@ def test_a_rollout_writes_back_exactly_however_its_lines_sit(rollout: str) -> No
 @pytest.mark.parametrize(
     ("context", "cwd", "declared"),
     [
-        (TurnContext(cwd="/a", encoding={"ascii_escaped": False}), None, "/a"),
+        (SessionContext(cwd=Path("/a"), encoding={"ascii_escaped": False}), None, "/a"),
         (
-            TurnContext(extra={"cwd": "/b"}, encoding={"ascii_escaped": False}),
+            SessionContext(extra={"cwd": "/b"}, encoding={"ascii_escaped": False}),
             None,
             "/b",
         ),
-        (TurnContext(encoding={"ascii_escaped": False}), None, ""),
-        (TurnContext(cwd="/a", encoding={"ascii_escaped": False}), "/c", "/c"),
+        (SessionContext(encoding={"ascii_escaped": False}), None, ""),
+        (SessionContext(cwd=Path("/a"), encoding={"ascii_escaped": False}), "/c", "/c"),
     ],
     ids=["field", "extra", "none", "given"],
 )
 def test_another_cli_s_session_is_declared_where_and_as_what_it_was_asked(
-    context: TurnContext,
+    context: SessionContext,
     cwd: str | None,
     declared: str,
 ) -> None:
@@ -2786,13 +2901,16 @@ def test_another_cli_s_session_is_declared_where_and_as_what_it_was_asked(
 def test_a_rollout_codex_wrote_is_not_rebuilt_as_another_cli_s() -> None:
     native = StringIO()
     codex.denormalize(
-        [TurnContext(encoding={"newline_terminated": True}), UserMessage(content="hi")],
+        [
+            SessionContext(encoding={"newline_terminated": True}),
+            UserMessage(content="hi"),
+        ],
         native,
     )
     compacted = StringIO()
     codex.denormalize(
         [
-            TurnContext(
+            SessionContext(
                 encoding={"newline_terminated": True},
                 extra={"$compact": True},
             ),
@@ -2809,15 +2927,15 @@ def test_a_rollout_codex_wrote_is_not_rebuilt_as_another_cli_s() -> None:
     ("launch", "ordinals"),
     [
         (
-            TurnContext(extra={"ordinal": 4, "payload": {"id": "s"}}),
+            SessionContext(extra={"ordinal": 4, "payload": {"id": "s"}}),
             [4, 5, 6, 7],
         ),
-        (TurnContext(extra={"payload": {"id": "s"}}), [None, None, None, None]),
+        (SessionContext(extra={"payload": {"id": "s"}}), [None, None, None, None]),
     ],
     ids=["numbered", "unnumbered"],
 )
 def test_lines_added_to_a_rollout_are_numbered_on_from_its_launch(
-    launch: TurnContext,
+    launch: SessionContext,
     ordinals: list[int | None],
 ) -> None:
     output = StringIO()
@@ -2826,7 +2944,7 @@ def test_lines_added_to_a_rollout_are_numbered_on_from_its_launch(
         [
             launch,
             IncompleteRecord(text="{torn\n"),
-            UserMessage(timestamp="t", content="a"),
+            UserMessage(timestamp=datetime(2026, 1, 1, tzinfo=UTC), content="a"),
             AssistantMessage(content="b"),
         ],
         output,
@@ -2838,7 +2956,7 @@ def test_lines_added_to_a_rollout_are_numbered_on_from_its_launch(
         None if line == "{torn" else json_loads(line, dict[str, object]).get("ordinal")
         for line in lines
     ] == [ordinals[0], None, *ordinals[2:]]
-    assert '"timestamp":"t"' in lines[2]
+    assert '"timestamp":"2026-01-01T00:00:00+00:00"' in lines[2]
     assert '"timestamp"' not in lines[3]
     assert '"timestamp"' in lines[0]
 
@@ -2848,7 +2966,7 @@ def test_a_launch_stating_a_null_ordinal_and_payload_numbers_from_zero() -> None
 
     codex.denormalize(
         [
-            TurnContext(extra={"ordinal": None, "payload": None}),
+            SessionContext(extra={"ordinal": None, "payload": None}),
             UserMessage(content="a"),
         ],
         output,
@@ -2915,7 +3033,12 @@ def test_a_launch_stated_unstamped_is_written_unstamped() -> None:
     output = StringIO()
 
     codex.denormalize(
-        [TurnContext(timestamp="t", extra={"$timestamp": False, "payload": {}})],
+        [
+            SessionContext(
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                extra={"$timestamp": False, "payload": {}},
+            ),
+        ],
         output,
     )
 
@@ -2923,7 +3046,7 @@ def test_a_launch_stated_unstamped_is_written_unstamped() -> None:
 
 
 def test_which_settings_records_become_a_turn_context_line() -> None:
-    restated = TurnContext(
+    restated = SessionContext(
         extra={
             "payload": {"cwd": "/w"},
             "$codex_line": {"outer": {"type": "turn_context"}},
@@ -2931,11 +3054,13 @@ def test_which_settings_records_become_a_turn_context_line() -> None:
     )
 
     assert [outer for outer, _ in codex._write_record(restated)] == ["turn_context"]
-    assert [outer for outer, _ in codex._write_record(TurnContext())] == [
+    assert [outer for outer, _ in codex._write_record(SessionContext())] == [
         "turn_context",
     ]
-    assert codex._write_record(TurnContext(extra={"payload": {}})) == []
-    assert codex._write_record(TurnContext(encoding={"newline_terminated": True})) == []
+    assert codex._write_record(SessionContext(extra={"payload": {}})) == []
+    assert (
+        codex._write_record(SessionContext(encoding={"newline_terminated": True})) == []
+    )
 
 
 def test_a_compaction_with_no_window_after_it_still_writes_its_line() -> None:
@@ -2976,7 +3101,7 @@ def test_a_world_state_and_an_event_marker_keep_no_note_of_the_reader_s() -> Non
 
 
 def test_a_result_codex_has_no_event_for_keeps_its_residual_in_codex_s_order() -> None:
-    failed = ToolResult(
+    failed = ToolMessage(
         call_id="c",
         state="failed",
         stderr=("boom",),
@@ -2993,6 +3118,1403 @@ def _swapped(index: int, record: object) -> str:
     """Return the rollout with line ``index`` replaced by ``record``."""
     line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
     return "".join([*FIXTURE[:index], line, *FIXTURE[index + 1 :]])
+
+
+def _stated(
+    order: Sequence[str],
+    states: Mapping[str, str],
+    residual: Mapping[str, PlainTree],
+) -> dict[str, PlainTree]:
+    """Return what a record keeps of a payload whose modeled fields it read."""
+    return {
+        "$__custom_json_fields__": {
+            "version": 1,
+            "order": list(order),
+            "states": dict(states),
+            "raw": {},
+            "residual": dict(residual),
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "model": "gpt-5",
+                "approval_policy": "never",
+                "effort": "ultra",
+                "summary": "auto",
+                "cwd": "/w",
+            },
+            SessionContext(
+                model="gpt-5",
+                effort="max",
+                summary_kind="auto",
+                permission="never",
+                extra=_stated(
+                    ["model", "approval_policy", "effort", "summary", "cwd"],
+                    {
+                        "model": "value",
+                        "approval_policy": "value",
+                        "effort": "value",
+                        "summary": "value",
+                    },
+                    {"cwd": "/w"},
+                )
+                | {"$effort": "ultra"},
+            ),
+        ),
+        (
+            {"model": 1, "approval_policy": 2, "effort": "high", "summary": "loud"},
+            SessionContext(
+                effort="high",
+                extra=_stated(
+                    ["model", "approval_policy", "effort", "summary"],
+                    {"effort": "value"},
+                    {"model": 1, "approval_policy": 2, "summary": "loud"},
+                ),
+            ),
+        ),
+        ({}, SessionContext(extra=_stated([], {}, {}))),
+    ],
+    ids=["an-alias", "mistyped", "absent"],
+)
+def test_a_settings_line_reads_as_the_whole_of_its_turn_context(
+    payload: dict[str, object],
+    expected: SessionContext,
+) -> None:
+    assert codex._read_context(payload) == expected
+
+
+@pytest.mark.parametrize(
+    ("outer", "payload", "expected"),
+    [
+        (
+            "response_item",
+            {"a": 1},
+            [
+                UncategorizedRecord(
+                    context_id=3,
+                    kind="response_item/",
+                    payload={"a": 1},
+                ),
+            ],
+        ),
+        (
+            "world_state",
+            {"a": 1},
+            [ContextState(context_id=3, kind="world_state", extra={"a": 1})],
+        ),
+        (
+            "compacted",
+            {},
+            [
+                ContextCompaction(context_id=3),
+                ContextClear(context_id=3, extra={"$opens": True}),
+            ],
+        ),
+        (
+            "mystery",
+            {"a": 1},
+            [UncategorizedRecord(context_id=3, kind="mystery/root", payload={"a": 1})],
+        ),
+        (
+            "mystery",
+            {"type": "k"},
+            [
+                UncategorizedRecord(
+                    context_id=3,
+                    kind="mystery/k",
+                    payload={"type": "k"},
+                ),
+            ],
+        ),
+    ],
+    ids=["item", "world-state", "compacted", "no-kind", "unknown"],
+)
+def test_a_line_reads_as_the_records_its_kind_carries(
+    outer: str,
+    payload: dict[str, object],
+    expected: list[SessionRecord],
+) -> None:
+    assert codex._read_records(outer, payload, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "one"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,aGk="},
+                    {"type": "input_text", "text": "two"},
+                ],
+            },
+            UserMessage(
+                context_id=3,
+                content="one\ntwo",
+                attachments=(Attachment(mime_descriptor="image/png", data=b"hi"),),
+                extra={
+                    "type": "message",
+                    "$templates": [
+                        {"type": "input_text", "text": None},
+                        {"type": None, "image_url": None},
+                        {"type": "input_text", "text": None},
+                    ],
+                    "$order": ["text", "image", "text"],
+                    "$parts": [3, 3],
+                },
+            ),
+        ),
+        (
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "input_text", "text": "one"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,aGk="},
+                ],
+            },
+            AssistantMessage(
+                context_id=3,
+                content="one",
+                attachments=(Attachment(mime_descriptor="image/png", data=b"hi"),),
+                extra={
+                    "type": "message",
+                    "$templates": [
+                        {"type": "input_text", "text": None},
+                        {"type": None, "image_url": None},
+                    ],
+                    "$order": ["text", "image"],
+                },
+            ),
+        ),
+        (
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [
+                    {"type": "input_text", "text": "one"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,aGk="},
+                ],
+            },
+            SystemMessage(
+                context_id=3,
+                content="one",
+                attachments=(Attachment(mime_descriptor="image/png", data=b"hi"),),
+                subtype="developer",
+                extra={
+                    "type": "message",
+                    "$templates": [
+                        {"type": "input_text", "text": None},
+                        {"type": None, "image_url": None},
+                    ],
+                    "$order": ["text", "image"],
+                },
+            ),
+        ),
+        (
+            {"type": "message", "role": "assistant"},
+            AssistantMessage(
+                context_id=3,
+                extra={"type": "message", "$content_absent": True},
+            ),
+        ),
+    ],
+    ids=["user", "assistant", "developer", "no-content"],
+)
+def test_a_message_reads_as_the_whole_record_of_who_sent_it(
+    payload: dict[str, object],
+    expected: SessionRecord,
+) -> None:
+    assert codex._read_message(payload, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "type": "function_call",
+                "name": "shell",
+                "arguments": '{"cmd": "ls", "n": "é"}',
+                "call_id": "c1",
+            },
+            ToolCall(
+                context_id=3,
+                call_id="c1",
+                name="shell",
+                arguments={"cmd": "ls", "n": "é"},
+                extra={
+                    "type": "function_call",
+                    "$present": ["type", "name", "arguments", "call_id"],
+                    "$spaced": True,
+                },
+            ),
+        ),
+        (
+            {
+                "type": "function_call",
+                "name": "shell",
+                "arguments": '{"cmd":"ls","n":"é"}',
+                "call_id": "c1",
+            },
+            ToolCall(
+                context_id=3,
+                call_id="c1",
+                name="shell",
+                arguments={"cmd": "ls", "n": "é"},
+                extra={
+                    "type": "function_call",
+                    "$present": ["type", "name", "arguments", "call_id"],
+                },
+            ),
+        ),
+        (
+            {"type": "function_call"},
+            ToolCall(
+                context_id=3,
+                call_id="",
+                name="",
+                arguments={},
+                extra={"type": "function_call", "$present": ["type"], "$raw": ""},
+            ),
+        ),
+        (
+            {"type": "function_call", "arguments": "{bad", "call_id": "c1"},
+            UncategorizedRecord(
+                context_id=3,
+                kind="response_item/function_call",
+                payload={"type": "function_call", "arguments": "{bad", "call_id": "c1"},
+            ),
+        ),
+        (
+            {
+                "type": "custom_tool_call",
+                "call_id": "c1",
+                "name": "apply_patch",
+                "input": "*** Begin",
+            },
+            ToolCall(
+                context_id=3,
+                call_id="c1",
+                name="apply_patch",
+                arguments={"input": "*** Begin"},
+                extra={
+                    "type": "custom_tool_call",
+                    "$present": ["type", "call_id", "name", "input"],
+                },
+            ),
+        ),
+        (
+            {"type": "custom_tool_call"},
+            ToolCall(
+                context_id=3,
+                call_id="",
+                name="",
+                arguments={"input": ""},
+                extra={"type": "custom_tool_call", "$present": ["type"]},
+            ),
+        ),
+    ],
+    ids=["spaced", "compact", "no-arguments", "not-json", "freeform", "no-input"],
+)
+def test_a_call_reads_as_the_whole_record_of_what_it_asked(
+    payload: dict[str, object],
+    expected: SessionRecord,
+) -> None:
+    assert codex._read_tool_call(payload, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {"type": "function_call_output", "call_id": "c1", "output": "ok", "n": 1},
+            ToolMessage(
+                context_id=3,
+                call_id="c1",
+                state="done",
+                stdout=("ok",),
+                result=UncategorizedToolResult(),
+                extra={"type": "function_call_output", "n": 1},
+            ),
+        ),
+        (
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [
+                    {"type": "input_text", "text": "one"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,aGk="},
+                    {"type": "input_text", "text": "two"},
+                ],
+            },
+            ToolMessage(
+                context_id=3,
+                call_id="c1",
+                state="done",
+                stdout=(
+                    "one\ntwo",
+                    Attachment(mime_descriptor="image/png", data=b"hi"),
+                ),
+                result=UncategorizedToolResult(),
+                extra={
+                    "type": "function_call_output",
+                    "$parts": [3, 3],
+                    "$templates": [
+                        {"type": "input_text", "text": None},
+                        {"type": None, "image_url": None},
+                        {"type": "input_text", "text": None},
+                    ],
+                    "$order": ["text", "image", "text"],
+                },
+            ),
+        ),
+        (
+            {"type": "function_call_output", "call_id": "c1", "output": []},
+            ToolMessage(
+                context_id=3,
+                call_id="c1",
+                state="done",
+                result=UncategorizedToolResult(),
+                extra={
+                    "type": "function_call_output",
+                    "$parts": [0],
+                    "$templates": [],
+                    "$order": [],
+                },
+            ),
+        ),
+        (
+            {"type": "function_call_output", "call_id": "c1", "output": None},
+            ToolMessage(
+                context_id=3,
+                call_id="c1",
+                state="done",
+                result=UncategorizedToolResult(),
+                extra={"type": "function_call_output", "output": None},
+            ),
+        ),
+        (
+            {"type": "function_call_output"},
+            ToolMessage(
+                context_id=3,
+                call_id="",
+                state="done",
+                result=UncategorizedToolResult(),
+                extra={
+                    "type": "function_call_output",
+                    "$output_absent": True,
+                    "$call_id_absent": True,
+                },
+            ),
+        ),
+    ],
+    ids=["text", "blocks", "no-blocks", "null", "absent"],
+)
+def test_an_output_reads_as_the_whole_record_of_what_came_back(
+    payload: dict[str, object],
+    expected: ToolMessage,
+) -> None:
+    assert codex._read_tool_result(payload, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "type": "web_search_call",
+                "id": "ws1",
+                "status": "completed",
+                "action": {"type": "search", "query": "q"},
+            },
+            ToolCall(
+                context_id=3,
+                call_id="ws1",
+                name="web_search",
+                arguments={"type": "search", "query": "q"},
+                extra={
+                    "status": "completed",
+                    "$id": "id",
+                    "$args": "action",
+                    "$kind": "web_search_call",
+                },
+            ),
+        ),
+        (
+            {
+                "type": "tool_search_call",
+                "call_id": "ts1",
+                "arguments": {"query": "q"},
+            },
+            ToolCall(
+                context_id=3,
+                call_id="ts1",
+                name="tool_search",
+                arguments={"query": "q"},
+                extra={
+                    "$id": "call_id",
+                    "$args": "arguments",
+                    "$kind": "tool_search_call",
+                },
+            ),
+        ),
+        (
+            {},
+            ToolCall(
+                context_id=3,
+                call_id="",
+                name="",
+                arguments={},
+                extra={"$id": "", "$args": "", "$kind": ""},
+            ),
+        ),
+    ],
+    ids=["web", "tool", "neither"],
+)
+def test_a_search_reads_as_the_whole_call_it_made(
+    payload: dict[str, object],
+    expected: ToolCall,
+) -> None:
+    assert codex._read_search_call(payload, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "type": "reasoning",
+                "id": "r1",
+                "summary": [{"type": "summary_text", "text": "why"}],
+                "encrypted_content": "enc",
+            },
+            Thinking(
+                context_id=3,
+                summary="why",
+                encrypted="enc",
+                reasoning_id="r1",
+                extra={
+                    "type": "reasoning",
+                    "$templates": [{"type": "summary_text", "text": None}],
+                    "$order": ["text"],
+                },
+            ),
+        ),
+        (
+            {"type": "function_call", "name": "shell", "call_id": "c1"},
+            ToolCall(
+                context_id=3,
+                call_id="c1",
+                name="shell",
+                arguments={},
+                extra={
+                    "type": "function_call",
+                    "$present": ["type", "name", "call_id"],
+                    "$raw": "",
+                },
+            ),
+        ),
+        (
+            {"type": "custom_tool_call_output", "call_id": "c1", "output": "ok"},
+            ToolMessage(
+                context_id=3,
+                call_id="c1",
+                state="done",
+                stdout=("ok",),
+                result=UncategorizedToolResult(),
+                extra={"type": "custom_tool_call_output"},
+            ),
+        ),
+        (
+            {"type": "web_search_call", "id": "ws1"},
+            ToolCall(
+                context_id=3,
+                call_id="ws1",
+                name="web_search",
+                arguments={},
+                extra={"$id": "id", "$args": "", "$kind": "web_search_call"},
+            ),
+        ),
+        (
+            {"type": "tool_search_call", "call_id": "ts1"},
+            ToolCall(
+                context_id=3,
+                call_id="ts1",
+                name="tool_search",
+                arguments={},
+                extra={"$id": "call_id", "$args": "", "$kind": "tool_search_call"},
+            ),
+        ),
+        (
+            {"type": "tool_search_output", "call_id": "ts1", "tools": []},
+            ToolMessage(
+                context_id=3,
+                call_id="ts1",
+                state="done",
+                result=UncategorizedToolResult(),
+                extra={"type": "tool_search_output", "tools": [], "$whole": True},
+            ),
+        ),
+        (
+            {"type": "tool_search_output"},
+            ToolMessage(
+                context_id=3,
+                call_id="",
+                state="done",
+                result=UncategorizedToolResult(),
+                extra={"type": "tool_search_output", "$whole": True},
+            ),
+        ),
+        (
+            {
+                "type": "agent_message",
+                "author": "a",
+                "recipient": "b",
+                "content": [
+                    {"type": "input_text", "text": "one"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,aGk="},
+                    {"type": "input_text", "text": "two"},
+                ],
+            },
+            AgentMessage(
+                context_id=3,
+                content="one\ntwo",
+                attachments=(Attachment(mime_descriptor="image/png", data=b"hi"),),
+                sender="a",
+                recipient="b",
+                extra={
+                    "type": "agent_message",
+                    "$parts": [3, 3],
+                    "$templates": [
+                        {"type": "input_text", "text": None},
+                        {"type": None, "image_url": None},
+                        {"type": "input_text", "text": None},
+                    ],
+                    "$order": ["text", "image", "text"],
+                },
+            ),
+        ),
+        (
+            {
+                "type": "agent_message",
+                "content": [{"type": "input_text", "text": "one"}],
+            },
+            AgentMessage(
+                context_id=3,
+                content="one",
+                sender=None,
+                extra={
+                    "type": "agent_message",
+                    "$templates": [{"type": "input_text", "text": None}],
+                    "$order": ["text"],
+                },
+            ),
+        ),
+        (
+            {"type": "agent_message"},
+            AgentMessage(
+                context_id=3,
+                sender=None,
+                extra={"type": "agent_message", "$templates": [], "$order": []},
+            ),
+        ),
+        (
+            {"type": "mystery", "a": 1},
+            UncategorizedRecord(
+                context_id=3,
+                kind="response_item/mystery",
+                payload={"type": "mystery", "a": 1},
+            ),
+        ),
+    ],
+    ids=[
+        "reasoning",
+        "call",
+        "freeform-output",
+        "web-search",
+        "tool-search",
+        "tools-found",
+        "tools-found-for-no-call",
+        "agent-message",
+        "agent-message-of-one-part",
+        "agent-message-of-nothing",
+        "unknown",
+    ],
+)
+def test_an_item_reads_as_the_whole_record_of_its_kind(
+    payload: dict[str, object],
+    expected: SessionRecord,
+) -> None:
+    kind = from_plain(payload["type"], str)
+
+    assert codex._read_response_item(kind, payload, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "message": "the summary",
+                "replacement_history": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "one"}],
+                    },
+                    {"type": "compaction", "encrypted_content": "sealed"},
+                    "junk",
+                ],
+            },
+            [
+                ContextCompaction(
+                    context_id=3,
+                    extra={
+                        "$message": True,
+                        "$history": [
+                            {"type": "compaction", "encrypted_content": "sealed"},
+                        ],
+                    },
+                ),
+                ContextClear(
+                    context_id=3,
+                    summary="the summary",
+                    history=(
+                        UserMessage(
+                            context_id=3,
+                            content="one",
+                            extra={
+                                "type": "message",
+                                "$templates": [{"type": "input_text", "text": None}],
+                                "$order": ["text"],
+                            },
+                        ),
+                        # What is no item is kept in its place, under no kind.
+                        UncategorizedRecord(
+                            context_id=3,
+                            kind="response_item/",
+                            payload={},
+                        ),
+                    ),
+                    extra={"$opens": True},
+                ),
+            ],
+        ),
+        (
+            {
+                "replacement_history": [
+                    {"type": "compaction", "encrypted_content": "sealed"},
+                ],
+            },
+            [
+                ContextCompaction(
+                    context_id=3,
+                    extra={
+                        "$history": [
+                            {"type": "compaction", "encrypted_content": "sealed"},
+                        ],
+                    },
+                ),
+                ContextClear(context_id=3, summary="sealed", extra={"$opens": True}),
+            ],
+        ),
+        (
+            {},
+            [
+                ContextCompaction(context_id=3),
+                ContextClear(context_id=3, extra={"$opens": True}),
+            ],
+        ),
+    ],
+    ids=["stated", "sealed", "neither"],
+)
+def test_a_compaction_reads_as_its_event_then_the_window_it_opened(
+    payload: dict[str, object],
+    expected: list[SessionRecord],
+) -> None:
+    assert codex._read_compacted(payload, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {"type": "token_count", "info": {"total": 1}, "rate_limits": {"used": 2}},
+            TokenUsage(context_id=3, info={"total": 1}, rate_limits={"used": 2}),
+        ),
+        (
+            {"type": "token_count", "info": None, "rate_limits": {"used": 2}},
+            TokenUsage(
+                context_id=3,
+                rate_limits={"used": 2},
+                extra={"$nulls": ["info"]},
+            ),
+        ),
+        (
+            {"type": "token_count", "info": 7, "rate_limits": None},
+            TokenUsage(
+                context_id=3,
+                extra={
+                    **_stated(
+                        ["type", "info", "rate_limits"],
+                        {"rate_limits": "null"},
+                        {"info": 7},
+                    ),
+                    "$nulls": ["rate_limits"],
+                },
+            ),
+        ),
+        (
+            {"type": "token_count", "info": {"total": 1}, "other": 1},
+            TokenUsage(
+                context_id=3,
+                info={"total": 1},
+                extra=_stated(
+                    ["type", "info", "other"],
+                    {"info": "value"},
+                    {"other": 1},
+                ),
+            ),
+        ),
+        (
+            {"type": "error", "message": "boom", "code": 1},
+            SystemMessage(
+                context_id=3,
+                content="boom",
+                subtype="error",
+                extra={"type": "error", "code": 1, "$event": True},
+            ),
+        ),
+        (
+            {"type": "item_completed", "item": {"type": "WebSearch", "id": "w1"}},
+            ToolMessage(
+                context_id=3,
+                call_id="w1",
+                state="done",
+                result=WebSearchResult(),
+                extra={
+                    "$echoes": "item_completed",
+                    "item": {"$present": ["type", "id"]},
+                },
+            ),
+        ),
+        (
+            {"type": "context_compacted"},
+            ContextCompaction(context_id=3, extra={"$echoes": "context_compacted"}),
+        ),
+        (
+            {
+                "type": "mcp_tool_call_end",
+                "call_id": "m1",
+                "invocation": {"server": "docs", "tool": "search"},
+                "result": {"ok": 1},
+            },
+            ToolMessage(
+                context_id=3,
+                call_id="m1",
+                state="done",
+                result=McpResult(server="docs", tool="search"),
+                extra={
+                    "invocation": {"server": "docs", "tool": "search"},
+                    "result": {"ok": 1},
+                    "$echoes": "mcp_tool_call_end",
+                },
+            ),
+        ),
+        (
+            {"type": "mcp_tool_call_end"},
+            ToolMessage(
+                context_id=3,
+                call_id="",
+                state="done",
+                result=McpResult(server="", tool=""),
+                extra={"$echoes": "mcp_tool_call_end"},
+            ),
+        ),
+        (
+            {
+                "type": "exec_command_end",
+                "call_id": "x1",
+                "command": ["ls"],
+                "stdout": "out",
+                "stderr": "err",
+                "exit_code": 1,
+            },
+            ToolMessage(
+                context_id=3,
+                call_id="x1",
+                state="done",
+                stdout=("out",),
+                stderr=("err",),
+                result=BashResult(command=("ls",), exit_code=1),
+                extra={
+                    "$echoes": "exec_command_end",
+                    "$present": [
+                        "type",
+                        "call_id",
+                        "command",
+                        "stdout",
+                        "stderr",
+                        "exit_code",
+                    ],
+                },
+            ),
+        ),
+        (
+            {"type": "exec_command_end"},
+            ToolMessage(
+                context_id=3,
+                call_id="",
+                state="done",
+                result=BashResult(),
+                extra={"$echoes": "exec_command_end", "$present": ["type"]},
+            ),
+        ),
+        (
+            {
+                "type": "patch_apply_end",
+                "call_id": "p1",
+                "changes": {
+                    "a.py": {"unified_diff": "@@ -1 +1 @@\n-a\n+A\n"},
+                    "b.py": {"content": "body"},
+                },
+            },
+            [
+                ToolMessage(
+                    context_id=3,
+                    call_id="p1",
+                    state="done",
+                    stdout=("Edited a.py.", *parse_udiff("@@ -1 +1 @@\n-a\n+A\n")),
+                    result=EditResult(path="a.py"),
+                    extra={
+                        "changes": {
+                            "a.py": {"unified_diff": None, "$filled": "unified_diff"},
+                            "b.py": {"content": None, "$filled": "content"},
+                        },
+                        "$echoes": "patch_apply_end",
+                        "$splice_counts": [1, 1],
+                    },
+                ),
+                ToolMessage(
+                    context_id=3,
+                    call_id="p1",
+                    state="done",
+                    stdout=("Wrote b.py.",),
+                    result=WriteResult(path="b.py", content="body"),
+                ),
+            ],
+        ),
+        (
+            {"type": "patch_apply_end"},
+            [
+                ToolMessage(
+                    context_id=3,
+                    call_id="",
+                    state="done",
+                    stdout=("Edited the file.",),
+                    result=EditResult(),
+                    extra={"$echoes": "patch_apply_end"},
+                ),
+            ],
+        ),
+        (
+            {
+                "type": "web_search_end",
+                "call_id": "w1",
+                "query": "q",
+                "results": [
+                    {"title": "T", "url": "https://x"},
+                    "junk",
+                    {"title": "U", "url": "https://y", "snippet": "s"},
+                ],
+            },
+            ToolMessage(
+                context_id=3,
+                call_id="w1",
+                state="done",
+                stdout=(
+                    "T\nhttps://x\n\nU\nhttps://y\ns",
+                    WebSearchHit(url="https://x", title="T"),
+                    WebSearchHit(url="https://y", title="U", snippet="s"),
+                ),
+                result=WebSearchResult(query="q"),
+                extra={
+                    "$echoes": "web_search_end",
+                    "$rows": [
+                        {"title": "T", "url": "https://x"},
+                        "junk",
+                        {"title": "U", "url": "https://y", "snippet": "s"},
+                    ],
+                    "$row_order": ["row", "other", "row"],
+                },
+            ),
+        ),
+        (
+            {"type": "web_search_end", "query": 7, "results": "none"},
+            ToolMessage(
+                context_id=3,
+                call_id="",
+                state="done",
+                result=WebSearchResult(query=""),
+                extra={"query": 7, "results": "none", "$echoes": "web_search_end"},
+            ),
+        ),
+        (
+            {"type": "agent_message", "message": "hi"},
+            UncategorizedRecord(
+                context_id=3,
+                kind="event_msg/agent_message",
+                payload={"type": "agent_message", "message": "hi"},
+            ),
+        ),
+    ],
+    ids=[
+        "usage",
+        "usage-null-info",
+        "usage-mistyped",
+        "usage-with-another-key",
+        "error",
+        "item-completed",
+        "context-compacted",
+        "mcp",
+        "mcp-absent",
+        "shell",
+        "shell-absent",
+        "patch",
+        "patch-absent",
+        "search",
+        "search-mistyped",
+        "an-echo",
+    ],
+)
+def test_an_event_reads_as_the_whole_record_of_its_kind(
+    payload: dict[str, object],
+    expected: SessionRecord | list[SessionRecord],
+) -> None:
+    kind = from_plain(payload["type"], str)
+
+    assert codex._read_event(kind, payload, 3) == expected
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        (
+            {
+                "type": "CommandExecution",
+                "id": "x1",
+                "command": ["ls"],
+                "stdout": "out",
+                "stderr": "err",
+                "exit_code": 1,
+            },
+            ToolMessage(
+                context_id=3,
+                call_id="x1",
+                state="done",
+                stdout=("out",),
+                stderr=("err",),
+                result=BashResult(command=("ls",), exit_code=1),
+                extra={
+                    "turn_id": "t1",
+                    "$echoes": "item_completed",
+                    "item": {
+                        "$present": [
+                            "type",
+                            "id",
+                            "command",
+                            "stdout",
+                            "stderr",
+                            "exit_code",
+                        ],
+                    },
+                },
+            ),
+        ),
+        (
+            {"type": "CommandExecution"},
+            ToolMessage(
+                context_id=3,
+                call_id="",
+                state="done",
+                result=BashResult(),
+                extra={
+                    "turn_id": "t1",
+                    "$echoes": "item_completed",
+                    "item": {"$present": ["type"]},
+                },
+            ),
+        ),
+        (
+            {
+                "type": "FileChange",
+                "id": "f1",
+                "changes": {
+                    "a.py": {"unified_diff": "@@ -1 +1 @@\n-a\n+A\n"},
+                    "b.py": {"content": "body"},
+                },
+            },
+            [
+                ToolMessage(
+                    context_id=3,
+                    call_id="f1",
+                    state="done",
+                    stdout=("Edited a.py.", *parse_udiff("@@ -1 +1 @@\n-a\n+A\n")),
+                    result=EditResult(path="a.py"),
+                    extra={
+                        "turn_id": "t1",
+                        "$echoes": "item_completed",
+                        "item": {
+                            "changes": {
+                                "a.py": {
+                                    "unified_diff": None,
+                                    "$filled": "unified_diff",
+                                },
+                                "b.py": {"content": None, "$filled": "content"},
+                            },
+                            "$present": ["type", "id", "changes"],
+                            "$splice_counts": [1, 1],
+                        },
+                    },
+                ),
+                ToolMessage(
+                    context_id=3,
+                    call_id="f1",
+                    state="done",
+                    stdout=("Wrote b.py.",),
+                    result=WriteResult(path="b.py", content="body"),
+                ),
+            ],
+        ),
+        (
+            {"type": "FileChange"},
+            [
+                ToolMessage(
+                    context_id=3,
+                    call_id="",
+                    state="done",
+                    stdout=("Edited the file.",),
+                    result=EditResult(),
+                    extra={
+                        "turn_id": "t1",
+                        "$echoes": "item_completed",
+                        "item": {"$present": ["type"]},
+                    },
+                ),
+            ],
+        ),
+        (
+            {"type": "WebSearch", "id": "w1", "query": "q", "action": {"k": 1}},
+            ToolMessage(
+                context_id=3,
+                call_id="w1",
+                state="done",
+                result=WebSearchResult(query="q"),
+                extra={
+                    "turn_id": "t1",
+                    "$echoes": "item_completed",
+                    "item": {
+                        "action": {"k": 1},
+                        "$present": ["type", "id", "query", "action"],
+                    },
+                },
+            ),
+        ),
+        (
+            {"type": "WebSearch"},
+            ToolMessage(
+                context_id=3,
+                call_id="",
+                state="done",
+                result=WebSearchResult(),
+                extra={
+                    "turn_id": "t1",
+                    "$echoes": "item_completed",
+                    "item": {"$present": ["type"]},
+                },
+            ),
+        ),
+        (
+            {"type": "AgentMessage"},
+            UncategorizedRecord(
+                context_id=3,
+                kind="event_msg/item_completed/AgentMessage",
+                payload={
+                    "type": "item_completed",
+                    "turn_id": "t1",
+                    "item": {"type": "AgentMessage"},
+                },
+            ),
+        ),
+        (
+            {},
+            UncategorizedRecord(
+                context_id=3,
+                kind="event_msg/item_completed/",
+                payload={"type": "item_completed", "turn_id": "t1", "item": {}},
+            ),
+        ),
+    ],
+    ids=[
+        "shell",
+        "shell-absent",
+        "patch",
+        "patch-absent",
+        "search",
+        "search-absent",
+        "an-echo",
+        "no-kind",
+    ],
+)
+def test_a_completed_item_reads_as_the_whole_record_of_what_it_did(
+    item: dict[str, object],
+    expected: SessionRecord | list[SessionRecord],
+) -> None:
+    payload: dict[str, object] = {
+        "type": "item_completed",
+        "turn_id": "t1",
+        "item": item,
+    }
+
+    assert codex._read_completed(payload, 3) == expected
+
+
+def test_a_completed_item_is_kept_after_the_rest_of_its_event() -> None:
+    payload: dict[str, object] = {
+        "type": "item_completed",
+        "turn_id": "t1",
+        "item": {"type": "WebSearch"},
+        "thread_id": "th1",
+    }
+
+    read = codex._read_completed(payload, 3)
+
+    assert isinstance(read, ToolMessage)
+    assert list(read.extra) == [
+        "turn_id",
+        "thread_id",
+        "$native_order",
+        "$echoes",
+        "item",
+    ]
+
+
+def _edit(call_id: str, **extra: PlainTree) -> ToolMessage:
+    """Return one path's edit of the patch ``call_id`` applied."""
+    return ToolMessage(
+        call_id=call_id,
+        state="done",
+        result=EditResult(path="a.py"),
+        extra=extra,
+    )
+
+
+def _follower(call_id: str) -> ToolMessage:
+    """Return a patch's second record: the reader's note of its line, and its time."""
+    return ToolMessage(
+        call_id=call_id,
+        state="done",
+        result=EditResult(path="a.py"),
+        extra={"$codex_line": {}, "$timestamp_as_written": "t"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("records", "expected"),
+    [
+        (
+            [ContextCompaction(), ContextClear(), UserMessage(content="next")],
+            [[ContextCompaction(), ContextClear()], [UserMessage(content="next")]],
+        ),
+        (
+            [UserMessage(content="said"), ContextClear()],
+            [[UserMessage(content="said")], [ContextClear()]],
+        ),
+        (
+            [ContextCompaction(), UserMessage(content="said")],
+            [[ContextCompaction()], [UserMessage(content="said")]],
+        ),
+        (
+            [
+                _edit("c1", changes={}),
+                _follower("c1"),
+            ],
+            [
+                [
+                    _edit("c1", changes={}),
+                    _follower("c1"),
+                ],
+            ],
+        ),
+        (
+            [_edit("c1", changes={}), _edit("c1", changes={})],
+            [[_edit("c1", changes={})], [_edit("c1", changes={})]],
+        ),
+        (
+            [_edit("c1", changes={}), _edit("c2")],
+            [[_edit("c1", changes={})], [_edit("c2")]],
+        ),
+    ],
+    ids=[
+        "a-compaction-and-its-window",
+        "a-clear-after-a-turn",
+        "a-turn-after-a-compaction",
+        "a-patch-and-its-follower",
+        "two-patches-of-one-call",
+        "two-calls",
+    ],
+)
+def test_records_group_as_the_lines_they_came_from(
+    records: list[SessionRecord],
+    expected: list[list[SessionRecord]],
+) -> None:
+    assert [list(group) for group in _grouped(records)] == expected
+
+
+def test_each_path_of_a_patch_takes_the_splices_counted_for_it() -> None:
+    first, second, third, fourth = (Splice(before=str(n), after="x") for n in range(4))
+    changes: dict[str, object] = {
+        "a.py": {"unified_diff": "a"},
+        "b.py": {"unified_diff": "b"},
+        "c.py": {"unified_diff": "c"},
+        "": {"unified_diff": "d"},
+    }
+
+    # One splice more than was counted: no path takes it.
+    read = codex._per_path_edits(
+        changes,
+        [first, second, third, fourth, Splice(before="spare", after="x")],
+        [1, 2, 1],
+        context_id=3,
+        call_id="p1",
+        extra={"kept": 1},
+    )
+
+    assert read == [
+        ToolMessage(
+            context_id=3,
+            call_id="p1",
+            state="done",
+            stdout=("Edited a.py.", first),
+            result=EditResult(path="a.py"),
+            extra={"kept": 1},
+        ),
+        ToolMessage(
+            context_id=3,
+            call_id="p1",
+            state="done",
+            stdout=("Edited b.py.", second, third),
+            result=EditResult(path="b.py"),
+        ),
+        ToolMessage(
+            context_id=3,
+            call_id="p1",
+            state="done",
+            stdout=("Edited c.py.", fourth),
+            result=EditResult(path="c.py"),
+        ),
+        # No count was kept for it, so it takes no splice; no path, so none is named.
+        ToolMessage(
+            context_id=3,
+            call_id="p1",
+            state="done",
+            stdout=("Edited the file.",),
+            result=EditResult(path=""),
+        ),
+    ]
+
+
+def test_a_file_a_patch_adds_with_no_splice_counted_states_no_content() -> None:
+    read = codex._per_path_edits(
+        {"": {"content": "body"}},
+        [],
+        [],
+        context_id=3,
+        call_id="p1",
+        extra={},
+    )
+
+    assert read == [
+        ToolMessage(
+            context_id=3,
+            call_id="p1",
+            state="done",
+            stdout=("Wrote the file.",),
+            result=WriteResult(path=""),
+        ),
+    ]
+
+
+def test_a_record_written_back_keeps_no_spelling_of_its_time() -> None:
+    kept = UserMessage(content="hi", extra={"$timestamp_as_written": "t", "a": 1})
+
+    assert codex._without_kept_spelling(kept) == UserMessage(
+        content="hi",
+        extra={"a": 1},
+    )
+
+
+def test_a_line_of_no_kind_and_a_second_declaration_keep_their_fields() -> None:
+    native = META + '{"payload":{"a":1}}\n' + META
+
+    records = list(codex.normalize(StringIO(native)))
+
+    context = next(i for i, r in enumerate(records) if isinstance(r, SessionContext))
+    kept = [
+        (r.kind, r.context_id) for r in records if isinstance(r, UncategorizedRecord)
+    ]
+    assert kept == [("/root", context), ("session_meta/repeat", context)]
+
+
+def test_an_event_line_reads_in_its_context() -> None:
+    assert codex._read_records(
+        "event_msg",
+        {"type": "error", "message": "boom"},
+        3,
+    ) == [
+        SystemMessage(
+            context_id=3,
+            content="boom",
+            subtype="error",
+            extra={"type": "error", "$event": True},
+        ),
+    ]
+
+
+def test_a_call_s_later_messages_from_sagent_are_user_text_one_result_each() -> None:
+    """Codex takes one result per call: a stub answers it, its news and result follow."""
+    records: list[SessionRecord] = [
+        SessionContext(model="m"),
+        UserMessage(content="go"),
+        ToolCall(call_id="c1", name="Bash", arguments={"command": "sleep 9"}),
+        ToolMessage(call_id="c1", state="pending", shown="[detached]"),
+        AssistantMessage(content="waiting"),
+        ToolMessage(
+            call_id="c1",
+            state="pending",
+            stdout=("[Bash c1 still running]\nhalf",),
+        ),
+        AssistantMessage(content="still"),
+        ToolMessage(call_id="c1", state="done", stdout=("all",)),
+        AssistantMessage(content="done"),
+    ]
+    output = StringIO()
+    codex.denormalize(records, output)
+    back = list(codex.normalize(StringIO(output.getvalue())))
+    assert [r.call_id for r in back if isinstance(r, ToolMessage)] == ["c1"]
+    assert [r.content for r in back if isinstance(r, UserMessage)] == [
+        "go",
+        "[Bash c1 still running]\nhalf",
+        "[call c1 done]\nall",
+    ]
 
 
 if __name__ == "__main__":

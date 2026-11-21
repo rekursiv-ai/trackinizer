@@ -195,6 +195,16 @@ async def test_an_unfiltered_search_runs_the_one_statement() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_owner_a_driver_answers_as_text_is_read_as_its_uuid() -> None:
+    conn = make_conn()
+    conn.fetch.return_value = [{**_unit_rows(1)[0], "owner_id": str(UUID(int=1))}]
+
+    hits = await _ask(_loaded(), _engine(conn), filtered=False, limit=1)
+
+    assert [hit.owner_id for hit in hits or []] == [UUID(int=1)]
+
+
+@pytest.mark.asyncio
 async def test_the_iterative_scan_is_set_for_one_transaction() -> None:
     """The statement is the plain one; only the transaction around it differs."""
     conn = make_conn()
@@ -301,6 +311,128 @@ async def test_the_installed_version_is_read_once_for_each_engine() -> None:
     assert _ITERATE not in executed_sql(older)
 
 
+@pytest.mark.asyncio
+async def test_a_search_near_an_owner_is_by_its_newest_vector_among_the_others() -> (
+    None
+):
+    """No text is embedded: the owner's own stored vector is the query."""
+    conn = make_conn()
+    conn.fetchval.return_value = "[0.6,0.8]"
+    conn.fetch.return_value = _unit_rows(2)
+    model = _Counting(dim=2)
+
+    hits = await replace(_loaded(), model=model).nearest(
+        _engine(conn),
+        query=UUID(int=9),
+        kept=_first_records,
+        filtered=False,
+        limit=7,
+    )
+
+    assert [call.args for call in conn.fetchval.await_args_list] == [
+        (
+            (
+                "SELECT v.embedding::text FROM embedding.vectors v "
+                "WHERE v.owner_id = $1 AND v.settings = '0123456789abcdef' "
+                "AND (SELECT v.idx = $2 FROM inquiries i WHERE i.id = v.owner_id) "
+                "ORDER BY v.part DESC, v.idx DESC, v.chunk DESC LIMIT 1"
+            ),
+            UUID(int=9),
+            0,
+        ),
+    ]
+    assert [call.args for call in conn.fetch.await_args_list] == [
+        (
+            (
+                "SELECT v.owner_id, v.part, v.idx, v.field, v.chunk "
+                "FROM embedding.vectors v "
+                "WHERE v.settings = '0123456789abcdef' "
+                "AND (SELECT v.owner_id <> $3 AND v.idx = $4 "
+                "FROM inquiries i WHERE i.id = v.owner_id) "
+                "ORDER BY (v.embedding::halfvec(2)) <=> $1::halfvec(2) LIMIT $2"
+            ),
+            "[0.6,0.8]",
+            7,
+            UUID(int=9),
+            0,
+        ),
+    ]
+    assert len(hits or []) == 2
+    assert model.queries == 0
+
+
+@pytest.mark.asyncio
+async def test_a_search_near_an_owner_with_no_vector_to_read_finds_nothing() -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = None
+
+    hits = await _loaded().nearest(
+        _engine(conn),
+        query=UUID(int=9),
+        kept=_first_records,
+        filtered=False,
+        limit=7,
+    )
+
+    assert hits == []
+    conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_units_nearest_a_session_are_other_sessions_and_gated_as_it_is(
+    store: Store,
+) -> None:
+    """Its newest unit is the query; a reader who may not read it learns nothing."""
+    asked, near, far = UUID(int=1), UUID(int=2), UUID(int=3)
+    async with store.engine.acquire() as conn:
+        await ensure_index(conn, _SETTINGS)
+        for owner in (asked, near, far):
+            await conn.execute(
+                "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+                "agentsession_audience) VALUES ($1, 'AgentSession', "
+                "nextval('seq_agentsession'), 'active', 'a@example.com', 't', 'open')",
+                owner,
+            )
+        for owner, idx, vector in (
+            (asked, 0, "[1,0]"),
+            (asked, 1, "[0,1]"),
+            (far, 0, "[1,0]"),
+            (near, 0, "[0.1,0.9]"),
+        ):
+            await conn.execute(
+                "INSERT INTO embedding.vectors (owner_id, idx, field, text_md5, "
+                "settings, embedding) VALUES ($1, $2, 'content', '', $3, $4::halfvec)",
+                owner,
+                idx,
+                _SETTINGS.key,
+                vector,
+            )
+
+    def but_the_asked(params: list[object]) -> str:
+        params.append(asked)
+        return f"v.owner_id <> ${len(params)}"
+
+    arm = _loaded()
+    found = await arm.nearest(
+        store.engine,
+        query=asked,
+        kept=_everything,
+        filtered=False,
+        limit=5,
+    )
+    hidden = await arm.nearest(
+        store.engine,
+        query=asked,
+        kept=but_the_asked,
+        filtered=False,
+        limit=5,
+    )
+
+    assert [(hit.owner_id, hit.idx) for hit in found or []] == [(near, 0), (far, 0)]
+    assert hidden == []
+
+
 class _Counting(HashEmbedder):
     """A hash model that counts the queries it embeds."""
 
@@ -341,6 +473,12 @@ def _first_records(params: list[object]) -> str:
     """Keep the units of each part's first record."""
     params.append(0)
     return f"v.idx = ${len(params)}"
+
+
+def _everything(params: list[object]) -> str:
+    """Keep every unit."""
+    del params
+    return "TRUE"
 
 
 async def _query_text() -> str:

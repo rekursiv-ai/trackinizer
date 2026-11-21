@@ -126,7 +126,7 @@ test("Messages reads only the conversation, in place of its kinds, so its newest
     actor: ["codex"],
     room: [],
     cli: [],
-    kind: ["AgentToAgentMessage", "AssistantMessage", "ContextState", "UserMessage"],
+    kind: ["AgentMessage", "AssistantMessage", "ContextState", "UserMessage"],
   };
   const feed = new ConsoleFeed(
     new QueryClient({ defaultOptions: { queries: { retry: false } } }),

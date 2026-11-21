@@ -28,7 +28,7 @@ test("Messages is the conversation: what a person, the agent or another agent sa
   expect(levelOf(record("AssistantMessage", { content: "Done." }))).toBe(1);
   expect(
     levelOf(
-      record("AgentToAgentMessage", {
+      record("AgentMessage", {
         content: "FINAL_ANSWER",
         sender: "/root/reviewer",
       }),
@@ -53,7 +53,7 @@ test("Messages is the conversation: what a person, the agent or another agent sa
 
 test("a record with nothing to read shows at no level, All included: a sealed codex peer message, and sealed reasoning with no summary", () => {
   const peer = (type: string, payload: string) =>
-    record("AgentToAgentMessage", {
+    record("AgentMessage", {
       content: `Message Type: ${type}\nTask name: /root\nSender: /root/prototype\nPayload:\n${payload}`,
       sender: "/root/prototype",
     });
@@ -102,7 +102,7 @@ test("+ Calls adds tool calls, + Output their results and thinking, and All the 
   }
   for (const kind of [
     "TokenUsage",
-    "TurnContext",
+    "SessionContext",
     "SystemMessage",
     "UncategorizedRecord",
   ]) {
@@ -119,12 +119,7 @@ test("+ Calls adds tool calls, + Output their results and thinking, and All the 
 });
 
 test("the server reads only a low level's kinds; + Output and All read every kind", () => {
-  const messages = [
-    "AgentToAgentMessage",
-    "AssistantMessage",
-    "ContextState",
-    "UserMessage",
-  ];
+  const messages = ["AgentMessage", "AssistantMessage", "ContextState", "UserMessage"];
   expect(levelKinds(1)).toEqual(messages);
   expect(levelKinds(2)).toEqual([...messages, "ToolCall"]);
   expect([levelKinds(3), levelKinds(4)]).toEqual([[], []]);
@@ -134,13 +129,13 @@ test("each level counts what it shows: the agents' conversation, then each kind 
   const kinds = {
     UserMessage: 30,
     AssistantMessage: 50,
-    AgentToAgentMessage: 10,
+    AgentMessage: 10,
     ContextState: 20,
     ToolCall: 200,
     BashResult: 150,
     Thinking: 100,
     TokenUsage: 300,
-    TurnContext: 90,
+    SessionContext: 90,
     SystemMessage: 5,
     UncategorizedRecord: 45,
   };

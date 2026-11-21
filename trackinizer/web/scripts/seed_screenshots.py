@@ -46,7 +46,7 @@ from trackinizer.sagent.session.types import (
     AssistantMessage,
     BashResult,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.types.session_records import SessionRecordRow
@@ -250,7 +250,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8812")
 
 
-type _Turn = UserMessage | AssistantMessage | ToolCall | ToolResult[BashResult]
+type _Turn = UserMessage | AssistantMessage | ToolCall | ToolMessage[BashResult]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -389,8 +389,7 @@ def _ending_at(sessions: Sequence[_Session], end: datetime) -> list[_Session]:
         replace(
             session,
             turns=tuple(
-                replace(turn, timestamp=(_stamp(turn) + shift).isoformat())
-                for turn in session.turns
+                replace(turn, timestamp=_stamp(turn) + shift) for turn in session.turns
             ),
         )
         for session in sessions
@@ -410,7 +409,7 @@ def _start(session: _Session) -> SessionStart:
 def _stamp(turn: _Turn) -> datetime:
     if turn.timestamp is None:
         raise ValueError(f"every seeded turn is stamped: {turn}")
-    return datetime.fromisoformat(turn.timestamp)
+    return turn.timestamp
 
 
 def _nodes() -> list[_Node]:
@@ -981,7 +980,7 @@ def _shell(
     call_id: str,
     command: str,
     stdout: str,
-) -> tuple[ToolCall, ToolResult[BashResult]]:
+) -> tuple[ToolCall, ToolMessage[BashResult]]:
     """Make a Bash call at ``called`` and its output at ``answered``."""
     return (
         ToolCall(
@@ -990,7 +989,7 @@ def _shell(
             name="Bash",
             arguments={"command": command},
         ),
-        ToolResult(
+        ToolMessage(
             timestamp=_when(answered),
             call_id=call_id,
             state="done",
@@ -1000,9 +999,9 @@ def _shell(
     )
 
 
-def _when(clock: str) -> str:
+def _when(clock: str) -> datetime:
     """``clock``, ``HH:MM:SS`` in UTC, on the seed's one day."""
-    return f"2026-03-12T{clock}+00:00"
+    return datetime.fromisoformat(f"2026-03-12T{clock}+00:00")
 
 
 if __name__ == "__main__":

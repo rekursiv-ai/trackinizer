@@ -16,7 +16,7 @@ import { must } from "../../must";
  *
  * A tool call's record has the kind its row is stored under, its tool's legacy
  * class name (`BashResult`, `ReadResult`; `record_kind` in
- * `types/session_records.py`). Its payload is always a `ToolResult`
+ * `types/session_records.py`). Its payload is always a `ToolMessage`
  * (`served_payload` there): `stdout` and `stderr` are arrays of text and of typed
  * items (an edit's `Splice`s, a search's `WebSearchHit`s, an `Attachment`), and
  * `result` is the tool's result, tagged with its class (`toolResultFields`).
@@ -182,7 +182,7 @@ export function unreadable({
     return !stringField(fields, "content") && !stringField(fields, "summary");
   const content = stringField(fields, "content");
   return (
-    kind === "AgentToAgentMessage" &&
+    kind === "AgentMessage" &&
     peerPayload(content) !== content &&
     !peerPayload(content).trim() &&
     !attachmentsChip(fields.attachments)
@@ -195,7 +195,7 @@ export function unreadable({
  * messages (codex's context on the user's turn among them), messages with
  * nothing in them, and every provider line with no neutral kind (Claude Code's
  * `last-prompt` or `file-history-snapshot`, codex's `event_msg/*` echoes) but a
- * legacy turn. A `TurnContext` that switches the model is not, so the switch
+ * legacy turn. A `SessionContext` that switches the model is not, so the switch
  * shows where it happened; nor is a message queued while the agent worked,
  * which Claude delivers as injected state.
  */
@@ -204,7 +204,7 @@ export function markBookkeeping(records: readonly SessionRecord[]): boolean[] {
   return records.map((record) => {
     const payload = record.payload ?? {};
     switch (record.kind) {
-      case "TurnContext": {
+      case "SessionContext": {
         const next = stringField(payload, "model");
         const switched = model !== "" && next !== "" && next !== model;
         model = next || model;
@@ -222,7 +222,7 @@ export function markBookkeeping(records: readonly SessionRecord[]): boolean[] {
           !attachmentsChip(payload.attachments)
         );
       case "AssistantMessage":
-      case "AgentToAgentMessage":
+      case "AgentMessage":
         return (
           !stringField(payload, "content").trim() &&
           !attachmentsChip(payload.attachments)
@@ -366,7 +366,7 @@ export function transcriptRows(records: readonly SessionRecord[]): TranscriptRow
         showModel:
           Boolean(record.model) &&
           record.model !== model &&
-          record.kind !== "TurnContext",
+          record.kind !== "SessionContext",
         showTime: !Number.isNaN(at) && at !== minute,
       });
       model = record.model || model;
@@ -626,7 +626,7 @@ function shapeOf(record: SessionRecord): Shape {
         context: null,
         long: false,
       };
-    case "AgentToAgentMessage":
+    case "AgentMessage":
       return said(field("sender") ? `From ${field("sender")}` : "Agent message", {
         text: peerPayload(field("content")),
         context: null,
@@ -734,7 +734,7 @@ function shapeOf(record: SessionRecord): Shape {
         prompt: field("system_prompt"),
         continues: field("cleared_session_id"),
       };
-    case "TurnContext":
+    case "SessionContext":
       return {
         shape: "note",
         label: field("model") ? `Model: ${field("model")}` : "Turn context",
@@ -796,7 +796,7 @@ function shapeOf(record: SessionRecord): Shape {
 }
 
 /**
- * The fields this view reads from a `ToolResult` payload
+ * The fields this view reads from a `ToolMessage` payload
  * (`trackinizer/sagent/session/types.py`); a field the server left out at its default
  * reads as empty.
  */
@@ -1002,11 +1002,16 @@ function nests(value: unknown): boolean {
   );
 }
 
-/** A tool's or another record's `text`, under its kind's name. */
+/**
+ * A tool's or another record's `text`, under its kind's name. A tool call with no
+ * result class of its own is a "Tool", whichever name its record's class bears.
+ */
 function output(kind: string, text: string): Shape & { readonly shape: "output" } {
   return {
     shape: "output",
-    label: sentence(kind.replace(/Results?$/, "")),
+    label: sentence(
+      kind.replace(/^Tool(Result|Message)$/, "Tool").replace(/Results?$/, ""),
+    ),
     source: "",
     meta: "",
     text,
@@ -1208,11 +1213,12 @@ const TOOL_RESULTS: ReadonlyMap<string, ToolKind> = new Map([
   ["PaperAuthorResult", "call"],
   ["PaperFetchResult", "call"],
   ["PlanResult", "call"],
+  ["RecallResult", "call"],
   ["RemoteToolResult", "call"],
   ["McpResult", "call"],
   ["FunctionResult", "call"],
   ["ToolErrorResult", "call"],
-  ["ToolResult", "call"],
+  ["ToolMessage", "call"],
 ]);
 
 /**

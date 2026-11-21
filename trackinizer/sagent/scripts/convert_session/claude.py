@@ -1,7 +1,7 @@
 """Normalize and denormalize Claude Code session streams.
 
 Claude repeats a session-wide envelope on every line, which becomes one
-:class:`TurnContext` the records name by index. What the record types do not
+:class:`SessionContext` the records name by index. What the record types do not
 name -- the message ids, the parent pointers, the provider's own bookkeeping
 -- rides in ``extra``, so the writer replays the line rather than
 approximating it.
@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
+from datetime import datetime
 from types import MappingProxyType
 from typing import Final, TextIO, TypeGuard, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -47,7 +48,10 @@ from trackinizer.sagent.scripts.convert_session.claude_orders import (
 )
 from trackinizer.sagent.scripts.convert_session.provider_fields import (
     MISSING_TIMESTAMP,
+    Stamped,
+    kept_spelling,
     read_or_default,
+    stamped,
 )
 from trackinizer.sagent.scripts.convert_session.shell_results import (
     lift_shell_result,
@@ -76,6 +80,7 @@ from trackinizer.sagent.session.types import (
     ListResult,
     McpResult,
     ReadResult,
+    SessionContext,
     SessionRecord,
     SkillResult,
     Splice,
@@ -83,8 +88,7 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolResult,
-    TurnContext,
+    ToolMessage,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -92,6 +96,9 @@ from trackinizer.sagent.session.types import (
     WebSearchHit,
     WebSearchResult,
     WriteResult,
+    as_sent,
+    stated_timestamp,
+    timestamp_as_written,
 )
 
 
@@ -148,17 +155,17 @@ def denormalize(
 
     """
     ordered = list(records)
-    contexts: dict[int | None, TurnContext] = {
+    contexts: dict[int | None, SessionContext] = {
         record.context_id: record
         for record in ordered
-        if isinstance(record, TurnContext)
+        if isinstance(record, SessionContext)
     }
-    fallback_context = next(iter(contexts.values()), TurnContext())
+    fallback_context = next(iter(contexts.values()), SessionContext())
     # The LAST context stating an encoding is the one in force: the reader
     # restates it as escaped lines arrive.
     metadata: dict[str, object] = {}
     for record in ordered:
-        if isinstance(record, TurnContext) and record.encoding:
+        if isinstance(record, SessionContext) and record.encoding:
             metadata = dict(record.encoding)
     escaped_default = from_plain(metadata.get("ascii_escaped"), bool, default=False)
     escape_exceptions = base64.b64decode(
@@ -179,12 +186,14 @@ def denormalize(
     # stream built BY HAND states no context at all and is left alone -- nothing
     # resumes one, and adding keys there would rewrite bytes the caller chose.
     foreign = (
-        any(isinstance(record, TurnContext) for record in ordered)
+        any(isinstance(record, SessionContext) for record in ordered)
         and "ascii_escaped" not in metadata
     )
     if foreign:
+        # Claude takes one result per call: a call's later messages are user text.
+        # A result another CLI wrote alone gets its call when it is written.
         ordered = _transcript_records_from_another_cli(
-            ordered,
+            as_sent(ordered, orphans_are_news=False),
         )
     renamed, synthesized = (
         _foreign_calls(ordered) if foreign else ({}, dict[str, ToolCall | None]())
@@ -203,7 +212,7 @@ def denormalize(
             emitter.add(head.text)
             continue
         context = contexts.get(head.context_id, fallback_context)
-        if isinstance(head, ToolResult) and head.call_id in synthesized:
+        if isinstance(head, ToolMessage) and head.call_id in synthesized:
             call = _synthetic_call(
                 head,
                 renamed[head.call_id],
@@ -247,24 +256,18 @@ def _transcript_records_from_another_cli(
     records: Sequence[SessionRecord],
 ) -> list[SessionRecord]:
     """Return another CLI's session as records a claude transcript holds, each stamped."""
-    last = next(
-        (
-            r.timestamp
-            for r in records
-            if not isinstance(r, IncompleteRecord) and r.timestamp is not None
-        ),
-        MISSING_TIMESTAMP,
-    )
+    stated = (stated_timestamp(record) for record in records)
+    last = next((stamp for stamp in stated if stamp is not None), MISSING_TIMESTAMP)
     unanswered: set[str] = set()
     kept: list[SessionRecord] = []
     for record in records:
-        if isinstance(record, TurnContext):
+        if isinstance(record, SessionContext):
             unanswered.clear()
         elif isinstance(record, ToolCall):
             unanswered.add(record.call_id)
-        elif isinstance(record, ToolResult) and record.call_id in unanswered:
+        elif isinstance(record, ToolMessage) and record.call_id in unanswered:
             unanswered.remove(record.call_id)
-        elif isinstance(record, ToolResult) and unanswered:
+        elif isinstance(record, ToolMessage) and unanswered:
             # An act run inside a call still open, such as the shell command codex's
             # ``exec`` ran: Anthropic rejects a result no call asked for.
             continue
@@ -273,8 +276,9 @@ def _transcript_records_from_another_cli(
         # Anthropic rejects a seal it did not make.
         if isinstance(record, Thinking) and record.reasoning_id is not None:
             continue
-        last = record.timestamp if record.timestamp is not None else last
-        kept.append(replace(record, timestamp=last))
+        own = stated_timestamp(record)
+        last = own if own is not None else last
+        kept.append(stamped(record, last))
     return kept
 
 
@@ -283,7 +287,7 @@ def _transcript_records_from_another_cli(
 def _stated_cwd(records: Sequence[SessionRecord]) -> str:
     """Return the working directory the source session named, if any."""
     for record in records:
-        if isinstance(record, TurnContext):
+        if isinstance(record, SessionContext):
             payload = from_plain(
                 record.extra.get("payload"),
                 dict[str, object],
@@ -294,8 +298,10 @@ def _stated_cwd(records: Sequence[SessionRecord]) -> str:
                 return stated
             break
     for record in records:
-        if isinstance(record, TurnContext):
-            found = record.cwd if record.cwd is not None else record.extra.get("cwd")
+        if isinstance(record, SessionContext):
+            if record.cwd is not None:
+                return str(record.cwd)
+            found = record.extra.get("cwd")
             if isinstance(found, str):
                 return found
     return ""
@@ -320,7 +326,7 @@ def _foreign_calls(
     renamed = {
         record.call_id: name
         for record in records
-        if isinstance(record, ToolResult)
+        if isinstance(record, ToolMessage)
         and record.call_id
         and (name := _claude_tool(record))
     }
@@ -330,7 +336,7 @@ def _foreign_calls(
         if isinstance(record, ToolCall) and record.call_id not in ahead:
             called.setdefault(record.call_id, record)
         elif (
-            isinstance(record, ToolResult)
+            isinstance(record, ToolMessage)
             and record.call_id in renamed
             and record.call_id not in called
         ):
@@ -347,9 +353,9 @@ def _foreign_calls(
 # acting tool nowhere else, so without this line the act crosses as an uncategorized
 # result.
 def _synthetic_call(
-    item: ToolResult,
+    item: ToolMessage,
     name: str,
-    context: TurnContext,
+    context: SessionContext,
     real: ToolCall | None,
 ) -> dict[str, object]:
     """Return the ``tool_use`` line an act needs to be typed by."""
@@ -367,7 +373,7 @@ def _synthetic_call(
             "message": {"role": "assistant", "content": [block]},
             "timestamp": item.timestamp,
         },
-        {},
+        kept_spelling(stated_timestamp(item)),
         settings,
     )
 
@@ -524,7 +530,7 @@ class _Emitter:
 
     def _apply_shell_edit(self, record: SessionRecord) -> None:
         """Rewrite a lifted file edit into the Bash call still in the window."""
-        if not isinstance(record, ToolResult):
+        if not isinstance(record, ToolMessage):
             return
         tool_result = record.result
         if not isinstance(tool_result, ReadResult | WriteResult | EditResult):
@@ -608,7 +614,7 @@ def _group(records: Iterable[SessionRecord]) -> Iterator[Sequence[SessionRecord]
     """Regroup records into the source lines they came from."""
     open_group: list[SessionRecord] = []
     for record in records:
-        if isinstance(record, TurnContext):
+        if isinstance(record, SessionContext):
             # Session-scoped: claude repeats its fields on every line rather
             # than giving it a line of its own.
             continue
@@ -632,18 +638,18 @@ def _continues(record: SessionRecord, head: SessionRecord) -> bool:
         isinstance(record, TokenUsage | ToolCall | Thinking | AssistantMessage)
         and isinstance(head, AssistantMessage | Thinking | ToolCall)
     ) or (
-        isinstance(record, UserMessage | ToolResult)
-        and isinstance(head, UserMessage | ToolResult)
+        isinstance(record, UserMessage | ToolMessage)
+        and isinstance(head, UserMessage | ToolMessage)
     )
     if not valid_pair:
         return False
     assert isinstance(
         record,
-        TokenUsage | ToolCall | Thinking | AssistantMessage | UserMessage | ToolResult,
+        TokenUsage | ToolCall | Thinking | AssistantMessage | UserMessage | ToolMessage,
     )
     assert isinstance(
         head,
-        AssistantMessage | Thinking | ToolCall | UserMessage | ToolResult,
+        AssistantMessage | Thinking | ToolCall | UserMessage | ToolMessage,
     )
     if record.context_id != head.context_id or "$keys" in record.extra:
         return False
@@ -652,7 +658,7 @@ def _continues(record: SessionRecord, head: SessionRecord) -> bool:
 
 def _write_group(
     group: Sequence[SessionRecord],
-    context: TurnContext,
+    context: SessionContext,
     settings: Mapping[str, object],
 ) -> dict[str, object] | None:
     """Return the one line a group of records came from."""
@@ -672,11 +678,11 @@ def _write_group(
         return {
             key: value
             for key, value in mutable(head.payload).items()
-            if key != "$ascii_escaped"
+            if key not in {"$ascii_escaped", "$timestamp_as_written"}
         }
     if isinstance(head, UserMessage):
         return _write_user(head, context, settings, group)
-    if isinstance(head, ToolResult):
+    if isinstance(head, ToolMessage):
         return _write_result(head, settings, group)
     if isinstance(head, AssistantMessage | ToolCall | Thinking):
         usage = next((r for r in group if isinstance(r, TokenUsage)), None)
@@ -728,6 +734,13 @@ def _splice(
     for key in order:
         if key == "timestamp" and "$timestamp" in extra:
             record[key] = extra["$timestamp"]
+        elif key == "timestamp" and key in named:
+            # A time is written as claude spells one, or as its own line spelled it.
+            when = named[key]
+            assert isinstance(when, datetime | None)
+            written = timestamp_as_written(when, extra)
+            if written is not None or key in nulls:
+                record[key] = written
         elif key in named:
             if named[key] is not None or key in nulls:
                 record[key] = named[key]
@@ -759,7 +772,7 @@ def _splice(
 # became ``null``, and with the result first the prose did.
 def _write_user(
     item: UserMessage,
-    context: TurnContext,
+    context: SessionContext,
     settings: Mapping[str, object],
     group: Sequence[SessionRecord] = (),
 ) -> dict[str, object]:
@@ -819,7 +832,7 @@ def _write_user_shape(
     texts = _split_widths(item.content, _text_lengths(shape))
     attachments = list(item.attachments)
     results = {
-        record.call_id: record for record in group if isinstance(record, ToolResult)
+        record.call_id: record for record in group if isinstance(record, ToolMessage)
     }
     text_index = 0
     attachment_index = 0
@@ -1038,7 +1051,7 @@ def _split_widths(content: str | None, widths: Sequence[int]) -> list[str]:
 # ``group`` is every record off that line, so a line answering several calls fills each
 # block from the record that owns it rather than from a stored copy of its content.
 def _write_result(
-    item: ToolResult,
+    item: ToolMessage,
     settings: Mapping[str, object],
     group: Sequence[SessionRecord] = (),
 ) -> dict[str, object]:
@@ -1049,7 +1062,9 @@ def _write_result(
     content_shape = from_plain(extra.pop("$content_shape", []), list[object])
     if content_shape:
         siblings = {
-            record.call_id: record for record in group if isinstance(record, ToolResult)
+            record.call_id: record
+            for record in group
+            if isinstance(record, ToolMessage)
         }
         # The prose off the SAME line. A line may answer a tool and speak, and
         # each is its own record (axiom 3); a text slot left as a bare stencil
@@ -1105,7 +1120,7 @@ def _write_result(
 
 # The inverse of :func:`_rendered`: the reader stored a marker rather than the string,
 # because the record already holds what it is made of.
-def _result_text(item: ToolResult) -> str:
+def _result_text(item: ToolMessage) -> str:
     """Rebuild the block text a result's own fields render."""
     tool_result = item.result
     shell = (
@@ -1121,7 +1136,7 @@ def _result_text(item: ToolResult) -> str:
     return ""
 
 
-def _write_result_block(item: ToolResult) -> dict[str, object]:
+def _write_result_block(item: ToolMessage) -> dict[str, object]:
     """Return the ``tool_result`` block one result record came from."""
     shape = from_plain(
         item.extra.get("$result"),
@@ -1170,7 +1185,7 @@ def _write_result_block(item: ToolResult) -> dict[str, object]:
 
 
 def _write_result_content(
-    item: ToolResult,
+    item: ToolMessage,
     shape: Sequence[object],
 ) -> list[object]:
     """Replay result content blocks while applying prose edits."""
@@ -1217,7 +1232,7 @@ def _text_block(
 
 
 def _write_tool_payload(
-    item: ToolResult,
+    item: ToolMessage,
     extra: dict[str, MutablePlainTree],
     shape: Mapping[str, object],
 ) -> object:
@@ -1296,7 +1311,7 @@ def _write_tool_payload(
 # ``apply_patch``, ``shell``, ``web_search`` -- which claude recognizes as nothing, so
 # the act arrived untyped. Naming the claude tool for the neutral act is what axiom 9
 # asks: the same act, in the target's own vocabulary.
-def _claude_tool(item: ToolResult) -> str:
+def _claude_tool(item: ToolMessage) -> str:
     """Return the claude tool whose shape states what this act did."""
     tool_result = item.result
     for kind, name in (
@@ -1342,7 +1357,7 @@ def _ordered(payload: dict[str, object], tool: str) -> dict[str, object]:
 # An entry the reader saw as a group is restored as one; anything else was the model's
 # own prose alongside the groups and is replayed as it stood.
 def _write_search_groups(
-    item: ToolResult,
+    item: ToolMessage,
     shape: Mapping[str, object],
 ) -> list[object]:
     """Return a search payload's ``results``, rows back inside their group."""
@@ -1419,7 +1434,7 @@ def _write_search_row(
 
 
 def _write_agent_blocks(
-    item: ToolResult,
+    item: ToolMessage,
     shape: Mapping[str, object],
 ) -> list[object]:
     """Replay agent prose blocks while preserving their boundaries."""
@@ -1451,7 +1466,7 @@ def _write_agent_blocks(
 
 # ``stored`` is the line's ``toolUseResult``, read to write an empty text as it was.
 def _result_values(
-    item: ToolResult,
+    item: ToolMessage,
     shape: Mapping[str, object],
     stored: Mapping[str, object] = MappingProxyType({}),
 ) -> dict[str, object]:
@@ -1535,7 +1550,7 @@ def _write_assistant(
     head: AssistantMessage | ToolCall | Thinking,
     group: Sequence[SessionRecord],
     usage: TokenUsage | None,
-    context: TurnContext,
+    context: SessionContext,
     settings: Mapping[str, object],
 ) -> dict[str, object]:
     """Return the ``assistant`` line an act came from."""
@@ -1887,7 +1902,7 @@ class _Reader:
         # stream index (axiom 5), which must count the records already handed
         # over as well as those still held.
         self._base = 0
-        self._context: TurnContext | None = None
+        self._context: SessionContext | None = None
         # A result says only which call it answers, so the tool that produced
         # it has to be carried forward from the ``tool_use`` block that opened
         # it.
@@ -1916,7 +1931,7 @@ class _Reader:
             # Settings before the acts they govern, then the context the
             # window opens from.
             self._started = True
-            self._pending.append(TurnContext(encoding=self._current_encoding()))
+            self._pending.append(SessionContext(encoding=self._current_encoding()))
             self._opening = self._at()
             self._pending.append(ContextClear(extra=({"$opens": True})))
         record = _parse(line)
@@ -1948,7 +1963,7 @@ class _Reader:
     def _read_line(
         self,
         record: Mapping[str, object],
-    ) -> tuple[TurnContext, list[SessionRecord], dict[str, tuple[str, str | None]]]:
+    ) -> tuple[SessionContext, list[SessionRecord], dict[str, tuple[str, str | None]]]:
         """Return one line's context, records, and calls, committing nothing."""
         context = self._context
         updated = _read_line_context(record, context)
@@ -2025,17 +2040,19 @@ class _Reader:
         self._opening = None
         if not _carries_a_compaction(item):
             return [item]
+        # Both at the summary's time, as its line spelled it.
+        extra = {"$in_place": True, **kept_spelling(stated_timestamp(item))}
         return [
             ContextCompaction(
                 context_id=item.context_id,
                 timestamp=item.timestamp,
-                extra=({"$in_place": True}),
+                extra=extra,
             ),
             ContextClear(
                 context_id=item.context_id,
                 timestamp=item.timestamp,
                 summary=item.content,
-                extra=({"$in_place": True}),
+                extra=extra,
             ),
             item,
         ]
@@ -2047,7 +2064,7 @@ class _Reader:
         if self._ends_newline == self._stated_newline:
             return
         self._stated_newline = self._ends_newline
-        self._pending.append(TurnContext(encoding=self._current_encoding()))
+        self._pending.append(SessionContext(encoding=self._current_encoding()))
 
     def _current_encoding(self) -> Mapping[str, PlainTree]:
         r"""How the file spells its bytes, for the lines consumed so far."""
@@ -2081,13 +2098,13 @@ def _carries_a_compaction(item: SessionRecord) -> TypeGuard[UserMessage]:
 # pure repetition.
 def _without_turn_envelope(
     record: SessionRecord,
-    context: TurnContext,
+    context: SessionContext,
 ) -> SessionRecord:
     """Drop an envelope override that merely restates the turn's own value."""
     # The turn IS the envelope's source, an incomplete line is unparsed text,
     # and an uncategorized record replays its payload verbatim -- none of the
     # three holds an ``extra`` the override could live in.
-    if isinstance(record, IncompleteRecord | TurnContext | UncategorizedRecord):
+    if isinstance(record, IncompleteRecord | SessionContext | UncategorizedRecord):
         return record
     settings = context.extra
     extra = dict(mutable(record.extra))
@@ -2130,8 +2147,8 @@ def _escapes_unicode(line: str, record: Mapping[str, object] | None) -> bool:
 
 def _read_line_context(
     record: Mapping[str, object],
-    previous: TurnContext | None,
-) -> TurnContext:
+    previous: SessionContext | None,
+) -> SessionContext:
     """Return the full settings state applying to one line."""
     prior_extra = dict(mutable(previous.extra)) if previous is not None else {}
     for key in (*envelope_keys(), *settings_keys()):
@@ -2151,7 +2168,7 @@ def _read_line_context(
     permission = previous.permission if previous is not None else None
     if "permissionMode" in record:
         permission = from_plain(record.get("permissionMode"), str, default=None)
-    return TurnContext(
+    return SessionContext(
         model=model,
         effort=effort,
         permission=permission,
@@ -2212,8 +2229,20 @@ def _update_tools(
 def _read_record(
     record: Mapping[str, object],
     tools: Mapping[str, tuple[str, str | None]],
-) -> list[SessionRecord]:
-    """Read one parsed line into the records it carries."""
+) -> Sequence[Stamped]:
+    """Read one parsed line into the records it carries, each at the line's time."""
+    read = _read_by_type(record, tools)
+    spelled = record.get("timestamp")
+    if not isinstance(spelled, str):
+        return read
+    return [stamped(item, spelled) for item in read]
+
+
+def _read_by_type(
+    record: Mapping[str, object],
+    tools: Mapping[str, tuple[str, str | None]],
+) -> Sequence[Stamped]:
+    """Read one parsed line into the records its type carries."""
     message = read_or_default(
         record.get("message"),
         dict[str, object],
@@ -2238,7 +2267,6 @@ def _read_record(
     # keeps its bytes and says which kind it was.
     return [
         UncategorizedRecord(
-            timestamp=read_or_default(record.get("timestamp"), str, default=None),
             kind=record_type,
             payload=immutable(record),
         ),
@@ -2318,7 +2346,7 @@ def _read_user(
     record: Mapping[str, object],
     message: Mapping[str, object],
     tools: Mapping[str, tuple[str, str | None]],
-) -> list[SessionRecord]:
+) -> Sequence[Stamped]:
     """Read a user line: prose, its attachments, or a tool's answer."""
     content: object = message.get("content")
     extra = _line_residual(record, consumed=("message",))
@@ -2333,7 +2361,6 @@ def _read_user(
         extra["$bare"] = True
         return [
             UserMessage(
-                timestamp=read_or_default(record.get("timestamp"), str, default=None),
                 content=content,
                 extra=immutable(extra),
             ),
@@ -2359,8 +2386,7 @@ def _read_user(
         extra["$parts"] = len(parts)
     if any(_media_first(block) for block, found in decoded if found is not None):
         extra["$media_first"] = True
-    timestamp = read_or_default(record.get("timestamp"), str, default=None)
-    acts: list[UserMessage | ToolResult] = []
+    acts: list[UserMessage | ToolMessage] = []
     # A ``tool_result`` is never the message, whatever else it carries. One
     # that also holds a ``text`` key would otherwise be indexed twice -- once
     # here and once as a result -- and the duplicate index made ``sorted``
@@ -2378,7 +2404,6 @@ def _read_user(
     if has_message:
         acts.append(
             UserMessage(
-                timestamp=timestamp,
                 content="\n".join(parts) if parts else None,
                 attachments=attachments,
                 extra={},
@@ -2407,8 +2432,7 @@ def _read_user(
     ]
     acts = [record for _, record in sorted(zip(positions, acts, strict=True))]
     acts[0] = _with_extra(acts[0], extra)
-    out: list[SessionRecord] = list(acts)
-    return out
+    return acts
 
 
 # Axiom 3: each block is its own record. One captured line in 2119 files mixes kinds --
@@ -2417,9 +2441,8 @@ def _read_user(
 def _read_assistant(
     record: Mapping[str, object],
     message: Mapping[str, object],
-) -> list[SessionRecord]:
+) -> Sequence[Stamped]:
     """Read an assistant line into the acts it carries, plus its usage."""
-    timestamp = read_or_default(record.get("timestamp"), str, default=None)
     blocks = _blocks(message.get("content"))
     extra = _line_residual(record, consumed=("message",))
     # ``model`` stays on the line. It is the turn's setting in the usual case,
@@ -2486,7 +2509,6 @@ def _read_assistant(
             name = read_or_default(block.get("name"), str, default=None)
             acts.append(
                 ToolCall(
-                    timestamp=timestamp,
                     call_id=read_or_default(block.get("id"), str, default=""),
                     name=name or "",
                     arguments=immutable(input_value or {}),
@@ -2497,7 +2519,6 @@ def _read_assistant(
             encrypted_text = read_or_default(block.get("signature"), str, default=None)
             acts.append(
                 Thinking(
-                    timestamp=timestamp,
                     content=read_or_default(block.get("thinking"), str, default=None),
                     encrypted=encrypted_text,
                     extra=immutable(
@@ -2520,24 +2541,23 @@ def _read_assistant(
         acts.insert(
             at,
             AssistantMessage(
-                timestamp=timestamp,
                 content="\n".join(prose) if prose else None,
             ),
         )
     acts[0] = _with_extra(acts[0], extra)
-    out: list[SessionRecord] = list(acts)
+    out: list[Stamped] = list(acts)
     if usage:
         # Claude reports usage on the assistant line rather than one of its
         # own, so it becomes a record here or is lost.
         out.append(
-            TokenUsage(timestamp=timestamp, info=immutable(usage)),
+            TokenUsage(info=immutable(usage)),
         )
     return out
 
 
 # pragma: no mutate start -- a type bound; never evaluated.
 def _with_extra[
-    T: AssistantMessage | Thinking | ToolCall | UserMessage | ToolResult,
+    T: AssistantMessage | Thinking | ToolCall | UserMessage | ToolMessage,
 ](record: T, extra: dict[str, PlainTree]) -> T:
     # pragma: no mutate end
     """Return the record carrying the line's residual, per axiom 10."""
@@ -2569,7 +2589,6 @@ def _read_system(record: Mapping[str, object]) -> SystemMessage:
         ):
             extra[f"${key}_value"] = cast(PlainTree, record[key])
     return SystemMessage(
-        timestamp=read_or_default(record.get("timestamp"), str, default=None),
         content=read_or_default(record.get("content"), str, default=None),
         subtype=read_or_default(record.get("subtype"), str, default=None),
         extra=immutable(extra),
@@ -2610,7 +2629,6 @@ def _read_attachment_record(record: Mapping[str, object]) -> ContextState:
         # fifth, after the hook's own name and the call it answered.
         extra["$prose"] = [prose, list(state).index(prose)]
     return ContextState(
-        timestamp=read_or_default(record.get("timestamp"), str, default=None),
         kind=from_plain(state.get("type"), str, default=""),
         content=text,
         extra=immutable(extra),
@@ -2624,7 +2642,7 @@ def _read_tool_result(
     extra: dict[str, PlainTree],
     *,
     message_blocks: PlainTree | None = None,
-) -> ToolResult:
+) -> ToolMessage:
     """Read a tool's answer as the record for what the tool DID."""
     content = block.get("content")
     parts: list[str] = []
@@ -2758,15 +2776,13 @@ def _typed_result(
     attachments: tuple[Attachment, ...],
     extra: dict[str, PlainTree],
     shape: dict[str, PlainTree],
-) -> ToolResult:
+) -> ToolMessage:
     """Return the result as the record for what its tool did."""
-    timestamp = read_or_default(record.get("timestamp"), str, default=None)
     structured_result = isinstance(record.get("toolUseResult"), Mapping)
     if name == "Bash":
         stdout = read_field_keeping_invalid(result, "stdout", str)
         stderr = read_field_keeping_invalid(result, "stderr", str)
-        shell = ToolResult(
-            timestamp=timestamp,
+        shell = ToolMessage(
             call_id=call_id,
             state="done",
             stdout=(stdout,) if isinstance(stdout, str) and stdout else (),
@@ -2812,8 +2828,7 @@ def _typed_result(
             )
         else:
             stored = dict(extract_unmodeled_fields(result, fields={"file": file_state}))
-        return ToolResult(
-            timestamp=timestamp,
+        return ToolMessage(
             call_id=call_id,
             state="done",
             stdout=(content,) if isinstance(content, str) and content else (),
@@ -2825,8 +2840,7 @@ def _typed_result(
     if name == "Write":
         path = read_field_keeping_invalid(result, "filePath", str)
         content = read_field_keeping_invalid(result, "content", str)
-        return ToolResult(
-            timestamp=timestamp,
+        return ToolMessage(
             call_id=call_id,
             state="done",
             stdout=(
@@ -2859,8 +2873,7 @@ def _typed_result(
                 old if isinstance(old, str) else None,
                 new if isinstance(new, str) else None,
             ]
-        return ToolResult(
-            timestamp=timestamp,
+        return ToolMessage(
             call_id=call_id,
             state="done",
             # Claude names the TEXT it replaced and never says where, so the
@@ -2958,8 +2971,7 @@ def _typed_result(
             )
             for hit in hits
         )
-        return ToolResult(
-            timestamp=timestamp,
+        return ToolMessage(
             call_id=call_id,
             state="done",
             stdout=(*((hits_text,) if hits_text else ()), *hits),
@@ -2991,8 +3003,7 @@ def _typed_result(
         size = read_field_keeping_invalid(result, "bytes", int)
         if isinstance(duration, int | float):
             shape["duration_ms"] = cast(PlainTree, result["durationMs"])
-        return ToolResult(
-            timestamp=timestamp,
+        return ToolMessage(
             call_id=call_id,
             state="done",
             stdout=(content_state,)
@@ -3054,8 +3065,7 @@ def _typed_result(
         prose = "\n".join(
             read_or_default(b.get("text"), str, default="") for b in blocks
         )
-        return ToolResult(
-            timestamp=timestamp,
+        return ToolMessage(
             call_id=call_id,
             state="done",
             stdout=(prose,) if prose else (),
@@ -3105,8 +3115,7 @@ def _typed_result(
     )
     # The tools sagent has too: the same act, under sagent's name for it.
     if name in _TEXT_TOOLS:
-        return ToolResult(
-            timestamp=timestamp,
+        return ToolMessage(
             call_id=call_id,
             state="done",
             stdout=(*((text,) if text else ()), *attachments),
@@ -3115,8 +3124,7 @@ def _typed_result(
         )
     if name.startswith("mcp__"):
         server, _, tool = name.removeprefix("mcp__").partition("__")
-        return ToolResult(
-            timestamp=timestamp,
+        return ToolMessage(
             call_id=call_id,
             state="done",
             stdout=(*((text,) if text else ()), *attachments),
@@ -3125,8 +3133,7 @@ def _typed_result(
         )
     # Every other tool -- ToolSearch, AskUserQuestion. Sagent has none like it, so
     # naming a type for it would be inventing one.
-    return ToolResult(
-        timestamp=timestamp,
+    return ToolMessage(
         call_id=call_id,
         state="done",
         stdout=(*((text,) if text else ()), *attachments),

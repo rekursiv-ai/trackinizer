@@ -328,7 +328,7 @@ const feedReads = (sent: readonly Sent[]) =>
       );
     });
 
-const MESSAGES = "AgentToAgentMessage,AssistantMessage,ContextState,UserMessage";
+const MESSAGES = "AgentMessage,AssistantMessage,ContextState,UserMessage";
 
 /** Messages' read: only the conversation, no kind. */
 const CONVERSATION = { conversation: "true" };

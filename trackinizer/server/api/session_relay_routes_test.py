@@ -95,7 +95,7 @@ _ROUTES: Final[tuple[tuple[str, str], ...]] = (
 @pytest.mark.parametrize(
     ("method", "path", "body"),
     [
-        ("POST", SESSION_INPUTS_PATH, {"kind": "Quit", "payload": {}}),
+        ("POST", SESSION_INPUTS_PATH, {"kind": "SessionQuit", "payload": {}}),
         ("POST", SESSION_INPUTS_PATH, {"kind": "Command", "payload": {"line": "hi"}}),
         ("PUT", SESSION_PROCESS_PATH, {"host": "lab-box", "cwd": "relative"}),
         ("PUT", SESSION_PROCESS_PATH, {"provider": "rai"}),

@@ -19,6 +19,12 @@ import itertools
 
 from treekle import from_plain
 
+from trackinizer.sagent.session.types import (
+    AgentMessage,
+    AssistantMessage,
+    UserMessage,
+    stored_names,
+)
 from trackinizer.server.audience import (
     NOBODY,
     SessionReader,
@@ -28,6 +34,7 @@ from trackinizer.server.audience import (
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql
+from trackinizer.types.session_records import sql_kinds
 from trackinizer.wire.wire_sessions import (
     CAMPAIGN_ASKER_INFIX,
     FeedActorFacet,
@@ -93,6 +100,20 @@ class FeedScope:
     account: str = ""
     asker: str = ""
     reader: SessionReader = NOBODY
+
+    # A renamed class's rows keep their former kind until they are rewritten, so a
+    # kind named by one of its names keeps the rows under each. Naming it by both
+    # changes nothing, so a scope built from another's kinds equals it.
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "kinds",
+            tuple(
+                dict.fromkeys(
+                    name for kind in self.kinds for name in stored_names(kind)
+                ),
+            ),
+        )
 
     @property
     def names_sessions(self) -> bool:
@@ -164,10 +185,12 @@ _ATTACHMENT_COUNT: Final = (
     " THEN e.payload -> 'attachments' END), 0)"
 )
 
+# A renamed record's rows keep their former kind until they are rewritten, so each
+# kind is selected under every name its class is stored by (``sql_kinds``).
 CONVERSATION: Final = (
-    "((e.kind IN ('UserMessage', 'AssistantMessage', 'AgentToAgentMessage')"
+    f"((e.kind IN ({sql_kinds(UserMessage, AssistantMessage, AgentMessage)})"
     " AND (e.payload ->> 'content' ~ '[^[:space:]]'"
-    " AND (e.kind <> 'AgentToAgentMessage' OR e.payload ->> 'content' !~"
+    f" AND (e.kind NOT IN ({sql_kinds(AgentMessage)}) OR e.payload ->> 'content' !~"
     " '^Message Type: [A-Z_]+\\nTask name: [^\\n]*\\nSender: [^\\n]*\\nPayload:\\s*$')"
     f" OR {_ATTACHMENT_COUNT} > 0)"
     " AND (e.kind <> 'UserMessage'"
@@ -185,7 +208,7 @@ CONVERSATION: Final = (
 UNREADABLE: Final = (
     "((e.kind = 'Thinking' AND coalesce(e.payload ->> 'content', '') = ''"
     " AND coalesce(e.payload ->> 'summary', '') = '')"
-    " OR (e.kind = 'AgentToAgentMessage' AND e.payload ->> 'content' ~"
+    f" OR (e.kind IN ({sql_kinds(AgentMessage)}) AND e.payload ->> 'content' ~"
     " '^Message Type: [A-Z_]+\\nTask name: [^\\n]*\\nSender: [^\\n]*\\nPayload:\\s*$'"
     f" AND {_ATTACHMENT_COUNT} = 0))"
 )

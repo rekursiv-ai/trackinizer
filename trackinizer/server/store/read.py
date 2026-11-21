@@ -14,6 +14,7 @@ from uuid import UUID
 
 from treekle import from_plain
 
+from trackinizer.sagent.session.types import stored_names
 from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.audience import (
     NOBODY,
@@ -1161,16 +1162,29 @@ async def _record_texts(
         kind = record["kind"]
         assert isinstance(kind, str)
         values = record["texts"]
-        texts.setdefault(session_id, {})[kinds[kind]] = values
+        held = texts.setdefault(session_id, {})
+        field = kinds[kind]
+        # A renamed class's rows are stored under two kinds: one field reads both.
+        held[field] = (
+            [
+                *from_plain(held[field], list[object]),
+                *from_plain(values, list[object]),
+            ]
+            if field in held
+            else values
+        )
     return texts
 
 
+# A renamed class's rows keep their former kind until they are rewritten, so its
+# field selects each kind the class is stored under.
 def _record_kinds(filters: Sequence[RowFilter]) -> dict[str, str]:
-    """Return the record kind each record field named in ``filters`` selects."""
+    """Return the field each stored record kind feeds, for the record fields ``filters`` name."""
     return {
-        kind: field
+        name: field
         for field in {canonical_filter_field(f.field) for f in filters}
         if (kind := column_record_kind(field)) is not None
+        for name in stored_names(kind)
     }
 
 

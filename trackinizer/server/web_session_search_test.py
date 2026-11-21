@@ -15,7 +15,6 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -23,17 +22,18 @@ from treekle import from_plain
 
 import pytest
 
+from trackinizer.conftest import make_store
 from trackinizer.server import web
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import Assistant, Config
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.search import VectorHit
 from trackinizer.server.store.session_feed import FeedScope
 
 
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.store.core import Store
     from trackinizer.server.store.search import (
         Kept,
         SessionSearchHit,
@@ -260,11 +260,104 @@ def test_a_search_names_no_model_of_its_own() -> None:
     )
     assert [each["name"] for each in parameters] == [
         "q",
+        "near",
+        "spawned",
         "mode",
         "limit",
         "whose",
         "hidden",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_search_near_a_session_hands_the_search_the_session_and_no_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    search = _SearchSpy(searched=True)
+    monkeypatch.setattr(web, "search_sessions", search)
+    near = uuid4()
+
+    body = await web.web_search_sessions(
+        _request(make_store()[0]),
+        identity=_VIEWER,
+        near=near,
+    )
+
+    assert (search.queries, search.spawned) == ([near], [""])
+    assert (body["semantic"], body["degraded"]) == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_a_search_near_what_a_session_spawned_hands_the_search_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    search = _SearchSpy(searched=True)
+    monkeypatch.setattr(web, "search_sessions", search)
+    near = uuid4()
+
+    _ = await web.web_search_sessions(
+        _request(make_store()[0]),
+        identity=_VIEWER,
+        near=near,
+        spawned="a/b",
+    )
+
+    assert (search.queries, search.spawned) == ([near], ["a/b"])
+
+
+@pytest.mark.asyncio
+async def test_a_search_by_words_that_names_a_spawned_session_is_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    search = _SearchSpy()
+    monkeypatch.setattr(web, "search_sessions", search)
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_search_sessions(
+            _request(make_store()[0]),
+            q="words",
+            identity=_VIEWER,
+            spawned="a/b",
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        400,
+        "spawned names what near spawned; give near",
+    )
+    assert search.queries == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("q", "near", "mode", "detail"),
+    [
+        ("", None, "fused", "q must be non-empty"),
+        ("words", UUID(int=7), "fused", "give q or near, not both"),
+        ("", UUID(int=7), "keyword", "near is searched by vector, not by keyword"),
+    ],
+    ids=["neither", "both", "near-by-keyword"],
+)
+async def test_a_search_with_no_query_two_or_a_session_by_keyword_is_400(
+    monkeypatch: pytest.MonkeyPatch,
+    q: str,
+    near: UUID | None,
+    mode: SearchMode,
+    detail: str,
+) -> None:
+    search = _SearchSpy()
+    monkeypatch.setattr(web, "search_sessions", search)
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_search_sessions(
+            _request(make_store()[0]),
+            q=q,
+            identity=_VIEWER,
+            near=near,
+            mode=mode,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (400, detail)
+    assert search.queries == []
 
 
 @pytest.mark.asyncio
@@ -288,7 +381,7 @@ async def test_degraded_says_a_vector_arm_asked_for_did_not_run(
     monkeypatch.setattr(web, "search_sessions", search)
 
     body = await web.web_search_sessions(
-        _request(cast(Store, Mock())),
+        _request(make_store()[0]),
         q="x",
         identity=_VIEWER,
         mode=mode,
@@ -306,7 +399,7 @@ async def test_a_search_naming_no_mode_runs_both_arms(
     monkeypatch.setattr(web, "search_sessions", search)
 
     _ = await web.web_search_sessions(
-        _request(cast(Store, Mock())),
+        _request(make_store()[0]),
         q="x",
         identity=_VIEWER,
     )
@@ -334,7 +427,7 @@ async def test_the_search_is_read_for_the_reader_its_caller_is_of_their_own(
 ) -> None:
     search = _SearchSpy()
     monkeypatch.setattr(web, "search_sessions", search)
-    request = _request(cast(Store, Mock()))
+    request = _request(make_store()[0])
 
     held = (frozenset({"open", "private"}), frozenset({"open", "private", "staff"}))
     for audiences in held:
@@ -366,7 +459,7 @@ async def test_search_sessions_takes_whose_and_hidden(
     """Search widens to every session the caller reads, or narrows to their campaigns."""
     search = _SearchSpy()
     monkeypatch.setattr(web, "search_sessions", search)
-    request = _request(cast(Store, Mock()))
+    request = _request(make_store()[0])
     caller = replace(_VIEWER, read_audiences=frozenset({"open", "private"}))
 
     cases: tuple[tuple[FeedWhose, bool], ...] = (
@@ -398,7 +491,7 @@ async def test_the_assistant_searches_every_session_it_reads_unless_it_names_who
     """It holds none of the sessions it is asked about, where a person searches theirs."""
     search = _SearchSpy()
     monkeypatch.setattr(web, "search_sessions", search)
-    state = _State(store=cast(Store, Mock()), vector_search=None)
+    state = _State(store=make_store()[0], vector_search=None)
     state.config = Config(assistant=Assistant(actor="scout", email=_VIEWER.email))
     request = cast(Request, _Request(_App(state)))
 
@@ -468,13 +561,13 @@ class _Fixed:
     """A vector arm that answers the same units for every query, recording each."""
 
     hits: list[VectorHit] | None
-    asked: list[str] = field(default_factory=list[str])
+    asked: list[str | UUID] = field(default_factory=list[str | UUID])
 
     async def nearest(
         self,
         engine: DatabaseEngine,
         *,
-        query: str,
+        query: str | UUID,
         kept: Kept,
         filtered: bool,
         limit: int,
@@ -492,17 +585,23 @@ class _SearchSpy:
     searched: bool = False
     asked: list[FeedScope] = field(default_factory=list[FeedScope])
     modes: list[str] = field(default_factory=list[str])
+    queries: list[str | UUID] = field(default_factory=list[str | UUID])
+    spawned: list[str] = field(default_factory=list[str])
 
     async def __call__(
         self,
         engine: object,
         *,
+        query: str | UUID,
+        spawned: str,
         scope: FeedScope,
         mode: str,
         **rest: object,
     ) -> tuple[list[SessionSearchHit], bool]:
-        """Keep ``scope`` and ``mode``; find nothing, the vector arm run or not."""
+        """Keep the query, ``scope`` and ``mode``; find nothing, the vector arm run or not."""
         del engine, rest
+        self.queries.append(query)
+        self.spawned.append(spawned)
         self.asked.append(scope)
         self.modes.append(mode)
         return [], self.searched

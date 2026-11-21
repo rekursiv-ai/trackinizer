@@ -24,11 +24,13 @@ import httpx2
 import pytest
 
 from trackinizer.sagent.session.types import (
+    SessionContext,
     SessionRecord,
     Thinking,
     TokenUsage,
     UncategorizedRecord,
     UserMessage,
+    stored_names,
 )
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import (
@@ -452,7 +454,7 @@ class TestReadRecords:
             (
                 "UncategorizedToolResult",
                 {
-                    "py/object": "ToolResult",
+                    "py/object": "ToolMessage",
                     "call_id": "c",
                     "state": "done",
                     "stdout": ["found it"],
@@ -1064,6 +1066,22 @@ def test_an_upload_is_one_store_call_whose_records_reach_only_a_watching_viewer(
     )
 
 
+def test_a_row_under_a_renamed_class_s_other_kind_is_served_under_its_name_now() -> (
+    None
+):
+    """A client knows each record class by one name, whichever a row is stored under."""
+    name, other = stored_names(SessionContext.__name__)
+    row = SessionRecordRow(
+        session_id=uuid.uuid4(),
+        idx=0,
+        kind=other,
+        payload=immutable({"py/object": other, "model": "m"}),
+        text="",
+    )
+    body = session_ir_routes._served(row)
+    assert (body.kind, body.payload) == (name, {"py/object": name, "model": "m"})
+
+
 def test_a_legacy_tool_call_an_upload_stored_reaches_a_viewer_in_the_current_shape(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
@@ -1085,7 +1103,7 @@ def test_a_legacy_tool_call_an_upload_stored_reaches_a_viewer_in_the_current_sha
         "append_session_part",
         AsyncMock(return_value=AppendedPart(part=0, written=(0,), skipped=0)),
     )
-    # A client older than ``ToolResult`` still sends its former record's payload.
+    # A client older than ``ToolMessage`` still sends its former record's payload.
     legacy = SessionRecordRow(
         session_id=uuid.uuid4(),
         idx=0,
@@ -1114,7 +1132,7 @@ def test_a_legacy_tool_call_an_upload_stored_reaches_a_viewer_in_the_current_sha
         "BashResult",
         immutable(
             {
-                "py/object": "ToolResult",
+                "py/object": "ToolMessage",
                 "call_id": "c",
                 "state": "done",
                 "stdout": ["hi\n"],

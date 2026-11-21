@@ -105,6 +105,7 @@ from trackinizer.server.store.session_feed import (
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
+from trackinizer.types.session_records import served_kind
 from trackinizer.wire.json_types import UtcDatetime
 from trackinizer.wire.routes import MAX_LIST_LIMIT, inquiry_relation_fields
 from trackinizer.wire.wire_device import DEVICE_PAGE_PATH
@@ -112,6 +113,7 @@ from trackinizer.wire.wire_sessions import (
     FeedCursor,
     FeedFacetsResponse,
     FeedHistogramResponse,
+    FeedKindFacet,
     FeedResponse,
     FeedWhose,
     SearchMode,
@@ -248,9 +250,11 @@ async def web_search(
 @router.get("/search_sessions")
 async def web_search_sessions(
     request: Request,
-    q: str,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    q: str = "",
     *,
+    near: UUID | None = None,
+    spawned: str = "",
     mode: SearchMode = "fused",
     limit: int = 20,
     whose: FeedWhose | None = None,
@@ -264,10 +268,21 @@ async def web_search_sessions(
     with what is left rather than fail -- a search never loads a model -- and flags
     the degrade in the response (``degraded: true``, ``semantic: false``).
 
+    A search takes words (``q``) or a session (``near``), never both. Near a
+    session, the query is the vector of what that session last said: the hits are
+    the records of other sessions nearest it, by the vector arm alone. A session
+    the caller does not read, or one with no vector yet, has no hits. With
+    ``spawned``, the session is the one ``near`` spawned, at any depth, under that
+    CLI session id: an agent names another agent of its run so, knowing its own
+    session's id and the other's CLI id alone. With none such there are no hits.
+
     Args:
       request: FastAPI request object for middleware access.
-      q: The search query. Full-text terms feed ``websearch_to_tsquery``.
       identity: Authenticated user, validated to have viewer role.
+      q: The search query. Full-text terms feed ``websearch_to_tsquery``.
+      near: The session to search near, in place of ``q``.
+      spawned: The CLI session id of the session ``near`` spawned, to search
+        near in its place.
       mode: The arms to run.
       limit: Maximum merged hits, 1-200.
       whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a
@@ -288,11 +303,24 @@ async def web_search_sessions(
             status_code=400,
             detail=f"limit must be in [1, {_SESSION_SEARCH_MAX_LIMIT}]",
         )
-    if not q.strip():
+    if near is None and not q.strip():
         raise HTTPException(status_code=400, detail="q must be non-empty")
+    if near is not None and q.strip():
+        raise HTTPException(status_code=400, detail="give q or near, not both")
+    if near is not None and mode == "keyword":
+        raise HTTPException(
+            status_code=400,
+            detail="near is searched by vector, not by keyword",
+        )
+    if near is None and spawned:
+        raise HTTPException(
+            status_code=400,
+            detail="spawned names what near spawned; give near",
+        )
     hits, searched = await search_sessions(
         get_store(request).engine,
-        query=q,
+        query=q if near is None else near,
+        spawned=spawned,
         vectors=_state(request).vector_search,
         mode=mode,
         limit=limit,
@@ -1050,10 +1078,27 @@ async def web_feed_facets(
     """
     _check_window(since, until)
     del identity
-    return await get_store(request).read_feed_facets(
+    facets = await get_store(request).read_feed_facets(
         since=since,
         until=until,
         scope=scope,
+    )
+    # A renamed class's rows are stored under two kinds, and are one to a client:
+    # counted together, under the kind the feed serves them by.
+    counts: dict[str, int] = {}
+    for facet in facets.kinds:
+        served = served_kind(facet.kind)
+        counts[served] = counts.get(served, 0) + facet.count
+    return facets.model_copy(
+        update={
+            "kinds": sorted(
+                (
+                    FeedKindFacet(kind=kind, count=count)
+                    for kind, count in counts.items()
+                ),
+                key=lambda facet: (-facet.count, facet.kind),
+            ),
+        },
     )
 
 

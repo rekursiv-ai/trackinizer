@@ -24,11 +24,12 @@ import pytest
 
 from trackinizer.conftest import make_store
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     Attachment,
     BashResult,
-    ToolResult,
+    ToolMessage,
     UserMessage,
+    stored_names,
 )
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.store import session_feed
@@ -90,6 +91,24 @@ _TASK_NOTICE = (
     '{"content": "<task-notification>\\n<status>completed</status>\\n'
     '<summary>Done</summary>\\n</task-notification>", "extra": {}}'
 )
+
+
+def test_a_scope_keeps_a_renamed_class_under_each_kind_its_rows_are_stored_by() -> None:
+    name = AgentMessage.__name__
+    # The other name an agent's message is stored under: its former one, or its next.
+    other_kind = stored_names(name)[1]
+    scope = FeedScope(kinds=(name, "ToolCall"))
+    assert scope.kinds == (name, other_kind, "ToolCall")
+    # Named by both, it is the same scope: one built from another's kinds equals it.
+    assert FeedScope(kinds=(other_kind, name, "ToolCall")).kinds == (
+        other_kind,
+        name,
+        "ToolCall",
+    )
+    assert FeedScope(kinds=scope.kinds) == scope
+    params: list[object] = []
+    assert scope.clauses(params, kind="e.kind") == ["e.kind = ANY($1::text[])"]
+    assert params == [[name, other_kind, "ToolCall"]]
 
 
 # ---- The bucket grid --------------------------------------------------------
@@ -348,7 +367,7 @@ async def test_a_tool_call_row_keeps_its_stored_kind_and_has_a_current_payload(
     """A legacy row and a current one have the same ``kind`` and the same payload."""
     session = await _session(integ_store, "a")
     current = stored_payload(
-        ToolResult(
+        ToolMessage(
             call_id="d",
             state="done",
             stdout=("ok",),
@@ -373,7 +392,7 @@ async def test_a_tool_call_row_keeps_its_stored_kind_and_has_a_current_payload(
         scope=replace(_ALL_SESSIONS, kinds=("BashResult", "UncategorizedToolResult")),
     )
     pending_or_cancelled = await integ_store.read_feed(
-        scope=replace(_ALL_SESSIONS, kinds=("ToolResult",)),
+        scope=replace(_ALL_SESSIONS, kinds=("ToolMessage",)),
     )
     facets = await integ_store.read_feed_facets(
         since=None,
@@ -386,7 +405,7 @@ async def test_a_tool_call_row_keeps_its_stored_kind_and_has_a_current_payload(
         ("BashResult", current),
         ("UncategorizedToolResult", {"$body": "offloaded"}),
     ]
-    # Only a pending or cancelled call is stored under ``ToolResult``; none is here.
+    # Only a pending or cancelled call is stored under ``ToolMessage``; none is here.
     assert pending_or_cancelled == []
     assert facets.kinds == [
         FeedKindFacet(kind="BashResult", count=2),
@@ -443,8 +462,8 @@ async def test_facets_count_a_window_by_session_room_and_kind(
             ("UserMessage", _T0 + 1 * minute, _HUMAN),
             ("UserMessage", _T0 + 2 * minute, _HARNESS),
             ("AssistantMessage", _T0 + 3 * minute, _SAID),
-            ("AgentToAgentMessage", _T0 + 4 * minute, _BLANK),
-            ("AgentToAgentMessage", _T0 + 5 * minute, _ATTACHED),
+            ("AgentMessage", _T0 + 4 * minute, _BLANK),
+            ("AgentMessage", _T0 + 5 * minute, _ATTACHED),
             ("ContextState", _T0 + 6 * minute, _QUEUED % "human"),
             ("ContextState", _T0 + 7 * minute, _QUEUED % "task-notification"),
             ("ContextState", _T0 + 8 * minute, '{"kind": "date", "extra": {}}'),
@@ -502,7 +521,7 @@ async def test_facets_count_a_window_by_session_room_and_kind(
     ]
     assert facets.kinds == [
         FeedKindFacet(kind="ContextState", count=3),
-        FeedKindFacet(kind="AgentToAgentMessage", count=2),
+        FeedKindFacet(kind="AgentMessage", count=2),
         FeedKindFacet(kind="AssistantMessage", count=2),
         FeedKindFacet(kind="ToolCall", count=2),
         FeedKindFacet(kind="UserMessage", count=2),
@@ -630,15 +649,18 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         ("UserMessage", _HUMAN),
         ("UserMessage", _HARNESS),
         ("AssistantMessage", _SAID),
-        ("AgentToAgentMessage", _BLANK),
-        ("AgentToAgentMessage", _ATTACHED),
+        ("AgentMessage", _BLANK),
+        ("AgentMessage", _ATTACHED),
         ("ContextState", _QUEUED % "human"),
         ("ContextState", _QUEUED % "task-notification"),
         ("ToolCall", "{}"),
-        ("AgentToAgentMessage", _PEER % ("MESSAGE", "")),
-        ("AgentToAgentMessage", _PEER % ("FINAL_ANSWER", "Implemented.")),
+        ("AgentMessage", _PEER % ("MESSAGE", "")),
+        ("AgentMessage", _PEER % ("FINAL_ANSWER", "Implemented.")),
         ("UserMessage", _CODEX_CONTEXT),
         ("UserMessage", _TASK_NOTICE),
+        # A renamed class's rows are stored under its other name too, and read alike.
+        (stored_names(AgentMessage.__name__)[1], _ATTACHED),
+        (stored_names(AgentMessage.__name__)[1], _PEER % ("MESSAGE", "")),
     )
     await _records(
         integ_store,
@@ -660,13 +682,25 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
     assert [(event.seq, event.kind) for event in said] == [
         (0, "UserMessage"),
         (2, "AssistantMessage"),
-        (4, "AgentToAgentMessage"),
+        (4, "AgentMessage"),
         (5, "ContextState"),
-        (9, "AgentToAgentMessage"),
+        (9, "AgentMessage"),
+        # Stored under its other kind, and served under the one its class bears.
+        (12, "AgentMessage"),
     ]
-    assert [event.seq for event in newest] == [5, 9]
+    assert [event.seq for event in newest] == [9, 12]
     assert [actor.conversation for actor in facets.actors] == [len(said)]
     assert len(await integ_store.read_feed(scope=talker)) == len(turns)
+    # Asked for by one name, the kind is read under each its rows are stored by.
+    of_kind = await integ_store.read_feed(
+        scope=FeedScope(
+            reader=_ANYONE,
+            actors=("talker",),
+            kinds=("AgentMessage",),
+        ),
+    )
+    assert [event.seq for event in of_kind] == [3, 4, 8, 9, 12, 13]
+    assert {event.kind for event in of_kind} == {"AgentMessage"}
 
 
 @pytest.mark.db_pglite
@@ -683,8 +717,8 @@ async def test_the_facets_count_no_record_with_nothing_to_read(
     turns = (
         ("Thinking", '{"content": null, "encrypted": "", "summary": null}'),
         ("Thinking", '{"content": null, "encrypted": "", "summary": "Planned."}'),
-        ("AgentToAgentMessage", _PEER % ("MESSAGE", "")),
-        ("AgentToAgentMessage", _PEER % ("FINAL_ANSWER", "Done.")),
+        ("AgentMessage", _PEER % ("MESSAGE", "")),
+        ("AgentMessage", _PEER % ("FINAL_ANSWER", "Done.")),
     )
     await _records(
         integ_store,
@@ -700,7 +734,7 @@ async def test_the_facets_count_no_record_with_nothing_to_read(
 
     assert [(actor.count, actor.conversation) for actor in facets.actors] == [(2, 1)]
     assert facets.kinds == [
-        FeedKindFacet(kind="AgentToAgentMessage", count=1),
+        FeedKindFacet(kind="AgentMessage", count=1),
         FeedKindFacet(kind="Thinking", count=1),
     ]
 
@@ -888,7 +922,7 @@ async def test_typed_attachment_only_messages_are_conversation(
     session_id = await _session(integ_store, "attached")
     attachments = (Attachment(mime_descriptor="image/png", data=b"image"),)
     record = (
-        AgentToAgentMessage(
+        AgentMessage(
             content="Message Type: MESSAGE\nTask name: /root\nSender: /peer\nPayload:\n",
             attachments=attachments,
         )

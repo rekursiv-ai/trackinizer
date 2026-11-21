@@ -32,12 +32,13 @@ Thinking record's own idx, which is the live convention.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from treekle import from_plain, immutable
 
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     AssistantMessage,
     Attachment,
     ContextCompaction,
@@ -46,7 +47,7 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -94,7 +95,7 @@ class SlashCommandOut:
     that table instead of the record stream.
     """
 
-    timestamp: str | None = None
+    timestamp: datetime | None = None
     command: str = ""
     args: str = ""
 
@@ -118,7 +119,7 @@ class Retyped:
 def retype(
     record: UncategorizedRecord,
     *,
-    timestamp: str | None = None,
+    timestamp: datetime | None = None,
     ciphertext: str = "",
 ) -> Retyped:
     """Map one ``legacy/*`` record to its typed IR records.
@@ -126,7 +127,7 @@ def retype(
     Args:
       record: An :class:`UncategorizedRecord` whose ``kind`` is a member of
         :data:`LEGACY_KINDS`.
-      timestamp: The ROW's timestamp, ISO-8601. 020 wrote ``'timestamp',
+      timestamp: The ROW's timestamp. 020 wrote ``'timestamp',
         NULL`` inside every payload (``schema.020.sql:68``) -- the real value
         survives only on the ``session_records.timestamp`` column, so the
         runner must pass it; ``record.timestamp`` is ``None`` on every
@@ -171,7 +172,7 @@ def retype(
         case "legacy/AgentSendMessage":
             return Retyped(
                 records=(
-                    AgentToAgentMessage(
+                    AgentMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
                         content=from_plain(payload.get("text"), str, default=""),
@@ -207,7 +208,7 @@ def retype(
             content = from_plain(payload.get("content"), str, default="")
             return Retyped(
                 records=(
-                    ToolResult(
+                    ToolMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
                         call_id=from_plain(payload.get("call_id"), str, default=""),
@@ -309,7 +310,7 @@ def _assistant_fan_out(
     record: UncategorizedRecord,
     payload: Mapping[str, object],
     *,
-    timestamp: str | None,
+    timestamp: datetime | None,
     ciphertext: str,
 ) -> tuple[SessionRecord, ...]:
     """Split one legacy assistant turn into its acts, in act order."""

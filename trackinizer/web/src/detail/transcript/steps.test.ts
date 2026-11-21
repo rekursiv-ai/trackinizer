@@ -243,7 +243,7 @@ test("a run of two or more tool steps between messages is one group, with the re
     at(8, "ToolCall", { name: "Bash" }),
     at(9, "AssistantMessage", { content: "again" }),
     at(10, "ToolCall", { name: "Bash" }),
-    at(11, "TurnContext", { model: "b" }),
+    at(11, "SessionContext", { model: "b" }),
     at(12, "ToolCall", { name: "Bash" }),
   ]);
   const shown = groupRows(rows).map((item) =>

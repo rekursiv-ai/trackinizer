@@ -39,7 +39,7 @@ export function levelOf({ kind, message }: FeedEvent): number {
         ? 4
         : said(payload);
     case "AssistantMessage":
-    case "AgentToAgentMessage":
+    case "AgentMessage":
       return said(payload);
     case "ContextState": {
       const attachment = isFields(extra.attachment) ? extra.attachment : {};
@@ -81,7 +81,7 @@ export function levelCounts({
 
 /** Kinds that hold conversation, and other records too (`levelOf`). */
 const CONVERSATION: readonly string[] = [
-  "AgentToAgentMessage",
+  "AgentMessage",
   "AssistantMessage",
   "ContextState",
   "UserMessage",
@@ -91,7 +91,7 @@ const CONVERSATION: readonly string[] = [
 const BOOKKEEPING: readonly string[] = [
   "SystemMessage",
   "TokenUsage",
-  "TurnContext",
+  "SessionContext",
   "UncategorizedRecord",
 ];
 

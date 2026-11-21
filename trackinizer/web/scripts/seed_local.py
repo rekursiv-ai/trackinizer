@@ -34,10 +34,10 @@ from trackinizer.client.client import Client
 from trackinizer.sagent.session.types import (
     AssistantMessage,
     BashResult,
+    SessionContext,
     Thinking,
     ToolCall,
-    ToolResult,
-    TurnContext,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.types.session_records import SessionRecordRow
@@ -223,11 +223,11 @@ def _seed_transcript(client: Client) -> None:
         ),
     )
     turns = (
-        TurnContext(model="claude-opus-5-5", extra={"cwd": "/work"}),
+        SessionContext(model="claude-opus-5-5", extra={"cwd": "/work"}),
         UserMessage(content="What does **Issue#1** ask for?"),
         Thinking(content="Reading the seeded root first."),
         ToolCall(call_id="c1", name="Bash", arguments={"command": "trax issue 1"}),
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             stdout=("Issue#1 [active]\n",),

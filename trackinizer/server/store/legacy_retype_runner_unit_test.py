@@ -9,23 +9,26 @@ from unittest.mock import AsyncMock
 
 import json
 
-from treekle import json_loads, to_plain
+from treekle import json_loads, mutable, to_plain
 
 import pytest
 
 from trackinizer.conftest import make_conn, make_store, new_uuid
-from trackinizer.sagent.session.types import Thinking
+from trackinizer.sagent.session.types import Thinking, UserMessage
 from trackinizer.server.store import legacy_retype_runner
 from trackinizer.server.store.legacy_retype import SlashCommandOut
-from trackinizer.server.store.legacy_retype_runner import RetypeStats, _Source
-from trackinizer.types.session_records import payload_record
+from trackinizer.server.store.legacy_retype_runner import (
+    RetypeStats,
+    _Output,
+    _Source,
+)
+from trackinizer.types.session_records import payload_record, stored_payload
 
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from trackinizer.lib.postgres import Conn
-    from trackinizer.server.store.legacy_retype_runner import _Output
 
 
 @pytest.mark.asyncio
@@ -144,7 +147,7 @@ def test_slash_commands_route_out_of_stream_with_capture_time_fallback(
     assert legacy_retype_runner._source_outputs(source, commands) == []
     assert commands == [
         SlashCommandOut(
-            timestamp=(source.timestamp or source.created).isoformat(),
+            timestamp=source.timestamp or source.created,
             command="model",
             args="tiny",
         ),
@@ -220,17 +223,77 @@ async def test_commands_are_written_as_parallel_arrays_after_the_existing_sequen
     conn = make_conn()
     store, _ = make_store(conn)
     session = new_uuid()
+    then = datetime(2026, 9, 2, tzinfo=UTC)
     async with store.engine.acquire() as held:
         await legacy_retype_runner._insert_slash_commands(
             held,
             session,
             [
-                SlashCommandOut(timestamp="then", command="model", args="tiny"),
+                SlashCommandOut(timestamp=then, command="model", args="tiny"),
             ],
         )
     [call] = conn.execute.call_args_list
-    assert call.args[1:] == (session, ["then"], ["model"], ["tiny"])
-    assert "max(seq) + 1" in str(call.args[0])
+    # The times are bound as times, not as text the database would parse; each
+    # command is numbered after the session's last.
+    assert call.args == (
+        (
+            "INSERT INTO session_slash_commands "
+            "(session_id, seq, timestamp, command, args) "
+            "SELECT $1, "
+            "  (SELECT coalesce(max(seq) + 1, 0) FROM session_slash_commands "
+            "   WHERE session_id = $1) + ordinality - 1, "
+            "  t.timestamp, t.command, t.args "
+            "FROM unnest($2::timestamptz[], $3::text[], $4::text[]) "
+            "  WITH ORDINALITY AS t(timestamp, command, args, ordinality) "
+            "ON CONFLICT (session_id, seq) DO NOTHING"
+        ),
+        session,
+        [then],
+        ["model"],
+        ["tiny"],
+    )
+
+
+def test_a_kind_no_one_retypes_is_copied_whole_as_it_was_stored() -> None:
+    when = datetime(2026, 9, 2, tzinfo=UTC)
+    source = replace(_source("legacy/UnknownMessage"), context_id=4, timestamp=when)
+
+    assert legacy_retype_runner._source_outputs(source, []) == [
+        _Output(
+            kind="UncategorizedRecord",
+            context_id=4,
+            timestamp=when,
+            model="tiny",
+            created=source.created,
+            payload_text=source.payload_text,
+            text="hi",
+            ciphertext="",
+        ),
+    ]
+
+
+def test_a_retyped_row_is_the_whole_row_of_its_typed_record() -> None:
+    source = replace(
+        _source("legacy/UserMessage"),
+        payload_text='{"kind":"legacy/UserMessage","context_id":5,"payload":{"text":"hi"}}',
+    )
+
+    # A row that kept no time has none: only a slash command takes its capture's.
+    assert legacy_retype_runner._source_outputs(source, []) == [
+        _Output(
+            kind="UserMessage",
+            context_id=5,
+            timestamp=None,
+            model="tiny",
+            created=source.created,
+            payload_text=json.dumps(
+                mutable(stored_payload(UserMessage(context_id=5, content="hi"))),
+                separators=(",", ":"),
+            ),
+            text="hi",
+            ciphertext="",
+        ),
+    ]
 
 
 def _source(kind: str) -> _Source:

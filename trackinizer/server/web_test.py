@@ -43,6 +43,7 @@ import pytest
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
 from trackinizer.lib.postgres import Conn
 from trackinizer.mock_test_support import AsyncMockProtocol
+from trackinizer.sagent.session.types import AgentMessage, stored_names
 from trackinizer.server import web
 from trackinizer.server.access_policy import Principal
 from trackinizer.server.api import auth_routes
@@ -81,6 +82,7 @@ from trackinizer.wire.wire_sessions import (
     FeedEvent,
     FeedFacetsResponse,
     FeedHistogramResponse,
+    FeedKindFacet,
     WorkedOn,
 )
 
@@ -1507,6 +1509,38 @@ class TestFeedReads:
             mode="json",
         )
         store.engine.conn.fetch.assert_not_awaited()
+
+    def test_a_renamed_class_is_one_kind_to_the_feed_whichever_its_rows_are_under(
+        self,
+    ) -> None:
+        """Asked for by one name, it is read under both; counted under both, it is told as one."""
+        name, other = stored_names(AgentMessage.__name__)
+        store = _FeedStore()
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[
+                FeedKindFacet(kind="ToolCall", count=4),
+                FeedKindFacet(kind=name, count=2),
+                FeedKindFacet(kind=other, count=3),
+            ],
+        )
+        client = self._client(store)
+
+        response = client.get(
+            "/api/web/feed/facets",
+            params=(("kind", name), ("kind", "ToolCall")),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "actors": [],
+            "rooms": [],
+            "kinds": [{"kind": name, "count": 5}, {"kind": "ToolCall", "count": 4}],
+        }
+        scope = store.read_feed_facets.call_args_list[-1].kwargs["scope"]
+        assert isinstance(scope, FeedScope)
+        assert scope.kinds == (name, other, "ToolCall")
 
     def test_a_histogram_has_2_to_1000_buckets_and_120_unless_asked(self) -> None:
         store = self._histogram_store()

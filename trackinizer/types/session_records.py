@@ -7,11 +7,11 @@ It is the source of truth for that table the way :mod:`types.inquiries` is for
 :class:`SessionRecordRow` here.
 
 A row's ``kind`` is its record's class name, except for the record of a tool
-call. That record is always a ``ToolResult``, but each tool once had a record
+call. That record is always a ``ToolMessage``, but each tool once had a record
 class of its own, and SQL policy (offload, search, filter fields) is keyed on
 those class names. So a tool-call row is stored under its tool's legacy class
 name, such as ``BashResult`` (:func:`record_kind`). A legacy row still holds
-that class's payload; a read converts it to the ``ToolResult`` shape and leaves
+that class's payload; a read converts it to the ``ToolMessage`` shape and leaves
 the row and its ``kind`` alone (:func:`served_payload`).
 
 Identity is ``(session_id, part, idx)``. ``idx`` is DERIVED -- a record's
@@ -36,9 +36,10 @@ Two fields of the record do not ride in ``payload``:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import cache
 from types import MappingProxyType
 from typing import Final, Self, cast, get_args
 from uuid import UUID
@@ -48,8 +49,8 @@ from treekle import PlainTree, immutable
 from trackinizer.sagent.session.types import (
     FORMER_RESULT_KINDS,
     RENAMED_KINDS,
+    AgentMessage,
     AgentSpawnResult,
-    AgentToAgentMessage,
     AssistantMessage,
     BashResult,
     ContextCompaction,
@@ -61,7 +62,7 @@ from trackinizer.sagent.session.types import (
     SystemMessage,
     Thinking,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UserMessage,
     WebFetchResult,
     WebSearchHit,
@@ -69,6 +70,8 @@ from trackinizer.sagent.session.types import (
     WriteResult,
     former_kind,
     record_classes,
+    renamed_records,
+    stored_names,
     stored_plain,
     stored_record,
 )
@@ -78,12 +81,16 @@ from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 __all__ = [
     "MAX_SEARCH_TEXT_BYTES",
     "SessionRecordRow",
+    "legacy_tool_call",
     "payload_record",
     "record_class",
     "record_kind",
     "record_time",
     "search_text",
+    "served_kind",
     "served_payload",
+    "sql_kinds",
+    "stored_kinds",
     "stored_payload",
 ]
 
@@ -106,11 +113,11 @@ def record_kind(record: TraxRecord) -> str:
       record: Any :data:`TraxRecord` member.
 
     Returns:
-      kind: The record's class name. For a ``ToolResult``, the legacy class name
+      kind: The record's class name. For a ``ToolMessage``, the legacy class name
         sagent's ``former_kind`` returns, such as ``BashResult``.
 
     """
-    if isinstance(record, ToolResult):
+    if isinstance(record, ToolMessage):
         return former_kind(record)
     return type(record).__name__
 
@@ -128,11 +135,59 @@ def record_class(kind: str) -> type[TraxRecord]:
       ValueError: ``kind`` names no record class.
 
     """
-    # A row stored before a record type was renamed carries its old name.
-    found = _BY_KIND.get(RENAMED_KINDS.get(kind, kind))
+    found = _kind_class(kind)
     if found is None:
         raise ValueError(f"unknown session record kind {kind!r}")
     return found
+
+
+def served_kind(kind: str) -> str:
+    """Return the kind a client reads a stored row under.
+
+    A client knows each record class by one name. A row stored under a renamed
+    class's other name is served under the name the class bears now; every other
+    row under its stored kind, a tool call's row under the kind of what it returned.
+
+    Args:
+      kind: A row's stored ``kind``.
+
+    Returns:
+      kind: The kind its :class:`RecordBody` and its feed event carry.
+
+    """
+    renamed = _by_other_kind().get(kind)
+    return kind if renamed is None else renamed.__name__
+
+
+def stored_kinds(*classes: type[TraxRecord]) -> tuple[str, ...]:
+    """Return every ``kind`` a row of one of ``classes`` is stored under.
+
+    A class that was renamed has rows under its former name until they are
+    rewritten, so whoever selects rows by kind selects by each of these.
+
+    Args:
+      classes: Record classes; not ``ToolMessage``, whose rows are stored under
+        the kind of what each call returned (:func:`record_kind`).
+
+    Returns:
+      kinds: Each class's name, then its other stored names, in the order given.
+
+    """
+    return tuple(name for cls in classes for name in stored_names(cls.__name__))
+
+
+def sql_kinds(*classes: type[TraxRecord]) -> str:
+    """Return :func:`stored_kinds` as the list of an SQL ``IN (...)``.
+
+    Args:
+      classes: Record classes, as :func:`stored_kinds` takes them.
+
+    Returns:
+      listed: Each kind quoted, comma-separated; a kind is a class's name, which
+        holds no quote.
+
+    """
+    return ", ".join(f"'{kind}'" for kind in stored_kinds(*classes))
 
 
 def served_payload(
@@ -142,7 +197,7 @@ def served_payload(
     """Return a stored row's payload in the current record shape.
 
     A legacy tool-call row holds the payload of a retired record class. This
-    converts it to the ``ToolResult`` payload :func:`stored_payload` writes
+    converts it to the ``ToolMessage`` payload :func:`stored_payload` writes
     today. The stored row and its ``kind`` do not change.
 
     Args:
@@ -150,23 +205,19 @@ def served_payload(
       payload: The row's stored payload.
 
     Returns:
-      payload: The converted payload for a legacy tool-call row. The same
-        ``payload`` for any other kind, for a row already in the current shape,
-        and for a payload that does not decode, such as an offloaded body's stub.
+      payload: The converted payload for a legacy tool-call row
+        (:func:`legacy_tool_call`). For any other row the same ``payload``, or,
+        when a renamed class's other name tags it, ``payload`` tagged with the
+        name the class bears. The same ``payload`` when it does not decode, such
+        as an offloaded body's stub.
 
     """
-    current = ToolResult.__name__
-    if RENAMED_KINDS.get(kind, kind) != current:
-        return payload
-    # The tag alone does not prove the current shape. A legacy placeholder row is
-    # tagged ``ToolResult`` too but has no ``state``, and an earlier ``ToolResult``
-    # stored a bare exit code as ``result``. Both must still be converted.
-    if (
-        payload.get("py/object") == current
-        and "state" in payload
-        and not isinstance(payload.get("result"), int)
-    ):
-        return payload
+    if not legacy_tool_call(kind, payload):
+        # A renamed class's row is tagged with its other name until rewritten, and so
+        # is each record it holds, as a window's start holds its history: served as
+        # the rewrite (``record_rename_runner``) leaves it.
+        renamed = _renamed_fields(payload)
+        return payload if renamed == payload else immutable(renamed)
     try:
         return stored_payload(payload_record(payload, record_class(kind)))
     # Ingest stores a client's payload without decoding it, and an offloaded
@@ -174,6 +225,28 @@ def served_payload(
     # one such row; its ``text`` column is still shown.
     except (TypeError, ValueError):
         return payload
+
+
+# The tag alone does not prove the current shape. A legacy placeholder row is tagged
+# ``ToolMessage`` too but has no ``state``, and an earlier ``ToolMessage`` stored a bare
+# exit code as ``result``.
+def legacy_tool_call(kind: str, payload: Mapping[str, PlainTree]) -> bool:
+    """Return whether a row holds a tool call in the shape of a retired record class.
+
+    Args:
+      kind: The row's stored kind.
+      payload: The row's stored payload.
+
+    Returns:
+      legacy: ``True`` for a tool-call row whose payload is not the ``ToolMessage``
+        payload :func:`stored_payload` writes, under either name of that class.
+
+    """
+    return _kind_class(kind) is ToolMessage and not (
+        payload.get("py/object") in stored_names(ToolMessage.__name__)
+        and "state" in payload
+        and not isinstance(payload.get("result"), int)
+    )
 
 
 def search_text(record: object) -> str:
@@ -229,11 +302,13 @@ def record_time(record: object) -> datetime | None:
       record: Any :data:`TraxRecord` member.
 
     Returns:
-      time: Its ISO-8601 ``timestamp`` read; ``None`` when it has none or no reader
-        reads it.
+      time: Its ``timestamp``; a scrape stream's, which is ISO-8601 text, read.
+        ``None`` when it has none, or one no reader reads.
 
     """
     raw = getattr(record, "timestamp", None)
+    if isinstance(raw, datetime):
+        return raw
     return _parsed(raw if isinstance(raw, str) else None)
 
 
@@ -262,7 +337,7 @@ class SessionRecordRow:
     decodes as."""
 
     context_id: int | None = None
-    """The ``idx`` of the :class:`TurnContext` that applied, within the same
+    """The ``idx`` of the :class:`SessionContext` that applied, within the same
     part. A claude context names ITSELF, so this may equal ``idx``; a codex
     stream has none until its first ``turn_context`` line."""
 
@@ -270,7 +345,7 @@ class SessionRecordRow:
     """When the act happened, on the CLI's clock."""
 
     model: str | None = None
-    """Denormalized from the applying ``TurnContext`` so the console feed need
+    """Denormalized from the applying ``SessionContext`` so the console feed need
     not self-join per row. A projection, never read back into a record."""
 
     payload: Mapping[str, PlainTree]
@@ -301,7 +376,7 @@ class SessionRecordRow:
           part: Which source file the record came from.
           idx: Its position in that file's normalized stream.
           record: The record itself.
-          model: The applying ``TurnContext``'s model, when the caller tracked
+          model: The applying ``SessionContext``'s model, when the caller tracked
             one.
 
         Returns:
@@ -314,14 +389,13 @@ class SessionRecordRow:
             if isinstance(record, Thinking) and encrypted
             else record
         )
-        raw = getattr(record, "timestamp", None)
         return cls(
             session_id=session_id,
             part=part,
             idx=idx,
             kind=record_kind(record),
             context_id=getattr(record, "context_id", None),
-            timestamp=_parsed(raw if isinstance(raw, str) else None),
+            timestamp=record_time(record),
             model=model,
             payload=stored_payload(stored),
             text=search_text(record),
@@ -355,7 +429,7 @@ def _parts(record: object) -> tuple[str, ...]:
             UserMessage()
             | AssistantMessage()
             | SystemMessage()
-            | AgentToAgentMessage()
+            | AgentMessage()
             | ContextState()
         ):
             return (record.content or "",)
@@ -366,7 +440,7 @@ def _parts(record: object) -> tuple[str, ...]:
                 record.name,
                 *(v for v in record.arguments.values() if isinstance(v, str)),
             )
-        case ToolResult():
+        case ToolMessage():
             return _result_parts(record)
         case IncompleteRecord() | Stdin() | Stdout() | Stderr():
             # A captured stream is prose and nothing else, so the line IS the
@@ -374,13 +448,13 @@ def _parts(record: object) -> tuple[str, ...]:
             # makes an answer findable by what prompted it.
             return (record.text,)
         case _:
-            # TurnContext, TokenUsage, ContextClear, UncategorizedRecord: no
+            # SessionContext, TokenUsage, ContextClear, UncategorizedRecord: no
             # prose, so no filter field either -- a clause naming one could
             # never match.
             return ()
 
 
-def _result_parts(record: ToolResult) -> tuple[str, ...]:
+def _result_parts(record: ToolMessage) -> tuple[str, ...]:
     """Return a tool-call record's searchable strings: result fields, then output."""
     tool_result = record.result
     stdout_text = "".join(item for item in record.stdout if isinstance(item, str))
@@ -434,12 +508,11 @@ def _truncate(text: str) -> str:
     return encoded[:MAX_SEARCH_TEXT_BYTES].decode(errors="ignore")
 
 
-# The IR keeps timestamps as the provider's own STRINGS so a session rewrites byte-
-# exactly; the column is TIMESTAMPTZ so it can be ordered and filtered. An unparseable
-# value stores NULL rather than failing the whole batch -- the string itself survives in
-# ``payload``, which is what replays the file.
+# A scrape stream keeps its time as text; the column is TIMESTAMPTZ so it can be
+# ordered and filtered. An unparseable value stores NULL rather than failing the whole
+# batch -- the string itself survives in ``payload``.
 def _parsed(raw: str | None) -> datetime | None:
-    """Return a record's ISO-8601 timestamp as a datetime, or ``None``."""
+    """Return a scrape stream's ISO-8601 timestamp as a datetime, or ``None``."""
     if raw is None:
         return None
     try:
@@ -464,7 +537,7 @@ def _members(alias: object) -> list[type]:
 
 # Walked from the union, so a record type added upstream decodes here at once. A
 # tool-call row is stored under a legacy class name (``record_kind``), so each of
-# those names decodes as ``ToolResult``; ``wire/session_record_fields.py`` derives
+# those names decodes as ``ToolMessage``; ``wire/session_record_fields.py`` derives
 # one filter field from each key here.
 _BY_KIND: Final[dict[str, type[TraxRecord]]] = {
     **{cls.__name__: cast("type[TraxRecord]", cls) for cls in _members(TraxRecord)},
@@ -473,12 +546,58 @@ _BY_KIND: Final[dict[str, type[TraxRecord]]] = {
             *sorted(FORMER_RESULT_KINDS & record_classes().keys()),
             "ToolErrorResult",
         ),
-        cast("type[TraxRecord]", ToolResult),
+        cast("type[TraxRecord]", ToolMessage),
     ),
 }
+
+
+# Apart from ``_BY_KIND``, whose keys each name a filter field: a renamed class's
+# other name is a kind rows are stored under, and names no field. Read per row
+# served, so it is worked out once per process.
+@cache
+def _by_other_kind() -> Mapping[str, type[TraxRecord]]:
+    """Return the record class each renamed class's other stored name stands for."""
+    return MappingProxyType(
+        {
+            name: cast("type[TraxRecord]", cls)
+            for cls in _members(TraxRecord)
+            for name in stored_names(cls.__name__)[1:]
+        },
+    )
+
 
 # The session's classes and the scrape streams: given ``classes``, a tag naming any
 # other is refused, so a stream record would store under no name at all.
 _CLASSES: Final = MappingProxyType(
     {**record_classes(), **{cls.__name__: cls for cls in (Stdin, Stdout, Stderr)}},
 )
+
+
+# A row stored before a record type was renamed carries its old name.
+def _kind_class(kind: str) -> type[TraxRecord] | None:
+    """Return the record class a row's ``kind`` names, of any version; ``None`` for none."""
+    return _BY_KIND.get(RENAMED_KINDS.get(kind, kind)) or _by_other_kind().get(kind)
+
+
+# Only the tags change, as the rewrite changes them; ``py/dict`` holds plain data, such
+# as a call's arguments, which no tag in it makes a record.
+def _renamed_fields(fields: Mapping[str, PlainTree]) -> dict[str, PlainTree]:
+    """Return ``fields`` with each record tagged by a renamed class's former name renamed."""
+    tag = fields.get("py/object")
+    return {
+        key: renamed_records().get(tag, tag)
+        if key == "py/object" and isinstance(tag, str)
+        else value
+        if key == "py/dict"
+        else _renamed_tags(value)
+        for key, value in fields.items()
+    }
+
+
+def _renamed_tags(tree: PlainTree) -> PlainTree:
+    """Return ``tree`` as :func:`_renamed_fields` returns each mapping in it."""
+    if isinstance(tree, Mapping):
+        return _renamed_fields(tree)
+    if isinstance(tree, Sequence) and not isinstance(tree, str):
+        return tuple(_renamed_tags(item) for item in tree)
+    return tree

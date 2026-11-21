@@ -42,11 +42,13 @@ from typing import TYPE_CHECKING
 
 from treekle import from_plain, immutable
 
+from trackinizer.sagent.scripts.convert_session.provider_fields import stamped
 from trackinizer.sagent.session.types import (
     ContextClear,
+    SessionContext,
     SessionRecord,
-    TurnContext,
     UserMessage,
+    stated_timestamp,
 )
 
 
@@ -162,7 +164,7 @@ def part_names(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list
     """
     out: list[str] = []
     for record in records:
-        if isinstance(record, TurnContext) and seam in record.extra and not out:
+        if isinstance(record, SessionContext) and seam in record.extra and not out:
             out.append(_bare(record.extra[seam]))
         elif isinstance(record, ContextClear) and seam in record.extra:
             if not out:
@@ -246,7 +248,7 @@ def _bare(value: object) -> str:
 def _declared(part: Sequence[SessionRecord]) -> dict[str, str]:
     """Return the launch settings' string fields a part declared, by wire key."""
     for record in part:
-        if isinstance(record, TurnContext) and "payload" in record.extra:
+        if isinstance(record, SessionContext) and "payload" in record.extra:
             payload = from_plain(
                 record.extra["payload"],
                 dict[str, object],
@@ -264,7 +266,7 @@ def _named(
 ) -> Iterator[SessionRecord]:
     """Yield a part with its file name on the settings it opens with."""
     for index, record in enumerate(part):
-        if index or not isinstance(record, TurnContext):
+        if index or not isinstance(record, SessionContext):
             yield record
             continue
         extra = dict(record.extra)
@@ -291,7 +293,7 @@ def _until_seam(
 
 def _unnamed(record: SessionRecord, *, seam: str) -> SessionRecord:
     """Return the root's opening settings without the name fusing added."""
-    if not isinstance(record, TurnContext) or seam not in record.extra:
+    if not isinstance(record, SessionContext) or seam not in record.extra:
         return record
     return _restated(
         record,
@@ -299,7 +301,7 @@ def _unnamed(record: SessionRecord, *, seam: str) -> SessionRecord:
     )
 
 
-def _restated(record: TurnContext, extra: Mapping[str, object]) -> TurnContext:
+def _restated(record: SessionContext, extra: Mapping[str, object]) -> SessionContext:
     """Return one context with a different residual and nothing else moved."""
     return replace(record, extra=immutable(extra))
 
@@ -322,20 +324,16 @@ def _boundary(
 ) -> tuple[list[SessionRecord], SessionRecord]:
     """Return the prefix read and the record naming what ``part`` resumed."""
     prefix: list[SessionRecord] = []
-    opened: str | None = None
     carried: str | None = None
     for record in part:
         prefix.append(record)
-        if isinstance(record, TurnContext) and opened is None:
-            opened = record.timestamp or ""
         if isinstance(record, UserMessage):
             # Codex names the thread it continued on its LAUNCH settings, never
             # on a turn, so a fork's first user turn is what crossed its seam.
             if forked_from in _declared(prefix) or summary in record.extra:
                 carried = record.content
             break
-    return prefix, ContextClear(
-        timestamp=opened or None,
-        summary=carried,
-        extra={seam: name},
-    )
+    boundary = ContextClear(summary=carried, extra={seam: name})
+    opened = next((r for r in prefix if isinstance(r, SessionContext)), None)
+    spelled = None if opened is None else stated_timestamp(opened)
+    return prefix, boundary if spelled is None else stamped(boundary, spelled)

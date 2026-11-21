@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -11,6 +11,7 @@ from treekle import immutable
 
 import pytest
 
+from trackinizer.client import conversation
 from trackinizer.client.conversation import (
     Delivery,
     Segment,
@@ -23,7 +24,7 @@ from trackinizer.client.conversation import (
     read_segments,
 )
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     AssistantMessage,
     BashResult,
     ContextClear,
@@ -33,13 +34,15 @@ from trackinizer.sagent.session.types import (
     SystemMessage,
     Thinking,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UncategorizedToolResult,
     UserMessage,
 )
 from trackinizer.types.session_records import (
     SessionRecordRow,
+    payload_record,
     record_kind,
+    stored_payload,
 )
 from trackinizer.types.streams import Stdout
 from trackinizer.wire.wire_session_ir import PartBody, RecordBody
@@ -52,8 +55,8 @@ if TYPE_CHECKING:
     from trackinizer.types.streams import TraxRecord
 
 
-def _at(second: int) -> str:
-    return f"2026-10-20T10:00:{second:02d}Z"
+def _at(second: int) -> datetime:
+    return datetime(2026, 10, 20, 10, 0, second, tzinfo=UTC)
 
 
 def _segment(part: int, fmt: str, records: Sequence[SessionRecord]) -> Segment:
@@ -65,7 +68,7 @@ def _neutral_conversation(segments: Sequence[Segment]) -> list[SessionRecord]:
     return [each.record for each in neutral(placed(segments))]
 
 
-def _delivered(text: str, sender: str, *, at: str | None) -> UserMessage:
+def _delivered(text: str, sender: str, *, at: datetime | None) -> UserMessage:
     """Build a UserMessage the bot delivered into a CLI: the rendered line, stamped."""
     return UserMessage(
         timestamp=at,
@@ -81,7 +84,7 @@ def _four_parts() -> list[Segment]:
             0,
             "assistant",
             [
-                AgentToAgentMessage(
+                AgentMessage(
                     timestamp=_at(1),
                     sender="ada@example.com",
                     content="q1",
@@ -113,12 +116,12 @@ def _four_parts() -> list[Segment]:
             2,
             "assistant",
             [
-                AgentToAgentMessage(
+                AgentMessage(
                     timestamp=_at(7),
                     sender="carol@example.com",
                     content="q4",
                 ),
-                AgentToAgentMessage(
+                AgentMessage(
                     timestamp=_at(8),
                     sender="dave@example.com",
                     content="q5",
@@ -213,7 +216,7 @@ def test_a_switch_is_marked_before_the_new_providers_first_tool_call() -> None:
                 "claude",
                 [
                     ToolCall(timestamp=_at(2), call_id="t1", name="Grep"),
-                    ToolResult(
+                    ToolMessage(
                         timestamp=_at(3),
                         call_id="t1",
                         state="done",
@@ -248,7 +251,7 @@ def test_a_target_that_last_called_a_tool_is_not_told_another_answered() -> None
                 "claude",
                 [
                     ToolCall(timestamp=_at(2), call_id="t1", name="Grep"),
-                    ToolResult(
+                    ToolMessage(
                         timestamp=_at(3),
                         call_id="t1",
                         state="done",
@@ -272,7 +275,7 @@ def test_every_person_line_keeps_its_stamp_and_the_provider_that_held_it() -> No
     people = [
         record
         for record in _neutral_conversation(_four_parts())
-        if isinstance(record, AgentToAgentMessage)
+        if isinstance(record, AgentMessage)
     ]
 
     assert [(record.sender, record.extra["provider"]) for record in people] == [
@@ -295,13 +298,13 @@ def test_a_person_line_keeps_the_files_attached_to_it() -> None:
                 0,
                 "bot",
                 [
-                    AgentToAgentMessage(
+                    AgentMessage(
                         timestamp=_at(1),
                         content="what is in this?",
                         sender="ada@example.com",
                         extra=immutable({"attachments": [shot]}),
                     ),
-                    AgentToAgentMessage(
+                    AgentMessage(
                         timestamp=_at(2),
                         content="and this?",
                         sender="ada@example.com",
@@ -311,7 +314,7 @@ def test_a_person_line_keeps_the_files_attached_to_it() -> None:
         ],
     )
 
-    people = [each for each in spoken if isinstance(each, AgentToAgentMessage)]
+    people = [each for each in spoken if isinstance(each, AgentMessage)]
     assert [record.extra for record in people] == [
         {"provider": "bot", "attachments": (shot,)},
         {"provider": "bot"},
@@ -324,7 +327,7 @@ def test_a_person_line_is_its_words_without_the_context_its_agent_was_told() -> 
         0,
         "bot",
         [
-            AgentToAgentMessage(
+            AgentMessage(
                 timestamp=_at(1),
                 content=f"hi{CONTEXT_TRAILER}{{}}",
                 sender="ada@example.com",
@@ -338,9 +341,26 @@ def test_a_person_line_is_its_words_without_the_context_its_agent_was_told() -> 
     assert _user_lines(projected(spoken, "claude")) == ["ada@example.com: hi"]
 
 
+def test_a_typed_line_that_names_its_person_is_theirs() -> None:
+    """A sagent user line may name who typed it; only an unnamed one is the terminal user's."""
+    segment = _segment(
+        0,
+        "sagent",
+        [
+            UserMessage(timestamp=_at(1), content="hi", sender="bob@example.com"),
+            UserMessage(timestamp=_at(2), content="and you?"),
+        ],
+    )
+
+    assert _people(_neutral_conversation([segment])) == [
+        ("bob@example.com", "hi"),
+        ("the terminal user", "and you?"),
+    ]
+
+
 def test_a_person_line_with_no_sender_or_words_is_unknowns_and_empty() -> None:
     """A line of files alone has no words; one stored with no sender names no one."""
-    segment = _segment(0, "bot", [AgentToAgentMessage(timestamp=_at(1))])
+    segment = _segment(0, "bot", [AgentMessage(timestamp=_at(1))])
 
     assert _people(_neutral_conversation([segment])) == [("unknown", "")]
 
@@ -350,14 +370,14 @@ def test_a_tool_result_failed_only_when_it_says_so() -> None:
         0,
         "codex",
         [
-            ToolResult(
+            ToolMessage(
                 timestamp=_at(1),
                 call_id="c1",
                 state="done",
                 stdout=("ok",),
                 result=UncategorizedToolResult(),
             ),
-            ToolResult(
+            ToolMessage(
                 timestamp=_at(2),
                 call_id="c2",
                 state="done",
@@ -370,7 +390,7 @@ def test_a_tool_result_failed_only_when_it_says_so() -> None:
 
     results = _neutral_conversation([segment])
 
-    assert [r.extra for r in results if isinstance(r, ToolResult)] == [
+    assert [r.extra for r in results if isinstance(r, ToolMessage)] == [
         {"provider": "codex", "is_error": False},
         {"provider": "codex", "is_error": True},
     ]
@@ -490,7 +510,7 @@ def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
 
     assert _people(spoken) == [("ada@example.com", "also check CI")]
     [person] = spoken
-    assert isinstance(person, AgentToAgentMessage)
+    assert isinstance(person, AgentMessage)
     assert (person.timestamp, person.extra) == (_at(1), {"provider": "claude"})
 
 
@@ -500,8 +520,8 @@ def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
         0,
         "assistant",
         [
-            AgentToAgentMessage(timestamp=_at(1), sender="ada", content="kb1"),
-            AgentToAgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
+            AgentMessage(timestamp=_at(1), sender="ada", content="kb1"),
+            AgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
         ],
     )
     claude_part = _segment(
@@ -521,14 +541,22 @@ def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
 def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
     """An unstamped line takes the stamp before it, and a leading one the first stamp.
 
-    A naive stamp is read as UTC, so it sorts with the aware ones rather than failing.
+    A row whose time was stored with no offset reads as UTC, so it sorts with the
+    others rather than failing.
     """
+    no_offset = payload_record(
+        {
+            **stored_payload(_delivered("cl2", "bob", at=None)),
+            "timestamp": "2026-10-20T10:00:04",
+        },
+        UserMessage,
+    )
     bot = _segment(
         0,
         "assistant",
         [
             AssistantMessage(content="early"),
-            AgentToAgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
+            AgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
         ],
     )
     claude_part = _segment(
@@ -536,7 +564,7 @@ def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
         "claude",
         [
             _delivered("cl1", "bob", at=_at(3)),
-            _delivered("cl2", "bob", at="2026-10-20T10:00:04"),
+            no_offset,
         ],
     )
 
@@ -562,11 +590,17 @@ def test_unstamped_parts_stay_ordered_before_a_stamped_part() -> None:
 
 
 def test_offset_timestamps_are_compared_as_instants() -> None:
+    east = timezone(timedelta(hours=2))
     parts = [
         _segment(
             0,
             "claude",
-            [UserMessage(timestamp="2026-10-20T11:00:00+02:00", content="first")],
+            [
+                UserMessage(
+                    timestamp=datetime(2026, 10, 20, 11, tzinfo=east),
+                    content="first",
+                ),
+            ],
         ),
         _segment(1, "codex", [AssistantMessage(timestamp=_at(1), content="second")]),
     ]
@@ -616,14 +650,14 @@ def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
                 name="exec",
                 arguments=immutable({"cmd": "ls"}),
             ),
-            ToolResult(
+            ToolMessage(
                 timestamp=_at(2),
                 call_id="c1",
                 state="done",
                 stdout=("a.txt",),
                 result=UncategorizedToolResult(),
             ),
-            ToolResult(
+            ToolMessage(
                 timestamp=_at(3),
                 call_id="c2",
                 state="done",
@@ -661,7 +695,7 @@ def test_a_foreign_typed_tool_keeps_its_call_and_structured_result(
         name="exec",
         arguments=immutable({"cmd": "pwd"}),
     )
-    result = ToolResult(
+    result = ToolMessage(
         context_id=12,
         timestamp=_at(2),
         call_id="shell-1",
@@ -681,7 +715,7 @@ def test_a_foreign_typed_tool_keeps_its_call_and_structured_result(
     assert [
         record
         for record in written
-        if isinstance(record, ToolResult) and isinstance(record.result, BashResult)
+        if isinstance(record, ToolMessage) and isinstance(record.result, BashResult)
     ] == [
         replace(
             result,
@@ -734,7 +768,7 @@ def test_every_projected_record_is_timestamped_and_the_switch_is_noted() -> None
     written = projected(_neutral_conversation(_four_parts()), "claude")
 
     assert all(
-        record.timestamp
+        record.timestamp is not None
         for record in written
         if not isinstance(record, IncompleteRecord)
     )
@@ -761,7 +795,7 @@ def test_a_person_line_after_a_tool_result_is_marked_as_a_line_of_its_own() -> N
                 "claude",
                 [
                     ToolCall(timestamp=_at(1), call_id="t1", name="Grep"),
-                    ToolResult(
+                    ToolMessage(
                         timestamp=_at(2),
                         call_id="t1",
                         state="done",
@@ -777,7 +811,7 @@ def test_a_person_line_after_a_tool_result_is_marked_as_a_line_of_its_own() -> N
 
     written = projected(spoken, "claude")
     index = next(
-        i for i, record in enumerate(written) if isinstance(record, ToolResult)
+        i for i, record in enumerate(written) if isinstance(record, ToolMessage)
     )
     following = written[index + 1]
 
@@ -796,7 +830,7 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
         "claude",
         [
             UserMessage(timestamp=_at(1), content="look"),
-            ToolResult(
+            ToolMessage(
                 timestamp=_at(2),
                 call_id="orphan",
                 state="done",
@@ -809,7 +843,7 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
 
     written = projected(_neutral_conversation([segment]), "claude")
 
-    assert not any(isinstance(record, ToolResult) for record in written)
+    assert not any(isinstance(record, ToolMessage) for record in written)
     assert [
         record.content for record in written if isinstance(record, AssistantMessage)
     ] == ["[a tool returned: found it]\nok"]
@@ -818,13 +852,13 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
 @pytest.mark.parametrize(
     "result",
     [
-        ToolResult(
+        ToolMessage(
             timestamp=_at(2),
             call_id="orphan",
             state="failed",
             stderr=("found it",),
         ),
-        ToolResult(
+        ToolMessage(
             timestamp=_at(2),
             call_id="orphan",
             state="pending",
@@ -834,7 +868,7 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
     ids=["error", "stand-in"],
 )
 def test_any_result_crossing_as_text_says_what_the_model_read(
-    result: ToolResult,
+    result: ToolMessage,
 ) -> None:
     segment = _segment(
         0,
@@ -873,7 +907,7 @@ def test_a_foreign_tool_result_is_quoted_to_a_bounded_length() -> None:
                 name="exec",
                 arguments=immutable({}),
             ),
-            ToolResult(
+            ToolMessage(
                 timestamp=_at(2),
                 call_id="c1",
                 state="done",
@@ -1007,7 +1041,11 @@ def test_an_unreadable_stamp_takes_the_one_before_it() -> None:
         "claude",
         [
             UserMessage(timestamp=_at(5), content="first"),
-            UserMessage(timestamp="not a time", content="second"),
+            # As a record reads whose stored time is no time.
+            UserMessage(
+                extra={"$timestamp_as_written": "not a time"},
+                content="second",
+            ),
         ],
     )
 
@@ -1047,6 +1085,25 @@ def test_an_unparsed_opening_line_is_kept_unstamped() -> None:
         torn,
         UserMessage(timestamp=_at(1), content="after"),
         AssistantMessage(timestamp=_at(2), content="a1"),
+    ]
+
+
+def test_a_leading_record_with_no_time_is_written_at_the_time_it_is_written() -> None:
+    before = datetime.now(UTC)
+
+    [written] = conversation._stamped([UserMessage(content="note")])
+
+    assert isinstance(written, UserMessage)
+    assert written.timestamp is not None
+    assert before <= written.timestamp <= datetime.now(UTC)
+
+
+def test_a_line_that_did_not_read_happened_when_its_neighbour_did() -> None:
+    torn = IncompleteRecord(text="{torn")
+
+    assert conversation._moments([torn, UserMessage(timestamp=_at(1))]) == [
+        _at(1),
+        _at(1),
     ]
 
 

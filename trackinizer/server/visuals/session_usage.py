@@ -28,6 +28,8 @@ from trackinizer.sagent.model.cost import TokenCount
 from trackinizer.sagent.model.exceptions import UnknownModelError
 from trackinizer.sagent.providers import anthropic, openai
 from trackinizer.sagent.providers.table import models
+from trackinizer.sagent.session.types import SessionContext
+from trackinizer.types.session_records import stored_kinds
 
 
 if TYPE_CHECKING:
@@ -130,7 +132,7 @@ class _Tally:
         """
         payload = row.payload
         extra = _fields(payload.get("extra"))
-        if row.kind == "TurnContext":
+        if row.kind in stored_kinds(SessionContext):
             self.model = from_plain(payload.get("model"), str, default="") or self.model
         message = _fields(extra.get("message"))
         self.model = (

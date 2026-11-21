@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Final
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ import pytest
 from trackinizer.sagent.session.types import (
     BashResult,
     Thinking,
-    ToolResult,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.types.session_records import SessionRecordRow, served_payload
@@ -53,11 +54,13 @@ def test_frozen_json_serializes_as_plain_json() -> None:
     [
         (UserMessage(content="hello"), "UserMessage"),
         (
+            # A time as a CLI's reader keeps it: the instant, and its spelling.
             Thinking(
                 context_id=3,
-                timestamp="2026-11-07T12:00:00Z",
+                timestamp=datetime(2026, 11, 7, 12, tzinfo=UTC),
                 content="reasoning",
                 encrypted="c2VhbGVk",
+                extra={"$timestamp_as_written": "2026-11-07T12:00:00Z"},
             ),
             "Thinking",
         ),
@@ -79,13 +82,17 @@ def test_a_stored_row_crosses_the_wire_and_back_unchanged(
     body = RecordBody.model_validate_json(RecordBody.of(row).model_dump_json())
 
     assert (body.idx, body.kind, body.text) == (5, kind, row.text)
+    assert (body.timestamp, body.payload.get("timestamp")) == (
+        record.timestamp,
+        None if record.timestamp is None else "2026-11-07T12:00:00Z",
+    )
     assert body.row(session_id, 2) == row
 
 
 def test_a_converted_legacy_row_crosses_the_wire_under_its_stored_kind() -> None:
     """The body keeps the row's legacy ``kind`` and decodes as the current record."""
     session_id = uuid4()
-    record = ToolResult(
+    record = ToolMessage(
         call_id="c",
         state="done",
         stdout=("a.py\n",),

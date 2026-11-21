@@ -9,8 +9,9 @@ import uuid
 
 import pytest
 
+from trackinizer.sagent.session.types import SessionContext
 from trackinizer.server.visuals.session_usage import session_usage
-from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.types.session_records import SessionRecordRow, stored_kinds
 
 
 if TYPE_CHECKING:
@@ -128,7 +129,7 @@ def test_a_claude_call_on_fable_5_2_is_priced_at_its_list_prices() -> None:
 
 def test_codex_counts_what_its_running_totals_grew_by() -> None:
     rows = _rows(
-        ("TurnContext", {"model": "gpt-5.6-sol"}),
+        ("SessionContext", {"model": "gpt-5.6-sol"}),
         _codex(1_000, 200, 50),
         _codex(1_000, 200, 50),
         _codex(2_500, 900, 80),
@@ -141,6 +142,43 @@ def test_codex_counts_what_its_running_totals_grew_by() -> None:
     )
     assert usage.context_window == 258_400
     assert usage.usd is not None
+
+
+@pytest.mark.parametrize("kind", stored_kinds(SessionContext))
+def test_the_model_is_the_last_a_context_named_under_either_of_its_kinds(
+    kind: str,
+) -> None:
+    """A context that names no model keeps the one named before it."""
+    rows = _rows(
+        (kind, {"model": "gpt-5.6-sol"}),
+        (kind, {"cwd": "/w"}),
+        _codex(1_000, 200, 50),
+    )
+    usage = session_usage(rows, formats={0: "codex"}, today=_DAY)
+    assert usage.usd is not None
+    assert usage.context_window == 258_400
+
+
+def test_codex_totals_run_within_one_part_and_start_again_in_the_next() -> None:
+    rows = [
+        *_rows(("SessionContext", {"model": "gpt-5.6-sol"}), _codex(1_000, 200, 50)),
+        *_rows(_codex(300, 0, 10), part=1),
+    ]
+    usage = session_usage(rows, formats={0: "codex", 1: "codex"}, today=_DAY)
+    assert (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens) == (
+        1_300,
+        60,
+        200,
+    )
+
+
+def test_a_spend_stated_as_nothing_adds_nothing() -> None:
+    rows = _rows(
+        ("TokenUsage", {"info": {"spend_usd": None}}),
+        ("TokenUsage", {"info": {"spend_usd": 0.25}}),
+    )
+    usage = session_usage(rows, formats={0: "sagent"}, today=_DAY)
+    assert usage.usd == pytest.approx(0.25)
 
 
 def test_sagent_states_its_own_spend() -> None:

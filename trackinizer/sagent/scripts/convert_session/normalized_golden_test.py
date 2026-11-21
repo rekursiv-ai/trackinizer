@@ -25,7 +25,7 @@ import os
 import pytest
 
 from trackinizer.sagent.scripts.convert_session import claude, codex, normalized
-from trackinizer.sagent.session.types import ToolResult, former_kind
+from trackinizer.sagent.session.types import ToolMessage, former_kind
 
 
 if TYPE_CHECKING:
@@ -170,7 +170,9 @@ def test_a_golden_carries_every_record_type_the_fixture_holds() -> None:
     # The goldens defend only the record kinds they contain, so this reports
     # what that set is rather than leaving it implicit.
     kinds = {
-        former_kind(record) if isinstance(record, ToolResult) else type(record).__name__
+        former_kind(record)
+        if isinstance(record, ToolMessage)
+        else type(record).__name__
         for fixture in fixtures()
         for record in _session(fixture)
     }
@@ -190,7 +192,7 @@ def test_a_golden_carries_every_record_type_the_fixture_holds() -> None:
         "Thinking",
         "TokenUsage",
         "ToolCall",
-        "TurnContext",
+        "SessionContext",
         "UncategorizedRecord",
         "UncategorizedToolResult",
         "UserMessage",

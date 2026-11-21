@@ -41,7 +41,9 @@ from trackinizer.sagent.model.capability import (
 from trackinizer.sagent.scripts.convert_session.codex_orders import payload_orders
 from trackinizer.sagent.scripts.convert_session.provider_fields import (
     MISSING_TIMESTAMP,
+    Stamped,
     read_or_default,
+    stamped,
 )
 from trackinizer.sagent.scripts.convert_session.shell_results import (
     lift_shell_result,
@@ -55,8 +57,8 @@ from trackinizer.sagent.scripts.convert_session.unmodeled import (
     restore_unmodeled_fields,
 )
 from trackinizer.sagent.session.types import (
+    AgentMessage,
     AgentSpawnResult,
-    AgentToAgentMessage,
     AssistantMessage,
     Attachment,
     BashResult,
@@ -67,14 +69,14 @@ from trackinizer.sagent.session.types import (
     IncompleteRecord,
     McpResult,
     ReadResult,
+    SessionContext,
     SessionRecord,
     Splice,
     SystemMessage,
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolResult,
-    TurnContext,
+    ToolMessage,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -82,27 +84,13 @@ from trackinizer.sagent.session.types import (
     WebSearchHit,
     WebSearchResult,
     WriteResult,
+    as_sent,
+    stated_timestamp,
+    timestamp_as_written,
 )
 
 
 __all__ = ["denormalize", "normalize"]
-
-
-_CompleteRecord = (
-    UserMessage
-    | AssistantMessage
-    | Thinking
-    | ToolCall
-    | ToolResult
-    | SystemMessage
-    | TokenUsage
-    | ContextState
-    | ContextCompaction
-    | ContextClear
-    | AgentToAgentMessage
-    | TurnContext
-    | UncategorizedRecord
-)
 
 
 def normalize(stream: TextIO) -> Iterator[SessionRecord]:
@@ -169,7 +157,7 @@ def denormalize(
 
     """
     ordered = list(records)
-    contexts = [record for record in ordered if isinstance(record, TurnContext)]
+    contexts = [record for record in ordered if isinstance(record, SessionContext)]
     # Codex's reader states its launch payload, or an encoding naming no escaping.
     if contexts and not any(
         "payload" in context.extra
@@ -180,9 +168,13 @@ def denormalize(
         )
         for context in contexts
     ):
-        stated = (c.cwd if c.cwd is not None else c.extra.get("cwd") for c in contexts)
+        stated = (
+            str(c.cwd) if c.cwd is not None else c.extra.get("cwd") for c in contexts
+        )
+        # Codex takes one output per call: a call's later messages are user text.
+        # A result another CLI wrote alone gets its call written for it.
         ordered = _rollout_records_from_another_cli(
-            ordered,
+            as_sent(ordered, orphans_are_news=False),
             session_id=session_id,
             cwd=next((d for d in stated if isinstance(d, str)), "")
             if cwd is None
@@ -196,16 +188,16 @@ def denormalize(
         (
             record
             for record in ordered
-            if isinstance(record, TurnContext) and "payload" in record.extra
+            if isinstance(record, SessionContext) and "payload" in record.extra
         ),
-        TurnContext(),
+        SessionContext(),
     )
     declaration: dict[str, object] = dict(settings.extra)
     encoding_source = next(
         (
             cast(dict[str, object], record.encoding)
             for record in ordered
-            if isinstance(record, TurnContext)
+            if isinstance(record, SessionContext)
         ),
         dict[str, object](),
     )
@@ -213,7 +205,10 @@ def denormalize(
     for record in ordered:
         # A later context supersedes: whether the file ended on a newline is
         # knowable only at EOF, so the reader restates it there.
-        if isinstance(record, TurnContext) and "newline_terminated" in record.encoding:
+        if (
+            isinstance(record, SessionContext)
+            and "newline_terminated" in record.encoding
+        ):
             encoding = dict(record.encoding)
     # Numbering lines is a per-file convention, and the launch line is the one
     # that shows it: a file whose ``session_meta`` carries an ordinal numbers
@@ -228,7 +223,10 @@ def denormalize(
     written = 0
     launch = (
         _write_line(
-            declaration.get("$launch_timestamp_raw", settings.timestamp),
+            declaration.get(
+                "$launch_timestamp_raw",
+                timestamp_as_written(settings.timestamp, declaration),
+            ),
             from_plain(declaration.get("ordinal"), int, default=0)
             if numbered
             else None,
@@ -279,16 +277,17 @@ def denormalize(
             dict[str, object],
             default=dict[str, object](),
         )
+        stated = stated_timestamp(wire_item)
         raw_timestamp = template.get("timestamp")
         timestamp = (
             raw_timestamp
-            if wire_item.timestamp is None
+            if stated is None
             and raw_timestamp is not None
             and not isinstance(raw_timestamp, str)
-            else wire_item.timestamp
+            else stated
         )
         include_timestamp = (
-            "timestamp" in template if line_state else wire_item.timestamp is not None
+            "timestamp" in template if line_state else stated is not None
         )
         payload_at = line_state.get("payload_at")
         for outer, payload in _write_record(wire_item, group[1:]):
@@ -331,14 +330,8 @@ def _rollout_records_from_another_cli(
     cli_version: str,
 ) -> list[SessionRecord]:
     """Return another CLI's session as records a rollout can be written from."""
-    opened = next(
-        (
-            r.timestamp
-            for r in records
-            if not isinstance(r, IncompleteRecord) and r.timestamp is not None
-        ),
-        MISSING_TIMESTAMP,
-    )
+    stated = (stated_timestamp(record) for record in records)
+    opened = next((stamp for stamp in stated if stamp is not None), MISSING_TIMESTAMP)
     kept: list[SessionRecord] = []
     last = opened
     for record in records:
@@ -351,8 +344,9 @@ def _rollout_records_from_another_cli(
             if isinstance(record, Thinking) and record.reasoning_id is None
             else record
         )
-        last = unsealed.timestamp if unsealed.timestamp is not None else last
-        kept.append(replace(unsealed, timestamp=last))
+        own = stated_timestamp(unsealed)
+        last = own if own is not None else last
+        kept.append(stamped(unsealed, last))
     said = next(
         (
             r.content
@@ -362,25 +356,27 @@ def _rollout_records_from_another_cli(
         "",
     )
     named = str(session_id or uuid5(NAMESPACE_URL, f"{opened}/{len(kept)}/{said:.64}"))
-    declared = TurnContext(
-        timestamp=opened,
-        encoding={"newline_terminated": True},
-        extra={
-            "ordinal": 0,
-            "$timestamp": True,
-            # Measured: codex refuses a payload naming only its id ("No saved session found").
-            "payload": {
-                "id": named,
-                "session_id": named,
-                "timestamp": opened,
-                "cwd": cwd,
-                "originator": "codex-tui",
-                "cli_version": cli_version,
-                "source": "cli",
-                "thread_source": "user",
-                "model_provider": "openai",
+    declared = stamped(
+        SessionContext(
+            encoding={"newline_terminated": True},
+            extra={
+                "ordinal": 0,
+                "$timestamp": True,
+                # Measured: codex refuses a payload naming only its id ("No saved session found").
+                "payload": {
+                    "id": named,
+                    "session_id": named,
+                    "timestamp": opened,
+                    "cwd": cwd,
+                    "originator": "codex-tui",
+                    "cli_version": cli_version,
+                    "source": "cli",
+                    "thread_source": "user",
+                    "model_provider": "openai",
+                },
             },
-        },
+        ),
+        opened,
     )
     return [declared, *kept]
 
@@ -448,14 +444,15 @@ def _grouped(records: Sequence[SessionRecord]) -> Iterator[Sequence[SessionRecor
             open_group.append(record)
             continue
         if (
-            isinstance(record, ToolResult)
+            isinstance(record, ToolMessage)
             and isinstance(record.result, EditResult | WriteResult)
-            and isinstance(leader, ToolResult)
+            and isinstance(leader, ToolMessage)
             and isinstance(leader.result, EditResult | WriteResult)
         ):
             # ``$codex_line`` is this reader's own note about the line, added
-            # after the split, so a follower carries it and nothing else.
-            own = {key for key in record.extra if key != "$codex_line"}
+            # after the split, and each record of a line keeps the line's time:
+            # a follower carries those and nothing else.
+            own = set(record.extra) - {"$codex_line", "$timestamp_as_written"}
             if record.call_id and record.call_id == leader.call_id and not own:
                 open_group.append(record)
                 continue
@@ -570,12 +567,18 @@ def _ordered(kind: str, payload: Mapping[str, object]) -> dict[str, object]:
 # ``followers`` are the other records off the same line -- one patch event reads as one
 # record per path -- so the writer fills every entry of the one ``changes`` map rather
 # than emitting an event per record.
+#
+# A payload is built from a record's whole residual, and the spelling its time was
+# stored with is no key of codex's: it is the line's ``timestamp``, which the caller
+# writes.
 def _write_record(
     item: SessionRecord,
     followers: Sequence[SessionRecord] = (),
 ) -> list[tuple[str, dict[str, object]]]:
     """Return the rollout lines one record becomes."""
-    if isinstance(item, TurnContext):
+    item = _without_kept_spelling(item)
+    followers = [_without_kept_spelling(follower) for follower in followers]
+    if isinstance(item, SessionContext):
         if "$codex_line" not in item.extra and "payload" in item.extra:
             # The LAUNCH settings, which ``denormalize`` already wrote as the
             # ``session_meta`` line. Codex states them once; emitting a
@@ -665,9 +668,9 @@ def _write_record(
                 ),
             ),
         ]
-    if isinstance(item, ToolResult):
+    if isinstance(item, ToolMessage):
         return _write_result(item, followers)
-    if isinstance(item, AgentToAgentMessage):
+    if isinstance(item, AgentMessage):
         return [("response_item", _write_agent_message(item))]
     if isinstance(item, SystemMessage) and "$event" in item.extra:
         extra = mutable(item.extra)
@@ -724,7 +727,7 @@ def _write_compacted(
     return _ordered("compacted", payload | extra)
 
 
-def _write_context(item: TurnContext) -> dict[str, object]:
+def _write_context(item: SessionContext) -> dict[str, object]:
     """Return the settings line a turn context came from."""
     stored = mutable(item.extra)
     # The word this line used for its effort, when it was not the IR's own.
@@ -750,7 +753,7 @@ def _write_context(item: TurnContext) -> dict[str, object]:
     return _ordered("turn_context", _codex_residual(payload))
 
 
-def _write_agent_message(item: AgentToAgentMessage) -> dict[str, object]:
+def _write_agent_message(item: AgentMessage) -> dict[str, object]:
     """Return the response item a peer message came from."""
     extra = mutable(item.extra)
     blocks = _write_content(
@@ -898,7 +901,7 @@ def _write_call(
 # Which of codex's several spellings wrote it is on the record: an output response item,
 # a pre-0.149 ``*_end`` event, or an ``item_completed``.
 def _write_result(
-    item: ToolResult,
+    item: ToolMessage,
     followers: Sequence[SessionRecord] = (),
 ) -> list[tuple[str, dict[str, object]]]:
     """Return the lines a tool's answer came from."""
@@ -906,7 +909,7 @@ def _write_result(
     by_path = {
         path: record
         for record in (item, *followers)
-        if isinstance(record, ToolResult)
+        if isinstance(record, ToolMessage)
         and isinstance(changed := record.result, EditResult | WriteResult)
         and (path := changed.path) is not None
     }
@@ -961,7 +964,7 @@ def _write_result(
 
 
 def _write_output(
-    item: ToolResult,
+    item: ToolMessage,
     extra: dict[str, MutablePlainTree],
 ) -> dict[str, object]:
     """Return the output response item a result came from."""
@@ -988,10 +991,10 @@ def _write_output(
 
 
 def _write_legacy_end(
-    item: ToolResult,
+    item: ToolMessage,
     kind: str,
     extra: dict[str, MutablePlainTree],
-    by_path: Mapping[str, ToolResult],
+    by_path: Mapping[str, ToolMessage],
 ) -> dict[str, object]:
     """Return the pre-0.149 ``*_end`` event an observation came from."""
     present_value = extra.pop("$present", None)
@@ -1044,7 +1047,7 @@ def _write_legacy_end(
 # carries its splices, an ADD the whole content it wrote -- so no boundary has to be
 # recovered: each record renders its own entry.
 def _write_changes(
-    by_path: Mapping[str, ToolResult],
+    by_path: Mapping[str, ToolMessage],
     stored: Mapping[str, object] | None,
 ) -> dict[str, MutablePlainTree] | None:
     """Return a patch's per-path entries carrying each record's current value."""
@@ -1094,9 +1097,9 @@ def _write_changes(
 
 
 def _write_completed(
-    item: ToolResult,
+    item: ToolMessage,
     extra: dict[str, MutablePlainTree],
-    by_path: Mapping[str, ToolResult] = MappingProxyType({}),
+    by_path: Mapping[str, ToolMessage] = MappingProxyType({}),
 ) -> dict[str, object] | None:
     """Return the ``item_completed`` event an observation came from."""
     nested = from_plain(extra.pop("item", {}), dict[str, object])
@@ -1202,7 +1205,7 @@ def _write_completed(
 
 
 def _write_rows(
-    item: ToolResult,
+    item: ToolMessage,
     extra: dict[str, MutablePlainTree],
 ) -> list[object] | None:
     """Return search results with opaque members in their original positions."""
@@ -1452,7 +1455,7 @@ class _Reader:
             # launch line, so a rollout that opens with one supersedes this
             # immediately -- the reader states what it knows and restates.
             self._pending.append(
-                TurnContext(
+                SessionContext(
                     # No ``ascii_escaped``: codex writes raw UTF-8 on every one
                     # of 13138 captured non-ASCII lines, so the convention is
                     # the format's, not the file's.
@@ -1495,7 +1498,7 @@ class _Reader:
         if not self._ends_newline:
             # Knowable only here: a later state record supersedes the opening
             # one rather than mutating a record already handed to the caller.
-            yield TurnContext(encoding={"newline_terminated": False})
+            yield SessionContext(encoding={"newline_terminated": False})
 
     def _read(self, line: str, position: int) -> None:
         """Append whatever one line contributes to the record stream."""
@@ -1521,7 +1524,7 @@ class _Reader:
             if outer == "session_meta" and self._declared is None:
                 launch = (
                     _read_declaration(record, payload, position),
-                    read_or_default(record.get("timestamp"), str, default=None),
+                    record.get("timestamp"),
                 )
                 read: list[SessionRecord] = []
             else:
@@ -1534,7 +1537,7 @@ class _Reader:
             self._launch(launch, payload, position)
             return
         for item in read:
-            if isinstance(item, TurnContext):
+            if isinstance(item, SessionContext):
                 self._context_id = self._at()
                 self._pending.append(item)
             else:
@@ -1547,41 +1550,42 @@ class _Reader:
         payload: Mapping[str, object],
     ) -> list[SessionRecord]:
         """Return the records one line states, committing nothing."""
-        timestamp = read_or_default(record.get("timestamp"), str, default=None)
         if outer == "session_meta":
             # 19 captured rollouts declare the session twice -- a fork
             # re-announcing itself. Only the first is the file's declaration;
             # a later one is a record in the stream like any other.
-            repeat = UncategorizedRecord(
-                context_id=self._context_id,
-                timestamp=timestamp,
-                kind="session_meta/repeat",
-                payload=immutable(payload),
-            )
-            return [_with_line_state(repeat, record)]
-        if outer == "turn_context":
-            return [_with_line_state(_read_context(payload, timestamp), record)]
-        return [
-            _with_line_state(item, record)
-            for item in _read_records(outer, payload, self._context_id, timestamp)
-        ]
+            read: list[SessionRecord] = [
+                UncategorizedRecord(
+                    context_id=self._context_id,
+                    kind="session_meta/repeat",
+                    payload=immutable(payload),
+                ),
+            ]
+        elif outer == "turn_context":
+            read = [_read_context(payload)]
+        else:
+            read = _read_records(outer, payload, self._context_id)
+        spelled = record.get("timestamp")
+        return [_with_line_state(_at_line_time(item, spelled), record) for item in read]
 
     # The launch line IS settings, so it supersedes the opening context rather than
     # becoming a record beside it. The clear that follows states what the model begins
     # from; both are derived, so neither costs a line on the way back out.
     def _launch(
         self,
-        launch: tuple[dict[str, PlainTree], str | None],
+        launch: tuple[dict[str, PlainTree], object],
         payload: Mapping[str, object],
         position: int,
     ) -> None:
         """Commit the launch line's context and the clear it opens."""
-        declaration, timestamp = launch
+        declaration, spelled = launch
         self._declared = declaration
-        declared = TurnContext(
-            timestamp=timestamp,
-            encoding={"newline_terminated": True},
-            extra=dict(declaration),
+        declared = _at_line_time(
+            SessionContext(
+                encoding={"newline_terminated": True},
+                extra=dict(declaration),
+            ),
+            spelled,
         )
         if position:
             # A launch line the file did not open with -- 1 captured rollout
@@ -1610,15 +1614,17 @@ class _Reader:
             opens["$declared"] = len(declared_prompt)
         self._opening = self._at()
         self._pending.append(
-            ContextClear(
-                timestamp=timestamp,
-                cleared_session_id=read_or_default(
-                    payload.get("forked_from_id"),
-                    str,
-                    default=None,
+            _at_line_time(
+                ContextClear(
+                    cleared_session_id=read_or_default(
+                        payload.get("forked_from_id"),
+                        str,
+                        default=None,
+                    ),
+                    system_prompt=declared_prompt,
+                    extra=opens,
                 ),
-                system_prompt=declared_prompt,
-                extra=opens,
+                spelled,
             ),
         )
 
@@ -1654,7 +1660,7 @@ class _Reader:
         return item
 
 
-# Returned as the residual of the opening :class:`TurnContext`, because a launch line IS
+# Returned as the residual of the opening :class:`SessionContext`, because a launch line IS
 # settings -- cwd, cli version, model provider, git state -- and axiom 6 makes a context
 # full state. There is no separate declaration record for it to live on.
 def _read_declaration(
@@ -1721,10 +1727,11 @@ def _read_declaration(
 # overwrites the key from it, so keeping a copy stored every line's body twice -- 59.5%
 # of everything ``extra`` held.
 #
-# Nor its ``timestamp`` when the record's own field holds it: the writer reads the field
-# and only falls back to this copy for a stamp no field can carry. Storing both wrote
-# every stamp twice -- 1241 of 1470 records on one captured rollout. The key's POSITION
-# still matters, so an empty string marks where it sat.
+# Nor its ``timestamp`` when the record holds it, as its time and the spelling beside
+# it: the writer reads the record and only falls back to this copy for a stamp no
+# record can carry. Storing both wrote every stamp twice -- 1241 of 1470 records on one
+# captured rollout. The key's POSITION still matters, so an empty string marks where it
+# sat.
 def _with_line_state(item: SessionRecord, outer: Mapping[str, object]) -> SessionRecord:
     """Store Codex line replay state on its owning record."""
     stencil: dict[str, object] = {}
@@ -1753,7 +1760,7 @@ def _with_line_state(item: SessionRecord, outer: Mapping[str, object]) -> Sessio
     return replace(item, extra=extra)
 
 
-# The shape it emits: a string ``timestamp`` the record's field carries, the ``type`` it
+# The shape it emits: a string ``timestamp`` the record carries, the ``type`` it
 # is told, then ``payload`` last. A line with an extra key, a malformed stamp, or a
 # different order is not reproducible and keeps its own copy.
 def _is_canonical_line(outer: Mapping[str, object]) -> bool:
@@ -1764,8 +1771,8 @@ def _is_canonical_line(outer: Mapping[str, object]) -> bool:
 
 
 def _pop_line_state(
-    item: _CompleteRecord,
-) -> tuple[dict[str, object], _CompleteRecord]:
+    item: Stamped,
+) -> tuple[dict[str, object], Stamped]:
     """Remove and return record-owned Codex line replay state."""
     if isinstance(item, UncategorizedRecord):
         payload = dict(item.payload)
@@ -1792,9 +1799,43 @@ def _pop_line_state(
     return state, replace(item, extra=extra)
 
 
+# Each record of a line holds the line's time, and so does each turn a compaction kept,
+# with the spelling of it beside: each is stored, and the line written back, as codex
+# spelled it.
+def _at_line_time(item: SessionRecord, spelled: object) -> SessionRecord:
+    """Return ``item`` at the time its line's ``timestamp`` holds."""
+    if isinstance(item, IncompleteRecord) or not isinstance(spelled, str):
+        return item
+    if isinstance(item, ContextClear):
+        kept = tuple(_at_line_time(turn, spelled) for turn in item.history)
+        return stamped(replace(item, history=kept), spelled)
+    return stamped(item, spelled)
+
+
+# A payload is built from a record's whole residual, and the spelling its time was
+# stored with is no key of codex's.
+def _without_kept_spelling(item: SessionRecord) -> SessionRecord:
+    """Return ``item`` less the spelling of its time that a stored record keeps."""
+    if isinstance(item, IncompleteRecord):
+        return item
+    if isinstance(item, UncategorizedRecord):
+        if "$timestamp_as_written" not in item.payload:
+            return item
+        payload = dict(item.payload)
+        del payload["$timestamp_as_written"]
+        return replace(item, payload=payload)
+    if "$timestamp_as_written" not in item.extra:
+        return item
+    extra = dict(item.extra)
+    del extra["$timestamp_as_written"]
+    return replace(item, extra=extra)
+
+
 # A summary the IR does not name stays in the residual rather than being dropped, so the
 # field means what it says and the line still rewrites.
-def _read_context(payload: Mapping[str, object], timestamp: str | None) -> TurnContext:
+def _read_context(
+    payload: Mapping[str, object],
+) -> SessionContext:
     """Read the settings line codex writes once per turn."""
     model = read_field_keeping_invalid(payload, "model", str)
     permission = read_field_keeping_invalid(payload, "approval_policy", str)
@@ -1819,8 +1860,7 @@ def _read_context(payload: Mapping[str, object], timestamp: str | None) -> TurnC
         # so an aliased string would otherwise come back as the canonical name
         # and rewrite 611 captured rollouts differently than codex wrote them.
         extra["$effort"] = wire
-    return TurnContext(
-        timestamp=timestamp,
+    return SessionContext(
         model=model if isinstance(model, str) else None,
         effort=effort,
         summary_kind=summary,
@@ -1833,32 +1873,29 @@ def _read_records(
     outer: str,
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> list[SessionRecord]:
     """Read one line into the records its payload carries."""
     kind = read_or_default(payload.get("type"), str, default="")
     if outer == "response_item":
-        return [_read_response_item(kind, payload, context_id, timestamp)]
+        return [_read_response_item(kind, payload, context_id)]
     if outer == "event_msg":
-        found = _read_event(kind, payload, context_id, timestamp)
+        found = _read_event(kind, payload, context_id)
         return list(found) if isinstance(found, list) else [found]
     if outer == "world_state":
         return [
             ContextState(
                 context_id=context_id,
-                timestamp=timestamp,
                 kind="world_state",
                 extra=_codex_residual(payload),
             ),
         ]
     if outer == "compacted":
-        return _read_compacted(payload, context_id, timestamp)
+        return _read_compacted(payload, context_id)
     # No silent fallback: an unrecognized kind is named so a coverage test
     # counts it.
     return [
         UncategorizedRecord(
             context_id=context_id,
-            timestamp=timestamp,
             kind=f"{outer}/{kind or 'root'}",
             payload=immutable(payload),
         ),
@@ -1907,7 +1944,6 @@ def _declared_instructions(payload: Mapping[str, object]) -> str | None:
 def _read_compacted(
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> list[SessionRecord]:
     """Read the line that replaces a session's history with a summary."""
     entries = read_or_default(
@@ -1927,7 +1963,6 @@ def _read_compacted(
                 read_or_default(entry.get("type"), str, default=""),
                 entry,
                 context_id,
-                timestamp,
             ),
         )
     stated = read_or_default(payload.get("message"), str, default=None)
@@ -1969,12 +2004,10 @@ def _read_compacted(
     return [
         ContextCompaction(
             context_id=context_id,
-            timestamp=timestamp,
             extra=immutable(extra),
         ),
         ContextClear(
             context_id=context_id,
-            timestamp=timestamp,
             summary=stated or sealed,
             history=tuple(kept),
             extra={"$opens": True},
@@ -1986,28 +2019,26 @@ def _read_response_item(
     kind: str,
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> SessionRecord:
     """Read one item of the transcript the model saw."""
     if kind == "message":
-        return _read_message(payload, context_id, timestamp)
+        return _read_message(payload, context_id)
     if kind == "reasoning":
-        return _read_thinking(payload, context_id, timestamp)
+        return _read_thinking(payload, context_id)
     if kind in {"function_call", "custom_tool_call"}:
-        return _read_tool_call(payload, context_id, timestamp)
+        return _read_tool_call(payload, context_id)
     if kind in {"function_call_output", "custom_tool_call_output"}:
-        return _read_tool_result(payload, context_id, timestamp)
+        return _read_tool_result(payload, context_id)
     if kind in {"web_search_call", "tool_search_call"}:
         # A search IS a tool invocation: it names an operation and carries
         # arguments. Mapping it to a state record instead lost it on every
         # cross-provider conversion. Its id is under ``id``, not ``call_id``.
-        return _read_search_call(payload, context_id, timestamp)
+        return _read_search_call(payload, context_id)
     if kind == "tool_search_output":
         # It answers with ``tools``, never an ``output``, so the record has no
         # text and the writer must not synthesize any.
-        return ToolResult(
+        return ToolMessage(
             context_id=context_id,
-            timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
             state="done",
             result=UncategorizedToolResult(),
@@ -2020,9 +2051,8 @@ def _read_response_item(
             extra["$parts"] = [len(part) for part in parts]
         extra["$templates"] = templates
         extra["$order"] = _block_order(payload.get("content"))
-        return AgentToAgentMessage(
+        return AgentMessage(
             context_id=context_id,
-            timestamp=timestamp,
             content="\n".join(parts) if parts else None,
             attachments=attachments,
             sender=read_or_default(payload.get("author"), str, default=None),
@@ -2031,7 +2061,6 @@ def _read_response_item(
         )
     return UncategorizedRecord(
         context_id=context_id,
-        timestamp=timestamp,
         kind=f"response_item/{kind}",
         payload=immutable(payload),
     )
@@ -2040,7 +2069,6 @@ def _read_response_item(
 def _read_message(
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> SessionRecord:
     """Read a message by the role that sent it."""
     role_value = payload.get("role")
@@ -2070,7 +2098,6 @@ def _read_message(
     if role == "user":
         return UserMessage(
             context_id=context_id,
-            timestamp=timestamp,
             content=content,
             attachments=attachments,
             extra=immutable(extra),
@@ -2078,7 +2105,6 @@ def _read_message(
     if role == "assistant":
         return AssistantMessage(
             context_id=context_id,
-            timestamp=timestamp,
             content=content,
             attachments=attachments,
             extra=immutable(extra),
@@ -2088,7 +2114,6 @@ def _read_message(
     # unexpected role.
     return SystemMessage(
         context_id=context_id,
-        timestamp=timestamp,
         content=content,
         attachments=attachments,
         subtype=role,
@@ -2167,7 +2192,6 @@ def _stencil(block: Mapping[str, object], *held: str) -> PlainTree:
 def _read_thinking(
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> Thinking:
     """Read reasoning, whose readable part is a summary codex may split."""
     summary_value = payload.get("summary")
@@ -2218,7 +2242,6 @@ def _read_thinking(
         extra["$parts"] = [len(part) for part in parts]
     return Thinking(
         context_id=context_id,
-        timestamp=timestamp,
         summary="\n".join(parts) if parts else None,
         encrypted=encrypted_text,
         reasoning_id=reasoning_id,
@@ -2229,7 +2252,6 @@ def _read_thinking(
 def _read_tool_call(
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> ToolCall | UncategorizedRecord:
     """Read a tool invocation, whose arguments are JSON inside JSON."""
     kind = read_or_default(payload.get("type"), str, default="")
@@ -2256,7 +2278,6 @@ def _read_tool_call(
             # never had.
             return UncategorizedRecord(
                 context_id=context_id,
-                timestamp=timestamp,
                 kind=f"response_item/{kind}",
                 payload=immutable(payload),
             )
@@ -2273,7 +2294,6 @@ def _read_tool_call(
             extra["$raw"] = text
     return ToolCall(
         context_id=context_id,
-        timestamp=timestamp,
         call_id=from_plain(payload.get("call_id"), str, default=""),
         name=read_or_default(payload.get("name"), str, default=""),
         arguments=immutable(from_plain(arguments, dict[str, object])),
@@ -2298,8 +2318,7 @@ def _parse_arguments(text: str) -> dict[str, object] | None:
 def _read_tool_result(
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
-) -> ToolResult:
+) -> ToolMessage:
     """Read what one tool invocation returned."""
     output = payload.get("output")
     consumed = {"call_id"}
@@ -2328,9 +2347,8 @@ def _read_tool_result(
     # call, and the writer would otherwise give it ``"call_id": ""``.
     if "call_id" not in payload:
         extra["$call_id_absent"] = True
-    return ToolResult(
+    return ToolMessage(
         context_id=context_id,
-        timestamp=timestamp,
         call_id=from_plain(payload.get("call_id"), str, default=""),
         state="done",
         stdout=(*((content,) if content else ()), *attachments),
@@ -2342,7 +2360,6 @@ def _read_tool_result(
 def _read_search_call(
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> ToolCall:
     """Read a web or tool search as the tool invocation it is."""
     # Both the id and the input go under different keys per search kind: a web
@@ -2359,7 +2376,6 @@ def _read_search_call(
         consumed.add(arg_key)
     return ToolCall(
         context_id=context_id,
-        timestamp=timestamp,
         call_id=from_plain(payload.get(id_key), str, default=""),
         name=(read_or_default(payload.get("type"), str, default="")).removesuffix(
             "_call",
@@ -2388,7 +2404,6 @@ def _read_event(
     kind: str,
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> SessionRecord | list[SessionRecord]:
     """Read one event the CLI reported alongside the transcript."""
     if kind == "token_count":
@@ -2419,7 +2434,6 @@ def _read_event(
             del usage_extra[_FIELD_STATE_KEY]
         return TokenUsage(
             context_id=context_id,
-            timestamp=timestamp,
             info=immutable(
                 from_plain(cast(dict[str, object], info), dict[str, object])
                 if isinstance(info, Mapping)
@@ -2438,7 +2452,6 @@ def _read_event(
     if kind == "error":
         return SystemMessage(
             context_id=context_id,
-            timestamp=timestamp,
             content=read_or_default(payload.get("message"), str, default=None),
             subtype="error",
             # An error is an EVENT, not a response item, so the writer needs
@@ -2446,13 +2459,12 @@ def _read_event(
             extra=_codex_residual(payload, {"message"}) | {"$event": True},
         )
     if kind == "item_completed":
-        return _read_completed(payload, context_id, timestamp)
+        return _read_completed(payload, context_id)
     if kind == "context_compacted":
         # The marker codex writes beside the ``compacted`` line that carries
         # the summary; both name one act, and this one holds no payload.
         return ContextCompaction(
             context_id=context_id,
-            timestamp=timestamp,
             extra=_echoing(payload, kind, ()),
         )
     if kind == "mcp_tool_call_end":
@@ -2463,9 +2475,8 @@ def _read_event(
             dict[str, object],
             default=dict[str, object](),
         )
-        return ToolResult(
+        return ToolMessage(
             context_id=context_id,
-            timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
             state="done",
             result=McpResult(
@@ -2479,9 +2490,8 @@ def _read_event(
     if kind == "exec_command_end":
         stdout = read_or_default(payload.get("stdout"), str, default="")
         stderr = read_or_default(payload.get("stderr"), str, default="")
-        shell = ToolResult(
+        shell = ToolMessage(
             context_id=context_id,
-            timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
             state="done",
             stdout=(stdout,) if stdout else (),
@@ -2505,7 +2515,6 @@ def _read_event(
             edits,
             counts,
             context_id=context_id,
-            timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
             extra=_stencil_changes(_echoing(payload, kind, {"call_id"}), counts),
         )
@@ -2545,9 +2554,8 @@ def _read_event(
             )
             for hit in hits
         )
-        return ToolResult(
+        return ToolMessage(
             context_id=context_id,
-            timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
             state="done",
             stdout=(*((hits_text,) if hits_text else ()), *hits),
@@ -2566,7 +2574,6 @@ def _read_event(
     # entering the IR as a second copy of a turn.
     return UncategorizedRecord(
         context_id=context_id,
-        timestamp=timestamp,
         kind=f"event_msg/{kind}",
         payload=immutable(payload),
     )
@@ -2684,7 +2691,6 @@ def _shell_residual(payload: Mapping[str, object], kind: str) -> dict[str, Plain
 def _read_completed(
     payload: Mapping[str, object],
     context_id: int | None,
-    timestamp: str | None,
 ) -> SessionRecord | list[SessionRecord]:
     """Read an ``item_completed`` event by the kind of item it completed."""
     item = read_or_default(
@@ -2711,9 +2717,8 @@ def _read_completed(
         nested["$present"] = list(item)
         stdout = read_or_default(item.get("stdout"), str, default="")
         stderr = read_or_default(item.get("stderr"), str, default="")
-        shell = ToolResult(
+        shell = ToolMessage(
             context_id=context_id,
-            timestamp=timestamp,
             call_id=from_plain(item.get("id"), str, default=""),
             state="done",
             stdout=(stdout,) if stdout else (),
@@ -2742,7 +2747,6 @@ def _read_completed(
             edits,
             counts,
             context_id=context_id,
-            timestamp=timestamp,
             call_id=from_plain(item.get("id"), str, default=""),
             extra=outer | {"item": _stencil_changes(nested, counts)},
         )
@@ -2753,9 +2757,8 @@ def _read_completed(
                 consumed.add(key)
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
-        return ToolResult(
+        return ToolMessage(
             context_id=context_id,
-            timestamp=timestamp,
             call_id=from_plain(item.get("id"), str, default=""),
             state="done",
             result=WebSearchResult(
@@ -2767,7 +2770,6 @@ def _read_completed(
     # also arrives as its own ``response_item``; see the echo note above.
     return UncategorizedRecord(
         context_id=context_id,
-        timestamp=timestamp,
         kind=f"event_msg/item_completed/{item_type}",
         payload=immutable(payload),
     )
@@ -2817,7 +2819,6 @@ def _per_path_edits(
     counts: Sequence[int],
     *,
     context_id: int | None,
-    timestamp: str | None,
     call_id: str,
     extra: Mapping[str, PlainTree],
 ) -> list[SessionRecord]:
@@ -2863,9 +2864,8 @@ def _per_path_edits(
             # An ADD states the file's whole bytes, which is what a write is --
             # and codex's own writer maps a write back to this entry. Typing it
             # as an edit left the IR unable to round-trip one.
-            ToolResult(
+            ToolMessage(
                 context_id=context_id,
-                timestamp=timestamp,
                 call_id=call_id,
                 state="done",
                 stdout=(f"Wrote {path or 'the file'}.",),
@@ -2876,9 +2876,8 @@ def _per_path_edits(
                 extra=own,
             )
             if added
-            else ToolResult(
+            else ToolMessage(
                 context_id=context_id,
-                timestamp=timestamp,
                 call_id=call_id,
                 state="done",
                 stdout=(f"Edited {path or 'the file'}.", *found),
@@ -2888,9 +2887,8 @@ def _per_path_edits(
         )
         at += count
     return out or [
-        ToolResult(
+        ToolMessage(
             context_id=context_id,
-            timestamp=timestamp,
             call_id=call_id,
             state="done",
             stdout=("Edited the file.",),

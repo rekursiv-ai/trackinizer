@@ -131,7 +131,7 @@ def refused_line(call_id: str, reason: str) -> bytes:
       reason: What the agent is told.
 
     Returns:
-      line: A ``Result`` whose record is a failed ``ToolResult`` with ``reason``
+      line: A ``Result`` whose record is a failed ``ToolMessage`` with ``reason``
         on ``stderr``, newline included.
 
     """
@@ -140,7 +140,7 @@ def refused_line(call_id: str, reason: str) -> bytes:
             "py/object": "Result",
             "id": call_id,
             "record": {
-                "py/object": "ToolResult",
+                "py/object": "ToolMessage",
                 "call_id": "",
                 "state": "failed",
                 "stderr": [reason],

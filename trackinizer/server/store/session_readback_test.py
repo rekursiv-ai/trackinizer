@@ -6,7 +6,7 @@ file (phase 6's resume) rather than merely rendered for a human.
 
 Real corpus fixtures rather than synthetic lines, and the whole pipeline
 rather than a store call: the fixtures carry the shapes that break a
-round-trip -- a claude ``TurnContext`` naming its own index, sealed thinking
+round-trip -- a claude ``SessionContext`` naming its own index, sealed thinking
 whose ciphertext is split into another table, provider-native fields no IR
 member has a home for -- and every one of those is a chance for capture to
 lose a byte that a hand-written line would not have.
@@ -32,9 +32,9 @@ import pytest
 from trackinizer.sagent.scripts.convert_session import claude, codex
 from trackinizer.sagent.scripts.convert_session.tail import Tail
 from trackinizer.sagent.session.types import (
+    SessionContext,
     SessionRecord,
     Thinking,
-    TurnContext,
 )
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
@@ -149,7 +149,7 @@ async def _materialize(store: Store, session_id: UUID, part: int) -> str:
     # begin at its own ``idx`` 0, so nothing else carries it.
     out = StringIO()
     _dialect_adapter(manifest.name).denormalize(
-        [TurnContext(encoding=manifest.metadata), *records],
+        [SessionContext(encoding=manifest.metadata), *records],
         out,
     )
     return out.getvalue()
@@ -281,7 +281,7 @@ async def test_two_parts_each_denormalize_to_their_own_file(store: Store) -> Non
 async def test_the_manifest_metadata_survives_storage(store: Store) -> None:
     """Rewriting needs how the file SPELLED its bytes, not just its records.
 
-    Which claude lines escaped their Unicode rides on the ``TurnContext`` in
+    Which claude lines escaped their Unicode rides on the ``SessionContext`` in
     force; without it the rewrite escapes the wrong lines and the file differs
     while every record matches.
     """
@@ -293,7 +293,7 @@ async def test_the_manifest_metadata_survives_storage(store: Store) -> None:
         stated = [
             record.encoding
             for record in claude.normalize(handle)
-            if isinstance(record, TurnContext) and record.encoding
+            if isinstance(record, SessionContext) and record.encoding
         ]
     expected = stated[-1]
 

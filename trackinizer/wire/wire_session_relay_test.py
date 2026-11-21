@@ -75,7 +75,7 @@ def _kind(frame: pydantic.BaseModel) -> str:
     [
         Opened(state=_STATE, process=_SERVING, settings=(_MODEL, _HALT)),
         Opened(),
-        EventLine(kind="ModelResponsePartial", payload={"text": "Hi"}),
+        EventLine(kind="ModelResponseTextStreamed", payload={"text": "Hi"}),
         StateLine(state=_STATE),
         SettingsLine(settings=(_MODEL, _HALT)),
         RecordLine(part=0, record=RecordBody(idx=4, kind="UserMessage")),
@@ -93,7 +93,7 @@ def test_a_viewer_frame_is_read_back_by_its_type_tag(frame: pydantic.BaseModel) 
     "frame",
     [
         Hello(process_id=_PROCESS, version="0.4.2", host="lab-box"),
-        EventLine(kind="Halt", payload={}),
+        EventLine(kind="ModelHalt", payload={}),
         StateLine(state=AgentState(line="", busy=False, since=_SINCE)),
         SettingsLine(settings=()),
     ],
@@ -121,8 +121,24 @@ def test_a_process_may_not_send_what_only_the_relay_writes() -> None:
         (True, (), (_ROOT,), True),
         (False, (_JOB,), (_ROOT,), True),
         (False, (), (_ROOT, _KID), True),
+        # A job that runs until it is stopped is no work that will end.
+        (
+            False,
+            (_JOB.model_copy(update={"call_id": "w2", "runs_until_stopped": True}),),
+            (_ROOT,),
+            False,
+        ),
+        (
+            False,
+            (
+                _JOB.model_copy(update={"call_id": "w2", "runs_until_stopped": True}),
+                _JOB,
+            ),
+            (_ROOT,),
+            True,
+        ),
     ],
-    ids=["idle", "busy", "a-job", "a-child"],
+    ids=["idle", "busy", "a-job", "a-child", "a-watch", "a-watch-and-a-job"],
 )
 def test_a_state_works_while_the_root_a_job_or_a_child_does(
     busy: bool,
@@ -169,7 +185,12 @@ def test_a_frame_reads_past_a_field_a_newer_peer_added() -> None:
 
 def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
     """The process socket is in no API schema, so nothing else holds its frames still."""
-    stamped = Input(id=UUID(int=7), author="ada@example.com", kind="Halt", payload={})
+    stamped = Input(
+        id=UUID(int=7),
+        author="ada@example.com",
+        kind="ModelHalt",
+        payload={},
+    )
 
     assert Hello(process_id=_PROCESS, version="0.4.2", host="lab-box").model_dump(
         mode="json",
@@ -179,9 +200,9 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
         "version": "0.4.2",
         "host": "lab-box",
     }
-    assert EventLine(kind="Halt", payload={}).model_dump(mode="json") == {
+    assert EventLine(kind="ModelHalt", payload={}).model_dump(mode="json") == {
         "type": "event",
-        "kind": "Halt",
+        "kind": "ModelHalt",
         "payload": {},
     }
     assert StateLine(state=_STATE).model_dump(mode="json") == {
@@ -205,6 +226,7 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
         "started": "2026-11-10T12:00:00Z",
         "state": "running",
         "awaited": False,
+        "runs_until_stopped": False,
     }
     assert [member.model_dump(mode="json") for member in (_ROOT, _KID)] == [
         {
@@ -240,7 +262,7 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
         "type": "input",
         "id": "00000000-0000-0000-0000-000000000007",
         "author": "ada@example.com",
-        "kind": "Halt",
+        "kind": "ModelHalt",
         "payload": {},
         "recipient": "",
         "booked": None,
@@ -257,7 +279,12 @@ def test_an_input_from_another_session_s_agent_names_its_agent_and_booking() -> 
         recipient="lead",
         booked="ask",
     )
-    older = {"type": "input", "id": str(UUID(int=7)), "author": "a@x.y", "kind": "Halt"}
+    older = {
+        "type": "input",
+        "id": str(UUID(int=7)),
+        "author": "a@x.y",
+        "kind": "ModelHalt",
+    }
 
     assert Input.model_validate_json(sent.model_dump_json()) == sent
     assert Input.model_validate({**older, "payload": {}}).booked is None
@@ -295,16 +322,16 @@ def test_an_input_carries_what_the_relay_stamped_on_a_persons_post() -> None:
 @pytest.mark.parametrize(
     "body",
     [
-        {"kind": "Quit", "payload": {}},
-        {"kind": "UserDeferredMessage", "payload": {"text": "later"}},
-        {"kind": "Halt", "payload": {}, "author": "mallory@example.com"},
-        {"kind": "Halt"},
+        {"kind": "SessionQuit", "payload": {}},
+        {"kind": "SessionCompact", "payload": {}},
+        {"kind": "ModelHalt", "payload": {}, "author": "mallory@example.com"},
+        {"kind": "ModelHalt"},
         {"kind": "Command", "payload": {"line": "model opus"}},
         {"kind": "Command", "payload": {}},
     ],
     ids=[
         "a kind no person may send",
-        "a line held for later, which only a terminal sends",
+        "a verb only a terminal sends",
         "a field only the relay sets",
         "no payload",
         "a command that is no slash line",
@@ -320,10 +347,10 @@ def test_a_persons_post_is_refused_outside_its_three_kinds_and_three_fields(
 
 def test_a_post_keeps_its_senders_id_and_is_given_one_when_it_names_none() -> None:
     named = NewInput.model_validate(
-        {"id": str(UUID(int=7)), "kind": "Halt", "payload": {}},
+        {"id": str(UUID(int=7)), "kind": "ModelHalt", "payload": {}},
     )
-    first = NewInput(kind="Halt", payload={})
-    second = NewInput(kind="Halt", payload={})
+    first = NewInput(kind="ModelHalt", payload={})
+    second = NewInput(kind="ModelHalt", payload={})
 
     assert named.id == UUID(int=7)
     assert first.id != second.id

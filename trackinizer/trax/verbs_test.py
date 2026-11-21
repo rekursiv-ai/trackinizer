@@ -17,10 +17,10 @@ import pytest
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     AssistantMessage,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UncategorizedToolResult,
     UserMessage,
 )
@@ -2215,9 +2215,9 @@ def test_search_of_agentsession_searches_transcripts(client: FakeClient) -> None
     run(["search", "lock", "--kind", "agentsession", "--limit", "5"], client)
 
     assert [c[1:] for c in client.calls if c[0].startswith("search_")] == [
-        (("lock",), {"mode": "fused", "limit": 20}),
-        (("lock",), {"mode": "vector", "limit": 20}),
-        (("lock",), {"mode": "fused", "limit": 5}),
+        (("lock",), {"spawned": "", "mode": "fused", "limit": 20}),
+        (("lock",), {"spawned": "", "mode": "vector", "limit": 20}),
+        (("lock",), {"spawned": "", "mode": "fused", "limit": 5}),
     ]
     assert {c[0] for c in client.calls if c[0].startswith("search_")} == {
         "search_sessions",
@@ -3851,14 +3851,14 @@ class _StoredClient(FakeClient):
     _PARTS: ClassVar = (
         (
             "sagent",
-            [AgentToAgentMessage(sender="ada", content=f"q{n}") for n in range(5)],
+            [AgentMessage(sender="ada", content=f"q{n}") for n in range(5)],
         ),
         (
             "claude",
             [
                 UserMessage(content="typed"),
                 ToolCall(call_id="t1", name="Grep"),
-                ToolResult(
+                ToolMessage(
                     call_id="t1",
                     state="done",
                     stdout=("r" * 300,),
@@ -3954,7 +3954,12 @@ def test_records_refuses_a_flag_it_does_not_read(tail: list[str]) -> None:
         run(["agentsession", "7", "records", *tail], _StoredClient())
 
 
-def test_records_help_names_its_flags(capsys: pytest.CaptureFixture[str]) -> None:
+def test_records_help_names_its_flags(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `argparse` wraps the usage at the terminal's width.
+    monkeypatch.setenv("COLUMNS", "80")
     with pytest.raises(SystemExit) as exited:
         run(["agentsession", "7", "records", "--help"], _StoredClient())
 

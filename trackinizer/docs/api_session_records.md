@@ -83,10 +83,10 @@ session_id   UUID         NOT NULL; FK -> inquiries(id) ON DELETE CASCADE
 part         INTEGER      NOT NULL DEFAULT 0; which SOURCE FILE (§3.5)
 idx          INTEGER      NOT NULL; CHECK >= 0; DERIVED position (§3.6)
 kind         TEXT         NOT NULL; the record class's name (a tool call: below)
-context_id   INTEGER      nullable; idx of the applying TurnContext, same part
+context_id   INTEGER      nullable; idx of the applying SessionContext, same part
 timestamp    TIMESTAMPTZ  nullable; when the act happened (CLI clock)
 created      TIMESTAMPTZ  NOT NULL DEFAULT clock_timestamp(); DB write time
-model        TEXT         nullable; denormalized from the applying TurnContext
+model        TEXT         nullable; denormalized from the applying SessionContext
 payload      JSON         NOT NULL; the record as DataclassCodec JSON
 text         TEXT         NOT NULL DEFAULT ''; the search projection (§3.7)
 search       tsvector     GENERATED ALWAYS AS to_tsvector('simple', text) STORED
@@ -103,7 +103,7 @@ written whole and read whole), so jsonb's indexing buys nothing to pay for it.
 `session_manifests.metadata` is `JSON` for the same reason.
 
 `kind` is the record's class name, except for the record of a tool call. That
-record is always a `ToolResult`:
+record is always a `ToolMessage`:
 
 - `state`: `pending`, `done`, `failed` or `cancelled`.
 - `stdout`, `stderr`: the items the tool wrote, text and typed items.
@@ -122,16 +122,16 @@ result has a class of its own        that class's name: BashResult, ReadResult, 
 no result, or an UncategorizedToolResult:
   state = done                       UncategorizedToolResult
   state = failed                     ToolErrorResult
-  state = pending | cancelled        ToolResult
+  state = pending | cancelled        ToolMessage
 ```
 
-A legacy row, stored before `ToolResult` replaced those classes, still holds
+A legacy row, stored before `ToolMessage` replaced those classes, still holds
 the old class's payload. A read returns each row under its stored kind and
-converts only a legacy payload, to the `ToolResult` payload ingest writes today
+converts only a legacy payload, to the `ToolMessage` payload ingest writes today
 (`served_payload`). The records route (§5.5) and the console feed both convert
 on the way out, so a client reads one payload shape. Neither rewrites a row.
 
-`context_id` uses `<=`, not `<`: a claude `TurnContext` is appended at its own
+`context_id` uses `<=`, not `<`: a claude `SessionContext` is appended at its own
 index and names ITSELF, where a codex stream has none until its first
 `turn_context` line.
 
@@ -300,7 +300,7 @@ ciphertext  str?       Thinking.encrypted verbatim, base64 ASCII
 `SessionRecordRow`. `kind` is open TEXT, not a closed Literal: the IR has 21
 concrete members and gains more. A tool-call record has the kind its row is
 stored under (§3.1), on write and on read. The read route keeps that kind and
-returns the payload `served_payload` converts: a `ToolResult` payload, even for
+returns the payload `served_payload` converts: a `ToolMessage` payload, even for
 a legacy row. An offloaded row's stub (`{"$body": "offloaded"}`) is returned
 unchanged, so its `kind` is the only field that names the tool.
 
@@ -436,7 +436,7 @@ part grew.
 `plaintext_only` is what a VIEWER wants -- only a replay needs the encrypted
 half, and it is the largest thing on the row.
 
-A tool-call record is returned under its row's stored kind, with a `ToolResult`
+A tool-call record is returned under its row's stored kind, with a `ToolMessage`
 payload even when the row is a legacy one (§3.1, §4.1).
 
 ### 5.6 Divergence from api.md
@@ -501,7 +501,7 @@ Each lowers to a correlated `EXISTS` over `session_records` with the kind
 BAKED INTO the template, never passed as an operand. Which kinds qualify is
 DERIVED, not listed: a kind is a filter field iff its `search_text`
 projection can be non-empty (`wire/session_record_fields.py`), so a filter on
-`TurnContext` -- which indexes nothing -- does not exist rather than silently
+`SessionContext` -- which indexes nothing -- does not exist rather than silently
 never matching. A field names a STORED kind (§3.1), so `bash_result` matches
 shell calls in legacy rows and current ones alike.
 

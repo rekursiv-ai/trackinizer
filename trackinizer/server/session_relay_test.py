@@ -13,6 +13,7 @@ import logging
 import pydantic
 import pytest
 
+from trackinizer.sagent.session.types import AgentMessage, stored_names
 from trackinizer.server import session_relay
 from trackinizer.server.session_relay import (
     BAD_FRAME,
@@ -63,7 +64,7 @@ _ENDED: Final = UUID(int=6)
 _SINCE: Final = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 _STATE: Final = StateLine(state=AgentState(line="[3s]", busy=True, since=_SINCE))
 _SETTINGS: Final = SettingsLine(settings=(Setting(name=("model",), help_short="M"),))
-_HALT: Final = NewInput(kind="Halt", payload={"py/object": "Halt"})
+_HALT: Final = NewInput(kind="ModelHalt", payload={"py/object": "ModelHalt"})
 _AUTHOR: Final = "ada@x.y"
 
 
@@ -211,7 +212,7 @@ def _start(
     )
 
 
-def _event(kind: str = "ModelResponsePartial", text: str = "hi") -> EventLine:
+def _event(kind: str = "ModelResponseTextStreamed", text: str = "hi") -> EventLine:
     return EventLine(kind=kind, payload={"text": text})
 
 
@@ -582,11 +583,34 @@ async def test_stored_records_reach_viewers_and_are_not_kept() -> None:
     ]
     socket = _Socket()
     _ = await _attached(relay, viewer, socket)
-    socket.push(_event("ModelCallStarted"))
+    socket.push(_event("ModelResponseStarted"))
     _ = await viewer.next()
     late = _Viewer(relay)
     assert isinstance(await late.next(), Opened)
-    assert await late.next() == _event("ModelCallStarted")
+    assert await late.next() == _event("ModelResponseStarted")
+
+
+# A process started before a record class was renamed, or after it against a server
+# not yet renamed, names an agent's line to the user by the class's other name; a
+# viewer knows the class by the one name it bears here, as it does a stored record's.
+async def test_an_event_named_by_a_renamed_class_s_other_name_is_told_by_the_name_it_bears() -> (
+    None
+):
+    name = AgentMessage.__name__
+    (other,) = (n for n in stored_names(name) if n != name)
+    relay = SessionRelay()
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    socket = _Socket()
+    _ = await _attached(relay, viewer, socket)
+
+    socket.push(_event(other, "to the user"))
+    socket.push(_event("ModelIdle"))
+
+    assert [await viewer.next(), await viewer.next()] == [
+        _event(name, "to the user"),
+        _event("ModelIdle"),
+    ]
 
 
 async def test_a_session_is_watched_while_a_viewer_follows_it() -> None:
@@ -621,8 +645,8 @@ async def test_what_the_server_says_reaches_each_viewer_now_and_is_not_kept() ->
     assert await viewer.next() == said
     late = _Viewer(relay)
     assert isinstance(await late.next(), Opened)
-    relay.tell(_SESSION, _event("ModelCallStarted"))
-    assert await late.next() == _event("ModelCallStarted")
+    relay.tell(_SESSION, _event("ModelResponseStarted"))
+    assert await late.next() == _event("ModelResponseStarted")
 
 
 async def test_a_late_viewer_gets_the_reply_since_its_model_call_then_live_lines() -> (
@@ -634,13 +658,13 @@ async def test_a_late_viewer_gets_the_reply_since_its_model_call_then_live_lines
     socket = _Socket()
     _ = await _attached(relay, viewer, socket)
     sent = [
-        _event("ModelResponsePartial", "before any call"),
-        _event("ModelCallStarted", "first"),
-        _event("ModelResponsePartial", "of the first call"),
-        _event("ModelCallStarted", "second"),
-        _event("ModelResponsePartial", "a"),
+        _event("ModelResponseTextStreamed", "before any call"),
+        _event("ModelResponseStarted", "first"),
+        _event("ModelResponseTextStreamed", "of the first call"),
+        _event("ModelResponseStarted", "second"),
+        _event("ModelResponseTextStreamed", "a"),
         _STATE,
-        _event("ModelResponsePartial", "b"),
+        _event("ModelResponseTextStreamed", "b"),
     ]
     for line in sent:
         socket.push(line)
@@ -649,12 +673,12 @@ async def test_a_late_viewer_gets_the_reply_since_its_model_call_then_live_lines
     late = _Viewer(relay)
     opened = await late.next()
     kept = [await late.next() for _ in range(3)]
-    socket.push(_event("ModelResponsePartial", "c"))
+    socket.push(_event("ModelResponseTextStreamed", "c"))
 
     assert isinstance(opened, Opened)
     assert opened.state == _STATE.state
     assert kept == [sent[3], sent[4], sent[6]]
-    assert await late.next() == _event("ModelResponsePartial", "c")
+    assert await late.next() == _event("ModelResponseTextStreamed", "c")
 
 
 async def test_every_connect_starts_again_with_no_cursor() -> None:
@@ -663,7 +687,7 @@ async def test_every_connect_starts_again_with_no_cursor() -> None:
     _ = await viewer.next()
     socket = _Socket()
     _ = await _attached(relay, viewer, socket)
-    for line in (_event("ModelCallStarted"), _event()):
+    for line in (_event("ModelResponseStarted"), _event()):
         socket.push(line)
         _ = await viewer.next()
 
@@ -671,13 +695,13 @@ async def test_every_connect_starts_again_with_no_cursor() -> None:
         again = _Viewer(relay)
         assert isinstance(await again.next(), Opened)
         assert [await again.next(), await again.next()] == [
-            _event("ModelCallStarted"),
+            _event("ModelResponseStarted"),
             _event(),
         ]
 
 
 async def test_past_its_budget_the_reply_is_kept_no_more_until_the_next_call() -> None:
-    call = _event("ModelCallStarted")
+    call = _event("ModelResponseStarted")
     budget = len(call.model_dump_json().encode()) + len(
         _event().model_dump_json().encode(),
     )
@@ -703,17 +727,15 @@ async def test_past_its_budget_the_reply_is_kept_no_more_until_the_next_call() -
     assert await kept_after(call) == [call]
 
 
-@pytest.mark.parametrize("end", ["ModelResponseComplete", "ModelResponseCancelled"])
-async def test_a_finished_reply_is_kept_no_more_until_the_next_model_call(
-    end: str,
-) -> None:
+async def test_a_finished_reply_is_kept_no_more_until_the_next_model_call() -> None:
     """It is a record once complete, stored or about to be: replayed, it shows twice."""
+    end = "ModelResponseCompleted"
     relay = SessionRelay()
     viewer = _Viewer(relay)
     _ = await viewer.next()
     socket = _Socket()
     _ = await _attached(relay, viewer, socket)
-    call = _event("ModelCallStarted")
+    call = _event("ModelResponseStarted")
     for line in (call, _event(), _event(end), _event("ToolCallStarted")):
         socket.push(line)
         _ = await viewer.next()
@@ -2073,7 +2095,7 @@ async def test_on_detach_the_kept_state_settings_and_lines_are_cleared() -> None
     _ = await viewer.next()
     socket = _Socket()
     served = await _attached(relay, viewer, socket)
-    for line in (_STATE, _SETTINGS, _event("ModelCallStarted")):
+    for line in (_STATE, _SETTINGS, _event("ModelResponseStarted")):
         socket.push(line)
         _ = await viewer.next()
 

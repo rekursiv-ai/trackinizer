@@ -12,6 +12,7 @@ the regex, and the ciphertext that must never be matchable.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -20,12 +21,13 @@ from treekle import immutable
 import pytest
 
 from trackinizer.sagent.session.types import (
+    AgentMessage,
     BashResult,
     ContextCompaction,
     SessionRecord,
     Thinking,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.server.audience import SessionReader
@@ -107,7 +109,7 @@ async def test_a_phrase_in_a_tool_result_matches(store: Store) -> None:
     hit = await _session_with(
         store,
         [
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("pg_advisory_lock",),
@@ -312,6 +314,44 @@ async def test_a_record_kind_scopes_the_match(store: Store) -> None:
 
     assert session_id in as_user
     assert session_id not in as_tool
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_row_stored_under_a_former_class_name_matches_in_both_evaluators(
+    store: Store,
+) -> None:
+    session_id = uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
+            "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
+            "'tester@example.com', 's', 'open')",
+            session_id,
+        )
+    row = SessionRecordRow.of(
+        session_id=session_id,
+        part=0,
+        idx=0,
+        record=AgentMessage(sender="lead", content="formerly sent"),
+    )
+    await store.append_session_records(
+        session_id,
+        [replace(row, kind="AgentToAgentMessage")],
+    )
+    _ = await store.upsert_session_manifest(
+        session_id,
+        name="s.jsonl",
+        metadata=immutable({}),
+        ir_id=uuid4(),
+        format="claude",
+        records=1,
+    )
+    clause = Filter(field="agent_message", op="re", value="formerly")
+
+    assert session_id in await _matching(store, clause, lowering=False)
+    assert session_id in await _matching(store, clause)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 type Fields = { readonly [field: string]: unknown };
 
-/** The fields of a `ToolResult` payload besides `result`; one not given is left out, as the server leaves a default out. */
+/** The fields of a `ToolMessage` payload besides `result`; one not given is left out, as the server leaves a default out. */
 type CallFields = {
   readonly call_id?: string;
   readonly state?: "pending" | "done" | "failed" | "cancelled";
@@ -19,12 +19,12 @@ export function tagged(tag: string, fields: Fields = {}): Fields {
 }
 
 /**
- * A `ToolResult` payload in the shape the server returns (`served_payload` in
+ * A `ToolMessage` payload in the shape the server returns (`served_payload` in
  * `types/session_records.py`): the tool's `result` (null when the tool returned
  * none) and the call's other fields. The record's kind is not in the payload; a
  * test passes the kind the row is stored under (`record_kind` there): the
  * result's class, else `ToolErrorResult` for a failed call,
- * `UncategorizedToolResult` for a done one, and `ToolResult` for a pending or
+ * `UncategorizedToolResult` for a done one, and `ToolMessage` for a pending or
  * cancelled one.
  */
 export function toolResult(
@@ -39,7 +39,7 @@ export function toolResult(
   }: CallFields = {},
 ): Fields {
   return {
-    "py/object": "ToolResult",
+    "py/object": "ToolMessage",
     call_id,
     state,
     ...(stdout.length ? { stdout } : {}),
