@@ -3265,7 +3265,8 @@ def _record_line(session_id: uuid.UUID, part: PartBody, body: RecordBody) -> str
         role, author, text = "user", record.sender or "unknown", record.content or ""
     elif isinstance(record, UserMessage):
         delivery = attested_delivery(record.extra)
-        role, author = "user", "terminal" if delivery is None else delivery.source
+        role = "user"
+        author = record.sender or "terminal" if delivery is None else delivery.source
         text = record.content or ""
     elif isinstance(record, AssistantMessage):
         role, text = "assistant", record.content or ""
