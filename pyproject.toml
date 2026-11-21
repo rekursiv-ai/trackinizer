@@ -33,8 +33,9 @@ dependencies = [
     # through `lib/`, at import time or later.
     # 0.3.3 adds `default_concrete_types`, `target` and `classes`, which session
     # records and the wire documents are written and read with.
-    # 0.4.1 leaves dataclass fields at their defaults out of trees.
-    "treekle>=0.4.1",
+    # 0.4.1 leaves dataclass fields at their defaults out of trees. 0.4.10 writes a
+    # class named in ``classes`` as ``py/type`` by that name, as records store it.
+    "treekle>=0.4.10",
     "websockets>=17.4",
     # http client
     "httpx2>=2.16.0",
