@@ -15,6 +15,13 @@ import uuid
 from pydantic import BaseModel
 from treekle import from_plain
 
+from trackinizer.sagent.session.types import (
+    AgentMessage,
+    AssistantMessage,
+    UserMessage,
+)
+from trackinizer.server.values import vetted_sql
+from trackinizer.types.session_records import sql_kinds
 from trackinizer.wire.wire_sessions import CONTEXT_TRAILER
 
 
@@ -58,7 +65,7 @@ class SessionLines:
 # The goal is the condition claude's ``goal_status`` attachment names, or the objective
 # codex's ``thread_goal_updated`` event names: the fields the agent runner normalises.
 # Audience: gated -- reads only the sessions its caller found the reader reads.
-_LINES: Final = (
+_LINES: Final = vetted_sql(
     "SELECT s.id, person.content, person.room, person.source, goal.text AS goal, "
     "last.kind AS last_kind, last.content AS last_content, last.sender AS last_sender, "
     "last.room AS last_room, last.source AS last_source "
@@ -69,7 +76,9 @@ _LINES: Final = (
     "FROM session_records AS r "
     "JOIN session_manifests AS m ON m.session_id = r.session_id AND m.part = r.part "
     "WHERE r.session_id = s.id AND r.idx < m.records "
-    "AND r.kind IN ('UserMessage', 'AgentToAgentMessage') "
+    "AND r.kind IN (",
+    sql_kinds(UserMessage, AgentMessage),
+    ") "
     "AND r.text ~ '\\S' AND r.text !~ "
     "'^\\s*(<|# AGENTS\\.md instructions|Caveat: The messages below were generated)' "
     "ORDER BY r.part, r.idx LIMIT 1) AS person ON TRUE LEFT JOIN LATERAL ("
@@ -89,10 +98,12 @@ _LINES: Final = (
     "FROM session_records AS r "
     "JOIN session_manifests AS m ON m.session_id = r.session_id AND m.part = r.part "
     "WHERE r.session_id = s.id AND r.idx < m.records "
-    "AND r.kind IN ('UserMessage', 'AgentToAgentMessage', 'AssistantMessage') "
+    "AND r.kind IN (",
+    sql_kinds(UserMessage, AgentMessage, AssistantMessage),
+    ") "
     "AND r.text ~ '\\S' AND (r.kind = 'AssistantMessage' OR r.text !~ "
     "'^\\s*(<|# AGENTS\\.md instructions|Caveat: The messages below were generated)') "
-    "ORDER BY r.part DESC, r.idx DESC LIMIT 1) AS last ON TRUE"
+    "ORDER BY r.part DESC, r.idx DESC LIMIT 1) AS last ON TRUE",
 )
 
 

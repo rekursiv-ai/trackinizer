@@ -16,6 +16,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final, Literal, cast, get_args, get_origin
 
+from trackinizer.sagent.session.types import stored_names
 from trackinizer.types.columns import (
     FlatColumn,
     flat_column_specs,
@@ -125,7 +126,8 @@ _REAL_TEXT: Final = (
 
 # One session's LIVE records of one kind. A compaction may shrink the manifest
 # while old tail rows remain stored, so every record read must bind idx to that
-# part's manifest. Correlated on ``inquiries.id``; ``{col}`` is the record KIND.
+# part's manifest. Correlated on ``inquiries.id``; ``{col}`` lists each KIND the
+# record is stored under, as a renamed class's rows keep their former kind.
 #
 # Audience: gated -- a clause built from this reads a transcript and names no audience,
 # so the store's ``list_kind`` applies it only to the sessions its caller reads. An
@@ -134,7 +136,7 @@ _RECORDS_WHERE: Final = (
     "SELECT 1 FROM session_records r "
     "JOIN session_manifests m "
     "ON m.session_id = r.session_id AND m.part = r.part "
-    "WHERE r.session_id = inquiries.id AND r.kind = '{col}' "
+    "WHERE r.session_id = inquiries.id AND r.kind IN ({col}) "
     "AND r.idx < m.records"
 )
 
@@ -304,8 +306,10 @@ def sql_template(column: str, op: str) -> str | None:
     if template is None or shape is not ColumnShape.SESSION_RECORD:
         return template
     # ``{col}`` consumed here; ``{p}`` is left for the caller to bind. The shape is
-    # seeded from ``SESSION_RECORD_FIELDS`` alone, so the lookup cannot miss.
-    return template.replace("{col}", SESSION_RECORD_FIELDS[column])
+    # seeded from ``SESSION_RECORD_FIELDS`` alone, so the lookup cannot miss. A
+    # kind is a class's name, which holds no quote.
+    kinds = stored_names(SESSION_RECORD_FIELDS[column])
+    return template.replace("{col}", ", ".join(f"'{kind}'" for kind in kinds))
 
 
 def compares_as_float(column: str, op: str) -> bool:

@@ -811,15 +811,19 @@ class Client:
 
     def search_sessions(
         self,
-        query: str,
+        query: str | uuid.UUID,
         *,
+        spawned: str = "",
         mode: SearchMode = "fused",
         limit: int = 20,
     ) -> dict[str, PlainTree]:
         """Search captured sessions: embeddings + full text, RRF-merged.
 
         Args:
-          query: The search query text.
+          query: The search query text. Or a session: the records of other
+            sessions nearest what it last said, by the vector arm alone.
+          spawned: The CLI session id of a session the ``query`` session spawned,
+            at any depth, to search near in its place.
           mode: ``fused`` runs both arms; ``keyword`` or ``vector`` one alone.
             The server degrades to keyword hits when its vector arm is absent or
             its model not loaded.
@@ -837,7 +841,12 @@ class Client:
                 self.get(
                     where,
                     params={
-                        "q": query,
+                        **(
+                            {"q": query}
+                            if isinstance(query, str)
+                            else {"near": str(query)}
+                        ),
+                        "spawned": spawned,
                         "mode": mode,
                         "limit": limit,
                     },

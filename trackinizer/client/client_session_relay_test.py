@@ -73,7 +73,10 @@ _CALLS: Final[tuple[tuple[str, str, Callable[[Client], object]], ...]] = (
     (
         "POST",
         f"/api/sessions/{_SESSION}/inputs",
-        lambda found: found.send_input(_SESSION, NewInput(kind="Halt", payload={})),
+        lambda found: found.send_input(
+            _SESSION,
+            NewInput(kind="ModelHalt", payload={}),
+        ),
     ),
     (
         "GET",
@@ -222,7 +225,7 @@ def test_an_input_to_a_session_no_process_serves_names_the_refusal() -> None:
     recorder = _Recorder(httpx2.Response(409, json=refusal))
 
     with _client(recorder) as found, pytest.raises(ClientError) as raised:
-        found.send_input(_SESSION, NewInput(kind="Halt", payload={}))
+        found.send_input(_SESSION, NewInput(kind="ModelHalt", payload={}))
 
     assert (raised.value.status_code, raised.value.code) == (409, "not_live")
 
@@ -232,7 +235,7 @@ def test_open_lines_yields_each_frame_and_skips_what_is_not_one() -> None:
         state=AgentState(line="[1s]", busy=True, since=_SINCE),
         process=_SERVING,
     )
-    event = EventLine(kind="ModelResponsePartial", payload={"text": "Hi"})
+    event = EventLine(kind="ModelResponseTextStreamed", payload={"text": "Hi"})
     state = StateLine(state=AgentState(line="[2s]", busy=False, since=_SINCE))
     stream = "".join(
         [

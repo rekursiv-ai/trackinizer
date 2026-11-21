@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, Never, Self
@@ -10,6 +11,7 @@ import argparse
 import functools
 import json
 import os
+import re
 import threading
 import time
 
@@ -43,12 +45,14 @@ from trackinizer.sagent.scripts.convert_session.convert import (
 )
 from trackinizer.sagent.session.types import (
     ReadResult,
+    SessionContext,
     SessionRecord,
     ToolCall,
-    ToolResult,
-    TurnContext,
+    ToolMessage,
     UncategorizedToolResult,
     UserMessage,
+    stored_plain,
+    stored_record,
 )
 
 
@@ -130,7 +134,7 @@ def test_convert_writes_stdout_and_out_dir(
     # wraps them and no metadata sits beside them.
     document = json_loads(capsys.readouterr().out, list[dict[str, object]])
     assert from_plain(document[0].get("py/object"), str, default="").endswith(
-        "TurnContext",
+        "SessionContext",
     )
 
     assert main(["convert", str(path), "--to", "json", "--out-dir", str(out_dir)]) == 0
@@ -325,7 +329,7 @@ def test_convert_reports_a_malformed_normalized_payload(tmp_path: Path) -> None:
     # A tagged record whose field holds the wrong type, inside the array the
     # wire format now is: the document parses as JSON and still cannot decode.
     path.write_text(
-        '[{"py/object":"trackinizer.sagent.session.types.TurnContext","context_id":"seven"}]',
+        '[{"py/object":"trackinizer.sagent.session.types.SessionContext","context_id":"seven"}]',
     )
 
     malformed = convert_file(path, "json", "claude", False).error or ""
@@ -1355,16 +1359,16 @@ def test_two_records_of_one_kind_lost_count_as_two() -> None:
 
 def test_a_lost_result_is_counted_under_its_former_record_class() -> None:
     records: list[SessionRecord] = [
-        ToolResult(call_id="r", state="done", result=ReadResult(path="a.py")),
-        ToolResult(
+        ToolMessage(call_id="r", state="done", result=ReadResult(path="a.py")),
+        ToolMessage(
             call_id="u",
             state="done",
             stdout=("ok",),
             result=UncategorizedToolResult(),
         ),
-        ToolResult(call_id="e", state="failed", stderr=("boom",)),
-        ToolResult(call_id="p", state="pending"),
-        ToolResult(
+        ToolMessage(call_id="e", state="failed", stderr=("boom",)),
+        ToolMessage(call_id="p", state="pending"),
+        ToolMessage(
             call_id="m",
             state="pending",
             result=UncategorizedToolResult(exit_code=1),
@@ -1375,7 +1379,7 @@ def test_a_lost_result_is_counted_under_its_former_record_class() -> None:
         "ReadResult": 1,
         "UncategorizedToolResult": 1,
         "ToolErrorResult": 1,
-        "ToolResult": 2,
+        "ToolMessage": 2,
     }
 
 
@@ -1393,7 +1397,9 @@ def test_a_nested_value_is_part_of_what_a_record_means() -> None:
     assert meaning(ToolCall(call_id="c", name="n", arguments={"a": 1})) != meaning(
         ToolCall(call_id="c", name="n", arguments={"a": 2}),
     )
-    assert meaning(TurnContext(tools=("a",))) != meaning(TurnContext(tools=("b",)))
+    assert meaning(SessionContext(tools=("a",))) != meaning(
+        SessionContext(tools=("b",)),
+    )
 
 
 @pytest.mark.parametrize(
@@ -1492,10 +1498,65 @@ def test_a_session_named_twice_is_one_session(tmp_path: Path) -> None:
     assert list(_session_files([path, path])) == [path]
 
 
-def test_a_part_with_no_stamp_opens_at_the_empty_stamp() -> None:
-    assert convert._opened([]) == ""
-    assert convert._opened([UserMessage(content="x")]) == ""
-    assert convert._opened([UserMessage(timestamp="t")]) == "t"
+def test_a_part_opens_at_its_first_time_and_one_with_none_before_any() -> None:
+    earliest = datetime.min.replace(tzinfo=UTC)
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    assert convert._opened([]) == earliest
+    assert convert._opened([UserMessage(content="x")]) == earliest
+    assert convert._opened([UserMessage(), UserMessage(timestamp=when)]) == when
+
+
+def test_parts_that_spell_their_times_with_and_without_an_offset_sort_by_the_instant() -> (
+    None
+):
+    """Sorted as text, 02:03:05 at -08:00 came before 10:03:04 with no offset."""
+    spelled = [
+        "2026-11-19T02:03:05-08:00",
+        "2026-11-19T10:03:04",
+        "2026-11-19T10:03:03Z",
+    ]
+    parts = [
+        [stored_record({"py/object": "UserMessage", "timestamp": each}, UserMessage)]
+        for each in spelled
+    ]
+    assert [
+        stored_plain(part[0])["timestamp"]
+        for part in sorted(parts, key=convert._opened)
+    ] == ["2026-11-19T10:03:03Z", "2026-11-19T10:03:04", "2026-11-19T02:03:05-08:00"]
+
+
+@pytest.mark.parametrize(
+    "spelled",
+    [
+        "2026-11-19T02:03:04-08:00",
+        "2026-11-19T10:03:04+00:00",
+        "2026-11-19T10:03:04.123456Z",
+        "2026-11-19T10:03:04",
+        "2026-11-19",
+        "soon",
+        "",
+    ],
+)
+@pytest.mark.parametrize("source", ["claude", "codex"])
+def test_a_time_a_session_spells_its_own_way_is_recovered_byte_for_byte(
+    tmp_path: Path,
+    source: str,
+    spelled: str,
+) -> None:
+    """A time is held as a ``datetime``; its line is written back as it was."""
+    native = _claude_session() if source == "claude" else _codex_session()
+    times = sorted(set(re.findall(r'"timestamp":"([^"]*)"', native)))
+    assert times
+    path = tmp_path / "session.jsonl"
+    path.write_text(
+        native.replace(f'"timestamp":"{times[-1]}"', f'"timestamp":"{spelled}"'),
+    )
+
+    assert spelled in path.read_text()
+    assert main(["verify", str(path), "-q"]) == 0
+    as_json = tmp_path / "session.json"
+    assert main(["convert", str(path), "--to", "json", "-o", str(as_json), "-q"]) == 0
+    assert convert_file(as_json, "auto", source, False).text == path.read_text()
 
 
 def test_the_json_report_states_every_result(

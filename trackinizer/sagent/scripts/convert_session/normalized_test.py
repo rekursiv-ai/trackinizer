@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -14,7 +15,7 @@ import pytest
 
 from trackinizer.sagent.scripts.convert_session import claude, codex, normalized
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     AssistantMessage,
     Attachment,
     BashResult,
@@ -22,12 +23,12 @@ from trackinizer.sagent.session.types import (
     ContextState,
     IncompleteRecord,
     ReadResult,
+    SessionContext,
     SessionRecord,
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolResult,
-    TurnContext,
+    ToolMessage,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -46,9 +47,9 @@ def test_session_json_round_trips_every_record_type() -> None:
     records: list[SessionRecord] = [
         # Everything the deleted metadata used to hold rides here: the file's
         # encoding on ``encoding``, the provider's launch payload on ``extra``.
-        TurnContext(
+        SessionContext(
             context_id=0,
-            timestamp="2026-08-22T00:00:00Z",
+            timestamp=datetime(2026, 8, 22, tzinfo=UTC),
             effort="high",
             summary_kind="auto",
             permission="never",
@@ -61,8 +62,9 @@ def test_session_json_round_trips_every_record_type() -> None:
         UserMessage(
             context_id=0,
             content="Hi.",
-            timestamp="2026-08-22T00:00:00Z",
-            extra={"uuid": "u1"},
+            # As a reader keeps a time its line spelled another way.
+            timestamp=datetime(2026, 8, 22, tzinfo=UTC),
+            extra={"uuid": "u1", "$timestamp_as_written": "2026-08-22T00:00:00.000Z"},
         ),
         AssistantMessage(context_id=0, content="Here.", extra={"id": "msg1"}),
         Thinking(context_id=0, content="t", encrypted="sig"),
@@ -73,24 +75,24 @@ def test_session_json_round_trips_every_record_type() -> None:
             arguments={"path": "/a"},
             extra={"$spaced": True},
         ),
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             stdout=("body",),
             result=ReadResult(path="/a"),
         ),
-        ToolResult(
+        ToolMessage(
             call_id="c2",
             state="done",
             result=BashResult(command=("ls",), exit_code=0),
         ),
-        ToolResult(
+        ToolMessage(
             call_id="c3",
             state="done",
             stdout=("ok", Attachment(mime_descriptor="image/png", data=b"png")),
             result=UncategorizedToolResult(),
         ),
-        AgentToAgentMessage(content="Look.", sender="/root", recipient="/kid"),
+        AgentMessage(content="Look.", sender="/root", recipient="/kid"),
         TokenUsage(info={"total": 7}, rate_limits={"used": 1}),
         ContextState(kind="world_state", extra={"full": True}),
         ContextClear(cleared_session_id="s0"),
@@ -103,10 +105,13 @@ def test_session_json_round_trips_every_record_type() -> None:
     stream.seek(0)
     rebuilt = list(normalized.normalize(stream))
 
-    first = rebuilt[1]
     assert rebuilt == records
-    assert isinstance(first, UserMessage)
-    assert first.timestamp == "2026-08-22T00:00:00Z"
+    context, message = json_loads(stream.getvalue(), list[dict[str, object]])[:2]
+    assert (context["timestamp"], message["timestamp"], message["extra"]) == (
+        "2026-08-22T00:00:00+00:00",
+        "2026-08-22T00:00:00.000Z",
+        {"uuid": "u1"},
+    )
 
 
 def test_session_json_keeps_a_nested_residual_verbatim() -> None:
@@ -115,12 +120,12 @@ def test_session_json_keeps_a_nested_residual_verbatim() -> None:
     nested = {"a": [{"b": {"c": [1, 2.5, True, None, "x"]}}]}
     stream = StringIO()
 
-    written = TurnContext(extra=nested)
+    written = SessionContext(extra=nested)
     normalized.denormalize([written], stream)
     stream.seek(0)
 
     context = next(iter(normalized.normalize(stream)))
-    assert isinstance(context, TurnContext)
+    assert isinstance(context, SessionContext)
     assert context == written
     assert json.loads(stream.getvalue())[0]["extra"] == nested
 
@@ -131,7 +136,7 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
     # them, which is the materialization axiom 11 forbids.
     stream = StringIO()
 
-    normalized.denormalize([TurnContext(), UserMessage(content="Hi.")], stream)
+    normalized.denormalize([SessionContext(), UserMessage(content="Hi.")], stream)
 
     text = stream.getvalue()
     assert text.endswith("\n")
@@ -139,7 +144,7 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
     assert [
         from_plain(entry.get("py/object"), str, default="").rpartition(".")[2]
         for entry in document
-    ] == ["TurnContext", "UserMessage"]
+    ] == ["SessionContext", "UserMessage"]
 
 
 def test_session_json_is_compact_and_keeps_its_text_as_written() -> None:
@@ -200,7 +205,7 @@ def test_a_row_tagged_with_a_former_result_class_import_path_still_reads() -> No
     old = json.dumps(
         [
             {
-                "py/object": f"{ToolResult.__module__}.UncategorizedToolResult",
+                "py/object": f"{ToolMessage.__module__}.UncategorizedToolResult",
                 "call_id": "c",
                 "content": "ok",
             },
@@ -208,7 +213,7 @@ def test_a_row_tagged_with_a_former_result_class_import_path_still_reads() -> No
     )
 
     assert list(normalized.normalize(StringIO(old))) == [
-        ToolResult(
+        ToolMessage(
             call_id="c",
             state="done",
             stdout=("ok",),

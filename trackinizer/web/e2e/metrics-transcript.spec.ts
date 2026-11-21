@@ -130,12 +130,12 @@ function heavy(_name: string, idx: number) {
         },
       };
     case 3:
-      // A shell call's record: a `ToolResult` payload under the kind its row is stored as, `BashResult`.
+      // A shell call's record: a `ToolMessage` payload under the kind its row is stored as, `BashResult`.
       return {
         idx,
         kind: "BashResult",
         payload: {
-          "py/object": "ToolResult",
+          "py/object": "ToolMessage",
           call_id: `c${idx - 1}`,
           state: "done",
           stdout: ["loop/x.py:12: some matched line of output text\n".repeat(45)],

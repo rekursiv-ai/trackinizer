@@ -62,7 +62,7 @@ class Nearest:
         self,
         engine: DatabaseEngine,
         *,
-        query: str,
+        query: str | UUID,
         kept: Kept,
         filtered: bool,
         limit: int,
@@ -72,21 +72,38 @@ class Nearest:
         Args:
           engine: The server's database; a connection is taken only once the query
             is embedded.
-          query: The search text.
+          query: The search text. Or an owner: then the query is its own newest
+            vector that ``kept`` keeps, nothing is embedded, and no unit of its
+            own is a hit.
           kept: The reader's and scope's test.
           filtered: ``kept`` may drop many candidates, so keep the index offering
             them until ``limit`` pass.
           limit: The most units to return.
 
         Returns:
-          hits: Nearest first; ``None`` while the model is not loaded.
+          hits: Nearest first; none for an owner with no vector ``kept`` keeps;
+            ``None`` while the model is not loaded.
 
         """
         if not self.loaded.is_set():
             return None
-        params: list[object] = [vec_to_text(await self.model.embed_query(query)), limit]
-        sql = _sql(self.settings, kept(params))
+        embedded = (
+            None
+            if isinstance(query, UUID)
+            else vec_to_text(await self.model.embed_query(query))
+        )
+        params: list[object]
         async with engine.acquire() as conn:
+            if isinstance(query, UUID):
+                vector = await _newest(conn, self.settings, owner_id=query, kept=kept)
+                if vector is None:
+                    return []
+                params = [vector, limit, query]
+                test = vetted_sql("v.owner_id <> $3 AND ", kept(params))
+            else:
+                params = [embedded, limit]
+                test = kept(params)
+            sql = _sql(self.settings, test)
             scan = await _scan(engine, conn, filtered=filtered)
             rows = await _nearest(conn, sql, params, limit=limit, scan=scan)
         return [
@@ -194,6 +211,33 @@ def _sql(settings: Settings, test: str) -> str:
         dim,
         ") LIMIT $2",
     )
+
+
+# The newest is the last chunk of the last record: what the owner said last.
+# Audience: gated -- ``kept`` is the reader's test, applied to the owner asked about.
+async def _newest(
+    conn: Conn,
+    settings: Settings,
+    *,
+    owner_id: UUID,
+    kept: Kept,
+) -> str | None:
+    """Return ``owner_id``'s newest vector that ``kept`` keeps, as text; ``None`` for none."""
+    key, _dim = _checked(settings)
+    params: list[object] = [owner_id]
+    vector = await conn.fetchval(
+        vetted_sql(
+            "SELECT v.embedding::text FROM embedding.vectors v "
+            "WHERE v.owner_id = $1 AND v.settings = '",
+            key,
+            "' AND (SELECT ",
+            kept(params),
+            " FROM inquiries i WHERE i.id = v.owner_id) "
+            "ORDER BY v.part DESC, v.idx DESC, v.chunk DESC LIMIT 1",
+        ),
+        *params,
+    )
+    return None if vector is None else from_plain(vector, str)
 
 
 async def _scan(engine: DatabaseEngine, conn: Conn, *, filtered: bool) -> _Scan:

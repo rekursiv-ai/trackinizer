@@ -14,7 +14,9 @@ session nothing of which is live any more, and which no viewer watches, it forge
 when told which processes still hold a live key (:meth:`SessionRelay.forget_idle`). The
 rules the routes hand it (:data:`Allowed`, :data:`Dropped`) may ask the database.
 The routes (``api/session_relay_routes.py``) check who may do what, mint and revoke
-keys, and call it. It never reads an event's payload. It keeps the key each process
+keys, and call it. It never reads an event's payload; of an event's kind it changes
+only a renamed record class's other name, to the name the class bears
+(``served_kind``), as a stored record's is served. It keeps the key each process
 holds its socket with, which is how a message the process posts is known to come
 from its session (:meth:`SessionRelay.socket_key`).
 
@@ -71,6 +73,7 @@ import logging
 
 import pydantic
 
+from trackinizer.types.session_records import served_kind
 from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_session_relay import (
     MAX_FRAME_BYTES,
@@ -956,6 +959,9 @@ class SessionRelay:
             assert isinstance(received, str)
             size = len(received.encode())
             if isinstance(frame, EventLine):
+                # A viewer knows a record class by the one name it bears here; a
+                # process built before or after a rename may say its other one.
+                frame = frame.model_copy(update={"kind": served_kind(frame.kind)})
                 self._keep(live, frame, size=size)
             elif isinstance(frame, StateLine):
                 live.state = frame.state
@@ -967,16 +973,13 @@ class SessionRelay:
     # records: kept lines replaying it would draw it twice.
     def _keep(self, live: _Session, line: EventLine, *, size: int) -> None:
         """Keep ``line`` if it belongs to the reply being written, within the budget."""
-        if line.kind == "ModelCallStarted":
+        if line.kind == "ModelResponseStarted":
             live.kept = [line]
             live.kept_bytes = size
         elif live.kept:
             live.kept.append(line)
             live.kept_bytes += size
-        if live.kept_bytes > self._kept_bytes or line.kind in {
-            "ModelResponseComplete",
-            "ModelResponseCancelled",
-        }:
+        if live.kept_bytes > self._kept_bytes or line.kind == "ModelResponseCompleted":
             live.kept = []
 
     def _admit(self, unsent_bytes: int, unsent: _Unsent) -> None:

@@ -413,11 +413,11 @@ const RECORDS = [
     kind: "ToolCall",
     payload: { call_id: "c1", name: "Bash", arguments: { command: "pytest -x" } },
   },
-  // A tool call's record: a `ToolResult` payload under the kind its row is stored as, the result's class.
+  // A tool call's record: a `ToolMessage` payload under the kind its row is stored as, the result's class.
   {
     kind: "BashResult",
     payload: {
-      "py/object": "ToolResult",
+      "py/object": "ToolMessage",
       call_id: "c1",
       state: "done",
       stdout: ["\u001b[32m1 passed\u001b[0m in 0.12s\n"],
@@ -431,7 +431,7 @@ const RECORDS = [
   {
     kind: "BashResult",
     payload: {
-      "py/object": "ToolResult",
+      "py/object": "ToolMessage",
       call_id: "c2",
       state: "done",
       stdout: [Array.from({ length: 80 }, (_, n) => `line ${n}`).join("\n")],
@@ -442,7 +442,7 @@ const RECORDS = [
   {
     kind: "EditResult",
     payload: {
-      "py/object": "ToolResult",
+      "py/object": "ToolMessage",
       call_id: "",
       state: "done",
       stdout: [
@@ -463,7 +463,7 @@ const RECORDS = [
   {
     kind: "WebSearchResult",
     payload: {
-      "py/object": "ToolResult",
+      "py/object": "ToolMessage",
       call_id: "",
       state: "done",
       stdout: [

@@ -188,7 +188,7 @@ class _Nearest:
         self,
         engine: DatabaseEngine,
         *,
-        query: str,
+        query: str | UUID,
         kept: Kept,
         filtered: bool,
         limit: int,

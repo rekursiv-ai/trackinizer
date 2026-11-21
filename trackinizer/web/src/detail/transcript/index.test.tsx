@@ -337,7 +337,7 @@ test("a part draws its newest records first, then 100 more per background render
   // Model switches, each a one-line note that costs jsdom little; the first switches nothing, and hides.
   serve([part(0, 110)], undefined, (idx) => ({
     ...record(idx),
-    kind: "TurnContext",
+    kind: "SessionContext",
     payload: { model: idx % 2 ? "a" : "b" },
   }));
   renderDetail({ id: SESSION.id });
@@ -544,7 +544,7 @@ test("bookkeeping, Claude Code's own lines included, hides behind one toggle; a 
     });
   await renderRecords(
     [
-      captured(0, "TurnContext", {
+      captured(0, "SessionContext", {
         model: "claude-opus-5-5",
         extra: { cwd: "/work/loop" },
       }),
@@ -568,9 +568,9 @@ test("bookkeeping, Claude Code's own lines included, hides behind one toggle; a 
         kind: "event_msg/task_started",
         payload: { type: "task_started" },
       }),
-      // The server names on each record the model of the last TurnContext.
+      // The server names on each record the model of the last SessionContext.
       {
-        ...captured(12, "TurnContext", { model: "claude-sonnet-5" }),
+        ...captured(12, "SessionContext", { model: "claude-sonnet-5" }),
         model: "claude-sonnet-5",
       },
       {

@@ -35,7 +35,7 @@ from trackinizer.sagent.session.types import (
     SessionRecord,
     Splice,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     WriteResult,
 )
 
@@ -182,20 +182,20 @@ def _codex_native(command: str, stdout: str) -> str:
     )
 
 
-def _lifted(records: Sequence[SessionRecord]) -> ToolResult | None:
+def _lifted(records: Sequence[SessionRecord]) -> ToolMessage | None:
     """Return the one file result a session carries."""
     found = [
         record
         for record in records
-        if isinstance(record, ToolResult)
+        if isinstance(record, ToolMessage)
         and isinstance(record.result, ReadResult | WriteResult | EditResult)
     ]
     return found[0] if len(found) == 1 else None
 
 
 def _with_file_result(
-    result: ToolResult | None,
-) -> tuple[ToolResult, ReadResult | WriteResult | EditResult]:
+    result: ToolMessage | None,
+) -> tuple[ToolMessage, ReadResult | WriteResult | EditResult]:
     """Return ``result`` and its ``result`` field, asserted to be a file result."""
     assert result is not None
     tool_result = result.result

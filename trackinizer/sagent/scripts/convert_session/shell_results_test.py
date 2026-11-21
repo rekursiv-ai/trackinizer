@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,7 +20,7 @@ from trackinizer.sagent.session.types import (
     LineSpan,
     ReadResult,
     Splice,
-    ToolResult,
+    ToolMessage,
     WriteResult,
 )
 
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from trackinizer.sagent.scripts.convert_session.shell_results import _BashNode
 
 
-def _typed_result[T](result: ToolResult | None, kind: type[T]) -> T:
+def _typed_result[T](result: ToolMessage | None, kind: type[T]) -> T:
     """Return ``result.result`` after asserting it is an instance of ``kind``."""
     assert result is not None
     tool_result = result.result
@@ -138,7 +139,7 @@ def test_a_static_file_operation_lifts_and_replays(
     written: str | None,
     path: str,
 ) -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=(stdout,) if stdout else (),
@@ -215,7 +216,7 @@ def test_a_static_file_operation_lifts_and_replays(
     ],
 )
 def test_an_ambiguous_or_unsupported_operation_returns_none(script: str) -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("/bin/bash", "-lc", script), exit_code=0),
@@ -245,7 +246,7 @@ def test_an_ambiguous_or_unsupported_operation_returns_none(script: str) -> None
 def test_an_operation_without_complete_neutral_semantics_returns_none(
     script: str,
 ) -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("/bin/bash", "-lc", script), exit_code=0),
@@ -273,7 +274,7 @@ def test_an_append_lifts_to_the_lines_it_added(script: str, udiff: str) -> None:
     before the append was never recorded, so the lines added are the only
     honest rendering. Verified against ``/bin/bash`` for each form.
     """
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("/bin/bash", "-lc", script), exit_code=0),
@@ -340,7 +341,7 @@ def test_a_read_reports_the_lines_it_returned(
     Without it every partial read claims the file's whole content was
     returned, which is wrong for the most common read agents write.
     """
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("x\n",),
@@ -391,7 +392,7 @@ def test_a_signed_count_names_the_lines_that_utility_prints(
     file's last five lines and ``head -n -5`` claimed five lines from an
     unknown start -- neither of which the command printed.
     """
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("x\n",),
@@ -421,7 +422,7 @@ def test_a_tab_stripped_heredoc_lifts_to_the_body_bash_writes() -> None:
     so an indented ``\tEOF`` never equalled ``EOF`` and the whole write was
     refused. Verified against /bin/bash: the file holds ``body\n``.
     """
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(
@@ -445,7 +446,7 @@ def test_a_static_chdir_composes_the_path_the_read_resolved() -> None:
     composed only when it is literal text; ``cd $HOME`` names a directory this
     reader cannot see, so its operand stays as the command wrote it.
     """
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("body\n",),
@@ -464,7 +465,7 @@ def test_a_static_chdir_composes_the_path_the_read_resolved() -> None:
 
 def test_a_chdir_leaves_an_absolute_operand_alone() -> None:
     """An absolute path resolves against the root, whatever ``cd`` ran."""
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("body\n",),
@@ -481,7 +482,7 @@ def test_a_chdir_leaves_an_absolute_operand_alone() -> None:
 
 def test_a_sed_script_that_does_more_than_print_is_not_a_read() -> None:
     """One non-printing clause refuses the whole script, never just itself."""
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("x\n",),
@@ -501,7 +502,7 @@ def test_a_bare_utility_name_lifts() -> None:
     corpus: it lifted ZERO of 359 captured codex shell results and zero of 588
     claude ones. A bare name is taken as the coreutils it names.
     """
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("body\n",),
@@ -516,7 +517,7 @@ def test_a_bare_utility_name_lifts() -> None:
 @pytest.mark.parametrize("path", ["XX.txt", "a{b.txt", "a}b.txt"])
 def test_a_word_bash_does_not_expand_is_a_literal_path(path: str) -> None:
     """Only a glob character or a ``{...}`` PAIR expands; a lone brace is literal."""
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("body\n",),
@@ -530,7 +531,7 @@ def test_a_word_bash_does_not_expand_is_a_literal_path(path: str) -> None:
 
 def test_a_utility_from_an_unexpected_directory_returns_none() -> None:
     """A path ending in the name but living elsewhere is another program."""
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("shadow\n",),
@@ -561,7 +562,7 @@ def test_a_shell_consumed_escape_lifts_to_what_the_shell_wrote(
     The neighbouring rejection cases spell doubled backslashes, so nothing
     covered the single-backslash form the guard is phrased against.
     """
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("/bin/bash", "-lc", script), exit_code=0),
@@ -573,7 +574,7 @@ def test_a_shell_consumed_escape_lifts_to_what_the_shell_wrote(
 
 
 def test_a_failed_file_operation_returns_none() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stderr=("cat: a.txt: No such file\n",),
@@ -584,7 +585,7 @@ def test_a_failed_file_operation_returns_none() -> None:
 
 
 def test_an_explicit_success_cannot_override_a_recorded_failure() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("cat", "missing.txt"), exit_code=1),
@@ -594,7 +595,7 @@ def test_an_explicit_success_cannot_override_a_recorded_failure() -> None:
 
 
 def test_provider_shell_source_can_supply_a_missing_argv() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("body\n",),
@@ -609,7 +610,7 @@ def test_provider_shell_source_can_supply_a_missing_argv() -> None:
 
 
 def test_replay_stencils_an_edited_path_into_the_original_command() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("body\n",),
@@ -629,7 +630,7 @@ def test_replay_stencils_an_edited_path_into_the_original_command() -> None:
 
 
 def test_replay_stencils_edited_write_content_into_the_original_command() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(
@@ -659,7 +660,7 @@ def test_replay_rewrites_the_path_not_a_trailing_flag() -> None:
     The same value-versus-position defect the matchers carry ``(word, index)``
     pairs to avoid.
     """
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("tee", "F", "-a"), exit_code=0),
@@ -675,7 +676,7 @@ def test_replay_rewrites_the_path_not_a_trailing_flag() -> None:
 
 
 def test_replay_uses_the_operand_position_when_argv_values_repeat() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("body",),
@@ -694,7 +695,7 @@ def test_replay_uses_the_operand_position_when_argv_values_repeat() -> None:
 def test_replay_renames_the_operand_not_an_earlier_word_with_its_text() -> None:
     # The script and the file carry the same text, so a lookup by value
     # rewrote the script and left the file named as before.
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("sed", "-i", "s/a/b/", "s/a/b/"), exit_code=0),
@@ -723,13 +724,13 @@ def test_a_write_keeps_the_stdout_it_printed_and_a_read_leaves_it_to_content() -
 
     Storing a read's stdout in ``$shell`` too would hold the file's bytes twice.
     """
-    write = ToolResult(
+    write = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("echoed\n",),
         result=BashResult(command=("/usr/bin/tee", "a.txt"), exit_code=0),
     )
-    read = ToolResult(
+    read = ToolMessage(
         call_id="c1",
         state="done",
         stdout=("echoed\n",),
@@ -751,14 +752,14 @@ def test_a_write_keeps_the_stdout_it_printed_and_a_read_leaves_it_to_content() -
 def test_a_native_file_result_has_no_shell_to_replay() -> None:
     assert (
         shell_result_for_replay(
-            ToolResult(call_id="c1", state="done", result=ReadResult(path="a")),
+            ToolMessage(call_id="c1", state="done", result=ReadResult(path="a")),
         )
         is None
     )
 
 
 def test_a_result_that_is_not_a_file_result_has_no_shell_to_replay() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(),
@@ -769,7 +770,7 @@ def test_a_result_that_is_not_a_file_result_has_no_shell_to_replay() -> None:
 
 
 def test_replay_preserves_stderr_from_the_shell_result() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         stderr=("warning",),
@@ -851,7 +852,7 @@ def test_rewrite_shell_source_changes_only_a_write_content() -> None:
     ],
 )
 def test_unsupported_shell_shapes_are_not_lifted(script: str) -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("bash", "-lc", script), exit_code=0),
@@ -861,7 +862,7 @@ def test_unsupported_shell_shapes_are_not_lifted(script: str) -> None:
 
 
 def test_patch_heredoc_carries_the_inline_diff() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(
@@ -1063,10 +1064,10 @@ def test_line_reader_supports_lines_equals_and_rejects_dash_paths() -> None:
         assert shell_results._simple_command("anything") is None
 
 
-def _lifted(script: str, *, stdout: str = "") -> ToolResult | None:
+def _lifted(script: str, *, stdout: str = "") -> ToolMessage | None:
     """Return what a successful bash execution of ``script`` lifts to."""
     return lift_shell_result(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             stdout=(stdout,) if stdout else (),
@@ -1087,9 +1088,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
     patch = "patch a.txt << 'EOF'\n@@ -1 +1 @@\n-a\n+b\nEOF\n"
 
     assert lift_shell_result(
-        ToolResult(
+        ToolMessage(
             context_id=3,
-            timestamp="t",
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
             call_id="c9",
             state="done",
             stdout=("out",),
@@ -1097,9 +1098,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
             result=BashResult(command=("bash", "-lc", "cat a.txt"), exit_code=0),
             extra={"k": 1},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         context_id=3,
-        timestamp="t",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         call_id="c9",
         state="done",
         stdout=("out",),
@@ -1107,9 +1108,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         extra=extra("cat a.txt", stdout=False),
     )
     assert lift_shell_result(
-        ToolResult(
+        ToolMessage(
             context_id=3,
-            timestamp="t",
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
             call_id="c9",
             state="done",
             stdout=("out",),
@@ -1120,9 +1121,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
             ),
             extra={"k": 1},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         context_id=3,
-        timestamp="t",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         call_id="c9",
         state="done",
         stdout=("Wrote a.txt.",),
@@ -1130,9 +1131,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         extra=extra("printf hi > a.txt", stdout=True),
     )
     assert lift_shell_result(
-        ToolResult(
+        ToolMessage(
             context_id=3,
-            timestamp="t",
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
             call_id="c9",
             state="done",
             stdout=("out",),
@@ -1140,9 +1141,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
             result=BashResult(command=("bash", "-lc", "echo hi >> a.txt"), exit_code=0),
             extra={"k": 1},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         context_id=3,
-        timestamp="t",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         call_id="c9",
         state="done",
         stdout=("Edited a.txt.", Splice(before="", after="hi\n")),
@@ -1150,9 +1151,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         extra=extra("echo hi >> a.txt", stdout=True),
     )
     assert lift_shell_result(
-        ToolResult(
+        ToolMessage(
             context_id=3,
-            timestamp="t",
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
             call_id="c9",
             state="done",
             stdout=("out",),
@@ -1160,9 +1161,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
             result=BashResult(command=("bash", "-lc", patch), exit_code=0),
             extra={"k": 1},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         context_id=3,
-        timestamp="t",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         call_id="c9",
         state="done",
         stdout=("Edited a.txt.", *parse_udiff("@@ -1 +1 @@\n-a\n+b\n")),
@@ -1170,9 +1171,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         extra=extra(patch, stdout=True),
     )
     assert lift_shell_result(
-        ToolResult(
+        ToolMessage(
             context_id=3,
-            timestamp="t",
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
             call_id="c9",
             state="done",
             stdout=("out",),
@@ -1183,9 +1184,9 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
             ),
             extra={"k": 1},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         context_id=3,
-        timestamp="t",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         call_id="c9",
         state="done",
         stdout=("Edited a.txt.",),
@@ -1223,8 +1224,8 @@ def test_an_empty_append_states_no_splice() -> None:
 
 
 def test_a_result_with_no_command_and_no_script_lifts_nothing() -> None:
-    shell = ToolResult(call_id="c1", state="done", result=BashResult(exit_code=0))
-    unparsed = ToolResult(
+    shell = ToolMessage(call_id="c1", state="done", result=BashResult(exit_code=0))
+    unparsed = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("bash", "-x", "cat a"), exit_code=0),
@@ -1235,7 +1236,7 @@ def test_a_result_with_no_command_and_no_script_lifts_nothing() -> None:
 
 
 def test_a_pending_result_lifts_nothing() -> None:
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("cat", "a.txt"), exit_code=0),
@@ -1248,15 +1249,15 @@ def test_a_pending_result_lifts_nothing() -> None:
 
 
 def test_replay_rebuilds_every_field_and_reads_bad_output_as_none() -> None:
-    read = ToolResult(
+    read = ToolMessage(
         context_id=3,
-        timestamp="t",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         call_id="c9",
         state="done",
         result=ReadResult(path="a.txt"),
         extra={"$shell": {"command": ["cat", "a.txt"]}, "k": 1},
     )
-    write = ToolResult(
+    write = ToolMessage(
         call_id="c9",
         state="done",
         stdout=("Wrote a.txt.",),
@@ -1265,20 +1266,20 @@ def test_replay_rebuilds_every_field_and_reads_bad_output_as_none() -> None:
     )
     bare = replace(write, extra={"$shell": {}})
 
-    assert shell_result_for_replay(read) == ToolResult(
+    assert shell_result_for_replay(read) == ToolMessage(
         context_id=3,
-        timestamp="t",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         call_id="c9",
         state="done",
         result=BashResult(command=("cat", "a.txt")),
         extra={"k": 1},
     )
-    assert shell_result_for_replay(write) == ToolResult(
+    assert shell_result_for_replay(write) == ToolMessage(
         call_id="c9",
         state="done",
         result=BashResult(),
     )
-    assert shell_result_for_replay(bare) == ToolResult(
+    assert shell_result_for_replay(bare) == ToolMessage(
         call_id="c9",
         state="done",
         result=BashResult(),
@@ -1462,49 +1463,49 @@ def test_a_heredoc_write_with_no_body_node_is_refused() -> None:
 def test_replay_keeps_a_command_it_cannot_reparse() -> None:
 
     assert shell_result_for_replay(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             result=ReadResult(),
             extra={"$shell": {"command": ["ls"]}},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("ls",)),
     )
     assert shell_result_for_replay(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             result=ReadResult(path="b.txt"),
             extra={"$shell": {"command": ["ls"]}},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("ls",)),
     )
     assert shell_result_for_replay(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             result=ReadResult(),
             extra={"$shell": {"command": []}},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=()),
     )
     assert shell_result_for_replay(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             result=ReadResult(),
             extra={"$shell": {"command": ["cat", "a.txt"]}},
         ),
-    ) == ToolResult(
+    ) == ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(command=("cat", "a.txt")),

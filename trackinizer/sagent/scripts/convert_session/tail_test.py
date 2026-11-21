@@ -12,7 +12,7 @@ import threading
 import pytest
 
 from trackinizer.sagent.scripts.convert_session import tail
-from trackinizer.sagent.session.types import SessionRecord, TurnContext, UserMessage
+from trackinizer.sagent.session.types import SessionContext, SessionRecord, UserMessage
 
 
 if TYPE_CHECKING:
@@ -162,11 +162,11 @@ def test_the_reader_runs_on_a_daemon_thread() -> None:
 def test_the_encoding_follows_the_last_stated_context() -> None:
     reader = tail.Tail(_contexts)
     try:
-        assert reader.feed("ascii") == [TurnContext(encoding={"escape": "ascii"})]
+        assert reader.feed("ascii") == [SessionContext(encoding={"escape": "ascii"})]
         assert reader.encoding == {"escape": "ascii"}
-        assert reader.feed("bare") == [TurnContext()]
+        assert reader.feed("bare") == [SessionContext()]
         assert reader.encoding == {"escape": "ascii"}
-        assert reader.feed("utf8") == [TurnContext(encoding={"escape": "utf8"})]
+        assert reader.feed("utf8") == [SessionContext(encoding={"escape": "utf8"})]
         assert reader.encoding == {"escape": "utf8"}
     finally:
         _finish_reader(reader)
@@ -174,7 +174,7 @@ def test_the_encoding_follows_the_last_stated_context() -> None:
 
 def test_a_whole_file_reader_remembers_the_encoding_it_read() -> None:
     reader = tail.Tail(_contexts, whole_file=True)
-    assert reader.feed("ascii\n") == [TurnContext(encoding={"escape": "ascii"})]
+    assert reader.feed("ascii\n") == [SessionContext(encoding={"escape": "ascii"})]
     assert reader.encoding == {"escape": "ascii"}
 
 
@@ -212,7 +212,7 @@ def _records(stream: TextIO) -> Iterator[SessionRecord]:
 def _contexts(stream: TextIO) -> Iterator[SessionRecord]:
     for line in stream:
         text = line.rstrip("\n")
-        yield TurnContext(encoding={"escape": text} if text != "bare" else {})
+        yield SessionContext(encoding={"escape": text} if text != "bare" else {})
 
 
 class _PausingQueue(queue.SimpleQueue[SessionRecord | tail._Signal]):

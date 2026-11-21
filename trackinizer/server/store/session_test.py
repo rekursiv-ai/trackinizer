@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
+import json
 import re
 
 from treekle import from_plain
@@ -23,11 +24,13 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.mock_test_support import AsyncMockProtocol
+from trackinizer.sagent.session.types import AgentMessage, ToolMessage, stored_names
 from trackinizer.server.access_policy import (
     AccessDeniedError,
     Principal,
     Resource,
 )
+from trackinizer.server.store import session
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
@@ -1675,6 +1678,42 @@ async def test_unbounded_feed_maps_null_context_without_conversation_filter() ->
     assert "e.created <=" not in str(sql)
     assert "ORDER BY e.created ASC" in str(sql)
     assert args[-1] == 3
+
+
+def test_a_feed_event_serves_the_kind_and_the_payload_a_client_reads() -> None:
+    """A renamed class's row under the name it bears; a legacy tool call in the shape now."""
+    name, other = stored_names(AgentMessage.__name__)
+    row: dict[str, object] = {
+        "session_id": uuid4(),
+        "owner": "ada",
+        "agentsession_rooms": [],
+        "agentsession_cli": "sagent",
+        "part": 0,
+        "idx": 3,
+        "created": datetime(2026, 1, 1, tzinfo=UTC),
+        "timestamp": None,
+        "model": None,
+        "text": "hi",
+    }
+    payload = {"py/object": other, "sender": "a", "content": "hi"}
+    legacy = {"py/object": "UncategorizedToolResult", "call_id": "c", "content": "x"}
+
+    renamed = session._feed_event(
+        cast("asyncpg.Record", {**row, "kind": other, "payload": json.dumps(payload)}),
+    )
+    tool = session._feed_event(
+        cast(
+            "asyncpg.Record",
+            {**row, "kind": "UncategorizedToolResult", "payload": json.dumps(legacy)},
+        ),
+    )
+
+    assert (renamed.kind, renamed.message["py/object"]) == (name, name)
+    assert (tool.kind, tool.message["py/object"], "state" in tool.message) == (
+        "UncategorizedToolResult",
+        ToolMessage.__name__,
+        True,
+    )
 
 
 if __name__ == "__main__":

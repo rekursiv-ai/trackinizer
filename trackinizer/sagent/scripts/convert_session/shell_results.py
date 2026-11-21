@@ -91,7 +91,7 @@ from trackinizer.sagent.session.types import (
     LineSpan,
     ReadResult,
     Splice,
-    ToolResult,
+    ToolMessage,
     WriteResult,
 )
 
@@ -189,11 +189,11 @@ class _BashNode(Protocol):
 
 
 def lift_shell_result(
-    result: ToolResult[BashResult, object, object],
+    result: ToolMessage[BashResult, object, object],
     *,
     command: str | None = None,
     succeeded: bool | None = None,
-) -> ToolResult[FileResult, object, object] | None:
+) -> ToolMessage[FileResult, object, object] | None:
     """Return the most-specific file result proved by a shell execution.
 
     Args:
@@ -239,7 +239,7 @@ def lift_shell_result(
     extra["$shell"] = replay
     extra_frozen = immutable(extra)
     if kind == "read":
-        return ToolResult(
+        return ToolMessage(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
@@ -257,7 +257,7 @@ def lift_shell_result(
         # the file and holds no ``Splice`` rather than claiming content nobody
         # captured. The command that did it rides in ``$shell``, which is what a
         # replay puts back.
-        return ToolResult(
+        return ToolMessage(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
@@ -270,7 +270,7 @@ def lift_shell_result(
         # The one edit whose new bytes the transcript holds, so it renders as
         # the one-sided diff it is. The file BEFORE the append was never
         # recorded, and a two-sided diff would invent that half.
-        return ToolResult(
+        return ToolMessage(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
@@ -298,7 +298,7 @@ def lift_shell_result(
         )
     if kind == "patched":
         # The diff arrived inline, so the record states the change itself.
-        return ToolResult(
+        return ToolMessage(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
@@ -307,7 +307,7 @@ def lift_shell_result(
             result=EditResult(path=path),
             extra=extra_frozen,
         )
-    return ToolResult(
+    return ToolMessage(
         context_id=result.context_id,
         timestamp=result.timestamp,
         call_id=result.call_id,
@@ -318,7 +318,7 @@ def lift_shell_result(
     )
 
 
-def shell_result_for_replay(result: ToolResult) -> ToolResult[BashResult] | None:
+def shell_result_for_replay(result: ToolMessage) -> ToolMessage[BashResult] | None:
     """Recover a lifted shell execution for provider-native replay.
 
     Args:
@@ -352,7 +352,7 @@ def shell_result_for_replay(result: ToolResult) -> ToolResult[BashResult] | None
     )
     stderr = replay.get("stderr")
     exit_code = replay.get("exit_code")
-    return ToolResult(
+    return ToolMessage(
         context_id=result.context_id,
         timestamp=result.timestamp,
         call_id=result.call_id,

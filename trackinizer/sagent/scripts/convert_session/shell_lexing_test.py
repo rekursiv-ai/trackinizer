@@ -26,15 +26,15 @@ from trackinizer.sagent.session.types import (
     LineSpan,
     ReadResult,
     Splice,
-    ToolResult,
+    ToolMessage,
     WriteResult,
 )
 
 
-def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> ToolResult | None:
+def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> ToolMessage | None:
     """Lift one script as a provider would have recorded it."""
     return lift_shell_result(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             stdout=(stdout,) if stdout else (),
@@ -46,7 +46,7 @@ def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> ToolResult | 
     )
 
 
-def _typed_result[T](result: ToolResult | None, kind: type[T]) -> T:
+def _typed_result[T](result: ToolMessage | None, kind: type[T]) -> T:
     """Return ``result.result`` after asserting it is an instance of ``kind``."""
     assert result is not None
     tool_result = result.result
@@ -393,7 +393,7 @@ def test_a_write_lifts_from_a_heredoc_body_only() -> None:
 )
 def test_a_failed_command_lifts_nothing(exit_code: int, succeeded: bool | None) -> None:
     """A command that failed changed nothing, whatever it was going to do."""
-    shell = ToolResult(
+    shell = ToolMessage(
         call_id="c1",
         state="done",
         result=BashResult(

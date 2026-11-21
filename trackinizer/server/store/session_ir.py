@@ -156,7 +156,7 @@ class SessionManifest:
     metadata: Mapping[str, PlainTree]
     """How the file spells its bytes, as its reader stated it for this part.
 
-    The ``TurnContext.encoding`` in force: ``newline_terminated`` plus, for
+    The ``SessionContext.encoding`` in force: ``newline_terminated`` plus, for
     claude, the bitmap of lines that escaped their Unicode. A rewrite
     needs it verbatim, and nothing else in the IR carries it -- every record
     still matches without it while the bytes differ.

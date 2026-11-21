@@ -19,6 +19,7 @@ from trackinizer.conftest import (
     queue_field_rows,
 )
 from trackinizer.lib.postgres import Conn
+from trackinizer.sagent.session.types import AgentMessage, stored_names
 from trackinizer.server.access_policy import DefaultPolicy, Principal
 from trackinizer.server.audience import (
     SessionReader,
@@ -32,6 +33,7 @@ from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
+from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 
 
 if TYPE_CHECKING:
@@ -545,6 +547,34 @@ class TestRecordTexts:
             hidden_exists_sql("r.session_id", params=[[], []], reader=SessionReader()),
             " GROUP BY r.session_id, r.kind",
         )
+
+    @pytest.mark.asyncio
+    async def test_a_renamed_class_s_field_reads_its_rows_under_both_their_kinds(
+        self,
+    ) -> None:
+        name, other = stored_names(AgentMessage.__name__)
+        field = next(f for f, kind in SESSION_RECORD_FIELDS.items() if kind == name)
+        both, one = new_uuid(), new_uuid()
+        conn = make_conn()
+        conn.fetch.return_value = [
+            {"session_id": both, "kind": name, "texts": ["under its name"]},
+            {"session_id": both, "kind": other, "texts": ["under the other"]},
+            {"session_id": one, "kind": other, "texts": ["only"]},
+        ]
+
+        texts = await read._record_texts(
+            cast(Conn, conn),
+            [both, one],
+            [Filter(field=field, op="notnull", value="")],
+            reader=SessionReader(),
+        )
+
+        assert texts == {
+            both: {field: ["under its name", "under the other"]},
+            one: {field: ["only"]},
+        }
+        assert conn.fetch.await_args is not None
+        assert conn.fetch.await_args.args[2] == [name, other]
 
     @pytest.mark.asyncio
     async def test_a_session_with_no_such_record_is_absent_not_empty(self) -> None:

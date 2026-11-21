@@ -519,9 +519,9 @@ records, an hour took 4 ms, a day 31 ms, a week 0.5 s, and the whole history
 `actors` holds one entry per session, newest `last` (its newest record's
 `created`) first; `ended` is `null` while the session is live. `conversation`
 counts what a person or agent said: every `AssistantMessage` and
-`AgentToAgentMessage`, a `UserMessage` unless Claude marked it `isMeta` (its
+`AgentMessage`, a `UserMessage` unless Claude marked it `isMeta` (its
 harness wrote it), and a `ContextState` of kind `queued_command` whose origin is
-human (a message sent while the agent worked). An `AgentToAgentMessage` that is
+human (a message sent while the agent worked). An `AgentMessage` that is
 only the envelope codex writes before a message to another of its agents
 (`Message Type: …` to `Payload:`), its payload sealed, says nothing, nor does a
 `UserMessage` that is wholly codex's context (`<codex_internal_context>`) or a

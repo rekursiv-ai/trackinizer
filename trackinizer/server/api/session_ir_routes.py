@@ -48,7 +48,7 @@ from trackinizer.server.store.session_ir import (
     StalePartError,
 )
 from trackinizer.server.visuals.session_usage import SessionUsage, session_usage
-from trackinizer.types.session_records import served_payload
+from trackinizer.types.session_records import served_kind, served_payload
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.wire_session_ir import (
     CLIENT_OUTDATED,
@@ -386,11 +386,17 @@ async def read_recent_session_turns_route(
 
 
 # A legacy tool-call row holds a retired record class's payload, and clients read
-# only the current ``ToolResult`` shape, so each payload is converted on the way
+# only the current ``ToolMessage`` shape, so each payload is converted on the way
 # out, to a reader and to a viewer alike. The stored row is not rewritten.
 def _served(row: SessionRecordRow) -> RecordBody:
     """Return ``row`` as a client reads it, a legacy payload in the current shape."""
-    return RecordBody.of(replace(row, payload=served_payload(row.kind, row.payload)))
+    return RecordBody.of(
+        replace(
+            row,
+            kind=served_kind(row.kind),
+            payload=served_payload(row.kind, row.payload),
+        ),
+    )
 
 
 # A client older than short class tags names each class by its import path, which no

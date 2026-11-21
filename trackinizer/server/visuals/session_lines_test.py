@@ -58,7 +58,7 @@ def test_a_goal_and_a_first_line_keep_one_line_cut_short_and_none_is_none() -> N
         ),
         (
             {
-                "last_kind": "AgentToAgentMessage",
+                "last_kind": "AgentMessage",
                 "last_content": "Ship it",
                 "last_sender": "grace@example.com",
                 "last_source": "bob@example.com",

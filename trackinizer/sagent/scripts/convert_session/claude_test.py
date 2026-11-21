@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -29,8 +30,8 @@ from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
     without,
 )
 from trackinizer.sagent.session.types import (
+    AgentMessage,
     AgentSpawnResult,
-    AgentToAgentMessage,
     AssistantMessage,
     Attachment,
     BashResult,
@@ -41,6 +42,7 @@ from trackinizer.sagent.session.types import (
     IncompleteRecord,
     McpResult,
     ReadResult,
+    SessionContext,
     SessionRecord,
     SkillResult,
     Splice,
@@ -48,9 +50,8 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     TranscriptItem,
-    TurnContext,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -59,11 +60,14 @@ from trackinizer.sagent.session.types import (
     WebSearchResult,
     WriteResult,
     former_kind,
+    stored_plain,
 )
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
+
+    from treekle import PlainTree
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
@@ -111,14 +115,14 @@ def _transcript(records: Iterable[SessionRecord]) -> tuple[TranscriptItem, ...]:
         for record in records
         if isinstance(
             record,
-            UserMessage | AssistantMessage | Thinking | ToolCall | ToolResult,
+            UserMessage | AssistantMessage | Thinking | ToolCall | ToolMessage,
         )
     )
 
 
-def _result(record: object) -> ToolResult:
-    """Return ``record`` after asserting it is a ``ToolResult``."""
-    assert isinstance(record, ToolResult)
+def _result(record: object) -> ToolMessage:
+    """Return ``record`` after asserting it is a ``ToolMessage``."""
+    assert isinstance(record, ToolMessage)
     return record
 
 
@@ -129,12 +133,12 @@ def _typed_result[T](record: object, kind: type[T]) -> T:
     return tool_result
 
 
-# The reader restates the file's spelling as a trailing :class:`TurnContext` whenever it
+# The reader restates the file's spelling as a trailing :class:`SessionContext` whenever it
 # changes -- the final record of a stream may be that state, not the act a line carried.
 def _last_act(records: Sequence[SessionRecord]) -> SessionRecord:
     """Return the last record that is not a restatement of the settings."""
     return next(
-        record for record in reversed(records) if not isinstance(record, TurnContext)
+        record for record in reversed(records) if not isinstance(record, SessionContext)
     )
 
 
@@ -170,7 +174,7 @@ def test_a_session_declares_its_context_first() -> None:
     # own settings follow them.
     assert isinstance(records[1], ContextClear)
     context = records[2]
-    assert isinstance(context, TurnContext)
+    assert isinstance(context, SessionContext)
     assert context.extra["sessionId"] == "s1"
     assert context.extra["cwd"] == "/workspace"
     assert context.extra["version"] == "2.1.241"
@@ -230,7 +234,7 @@ def test_the_first_act_of_a_line_carries_what_the_line_reported() -> None:
     # The model is the turn's setting, not the line's: it never varies within
     # a session, so it lives once on the context.
     context = records[2]
-    assert isinstance(context, TurnContext)
+    assert isinstance(context, SessionContext)
     assert context.model == "claude-opus-5"
 
 
@@ -322,12 +326,54 @@ def test_a_system_line_reads_its_time_text_and_kind() -> None:
 
     assert isinstance(message, SystemMessage)
     assert (message.timestamp, message.content, message.subtype) == (
-        "2026-08-24T20:29:52.614Z",
+        datetime(2026, 8, 24, 20, 29, 52, 614_000, UTC),
         "Hook ran",
         "informational",
     )
     # Read into fields, so not kept a second time in the residual.
     assert not {"content", "subtype"} & set(message.extra)
+    assert message.extra["$timestamp_as_written"] == "2026-08-24T20:29:52.614Z"
+
+
+def test_every_record_of_a_line_keeps_the_time_as_the_line_spelled_it() -> None:
+    """A line's call and its usage are records of their own, each stored at its time."""
+    native = (
+        '{"type":"assistant","timestamp":"2026-08-24T20:29:52.614Z","uuid":"a1",'
+        '"message":{"role":"assistant","content":[{"type":"text","text":"on it"},'
+        '{"type":"tool_use","id":"c1","name":"Read","input":{}}],'
+        '"usage":{"input_tokens":1}}}\n'
+        '{"type":"queue-operation","timestamp":"soon","operation":"enqueue"}\n'
+    )
+
+    records = [
+        r
+        for r in claude.normalize(StringIO(native))
+        if isinstance(r, AssistantMessage | ToolCall | TokenUsage | UncategorizedRecord)
+    ]
+
+    assert [(type(r), stored_plain(r)["timestamp"]) for r in records] == [
+        (AssistantMessage, "2026-08-24T20:29:52.614Z"),
+        (ToolCall, "2026-08-24T20:29:52.614Z"),
+        (TokenUsage, "2026-08-24T20:29:52.614Z"),
+        (UncategorizedRecord, "soon"),
+    ]
+    output = StringIO()
+    claude.denormalize(claude.normalize(StringIO(native)), output)
+    assert output.getvalue() == native
+
+
+def test_a_line_with_no_time_writes_a_null_only_where_it_stated_one() -> None:
+    stated = '{"type":"system","content":"x","timestamp":null,"uuid":"y1"}\n'
+    assert _round_trip(stated) == stated
+
+    timed = stated.replace("null", '"2026-08-24T20:29:52.614Z"')
+    cleared = [
+        replace(record, timestamp=None) if isinstance(record, SystemMessage) else record
+        for record in claude.normalize(StringIO(timed))
+    ]
+    output = StringIO()
+    claude.denormalize(cleared, output)
+    assert output.getvalue() == '{"type":"system","content":"x","uuid":"y1"}\n'
 
 
 def test_a_queued_message_is_its_contexts_prose() -> None:
@@ -409,6 +455,755 @@ def test_a_result_is_typed_by_what_its_tool_did(
     records = list(claude.normalize(StringIO(native)))
 
     assert type(_result(_last_act(records)).result) is expected
+
+
+def _stated(
+    order: Sequence[str],
+    states: Mapping[str, str],
+    residual: Mapping[str, PlainTree],
+    raw: Mapping[str, PlainTree] | None = None,
+) -> dict[str, PlainTree]:
+    """Return what a record keeps of a payload whose modeled fields it read."""
+    return {
+        "$__custom_json_fields__": {
+            "version": 1,
+            "order": list(order),
+            "states": dict(states),
+            "raw": {} if raw is None else dict(raw),
+            "residual": dict(residual),
+        },
+    }
+
+
+def _kept(name: str, stored: PlainTree, **shape: PlainTree) -> dict[str, PlainTree]:
+    """Return the ``extra`` of ``name``'s result, read beside one line field."""
+    return {
+        "line": 1,
+        "$result": {"tool_name": name, **shape},
+        "toolUseResult": stored,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "payload", "text", "expected"),
+    [
+        pytest.param(
+            "Bash",
+            {"stdout": "out", "stderr": "err", "interrupted": False, "note": 1},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("out",),
+                stderr=("err",),
+                result=BashResult(),
+                extra=_kept(
+                    "Bash",
+                    _stated(
+                        ["stdout", "stderr", "interrupted", "note"],
+                        {"stdout": "value", "stderr": "value"},
+                        {"interrupted": False, "note": 1},
+                    ),
+                ),
+            ),
+            id="bash",
+        ),
+        pytest.param(
+            "Bash",
+            {"stdout": 1, "stderr": 2},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=BashResult(),
+                extra=_kept(
+                    "Bash",
+                    _stated(["stdout", "stderr"], {}, {"stdout": 1, "stderr": 2}),
+                ),
+            ),
+            id="bash-mistyped",
+        ),
+        pytest.param(
+            "Bash",
+            {},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=BashResult(),
+                extra=_kept("Bash", _stated([], {}, {})),
+            ),
+            id="bash-absent",
+        ),
+        pytest.param(
+            "Read",
+            {
+                "file": {"filePath": "/a.py", "content": "body", "numLines": 1},
+                "type": "text",
+            },
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("body",),
+                result=ReadResult(path="/a.py"),
+                extra=_kept(
+                    "Read",
+                    {
+                        "type": "text",
+                        "file": _stated(
+                            ["filePath", "content", "numLines"],
+                            {"filePath": "value", "content": "value"},
+                            {"numLines": 1},
+                        ),
+                    },
+                ),
+            ),
+            id="read",
+        ),
+        pytest.param(
+            "Read",
+            {"file": {"filePath": 1, "content": 2}},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=ReadResult(),
+                extra=_kept(
+                    "Read",
+                    {
+                        "file": _stated(
+                            ["filePath", "content"],
+                            {},
+                            {"filePath": 1, "content": 2},
+                        ),
+                    },
+                ),
+            ),
+            id="read-mistyped",
+        ),
+        pytest.param(
+            "Read",
+            {"file": 3, "type": "text"},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=ReadResult(),
+                extra=_kept(
+                    "Read",
+                    _stated(["file", "type"], {}, {"file": 3, "type": "text"}),
+                ),
+            ),
+            id="read-no-file",
+        ),
+        pytest.param(
+            "Read",
+            {"file": None},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=ReadResult(),
+                extra=_kept("Read", _stated(["file"], {"file": "null"}, {})),
+            ),
+            id="read-null-file",
+        ),
+        pytest.param(
+            "Write",
+            {"filePath": "/a.py", "content": "body", "type": "create"},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("Wrote /a.py.",),
+                result=WriteResult(path="/a.py", content="body"),
+                extra=_kept(
+                    "Write",
+                    _stated(
+                        ["filePath", "content", "type"],
+                        {"filePath": "value", "content": "value"},
+                        {"type": "create"},
+                    ),
+                ),
+            ),
+            id="write",
+        ),
+        pytest.param(
+            "Write",
+            {"filePath": 1, "content": 2},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("Wrote the file.",),
+                result=WriteResult(),
+                extra=_kept(
+                    "Write",
+                    _stated(
+                        ["filePath", "content"],
+                        {},
+                        {"filePath": 1, "content": 2},
+                    ),
+                ),
+            ),
+            id="write-mistyped",
+        ),
+        pytest.param(
+            "Write",
+            {},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("Wrote the file.",),
+                result=WriteResult(),
+                extra=_kept("Write", _stated([], {}, {})),
+            ),
+            id="write-absent",
+        ),
+        pytest.param(
+            "Edit",
+            {
+                "filePath": "/a.py",
+                "oldString": "old",
+                "newString": "new",
+                "structuredPatch": [],
+            },
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("Edited /a.py.", Splice(before="old", after="new")),
+                result=EditResult(path="/a.py"),
+                extra=_kept(
+                    "Edit",
+                    _stated(
+                        ["filePath", "oldString", "newString", "structuredPatch"],
+                        {
+                            "filePath": "value",
+                            "oldString": "value",
+                            "newString": "value",
+                        },
+                        {"structuredPatch": []},
+                    ),
+                    splice=["old", "new"],
+                ),
+            ),
+            id="edit",
+        ),
+        pytest.param(
+            "Edit",
+            {"filePath": 1, "oldString": 2, "newString": 3, "structuredPatch": []},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("Edited the file.",),
+                result=EditResult(),
+                extra=_kept(
+                    "Edit",
+                    _stated(
+                        ["filePath", "oldString", "newString", "structuredPatch"],
+                        {},
+                        {
+                            "filePath": 1,
+                            "oldString": 2,
+                            "newString": 3,
+                            "structuredPatch": [],
+                        },
+                    ),
+                    splice=[None, None],
+                ),
+            ),
+            id="edit-mistyped",
+        ),
+        pytest.param(
+            "Edit",
+            {"oldString": "old"},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("Edited the file.", Splice(before="old")),
+                result=EditResult(),
+                extra=_kept(
+                    "Edit",
+                    _stated(["oldString"], {"oldString": "value"}, {}),
+                ),
+            ),
+            id="edit-only-what-it-took-out",
+        ),
+        pytest.param(
+            "Edit",
+            {"newString": "new"},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("Edited the file.", Splice(after="new")),
+                result=EditResult(),
+                extra=_kept(
+                    "Edit",
+                    _stated(["newString"], {"newString": "value"}, {}),
+                ),
+            ),
+            id="edit-only-what-it-put-in",
+        ),
+        pytest.param(
+            "WebSearch",
+            {
+                "query": "q",
+                "durationSeconds": 1.5,
+                "results": [
+                    {
+                        "tool_use_id": "s1",
+                        "content": [
+                            {"title": "T", "url": "https://x"},
+                            "junk",
+                            {"title": "U", "url": "https://y"},
+                        ],
+                    },
+                    "prose",
+                ],
+            },
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=(
+                    "T\nhttps://x\n\nU\nhttps://y",
+                    WebSearchHit(url="https://x", title="T"),
+                    WebSearchHit(url="https://y", title="U"),
+                ),
+                result=WebSearchResult(query="q", duration_sec=1.5),
+                extra=_kept(
+                    "WebSearch",
+                    _stated(
+                        ["query", "durationSeconds", "results"],
+                        {
+                            "query": "value",
+                            "durationSeconds": "value",
+                            "results": "value",
+                        },
+                        {},
+                        {"durationSeconds": 1.5},
+                    ),
+                    rows=[
+                        {
+                            "template": {
+                                "tool_use_id": "s1",
+                                "content": [
+                                    {"title": "T", "url": "https://x"},
+                                    "junk",
+                                    {"title": "U", "url": "https://y"},
+                                ],
+                            },
+                            "rows": 2,
+                        },
+                        "prose",
+                    ],
+                ),
+            ),
+            id="search",
+        ),
+        pytest.param(
+            "WebSearch",
+            {"query": 1, "durationSeconds": "d", "results": 3},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=WebSearchResult(),
+                extra=_kept(
+                    "WebSearch",
+                    _stated(
+                        ["query", "durationSeconds", "results"],
+                        {},
+                        {"query": 1, "durationSeconds": "d", "results": 3},
+                    ),
+                    rows=[],
+                ),
+            ),
+            id="search-mistyped",
+        ),
+        pytest.param(
+            "WebSearch",
+            {},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=WebSearchResult(),
+                extra=_kept("WebSearch", _stated([], {}, {})),
+            ),
+            id="search-absent",
+        ),
+        pytest.param(
+            "WebFetch",
+            {
+                "url": "https://x",
+                "result": "body",
+                "code": 200,
+                "durationMs": 1500,
+                "bytes": 4,
+                "codeText": "OK",
+            },
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("body",),
+                result=WebFetchResult(
+                    url="https://x",
+                    code=200,
+                    duration_sec=1.5,
+                    size=4,
+                ),
+                extra=_kept(
+                    "WebFetch",
+                    _stated(
+                        ["url", "result", "code", "durationMs", "bytes", "codeText"],
+                        {
+                            "url": "value",
+                            "result": "value",
+                            "code": "value",
+                            "durationMs": "value",
+                            "bytes": "value",
+                        },
+                        {"codeText": "OK"},
+                        {"code": 200, "durationMs": 1500, "bytes": 4},
+                    ),
+                    duration_ms=1500,
+                ),
+            ),
+            id="fetch",
+        ),
+        pytest.param(
+            "WebFetch",
+            {"url": 1, "result": 2, "code": "c", "durationMs": "d", "bytes": "b"},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=WebFetchResult(),
+                extra=_kept(
+                    "WebFetch",
+                    _stated(
+                        ["url", "result", "code", "durationMs", "bytes"],
+                        {},
+                        {
+                            "url": 1,
+                            "result": 2,
+                            "code": "c",
+                            "durationMs": "d",
+                            "bytes": "b",
+                        },
+                    ),
+                ),
+            ),
+            id="fetch-mistyped",
+        ),
+        pytest.param(
+            "WebFetch",
+            {},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=WebFetchResult(),
+                extra=_kept("WebFetch", _stated([], {}, {})),
+            ),
+            id="fetch-absent",
+        ),
+        pytest.param(
+            "Agent",
+            {
+                "agentId": "a1",
+                "agentType": "general",
+                "prompt": "do it",
+                "content": [
+                    {"type": "text", "text": "one"},
+                    "junk",
+                    {"type": "tool_use"},
+                    {"type": "text", "text": "two"},
+                ],
+                "resolvedModel": "m",
+                "status": "completed",
+                "totalTokens": 7,
+                "totalDurationMs": 2500,
+                "totalToolUseCount": 3,
+                "outputFile": "/o",
+                "usage": {},
+            },
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("one\n\ntwo",),
+                result=AgentSpawnResult(
+                    agent_id="a1",
+                    agent_kind="general",
+                    prompt="do it",
+                    model="m",
+                    state="completed",
+                    tokens=7,
+                    duration_sec=2.5,
+                    tool_calls=3,
+                    output_file="/o",
+                ),
+                extra=_kept(
+                    "Agent",
+                    _stated(
+                        [
+                            "agentId",
+                            "agentType",
+                            "prompt",
+                            "content",
+                            "resolvedModel",
+                            "status",
+                            "totalTokens",
+                            "totalDurationMs",
+                            "totalToolUseCount",
+                            "outputFile",
+                            "usage",
+                        ],
+                        {
+                            "agentId": "value",
+                            "agentType": "value",
+                            "prompt": "value",
+                            "content": "value",
+                            "resolvedModel": "value",
+                            "status": "value",
+                            "totalTokens": "value",
+                            "totalDurationMs": "value",
+                            "totalToolUseCount": "value",
+                            "outputFile": "value",
+                        },
+                        {"usage": {}},
+                        {
+                            "totalTokens": 7,
+                            "totalDurationMs": 2500,
+                            "totalToolUseCount": 3,
+                        },
+                    ),
+                    duration_ms=2500,
+                    agent_blocks=[
+                        {"type": "text", "text": "one"},
+                        "junk",
+                        {"type": "tool_use"},
+                        {"type": "text", "text": "two"},
+                    ],
+                ),
+            ),
+            id="agent",
+        ),
+        pytest.param(
+            "Agent",
+            {
+                "agentId": 1,
+                "agentType": 2,
+                "prompt": 3,
+                "content": "c",
+                "resolvedModel": 4,
+                "status": 5,
+                "totalTokens": "t",
+                "totalDurationMs": "d",
+                "totalToolUseCount": "n",
+                "outputFile": 6,
+            },
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=AgentSpawnResult(),
+                extra=_kept(
+                    "Agent",
+                    _stated(
+                        [
+                            "agentId",
+                            "agentType",
+                            "prompt",
+                            "content",
+                            "resolvedModel",
+                            "status",
+                            "totalTokens",
+                            "totalDurationMs",
+                            "totalToolUseCount",
+                            "outputFile",
+                        ],
+                        {},
+                        {
+                            "agentId": 1,
+                            "agentType": 2,
+                            "prompt": 3,
+                            "content": "c",
+                            "resolvedModel": 4,
+                            "status": 5,
+                            "totalTokens": "t",
+                            "totalDurationMs": "d",
+                            "totalToolUseCount": "n",
+                            "outputFile": 6,
+                        },
+                    ),
+                ),
+            ),
+            id="agent-mistyped",
+        ),
+        pytest.param(
+            "Agent",
+            {},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=AgentSpawnResult(),
+                extra=_kept("Agent", _stated([], {}, {})),
+            ),
+            id="agent-absent",
+        ),
+        pytest.param(
+            "Skill",
+            {"commandName": "tdd"},
+            "ran",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("ran",),
+                result=SkillResult(),
+                extra=_kept("Skill", {"commandName": "tdd"}),
+            ),
+            id="skill",
+        ),
+        pytest.param(
+            "Skill",
+            {},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=SkillResult(),
+                extra=_kept("Skill", {}),
+            ),
+            id="skill-silent",
+        ),
+        pytest.param(
+            "mcp__docs__search__deep",
+            {"hits": []},
+            "found",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("found",),
+                result=McpResult(server="docs", tool="search__deep"),
+                extra=_kept("mcp__docs__search__deep", {"hits": []}),
+            ),
+            id="mcp",
+        ),
+        pytest.param(
+            "mcp__docs__search",
+            {},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=McpResult(server="docs", tool="search"),
+                extra=_kept("mcp__docs__search", {}),
+            ),
+            id="mcp-silent",
+        ),
+        pytest.param(
+            "ToolSearch",
+            {"matches": []},
+            "found",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                stdout=("found",),
+                result=UncategorizedToolResult(),
+                extra=_kept("ToolSearch", {"matches": []}),
+            ),
+            id="uncategorized",
+        ),
+        pytest.param(
+            "ToolSearch",
+            {},
+            "",
+            ToolMessage(
+                call_id="c1",
+                state="done",
+                result=UncategorizedToolResult(),
+                extra=_kept("ToolSearch", {}),
+            ),
+            id="uncategorized-silent",
+        ),
+    ],
+)
+def test_a_structured_result_reads_as_the_whole_record_of_what_its_tool_did(
+    name: str,
+    payload: dict[str, object],
+    text: str,
+    expected: ToolMessage,
+) -> None:
+    read = claude._typed_result(
+        name,
+        payload,
+        {"toolUseResult": payload},
+        call_id="c1",
+        command=None,
+        failed=False,
+        text=text,
+        attachments=(),
+        extra={"line": 1},
+        shape={"tool_name": name},
+    )
+
+    assert read == expected
+
+
+def test_a_read_result_keeps_its_file_after_the_rest_of_its_payload() -> None:
+    payload: dict[str, object] = {"file": {"filePath": "/a.py"}, "type": "text"}
+
+    read = claude._typed_result(
+        "Read",
+        payload,
+        {"toolUseResult": payload},
+        call_id="c1",
+        command=None,
+        failed=False,
+        text="",
+        attachments=(),
+        extra={},
+        shape={},
+    )
+
+    assert list(from_plain(read.extra["toolUseResult"], dict[str, object])) == [
+        "type",
+        "file",
+    ]
+
+
+def test_a_result_with_no_payload_object_keeps_none() -> None:
+    read = claude._typed_result(
+        "ToolSearch",
+        {},
+        {"toolUseResult": "Error: no such tool"},
+        call_id="c1",
+        command=None,
+        failed=True,
+        text="Error: no such tool",
+        attachments=(),
+        extra={"line": 1},
+        shape={"tool_name": "ToolSearch"},
+    )
+
+    assert read == ToolMessage(
+        call_id="c1",
+        state="done",
+        stdout=("Error: no such tool",),
+        result=UncategorizedToolResult(),
+        extra={"line": 1, "$result": {"tool_name": "ToolSearch"}},
+    )
 
 
 @pytest.mark.parametrize(
@@ -997,7 +1792,7 @@ def test_a_line_answering_two_calls_round_trips_and_each_keeps_the_line() -> Non
     results = [
         record
         for record in records
-        if isinstance(record, ToolResult) and isinstance(record.result, BashResult)
+        if isinstance(record, ToolMessage) and isinstance(record.result, BashResult)
     ]
     assert [result.text() for result in results] == ["a", "/w"]
     line = json_loads(native.splitlines()[1], dict[str, object])
@@ -1034,7 +1829,7 @@ def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
         for record in claude.normalize(
             StringIO(first_call + first_result + second_call + second_result),
         )
-        if isinstance(record, ToolResult) and isinstance(record.result, ReadResult)
+        if isinstance(record, ToolMessage) and isinstance(record.result, ReadResult)
     ]
 
     assert [
@@ -1051,7 +1846,7 @@ def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
 
 def test_a_foreign_lifted_read_uses_its_semantic_content() -> None:
     records = (
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             stdout=("body\n",),
@@ -1390,8 +2185,8 @@ def test_an_unparsable_line_survives_verbatim() -> None:
 
 def test_a_neutral_tool_result_emits_a_complete_claude_block() -> None:
     records = (
-        TurnContext(context_id=0, extra={"sessionId": "s1"}),
-        ToolResult(
+        SessionContext(context_id=0, extra={"sessionId": "s1"}),
+        ToolMessage(
             context_id=0,
             call_id="c1",
             state="done",
@@ -1415,7 +2210,7 @@ def test_a_neutral_tool_result_emits_a_complete_claude_block() -> None:
 
 def test_a_synthesized_session_denormalizes_to_claude_records() -> None:
     records = (
-        TurnContext(context_id=0, extra={"sessionId": "s1", "cwd": "/w"}),
+        SessionContext(context_id=0, extra={"sessionId": "s1", "cwd": "/w"}),
         UserMessage(context_id=0, content="Hi.", extra={"uuid": "u1"}),
         Thinking(context_id=0, content="Reading.", encrypted="sig"),
         ToolCall(
@@ -1425,7 +2220,7 @@ def test_a_synthesized_session_denormalizes_to_claude_records() -> None:
             arguments={"path": "/a"},
             extra={"uuid": "a2"},
         ),
-        ToolResult(
+        ToolMessage(
             context_id=0,
             call_id="c1",
             state="done",
@@ -1442,7 +2237,7 @@ def test_a_synthesized_session_denormalizes_to_claude_records() -> None:
     # The result comes back as what the tool DID, not as a bare result: the
     # ``Read`` call two records earlier is what names it.
     assert [
-        former_kind(r) if isinstance(r, ToolResult) else type(r).__name__
+        former_kind(r) if isinstance(r, ToolMessage) else type(r).__name__
         for r in _transcript(rebuilt)
     ] == [
         "UserMessage",
@@ -1554,9 +2349,11 @@ def test_later_line_context_changes_are_explicit_and_lossless() -> None:
     records = list(claude.normalize(StringIO(native)))
 
     # Settings only: the reader also restates the file's ENCODING as a
-    # ``TurnContext``, and those state no turn for a record to name.
+    # ``SessionContext``, and those state no turn for a record to name.
     settings = [
-        record for record in records if isinstance(record, TurnContext) and record.extra
+        record
+        for record in records
+        if isinstance(record, SessionContext) and record.extra
     ]
     messages = [record for record in records if isinstance(record, UserMessage)]
     assert len(settings) == 2
@@ -1669,7 +2466,7 @@ def test_multiblock_tool_result_edits_update_the_matching_text_blocks() -> None:
 
 def test_foreign_residual_does_not_leak_into_synthesized_claude_wire() -> None:
     records = (
-        TurnContext(context_id=0, extra={"sessionId": "s1"}),
+        SessionContext(context_id=0, extra={"sessionId": "s1"}),
         UserMessage(
             context_id=0,
             content="hi",
@@ -1852,7 +2649,7 @@ def test_clearing_assistant_acts_removes_source_blocks() -> None:
     assert '"content":[{"future":true}]' in output.getvalue()
 
 
-_FOREIGN = TurnContext(encoding={"newline_terminated": True})
+_FOREIGN = SessionContext(encoding={"newline_terminated": True})
 
 
 def _tool_uses(records: Sequence[SessionRecord]) -> list[str]:
@@ -1868,9 +2665,9 @@ def test_an_untyped_foreign_result_after_a_typed_one_does_not_abort() -> None:
     # assistant line reached the synthetic-call path and raised ``KeyError``.
     records = [
         _FOREIGN,
-        ToolResult(call_id="a", state="done", result=BashResult(command=("ls",))),
+        ToolMessage(call_id="a", state="done", result=BashResult(command=("ls",))),
         AssistantMessage(content="x"),
-        ToolResult(
+        ToolMessage(
             call_id="b",
             state="done",
             stdout=("y",),
@@ -1886,7 +2683,7 @@ def test_a_foreign_call_after_its_result_is_written_once() -> None:
     # later would state the same id a second time.
     records = [
         _FOREIGN,
-        ToolResult(call_id="a", state="done", result=BashResult(command=("ls",))),
+        ToolMessage(call_id="a", state="done", result=BashResult(command=("ls",))),
         ToolCall(call_id="a", name="shell"),
     ]
 
@@ -1898,12 +2695,12 @@ def test_a_foreign_act_run_inside_an_open_call_is_left_out() -> None:
     records = [
         _FOREIGN,
         ToolCall(call_id="exec", name="exec"),
-        ToolResult(call_id="inner", state="done", result=BashResult(command=("ls",))),
-        ToolResult(call_id="exec", state="done", result=UncategorizedToolResult()),
+        ToolMessage(call_id="inner", state="done", result=BashResult(command=("ls",))),
+        ToolMessage(call_id="exec", state="done", result=UncategorizedToolResult()),
         _FOREIGN,
         ToolCall(call_id="interrupted", name="exec"),
         _FOREIGN,
-        ToolResult(call_id="search", state="done", result=WebSearchResult(query="q")),
+        ToolMessage(call_id="search", state="done", result=WebSearchResult(query="q")),
     ]
     output = StringIO()
 
@@ -1912,7 +2709,7 @@ def test_a_foreign_act_run_inside_an_open_call_is_left_out() -> None:
     assert [
         r.call_id
         for r in claude.normalize(StringIO(output.getvalue()))
-        if isinstance(r, ToolResult)
+        if isinstance(r, ToolMessage)
     ] == ["exec", "search"]
 
 
@@ -1926,16 +2723,29 @@ def _written_lines(records: list[SessionRecord]) -> list[dict[str, object]]:
 
 
 def test_another_cli_s_lines_take_the_last_stated_time_and_stay_raw_utf8() -> None:
+    first = datetime(2026, 1, 1, tzinfo=UTC)
     lines = _written_lines(
         [
             _FOREIGN,
-            UserMessage(timestamp="t1", content="é"),
+            UserMessage(timestamp=first, content="é"),
             AssistantMessage(content="b"),
-            UserMessage(timestamp="t2", content="c"),
+            # As a line of its own CLI spelled it.
+            UserMessage(
+                timestamp=datetime(2026, 1, 2, tzinfo=UTC),
+                content="c",
+                extra={"$timestamp_as_written": "2026-01-02T00:00:00.000Z"},
+            ),
+            AssistantMessage(content="d"),
         ],
     )
 
-    assert [line["timestamp"] for line in lines] == ["t1", "t1", "t2"]
+    assert [line["timestamp"] for line in lines] == [
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-02T00:00:00.000Z",
+        "2026-01-02T00:00:00.000Z",
+    ]
+    assert "$timestamp_as_written" not in json.dumps(lines)
     output = StringIO()
     claude.denormalize([_FOREIGN, UserMessage(content="é")], output)
     assert "é" in output.getvalue()
@@ -1944,10 +2754,10 @@ def test_another_cli_s_lines_take_the_last_stated_time_and_stay_raw_utf8() -> No
 def test_a_result_another_cli_called_for_is_linked_to_the_line_before_it() -> None:
     lines = _written_lines(
         [
-            TurnContext(cwd="/w", encoding={"newline_terminated": True}),
+            SessionContext(cwd=Path("/w"), encoding={"newline_terminated": True}),
             UserMessage(content="hi"),
             AssistantMessage(content="ok"),
-            ToolResult(call_id="x", state="done", result=WebSearchResult(query="q")),
+            ToolMessage(call_id="x", state="done", result=WebSearchResult(query="q")),
         ],
     )
 
@@ -1955,10 +2765,28 @@ def test_a_result_another_cli_called_for_is_linked_to_the_line_before_it() -> No
     assert (called["parentUuid"], called["cwd"]) == (said["uuid"], "/w")
 
 
+def test_the_call_written_for_another_cli_s_result_is_at_the_result_s_time() -> None:
+    """Spelled as the result's own line spelled it."""
+    lines = _written_lines(
+        [
+            _FOREIGN,
+            ToolMessage(
+                timestamp=datetime(2026, 1, 2, tzinfo=UTC),
+                call_id="x",
+                state="done",
+                result=WebSearchResult(query="q"),
+                extra={"$timestamp_as_written": "2026-01-02T00:00:00.000Z"},
+            ),
+        ],
+    )
+
+    assert [line["timestamp"] for line in lines] == ["2026-01-02T00:00:00.000Z"] * 2
+
+
 def test_a_prompt_source_line_states_the_turn_s_permission_mode() -> None:
     lines = _written_lines(
         [
-            TurnContext(
+            SessionContext(
                 context_id=0,
                 permission="plan",
                 encoding={"newline_terminated": True},
@@ -1975,7 +2803,9 @@ def test_a_spelling_naming_no_exceptions_writes_every_line_raw() -> None:
 
     claude.denormalize(
         [
-            TurnContext(encoding={"newline_terminated": True, "ascii_escaped": False}),
+            SessionContext(
+                encoding={"newline_terminated": True, "ascii_escaped": False},
+            ),
             UserMessage(content="é"),
         ],
         output,
@@ -1985,7 +2815,7 @@ def test_a_spelling_naming_no_exceptions_writes_every_line_raw() -> None:
 
 
 def test_a_corrupt_escape_bitmap_is_refused() -> None:
-    corrupt = TurnContext(
+    corrupt = SessionContext(
         encoding={
             "newline_terminated": True,
             "ascii_escaped": False,
@@ -2060,7 +2890,7 @@ def test_a_foreign_result_preserves_its_tool_identity_and_late_arguments(
     arguments = {"command": "pwd", "description": "show directory"}
     records: list[SessionRecord] = [
         _FOREIGN,
-        ToolResult(call_id="a", state="done", stdout=("ok",), result=BashResult()),
+        ToolMessage(call_id="a", state="done", stdout=("ok",), result=BashResult()),
     ]
     if late_call:
         records.append(ToolCall(call_id="a", name="shell", arguments=arguments))
@@ -2154,7 +2984,7 @@ def test_user_line_normalizes_every_act() -> None:
     records = _transcript(claude.normalize(StringIO(native)))
 
     assert [
-        former_kind(r) if isinstance(r, ToolResult) else type(r).__name__
+        former_kind(r) if isinstance(r, ToolMessage) else type(r).__name__
         for r in records
     ] == [
         "UserMessage",
@@ -2165,7 +2995,9 @@ def test_user_line_normalizes_every_act() -> None:
     assert isinstance(message, UserMessage)
     assert message.content == "before\nafter"
     assert message.attachments == (Attachment(mime_descriptor="image/png", data=b"hi"),)
-    assert [record.call_id for record in records if isinstance(record, ToolResult)] == [
+    assert [
+        record.call_id for record in records if isinstance(record, ToolMessage)
+    ] == [
         "c1",
         "c2",
     ]
@@ -2265,7 +3097,7 @@ def test_claude_shape_writers_preserve_absent_blocks() -> None:
         "type": "thinking",
     }
     assert claude._write_agent_blocks(
-        ToolResult(
+        ToolMessage(
             call_id="c",
             state="done",
             stdout=("hi",),
@@ -2277,13 +3109,13 @@ def test_claude_shape_writers_preserve_absent_blocks() -> None:
     ]
     assert (
         claude._result_values(
-            ToolResult(call_id="c", state="done", result=UncategorizedToolResult()),
+            ToolMessage(call_id="c", state="done", result=UncategorizedToolResult()),
             {},
         )
         == {}
     )
     assert claude._write_result_content(
-        ToolResult(
+        ToolMessage(
             call_id="c",
             state="done",
             stdout=("new",),
@@ -2303,7 +3135,7 @@ def test_agent_blocks_replay_edited_prose_inside_their_boundaries() -> None:
             {"type": "text", "text": "c"},
         ],
     }
-    report = ToolResult(
+    report = ToolMessage(
         call_id="c",
         state="done",
         stdout=("x\ny", "\nz"),
@@ -2326,7 +3158,7 @@ def test_agent_blocks_keep_their_own_text_when_the_prose_no_longer_fits() -> Non
             {"type": "text", "text": None},
         ],
     }
-    report = ToolResult(
+    report = ToolMessage(
         call_id="c",
         state="done",
         stdout=("whole",),
@@ -2342,7 +3174,7 @@ def test_agent_blocks_keep_their_own_text_when_the_prose_no_longer_fits() -> Non
 
 def test_a_crossed_agent_report_takes_the_finished_reports_order() -> None:
     """With no ``isAsync`` it is a finished report, which states its prompt second."""
-    report = ToolResult(
+    report = ToolMessage(
         call_id="c",
         state="done",
         stdout=("done",),
@@ -2353,7 +3185,7 @@ def test_a_crossed_agent_report_takes_the_finished_reports_order() -> None:
 
 
 def test_a_crossed_finished_agent_replays_with_claudes_name_and_order() -> None:
-    report = ToolResult(
+    report = ToolMessage(
         call_id="c",
         state="done",
         stdout=("done",),
@@ -2362,7 +3194,7 @@ def test_a_crossed_finished_agent_replays_with_claudes_name_and_order() -> None:
     stream = StringIO()
     claude.denormalize(
         [
-            TurnContext(encoding={"newline_terminated": False}),
+            SessionContext(encoding={"newline_terminated": False}),
             ToolCall(call_id="c", name="spawn_agent"),
             report,
         ],
@@ -2384,7 +3216,7 @@ def test_a_crossed_finished_agent_replays_with_claudes_name_and_order() -> None:
 
 def test_an_mcp_result_is_written_as_the_tool_claude_named_it() -> None:
     assert claude._claude_tool(
-        ToolResult(
+        ToolMessage(
             call_id="c",
             state="done",
             result=McpResult(server="docs", tool="search"),
@@ -2395,7 +3227,7 @@ def test_an_mcp_result_is_written_as_the_tool_claude_named_it() -> None:
 def test_claude_writer_special_result_shapes() -> None:
     assert (
         claude._write_result_block(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 result=UncategorizedToolResult(),
@@ -2406,7 +3238,7 @@ def test_claude_writer_special_result_shapes() -> None:
     )
     assert (
         claude._write_tool_payload(
-            ToolResult(call_id="c", state="done", result=UncategorizedToolResult()),
+            ToolMessage(call_id="c", state="done", result=UncategorizedToolResult()),
             {"toolUseResult": "failed"},
             {},
         )
@@ -2435,7 +3267,7 @@ def test_claude_writer_special_result_shapes() -> None:
 
 
 def test_a_line_context_reads_what_the_line_states_and_keeps_the_rest() -> None:
-    previous = TurnContext(
+    previous = SessionContext(
         model="old",
         effort="low",
         permission="ask",
@@ -2455,7 +3287,7 @@ def test_a_line_context_reads_what_the_line_states_and_keeps_the_rest() -> None:
 
 
 def test_claude_reader_context_and_result_edge_cases() -> None:
-    previous = TurnContext(model="old", effort="low", permission="ask")
+    previous = SessionContext(model="old", effort="low", permission="ask")
     updated = claude._read_line_context(
         {"message": {"model": "new"}, "effort": "high"},
         previous,
@@ -2466,7 +3298,7 @@ def test_claude_reader_context_and_result_edge_cases() -> None:
 
 
 def test_a_line_stating_no_settings_keeps_the_previous_ones() -> None:
-    previous = TurnContext(
+    previous = SessionContext(
         model="m",
         effort="low",
         permission="ask",
@@ -2479,7 +3311,7 @@ def test_a_line_stating_no_settings_keeps_the_previous_ones() -> None:
 
 
 def test_a_line_s_own_settings_replace_the_previous_ones() -> None:
-    previous = TurnContext(model="m", effort="low", permission="ask")
+    previous = SessionContext(model="m", effort="low", permission="ask")
 
     updated = claude._read_line_context(
         {"permissionMode": "plan", "effort": "max", "message": {"model": "n"}},
@@ -2490,7 +3322,7 @@ def test_a_line_s_own_settings_replace_the_previous_ones() -> None:
 
 
 def test_a_null_model_clears_the_previous_one() -> None:
-    previous = TurnContext(model="m")
+    previous = SessionContext(model="m")
 
     updated = claude._read_line_context({"message": {"model": None}}, previous)
 
@@ -2504,7 +3336,7 @@ def test_a_null_model_clears_the_previous_one() -> None:
 def test_a_malformed_setting_is_a_read_error(record: dict[str, object]) -> None:
     # The line's guard keeps it as its bytes; a guessed setting would be wrong.
     with pytest.raises(ReadError):
-        claude._read_line_context(record, TurnContext(model="m"))
+        claude._read_line_context(record, SessionContext(model="m"))
 
 
 def test_a_line_with_malformed_settings_round_trips() -> None:
@@ -2554,11 +3386,22 @@ def test_a_line_with_a_malformed_field_round_trips(native: str) -> None:
 
 
 def test_a_system_line_reads_its_own_fields() -> None:
-    message = claude._read_system(
-        {"type": "system", "timestamp": "t", "content": "c", "subtype": "s"},
+    (message,) = claude._read_record(
+        {
+            "type": "system",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "content": "c",
+            "subtype": "s",
+        },
+        {},
     )
 
-    assert (message.timestamp, message.content, message.subtype) == ("t", "c", "s")
+    assert isinstance(message, SystemMessage)
+    assert (message.timestamp, message.content, message.subtype) == (
+        datetime(2026, 1, 1, tzinfo=UTC),
+        "c",
+        "s",
+    )
     assert not {"content", "subtype"} & set(message.extra)
     assert (
         claude._carries_a_compaction(
@@ -2570,10 +3413,12 @@ def test_a_system_line_reads_its_own_fields() -> None:
 
 
 def test_a_system_line_reads_a_mistyped_field_as_absent() -> None:
-    message = claude._read_system(
+    (message,) = claude._read_record(
         {"type": "system", "timestamp": 5, "content": 7, "subtype": ["s"]},
+        {},
     )
 
+    assert isinstance(message, SystemMessage)
     assert (message.timestamp, message.content, message.subtype) == (None, None, None)
     assert (message.extra["$content_value"], message.extra["$subtype_value"]) == (
         7,
@@ -2586,13 +3431,13 @@ def test_a_system_line_reads_a_mistyped_field_as_absent() -> None:
     [
         (
             (
-                TurnContext(extra={"payload": {"cwd": 7}}),
-                TurnContext(extra={"cwd": "/work"}),
+                SessionContext(extra={"payload": {"cwd": 7}}),
+                SessionContext(extra={"cwd": "/work"}),
             ),
             "/work",
         ),
-        ((TurnContext(cwd="/sagent", extra={"cwd": "/other"}),), "/sagent"),
-        ((TurnContext(extra={"payload": {"cwd": 7}}),), ""),
+        ((SessionContext(cwd=Path("/sagent"), extra={"cwd": "/other"}),), "/sagent"),
+        ((SessionContext(extra={"payload": {"cwd": 7}}),), ""),
     ],
     ids=["envelope", "sagent", "none"],
 )
@@ -2614,19 +3459,26 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
         is None
     )
     assert (
-        claude._write_group((TokenUsage(info={"input_tokens": 1}),), TurnContext(), {})
+        claude._write_group(
+            (TokenUsage(info={"input_tokens": 1}),),
+            SessionContext(),
+            {},
+        )
         is None
     )
     assert (
-        claude._write_group((AgentToAgentMessage(content="hi"),), TurnContext(), {})
-        is None
+        claude._write_group((AgentMessage(content="hi"),), SessionContext(), {}) is None
     )
     assert (
-        claude._write_group((SystemMessage(content="bad"),), TurnContext(), {})
+        claude._write_group((SystemMessage(content="bad"),), SessionContext(), {})
         is not None
     )
     assert (
-        claude._write_group((UncategorizedRecord(kind="foreign"),), TurnContext(), {})
+        claude._write_group(
+            (UncategorizedRecord(kind="foreign"),),
+            SessionContext(),
+            {},
+        )
         == {}
     )
     assert claude._splice(
@@ -2663,7 +3515,7 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
         from_plain(
             claude._write_user(
                 UserMessage(content="hi", extra={"promptSource": "user"}),
-                TurnContext(permission="ask"),
+                SessionContext(permission="ask"),
                 {},
             ),
             dict[str, object],
@@ -2704,7 +3556,9 @@ def test_only_a_line_that_escapes_unicode_carries_the_flag() -> None:
     out = StringIO()
     claude.denormalize(records, out)
 
-    stated = [r.encoding for r in records if isinstance(r, TurnContext) and r.encoding]
+    stated = [
+        r.encoding for r in records if isinstance(r, SessionContext) and r.encoding
+    ]
     users = [r for r in records if isinstance(r, UserMessage)]
     assert [dict(e) for e in stated] == [
         {
@@ -2726,7 +3580,9 @@ def test_an_all_escaped_transcript_states_its_spelling_once() -> None:
     out = StringIO()
     claude.denormalize(records, out)
 
-    assert len([r for r in records if isinstance(r, TurnContext) and r.encoding]) == 1
+    assert (
+        len([r for r in records if isinstance(r, SessionContext) and r.encoding]) == 1
+    )
     assert out.getvalue() == text
 
 
@@ -2794,7 +3650,7 @@ def test_releasing_one_line_keeps_another_line_s_open_call_editable() -> None:
         newline_terminated=True,
         lookahead=2,
     )
-    read = ToolResult(
+    read = ToolMessage(
         call_id="c",
         state="done",
         result=ReadResult(path="b.txt"),
@@ -2866,7 +3722,7 @@ def test_claude_writer_skips_non_string_shell_commands() -> None:
     call = ToolCall(call_id="c", name="Bash")
     writer.add(line, calls=(call,))
     writer._apply_shell_edit(
-        ToolResult(
+        ToolMessage(
             call_id="c",
             state="done",
             stdout=("Wrote x.",),
@@ -2889,7 +3745,7 @@ def test_claude_writer_skips_non_string_shell_commands() -> None:
 
 
 def test_claude_user_shape_replays_results_and_stencils() -> None:
-    result = ToolResult(
+    result = ToolMessage(
         call_id="c",
         state="done",
         stdout=("done",),
@@ -2922,7 +3778,7 @@ def test_claude_user_shape_replays_results_and_stencils() -> None:
     ]
     result_line = from_plain(
         claude._write_result(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("done",),
@@ -2946,7 +3802,7 @@ def test_a_foreign_call_restated_after_its_typed_result_is_written_once() -> Non
     """
     records = [
         _FOREIGN,
-        ToolResult(call_id="a", state="done", result=BashResult(command=("ls",))),
+        ToolMessage(call_id="a", state="done", result=BashResult(command=("ls",))),
         ToolCall(call_id="a", name="shell"),
         ToolCall(call_id="a", name="shell"),
     ]
@@ -2960,7 +3816,7 @@ def test_a_foreign_call_before_its_result_takes_the_claude_tool_name() -> None:
         _FOREIGN,
         ToolCall(call_id="a", name="shell"),
         AssistantMessage(content="running"),
-        ToolResult(call_id="a", state="done", result=BashResult(command=("ls",))),
+        ToolMessage(call_id="a", state="done", result=BashResult(command=("ls",))),
     ]
     output = StringIO()
 
@@ -2975,14 +3831,14 @@ def test_a_foreign_call_before_its_result_takes_the_claude_tool_name() -> None:
 def test_a_session_with_no_lines_writes_nothing() -> None:
     output = StringIO()
 
-    claude.denormalize([TurnContext()], output)
+    claude.denormalize([SessionContext()], output)
 
     assert output.getvalue() == ""
 
 
 def test_a_foreign_cwd_stated_on_the_launch_settings_names_the_project() -> None:
     records = [
-        TurnContext(
+        SessionContext(
             encoding={"newline_terminated": True},
             extra={"payload": {"cwd": "/launch"}},
         ),
@@ -3097,7 +3953,7 @@ def test_search_groups_replay_prose_and_scalar_rows_around_groups() -> None:
 
 
 def test_a_search_shape_entry_without_a_template_replays_verbatim() -> None:
-    search = ToolResult(
+    search = ToolMessage(
         call_id="c1",
         state="done",
         result=WebSearchResult(query="q"),
@@ -3112,7 +3968,7 @@ def test_a_search_shape_entry_without_a_template_replays_verbatim() -> None:
 
 def test_the_turns_model_and_effort_fill_a_line_that_states_neither() -> None:
     records = [
-        TurnContext(model="claude-opus-5", effort="high"),
+        SessionContext(model="claude-opus-5", effort="high"),
         AssistantMessage(content="hi"),
     ]
     output = StringIO()
@@ -3129,13 +3985,28 @@ def test_a_compact_summary_line_opens_a_window_carrying_it() -> None:
         type='"user"',
         isCompactSummary="true",
         message='{"role":"user","content":"the summary"}',
+        timestamp='"2026-08-24T00:00:00.000Z"',
     )
 
     records = list(claude.normalize(StringIO(native)))
 
     clears = [record for record in records if isinstance(record, ContextClear)]
-    assert clears[-1].summary == "the summary"
-    assert any(isinstance(record, ContextCompaction) for record in records)
+    [compaction] = [r for r in records if isinstance(r, ContextCompaction)]
+    # Both are in the summary's context and at its time.
+    at = datetime(2026, 8, 24, tzinfo=UTC)
+    kept = {"$in_place": True, "$timestamp_as_written": "2026-08-24T00:00:00.000Z"}
+    assert compaction == ContextCompaction(context_id=2, timestamp=at, extra=kept)
+    assert clears[-1] == ContextClear(
+        context_id=2,
+        timestamp=at,
+        summary="the summary",
+        extra=kept,
+    )
+    # Each is stored as the line spelled its time.
+    assert [stored_plain(r)["timestamp"] for r in (compaction, clears[-1])] == [
+        "2026-08-24T00:00:00.000Z",
+        "2026-08-24T00:00:00.000Z",
+    ]
     assert _round_trip(native) == native
 
 
@@ -3156,7 +4027,7 @@ def test_an_automatic_compaction_reads_as_its_boundary_then_the_window_it_opened
     )
     metadata = from_plain(boundary.extra["compactMetadata"], dict[str, object])
     assert (metadata["trigger"], metadata["durationMs"]) == ("auto", 100_076)
-    acts = [r for r in records if not isinstance(r, TurnContext | ContextState)]
+    acts = [r for r in records if not isinstance(r, SessionContext | ContextState)]
     assert [type(r).__name__ for r in acts] == [
         "ContextClear",
         "SystemMessage",
@@ -3286,7 +4157,7 @@ def test_a_spelling_stored_escaped_by_default_writes_its_raw_lines_raw() -> None
                 "ascii_escape_exceptions": base64.b64encode(b"\x02").decode(),
             },
         )
-        if isinstance(record, TurnContext) and record.encoding
+        if isinstance(record, SessionContext) and record.encoding
         else replace(
             record,
             extra={k: v for k, v in record.extra.items() if k != "$ascii_escaped"},
@@ -3317,7 +4188,7 @@ def test_the_spelling_is_stated_first_and_an_escaped_line_restates_nothing() -> 
     records = list(claude.normalize(StringIO(native)))
 
     encodings = [
-        r.encoding for r in records if isinstance(r, TurnContext) and r.encoding
+        r.encoding for r in records if isinstance(r, SessionContext) and r.encoding
     ]
     assert [dict(e) for e in encodings] == [
         {
@@ -3326,11 +4197,11 @@ def test_the_spelling_is_stated_first_and_an_escaped_line_restates_nothing() -> 
             "ascii_escape_exceptions": "",
         },
     ]
-    assert isinstance(records[0], TurnContext)
+    assert isinstance(records[0], SessionContext)
     assert records[0].encoding == encodings[0]
     assert isinstance(records[1], ContextClear)
     assert records[1].extra == {"$opens": True}
-    settings = [r for r in records if isinstance(r, TurnContext) and not r.encoding]
+    settings = [r for r in records if isinstance(r, SessionContext) and not r.encoding]
     assert len(settings) == 1
 
 
@@ -3345,7 +4216,7 @@ def test_a_transcript_without_a_final_newline_says_so_and_writes_back() -> None:
     claude.denormalize(records, output)
 
     encodings = [
-        r.encoding for r in records if isinstance(r, TurnContext) and r.encoding
+        r.encoding for r in records if isinstance(r, SessionContext) and r.encoding
     ]
     assert encodings[-1]["newline_terminated"] is False
     assert output.getvalue() == native
@@ -3367,7 +4238,7 @@ def test_a_tailed_file_restates_its_newline_only_when_it_changes() -> None:
     assert [
         r.encoding["newline_terminated"]
         for r in records
-        if isinstance(r, TurnContext) and r.encoding
+        if isinstance(r, SessionContext) and r.encoding
     ] == [True, False, True]
 
 
@@ -3383,6 +4254,12 @@ def test_what_the_harness_gives_at_the_head_is_the_opening_clears_prompt() -> No
             separators=(",", ":"),
         )
         + "\n"
+        # One that gives no prose, then one more that does.
+        + _line(type='"attachment"', attachment='{"type":"todo","content":[]}')
+        + _line(
+            type='"attachment"',
+            attachment='{"type":"agent_listing","content":"- scout: look"}',
+        )
         + _line(type='"user"', message='{"role":"user","content":"hi"}')
     )
 
@@ -3390,7 +4267,246 @@ def test_what_the_harness_gives_at_the_head_is_the_opening_clears_prompt() -> No
 
     opening = records[1]
     assert isinstance(opening, ContextClear)
-    assert opening.system_prompt == "- tdd: write it"
+    assert opening.system_prompt == "- tdd: write it\n- scout: look"
+
+
+def test_an_assistant_line_reads_as_one_record_for_each_block_it_holds() -> None:
+    message: dict[str, object] = {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "hm", "signature": "sig"},
+            {"type": "thinking", "thinking": "so"},
+            {"type": "tool_use", "caller": {"type": "direct"}},
+            {"type": "text", "text": "one"},
+            {"type": "text", "text": "two"},
+            {"type": "server_tool_use", "id": "s1"},
+        ],
+    }
+
+    read = claude._read_assistant({"type": "assistant", "message": message}, message)
+
+    assert read == [
+        Thinking(
+            content="hm",
+            encrypted="sig",
+            extra={
+                "$keys": ["type", "message"],
+                "$content_shape": [
+                    {
+                        "type": "thinking",
+                        "thinking": None,
+                        "signature": None,
+                        "$held": ["thinking", "signature"],
+                    },
+                    {"type": "thinking", "thinking": None, "$held": ["thinking"]},
+                    {"type": "tool_use", "caller": {"type": "direct"}},
+                    {"type": "text", "text": None, "$held": ["text"]},
+                    {"type": "text", "text": None, "$held": ["text"]},
+                    {"type": "server_tool_use", "id": None, "$held": ["id"]},
+                ],
+                "$parts": 2,
+                "$blocks": [{"type": "server_tool_use", "id": "s1"}],
+                "$signature_present": True,
+            },
+        ),
+        Thinking(content="so"),
+        ToolCall(
+            call_id="",
+            name="",
+            arguments={},
+            extra={"$call": {"caller": {"type": "direct"}}},
+        ),
+        # The words sit where the line said them: after what it thought and called.
+        AssistantMessage(content="one\ntwo"),
+    ]
+
+
+def test_an_assistant_line_of_one_text_block_keeps_no_shape_of_it() -> None:
+    message: dict[str, object] = {
+        "model": "claude-opus-5",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hi"}],
+        "usage": {"input_tokens": 1},
+    }
+
+    read = claude._read_assistant({"type": "assistant", "message": message}, message)
+
+    assert read == [
+        AssistantMessage(
+            content="hi",
+            extra={
+                "$keys": ["type", "message"],
+                "message": {"model": "claude-opus-5"},
+            },
+        ),
+        TokenUsage(info={"input_tokens": 1}),
+    ]
+
+
+def test_an_assistant_line_with_no_content_is_still_a_turn() -> None:
+    message: dict[str, object] = {"role": "assistant"}
+
+    read = claude._read_assistant({"type": "assistant", "message": message}, message)
+
+    assert read == [
+        AssistantMessage(extra={"$keys": ["type", "message"], "$content_shape": []}),
+    ]
+
+
+def test_a_user_line_reads_as_its_words_and_what_it_attached() -> None:
+    message: dict[str, object] = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "one"},
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "aGk="},
+            },
+            {"type": "text", "text": "two"},
+            "junk",
+        ],
+    }
+
+    read = claude._read_user({"type": "user", "message": message}, message, {})
+
+    assert read == [
+        UserMessage(
+            content="one\ntwo",
+            attachments=(Attachment(mime_descriptor="image/png", data=b"hi"),),
+            extra={
+                "$keys": ["type", "message"],
+                "$content_shape": [
+                    {"type": "text", "text": None, "$held": ["text"]},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": None,
+                            "data": None,
+                            "$held": ["data", "media_type"],
+                        },
+                    },
+                    {"type": "text", "text": None, "$held": ["text"]},
+                    "junk",
+                ],
+                "$parts": 2,
+                "$media_first": True,
+            },
+        ),
+    ]
+
+
+def test_a_user_line_of_one_block_counts_no_parts() -> None:
+    message: dict[str, object] = {
+        "role": "user",
+        "content": [{"type": "text", "text": "one"}],
+    }
+
+    read = claude._read_user({"type": "user", "message": message}, message, {})
+
+    assert read == [
+        UserMessage(
+            content="one",
+            extra={
+                "$keys": ["type", "message"],
+                "$content_shape": [{"type": "text", "text": None, "$held": ["text"]}],
+            },
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("blocks", "expected"),
+    [
+        (
+            [
+                {"type": "tool_result", "tool_use_id": "c1", "content": "ok"},
+                {"type": "other"},
+            ],
+            [ToolMessage],
+        ),
+        (
+            [
+                {"type": "tool_result", "tool_use_id": "c1", "content": "ok"}
+                | {"text": "t"},
+            ],
+            [ToolMessage],
+        ),
+        (
+            [
+                {"type": "image", "source": {"type": "base64", "data": "aGk="}},
+                {"type": "tool_result", "tool_use_id": "c1", "content": "ok"},
+            ],
+            [UserMessage, ToolMessage],
+        ),
+    ],
+    ids=["beside-a-block-with-no-words", "holding-words", "after-an-image"],
+)
+def test_a_tool_answer_is_a_message_only_beside_words_or_an_image(
+    blocks: list[object],
+    expected: list[type[object]],
+) -> None:
+    message: dict[str, object] = {"role": "user", "content": blocks}
+
+    read = claude._read_user({"type": "user", "message": message}, message, {})
+
+    assert [type(act) for act in read] == expected
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            {"type": "attachment", "attachment": {"type": "hook", "text": "t"}},
+            ContextState(
+                kind="hook",
+                content="t",
+                extra={"$keys": ["type", "attachment"], "$prose": ["text", 1]},
+            ),
+        ),
+        ({"type": "attachment"}, ContextState(kind="", extra={"$keys": ["type"]})),
+    ],
+    ids=["text", "no-attachment"],
+)
+def test_an_attachment_line_reads_as_the_context_it_gave(
+    record: dict[str, object],
+    expected: ContextState,
+) -> None:
+    assert claude._read_attachment_record(record) == expected
+
+
+def test_a_line_of_no_type_keeps_its_fields_under_no_kind() -> None:
+    assert claude._read_by_type({"other": 1}, {}) == [
+        UncategorizedRecord(kind="", payload={"other": 1}),
+    ]
+
+
+def test_a_call_s_later_messages_from_sagent_are_user_text_one_result_each() -> None:
+    """Claude takes one result per call: a stub answers it, its news and result follow."""
+    records: list[SessionRecord] = [
+        SessionContext(model="m"),
+        UserMessage(content="go"),
+        ToolCall(call_id="c1", name="Bash", arguments={"command": "sleep 9"}),
+        ToolMessage(call_id="c1", state="pending", shown="[detached]"),
+        AssistantMessage(content="waiting"),
+        ToolMessage(
+            call_id="c1",
+            state="pending",
+            stdout=("[Bash c1 still running]\nhalf",),
+        ),
+        AssistantMessage(content="still"),
+        ToolMessage(call_id="c1", state="done", stdout=("all",)),
+        AssistantMessage(content="done"),
+    ]
+    output = StringIO()
+    claude.denormalize(records, output)
+    back = list(claude.normalize(StringIO(output.getvalue())))
+    assert [r.call_id for r in back if isinstance(r, ToolMessage)] == ["c1"]
+    assert [r.content for r in back if isinstance(r, UserMessage)] == [
+        "go",
+        "[Bash c1 still running]\nhalf",
+        "[call c1 done]\nall",
+    ]
 
 
 if __name__ == "__main__":

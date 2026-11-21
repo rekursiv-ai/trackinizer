@@ -31,7 +31,7 @@ from typing import Final, TextIO, override
 import queue
 import threading
 
-from trackinizer.sagent.session.types import TurnContext
+from trackinizer.sagent.session.types import SessionContext
 
 
 __all__ = ["Tail"]
@@ -212,7 +212,7 @@ class Tail[R]:
 
     def _remembered(self, record: R) -> R:
         """Keep the whole-file properties a rewrite needs, as they are stated."""
-        if isinstance(record, TurnContext) and record.encoding:
+        if isinstance(record, SessionContext) and record.encoding:
             self._encoding = dict(record.encoding)
         return record
 

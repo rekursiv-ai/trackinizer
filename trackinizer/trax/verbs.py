@@ -30,10 +30,10 @@ from treekle import from_plain
 from trackinizer.client.conversation import attested_delivery
 from trackinizer.client.errors import ClientError
 from trackinizer.sagent.session.types import (
-    AgentToAgentMessage,
+    AgentMessage,
     AssistantMessage,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.trax import render
@@ -3261,7 +3261,7 @@ def _record_line(session_id: uuid.UUID, part: PartBody, body: RecordBody) -> str
     record = body.row(session_id, part.part).record()
     provider = {"sagent": "bot"}.get(part.format, part.format) or "terminal"
     role, author, text = body.kind, provider, body.text
-    if isinstance(record, AgentToAgentMessage):
+    if isinstance(record, AgentMessage):
         role, author, text = "user", record.sender or "unknown", record.content or ""
     elif isinstance(record, UserMessage):
         delivery = attested_delivery(record.extra)
@@ -3271,7 +3271,7 @@ def _record_line(session_id: uuid.UUID, part: PartBody, body: RecordBody) -> str
         role, text = "assistant", record.content or ""
     elif isinstance(record, ToolCall):
         role, text = "call", record.name
-    elif isinstance(record, ToolResult):
+    elif isinstance(record, ToolMessage):
         role, text = "result", body.text[:200]
     stamp = "-" if body.timestamp is None else body.timestamp.isoformat()
     return f"p{part.part}#{body.idx} {stamp} {role} {author}: {' '.join(text.split())}"

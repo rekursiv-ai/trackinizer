@@ -19,8 +19,8 @@ import pytest
 
 from trackinizer.sagent.session.jsonl import record_line
 from trackinizer.sagent.session.types import (
+    AgentMessage,
     AgentSpawnResult,
-    AgentToAgentMessage,
     AssistantMessage,
     Attachment,
     BashResult,
@@ -30,14 +30,14 @@ from trackinizer.sagent.session.types import (
     EditResult,
     IncompleteRecord,
     ReadResult,
+    SessionContext,
     SessionRecord,
     Splice,
     SystemMessage,
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolResult,
-    TurnContext,
+    ToolMessage,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -45,15 +45,22 @@ from trackinizer.sagent.session.types import (
     WebSearchHit,
     WebSearchResult,
     WriteResult,
+    stored_names,
 )
+from trackinizer.types import session_records
 from trackinizer.types.session_records import (
     _BY_KIND,
     MAX_SEARCH_TEXT_BYTES,
     SessionRecordRow,
+    legacy_tool_call,
+    record_class,
     record_kind,
     record_time,
     search_text,
+    served_kind,
     served_payload,
+    sql_kinds,
+    stored_kinds,
     stored_payload,
 )
 from trackinizer.types.streams import Stdout, TraxRecord
@@ -100,7 +107,7 @@ def test_tool_call_indexes_name_and_string_arguments() -> None:
 def test_shell_result_indexes_command_and_both_streams() -> None:
     """A failed command is findable by what it printed on either stream."""
     text = search_text(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             stderr=("No such file or directory",),
@@ -119,7 +126,7 @@ def test_file_edit_indexes_each_splice() -> None:
     the projection reads them directly rather than rendering one.
     """
     text = search_text(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             stdout=("Edited a/b.py.", Splice(before="old_name", after="new_name")),
@@ -135,7 +142,7 @@ def test_file_edit_indexes_each_splice() -> None:
 def test_web_search_indexes_query_and_every_row() -> None:
     """Each result row's title and snippet is matchable, not just the query."""
     text = search_text(
-        ToolResult(
+        ToolMessage(
             call_id="c1",
             state="done",
             stdout=(
@@ -222,7 +229,7 @@ def test_a_tool_result_indexes_its_result_then_its_output(
     stdout: tuple[object, ...],
     expected: str,
 ) -> None:
-    record = ToolResult(
+    record = ToolMessage(
         call_id="c",
         state="done",
         stdout=stdout,
@@ -234,13 +241,13 @@ def test_a_tool_result_indexes_its_result_then_its_output(
 
 
 def test_a_placeholder_with_no_note_indexes_nothing() -> None:
-    assert search_text(ToolResult(call_id="c", state="pending")) == ""
+    assert search_text(ToolMessage(call_id="c", state="pending")) == ""
 
 
 @pytest.mark.parametrize(
     "record",
     [
-        pytest.param(TurnContext(model="opus"), id="TurnContext"),
+        pytest.param(SessionContext(model="opus"), id="SessionContext"),
         pytest.param(TokenUsage(), id="TokenUsage"),
         pytest.param(ContextClear(cleared_session_id="x"), id="ContextClear"),
         pytest.param(UncategorizedRecord(kind="k"), id="UncategorizedRecord"),
@@ -261,12 +268,12 @@ def test_metadata_records_index_nothing(record: object) -> None:
         pytest.param(UserMessage(content="hello"), id="UserMessage"),
         pytest.param(AssistantMessage(content="hello"), id="AssistantMessage"),
         pytest.param(SystemMessage(content="hello"), id="SystemMessage"),
-        pytest.param(AgentToAgentMessage(content="hello"), id="AgentToAgent"),
+        pytest.param(AgentMessage(content="hello"), id="AgentToAgent"),
         pytest.param(ContextState(content="hello"), id="ContextState"),
         pytest.param(ContextCompaction(summary="hello"), id="ContextCompaction"),
         pytest.param(IncompleteRecord(text="hello"), id="IncompleteRecord"),
         pytest.param(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("hello",),
@@ -275,7 +282,7 @@ def test_metadata_records_index_nothing(record: object) -> None:
             id="UncategorizedToolResult",
         ),
         pytest.param(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("hello",),
@@ -284,7 +291,7 @@ def test_metadata_records_index_nothing(record: object) -> None:
             id="FileRead",
         ),
         pytest.param(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("Wrote p.",),
@@ -293,7 +300,7 @@ def test_metadata_records_index_nothing(record: object) -> None:
             id="FileWrite",
         ),
         pytest.param(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("hello",),
@@ -302,7 +309,7 @@ def test_metadata_records_index_nothing(record: object) -> None:
             id="WebFetch",
         ),
         pytest.param(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("hello",),
@@ -311,8 +318,8 @@ def test_metadata_records_index_nothing(record: object) -> None:
             id="AgentStatus",
         ),
         pytest.param(
-            ToolResult(call_id="c", state="pending", shown="hello"),
-            id="ToolResult",
+            ToolMessage(call_id="c", state="pending", shown="hello"),
+            id="ToolMessage",
         ),
     ],
 )
@@ -375,7 +382,7 @@ def test_a_rows_payload_is_the_line_a_sagent_journal_writes() -> None:
                 attachments=(Attachment(mime_descriptor="image/png", data=b"\0"),),
             ),
             AssistantMessage(content="a"),
-            ToolResult(
+            ToolMessage(
                 call_id="c1",
                 state="done",
                 stdout=("Edited a.py.", Splice(before="x")),
@@ -406,7 +413,7 @@ def test_a_row_stored_under_a_former_kind_reads_as_the_record_now() -> None:
         payload={"py/object": "ShellCommandResult", "call_id": "c", "stdout": "x"},
     )
 
-    assert old.record() == ToolResult(
+    assert old.record() == ToolMessage(
         call_id="c",
         state="done",
         stdout=("x",),
@@ -446,13 +453,13 @@ def test_a_frozen_legacy_payload_decodes_its_lists() -> None:
         ),
     )
 
-    assert searched.record() == ToolResult(
+    assert searched.record() == ToolMessage(
         call_id="c",
         state="done",
         stdout=("T\nu\ns", WebSearchHit(url="u", title="T", snippet="s")),
         result=WebSearchResult(query="q"),
     )
-    assert edited.record() == ToolResult(
+    assert edited.record() == ToolMessage(
         call_id="c",
         state="done",
         stdout=(
@@ -487,28 +494,43 @@ def test_a_stream_records_payload_names_its_class_alone() -> None:
 
 def test_row_carries_the_records_context_and_timestamp() -> None:
     """``context_id`` and ``timestamp`` are columns, read off the record."""
-    record = UserMessage(content="hi", context_id=2, timestamp="2026-09-02T00:00:00Z")
+    when = datetime(2026, 9, 2, tzinfo=UTC)
+    record = UserMessage(
+        content="hi",
+        context_id=2,
+        timestamp=when,
+        extra={"$timestamp_as_written": "2026-09-02T00:00:00Z"},
+    )
     row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=7, record=record)
 
-    assert row.context_id == 2
-    assert row.timestamp is not None
+    assert (row.context_id, row.timestamp) == (2, when)
+    # The payload stores the time as the provider spelled it.
+    assert (row.payload["timestamp"], row.payload["extra"]) == (
+        "2026-09-02T00:00:00Z",
+        {},
+    )
+    assert row.record() == record
 
 
 def test_an_unparseable_timestamp_stores_null_and_keeps_the_string() -> None:
     """A provider timestamp that is not ISO-8601 nulls the column, not the batch."""
-    record = UserMessage(content="hi", timestamp="yesterday")
+    record = UserMessage(content="hi", extra={"$timestamp_as_written": "yesterday"})
     row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
 
     assert row.timestamp is None
+    assert row.payload["timestamp"] == "yesterday"
     assert row.record() == record
 
 
-def test_a_records_time_is_its_iso_timestamp_read_and_none_without_one() -> None:
-    assert record_time(UserMessage(timestamp="2026-09-02T01:02:03+00:00")) == (
-        datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
-    )
-    assert record_time(UserMessage(timestamp="yesterday")) is None
+def test_a_records_time_is_its_timestamp_and_none_without_one() -> None:
+    when = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    assert record_time(UserMessage(timestamp=when)) == when
     assert record_time(UserMessage()) is None
+    # A scrape's line states its time as text.
+    assert record_time(Stdout(text="ok\n", timestamp="2026-09-02T01:02:03+00:00")) == (
+        when
+    )
+    assert record_time(Stdout(text="ok\n", timestamp="yesterday")) is None
     assert record_time(Stdout(text="ok\n")) is None
     # What states no time, or states one that is no text, has none.
     assert record_time(object()) is None
@@ -521,23 +543,59 @@ def test_row_strips_ciphertext_from_its_payload() -> None:
     No marker string: a plaintext field equal to one would be silently
     replaced on read. The ciphertext row's EXISTENCE is the splice signal.
     """
-    record = Thinking(content="visible", encrypted=_CIPHERTEXT)
-    row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
+    record = Thinking(content="visible", encrypted=_CIPHERTEXT, context_id=2)
+    session = uuid4()
 
-    assert row.ciphertext == _CIPHERTEXT
+    row = SessionRecordRow.of(
+        session_id=session,
+        part=1,
+        idx=3,
+        record=record,
+        model="m",
+    )
+
+    assert row == SessionRecordRow(
+        session_id=session,
+        part=1,
+        idx=3,
+        kind="Thinking",
+        context_id=2,
+        model="m",
+        payload=stored_payload(Thinking(content="visible", encrypted="", context_id=2)),
+        text="visible",
+        ciphertext=_CIPHERTEXT,
+    )
+    assert row.payload["encrypted"] == ""
     assert _CIPHERTEXT not in str(row.payload)
 
 
-def test_a_record_without_ciphertext_reports_none() -> None:
+@pytest.mark.parametrize(
+    ("record", "text"),
+    [
+        (UserMessage(content="hi"), "hi"),
+        (Thinking(content="hi"), "hi"),
+        (Thinking(content="hi", encrypted=""), "hi"),
+        (IncompleteRecord(text="{torn"), "{torn"),
+    ],
+    ids=["no-such-field", "none", "empty", "unread-line"],
+)
+def test_a_record_without_ciphertext_is_stored_as_it_is(
+    record: SessionRecord,
+    text: str,
+) -> None:
     """Only a ``Thinking`` carrying ciphertext yields a ciphertext row."""
-    row = SessionRecordRow.of(
-        session_id=uuid4(),
-        part=0,
-        idx=0,
-        record=UserMessage(content="hi"),
-    )
+    session = uuid4()
 
-    assert row.ciphertext is None
+    row = SessionRecordRow.of(session_id=session, part=1, idx=3, record=record)
+
+    assert row == SessionRecordRow(
+        session_id=session,
+        part=1,
+        idx=3,
+        kind=type(record).__name__,
+        payload=stored_payload(record),
+        text=text,
+    )
 
 
 def test_every_record_kind_decodes() -> None:
@@ -591,32 +649,32 @@ def _union_members(alias: object) -> list[type]:
     [
         pytest.param(UserMessage(content="hi"), "UserMessage", id="message"),
         pytest.param(
-            ToolResult(call_id="c", state="done", result=BashResult(exit_code=0)),
+            ToolMessage(call_id="c", state="done", result=BashResult(exit_code=0)),
             "BashResult",
             id="shell call",
         ),
         pytest.param(
-            ToolResult(call_id="c", state="done", result=ReadResult(path="p")),
+            ToolMessage(call_id="c", state="done", result=ReadResult(path="p")),
             "ReadResult",
             id="read call",
         ),
         pytest.param(
-            ToolResult(call_id="c", state="failed", stderr=("boom",)),
+            ToolMessage(call_id="c", state="failed", stderr=("boom",)),
             "ToolErrorResult",
             id="failed call",
         ),
         pytest.param(
-            ToolResult(call_id="c", state="pending", shown="[running]"),
-            "ToolResult",
+            ToolMessage(call_id="c", state="pending", shown="[running]"),
+            "ToolMessage",
             id="pending call",
         ),
         pytest.param(
-            ToolResult(call_id="c", state="cancelled"),
-            "ToolResult",
+            ToolMessage(call_id="c", state="cancelled"),
+            "ToolMessage",
             id="cancelled call",
         ),
         pytest.param(
-            ToolResult(
+            ToolMessage(
                 call_id="c",
                 state="done",
                 stdout=("ok",),
@@ -647,7 +705,7 @@ def test_a_legacy_tool_call_payload_is_converted_to_the_current_shape() -> None:
         "stdout": "a.py\n",
         "exit_code": 0,
     }
-    current = ToolResult(
+    current = ToolMessage(
         call_id="c",
         state="done",
         stdout=("a.py\n",),
@@ -661,14 +719,14 @@ def test_a_legacy_tool_call_payload_is_converted_to_the_current_shape() -> None:
     assert served_payload("ShellCommandResult", immutable(legacy)) == payload
     # A payload already in the current shape is returned as is.
     assert served_payload("BashResult", payload) is payload
-    assert served_payload("ToolResult", payload) is payload
+    assert served_payload("ToolMessage", payload) is payload
 
 
 def test_a_legacy_payload_that_looks_current_is_still_converted() -> None:
-    """Neither a ``ToolResult`` tag nor a ``state`` field marks the current shape."""
+    """Neither a ``ToolMessage`` tag nor a ``state`` field marks the current shape."""
     legacy_pending = immutable(
         {
-            "py/object": "ToolResult",
+            "py/object": "ToolMessage",
             "call_id": "c",
             "stub": "pending",
             "shown": "[running]",
@@ -683,11 +741,11 @@ def test_a_legacy_payload_that_looks_current_is_still_converted() -> None:
         },
     )
 
-    assert served_payload("ToolResult", legacy_pending) == stored_payload(
-        ToolResult(call_id="c", state="pending", shown="[running]"),
+    assert served_payload("ToolMessage", legacy_pending) == stored_payload(
+        ToolMessage(call_id="c", state="pending", shown="[running]"),
     )
     assert served_payload("AgentSpawnResult", legacy_spawn) == stored_payload(
-        ToolResult(
+        ToolMessage(
             call_id="c",
             state="done",
             stdout=("Found 3 uses.",),
@@ -697,10 +755,10 @@ def test_a_legacy_payload_that_looks_current_is_still_converted() -> None:
 
 
 def test_a_bare_exit_code_result_is_converted_to_a_result_class() -> None:
-    """An earlier ``ToolResult`` payload stored a bare exit code as ``result``."""
+    """An earlier ``ToolMessage`` payload stored a bare exit code as ``result``."""
     stored = immutable(
         {
-            "py/object": "ToolResult",
+            "py/object": "ToolMessage",
             "call_id": "c",
             "state": "done",
             "stdout": ["posted"],
@@ -709,7 +767,7 @@ def test_a_bare_exit_code_result_is_converted_to_a_result_class() -> None:
     )
 
     assert served_payload("UncategorizedToolResult", stored) == stored_payload(
-        ToolResult(
+        ToolMessage(
             call_id="c",
             state="done",
             stdout=("posted",),
@@ -720,7 +778,7 @@ def test_a_bare_exit_code_result_is_converted_to_a_result_class() -> None:
 
 @pytest.mark.parametrize(
     "kind",
-    ["ReadResult", "ShellCommandResult", "UncategorizedToolResult", "ToolResult"],
+    ["ReadResult", "ShellCommandResult", "UncategorizedToolResult", "ToolMessage"],
 )
 def test_an_offloaded_stub_is_returned_unchanged(kind: str) -> None:
     """An offloaded body's row holds a stub, which is not a record payload."""
@@ -771,6 +829,91 @@ def test_templates_decode_from_both_frozen_and_mutable_payloads() -> None:
         assert isinstance(decoded, SystemMessage)
         assert decoded.content == record.content
         assert mutable(decoded.extra) == mutable(record.extra)
+
+
+@pytest.mark.parametrize("cls", [AgentMessage, SessionContext])
+def test_a_renamed_class_s_rows_are_selected_and_decoded_under_both_its_names(
+    cls: type[TraxRecord],
+) -> None:
+    name, other = stored_names(cls.__name__)
+    assert stored_kinds(cls) == (name, other)
+    assert stored_kinds(UserMessage, cls) == ("UserMessage", name, other)
+    assert sql_kinds(UserMessage, cls) == f"'UserMessage', '{name}', '{other}'"
+    assert (record_class(name), record_class(other)) == (cls, cls)
+    # Its other name is a kind rows are stored under; it names no filter field.
+    assert other not in _BY_KIND
+
+
+@pytest.mark.parametrize("cls", [AgentMessage, SessionContext, ToolMessage])
+def test_a_row_under_a_renamed_class_s_other_kind_is_served_under_its_name_now(
+    cls: type[TraxRecord],
+) -> None:
+    name, other = stored_names(cls.__name__)
+    assert (served_kind(name), served_kind(other)) == (name, name)
+    # A tool call's row keeps the kind of what the call returned.
+    assert served_kind("BashResult") == "BashResult"
+    # The cached map is worked out once per process; this works it out here.
+    assert session_records._by_other_kind.__wrapped__()[other] is cls
+
+
+def test_a_payload_tagged_with_the_other_name_is_served_tagged_with_the_name_now() -> (
+    None
+):
+    name, other = stored_names(SessionContext.__name__)
+    stored = immutable({"py/object": other, "model": "m"})
+    assert served_payload(other, stored) == {"py/object": name, "model": "m"}
+    current = immutable({"py/object": name, "model": "m"})
+    assert served_payload(name, current) is current
+    # An offloaded body's stub has no tag, and is served as it is; so is a payload
+    # whose tag is no name at all.
+    stub = immutable({"offloaded": True})
+    assert served_payload(name, stub) is stub
+    odd: dict[str, PlainTree] = {"py/object": {"no": "name"}}
+    assert served_payload(name, odd) is odd
+
+
+def test_a_record_another_holds_is_served_under_the_name_its_class_bears_now() -> None:
+    """A window's start holds its history: every record in it is renamed, however deep."""
+    stored = immutable(
+        {
+            "py/object": "ContextClear",
+            "history": [
+                {"py/object": "AgentToAgentMessage", "sender": "a", "content": "hi"},
+                {"py/object": "TurnContext", "model": "m"},
+            ],
+        },
+    )
+    served = served_payload("ContextClear", stored)
+    # Read back mutable, as a client's own payload may be, it is served the same.
+    assert served_payload("ContextClear", mutable(stored)) == served
+    assert served == immutable(
+        {
+            "py/object": "ContextClear",
+            "history": [
+                {"py/object": "AgentMessage", "sender": "a", "content": "hi"},
+                {"py/object": "SessionContext", "model": "m"},
+            ],
+        },
+    )
+
+
+def test_a_tool_call_row_under_the_records_other_name_is_served_as_one() -> None:
+    name, other = stored_names(ToolMessage.__name__)
+    legacy = {"py/object": ToolMessage.__name__, "call_id": "c1", "result": 3}
+    served = served_payload(other, immutable(legacy))
+    assert served == served_payload(ToolMessage.__name__, immutable(legacy))
+    # Converted, as a row under the class's own name is: the placeholder had no state.
+    assert (served["py/object"], "state" in served) == (ToolMessage.__name__, True)
+    assert record_class(other) is ToolMessage
+    assert legacy_tool_call(other, immutable(legacy))
+    # One in the shape written today is the same row whichever name tags it: served
+    # tagged with the name the class bears, and no legacy call to rewrite whole.
+    for kind in (ToolMessage.__name__, other, "BashResult"):
+        current = immutable({"py/object": other, "call_id": "c1", "state": "done"})
+        assert not legacy_tool_call(kind, current)
+        assert served_payload(kind, current) == {**current, "py/object": name}
+    # No tool call's row is one, whatever its payload.
+    assert not legacy_tool_call("UserMessage", immutable(legacy))
 
 
 if __name__ == "__main__":

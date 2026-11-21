@@ -483,7 +483,7 @@ def test_refused_line_is_one_json_line() -> None:
         "py/object": "Result",
         "id": "c1",
         "record": {
-            "py/object": "ToolResult",
+            "py/object": "ToolMessage",
             "call_id": "",
             "state": "failed",
             "stderr": ["no"],

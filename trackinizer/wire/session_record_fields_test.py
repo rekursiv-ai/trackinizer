@@ -6,8 +6,8 @@ from typing import Final
 
 from trackinizer.sagent.session import types
 from trackinizer.sagent.session.types import (
+    AgentMessage,
     AgentSpawnResult,
-    AgentToAgentMessage,
     AssistantMessage,
     BashResult,
     ContextClear,
@@ -16,12 +16,12 @@ from trackinizer.sagent.session.types import (
     EditResult,
     IncompleteRecord,
     ReadResult,
+    SessionContext,
     SystemMessage,
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolResult,
-    TurnContext,
+    ToolMessage,
     UncategorizedRecord,
     UserMessage,
     WebFetchResult,
@@ -49,11 +49,11 @@ class TestTheFieldSetIsDerived:
     def test_a_zero_text_record_class_is_not_a_field(self) -> None:
         """A filter on one could never match, so offering it would mislead.
 
-        ``TurnContext`` and friends project to ``''``: nothing is indexed for
+        ``SessionContext`` and friends project to ``''``: nothing is indexed for
         them, so ``turn_context re x`` would answer "no sessions" for every
         corpus rather than "that is not a thing you can ask".
         """
-        for cls in (TurnContext, TokenUsage, ContextClear, UncategorizedRecord):
+        for cls in (SessionContext, TokenUsage, ContextClear, UncategorizedRecord):
             assert snake_case(cls.__name__) not in SESSION_RECORD_FIELDS
 
     def test_every_field_names_a_real_record_class(self) -> None:
@@ -94,12 +94,12 @@ class TestTheFieldSetIsDerived:
         """The count the design predicted, pinned so a drift is visible.
 
         Four never qualify, and they are the same four: the state records
-        (``TurnContext``, ``ContextClear``), the accounting one
+        (``SessionContext``, ``ContextClear``), the accounting one
         (``TokenUsage``), and the one whose payload is untyped
         (``UncategorizedRecord``). Everything else carries prose.
         """
-        assert len(_BY_KIND) == 44
-        assert len(SESSION_RECORD_FIELDS) == 41
+        assert len(_BY_KIND) == 45
+        assert len(SESSION_RECORD_FIELDS) == 42
 
 
 # One populated instance per stored kind, spelled out rather than reflected: the
@@ -108,157 +108,163 @@ class TestTheFieldSetIsDerived:
 # set. A kind added upstream fails the membership assert above.
 _SAMPLES: Final[dict[str, TraxRecord]] = {
     "UserMessage": UserMessage(content="probe"),
-    "ToolErrorResult": ToolResult(call_id="c", state="failed", stderr=("probe",)),
-    "ToolResult": ToolResult(call_id="c", state="pending", shown="probe"),
+    "ToolErrorResult": ToolMessage(call_id="c", state="failed", stderr=("probe",)),
+    "ToolMessage": ToolMessage(call_id="c", state="pending", shown="probe"),
     "AssistantMessage": AssistantMessage(content="probe"),
     "SystemMessage": SystemMessage(content="probe"),
-    "AgentToAgentMessage": AgentToAgentMessage(content="probe"),
+    "AgentMessage": AgentMessage(content="probe"),
     "Thinking": Thinking(content="probe"),
     "ToolCall": ToolCall(call_id="c", name="probe"),
-    "BashResult": ToolResult(
+    "BashResult": ToolMessage(
         call_id="c",
         state="done",
         result=BashResult(command=("probe",)),
     ),
-    "ReadResult": ToolResult(
+    "ReadResult": ToolMessage(
         call_id="c",
         state="done",
         result=ReadResult(path="probe"),
     ),
-    "WriteResult": ToolResult(
+    "WriteResult": ToolMessage(
         call_id="c",
         state="done",
         result=WriteResult(path="probe"),
     ),
-    "EditResult": ToolResult(
+    "EditResult": ToolMessage(
         call_id="c",
         state="done",
         result=EditResult(path="probe"),
     ),
-    "WebSearchResult": ToolResult(
+    "WebSearchResult": ToolMessage(
         call_id="c",
         state="done",
         result=WebSearchResult(query="probe"),
     ),
-    "WebFetchResult": ToolResult(
+    "WebFetchResult": ToolMessage(
         call_id="c",
         state="done",
         result=WebFetchResult(url="probe"),
     ),
-    "WebBrowserResult": ToolResult(
+    "WebBrowserResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.WebBrowserResult(),
     ),
-    "AgentSpawnResult": ToolResult(
+    "AgentSpawnResult": ToolMessage(
         call_id="c",
         state="done",
         result=AgentSpawnResult(prompt="probe"),
     ),
-    "UncategorizedToolResult": ToolResult(
+    "UncategorizedToolResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.UncategorizedToolResult(),
     ),
-    "GrepResult": ToolResult(
+    "GrepResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.GrepResult(),
     ),
-    "GlobResult": ToolResult(
+    "GlobResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.GlobResult(),
     ),
-    "ListResult": ToolResult(
+    "ListResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.ListResult(),
     ),
-    "SkillResult": ToolResult(
+    "SkillResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.SkillResult(),
     ),
-    "AgentSendResult": ToolResult(
+    "AgentSendResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.AgentSendResult(),
     ),
-    "BackgroundTaskResult": ToolResult(
+    "BackgroundTaskResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.BackgroundTaskResult(),
     ),
-    "AgentSelfResult": ToolResult(
+    "AgentSelfResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.AgentSelfResult(),
     ),
-    "SessionResult": ToolResult(
+    "SessionResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.SessionResult(),
     ),
-    "MemoryResult": ToolResult(
+    "MemoryResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.MemoryResult(),
     ),
-    "PlayAudioResult": ToolResult(
+    "PlayAudioResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.PlayAudioResult(),
     ),
-    "PaperSearchResult": ToolResult(
+    "PaperSearchResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.PaperSearchResult(),
     ),
-    "PaperDetailsResult": ToolResult(
+    "PaperDetailsResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.PaperDetailsResult(),
     ),
-    "PaperAuthorResult": ToolResult(
+    "PaperAuthorResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.PaperAuthorResult(),
     ),
-    "PaperFetchResult": ToolResult(
+    "PaperFetchResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.PaperFetchResult(),
     ),
-    "PlanResult": ToolResult(
+    "PlanResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.PlanResult(),
     ),
-    "RemoteToolResult": ToolResult(
+    "RecallResult": ToolMessage(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.RecallResult(),
+    ),
+    "RemoteToolResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
         result=types.RemoteToolResult(),
     ),
-    "McpResult": ToolResult(
+    "McpResult": ToolMessage(
         call_id="c",
         state="done",
         stdout=("probe",),
@@ -271,7 +277,7 @@ _SAMPLES: Final[dict[str, TraxRecord]] = {
     "Stdout": Stdout(text="probe"),
     "Stderr": Stderr(text="probe"),
     # The four with no prose to project, populated as fully as they can be.
-    "TurnContext": TurnContext(model="probe"),
+    "SessionContext": SessionContext(model="probe"),
     "TokenUsage": TokenUsage(),
     "ContextClear": ContextClear(),
     "UncategorizedRecord": UncategorizedRecord(kind="probe"),
@@ -307,8 +313,15 @@ class TestTheSqlBakesTheKindIn:
         """Formatted from the closed derived set, so it cannot be injected."""
         template = sql_template("tool_call", "re")
         assert template is not None
-        assert "r.kind = 'ToolCall'" in template
+        assert "r.kind IN ('ToolCall')" in template
         assert "{col}" not in template, "the kind was left for the caller to format"
+
+    def test_a_renamed_class_s_template_names_each_kind_it_is_stored_under(
+        self,
+    ) -> None:
+        template = sql_template("agent_message", "re")
+        assert template is not None
+        assert "r.kind IN ('AgentMessage', 'AgentToAgentMessage')" in template
 
     def test_the_operand_placeholder_survives_for_the_caller(self) -> None:
         template = sql_template("thinking", "re")

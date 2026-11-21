@@ -10,6 +10,7 @@ would replay, and about a re-read yielding the same records the last one did.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from typing import TypedDict
 
@@ -30,10 +31,10 @@ from trackinizer.sagent.session.types import (
     AssistantMessage,
     ContextClear,
     IncompleteRecord,
+    SessionContext,
     SessionRecord,
     Thinking,
     ToolCall,
-    TurnContext,
     UncategorizedRecord,
     UserMessage,
 )
@@ -81,7 +82,7 @@ def test_a_gemini_turn_splits_prose_from_its_tool_calls() -> None:
     )
 
     assert [type(r) for r in records] == [
-        TurnContext,
+        SessionContext,
         ContextClear,
         AssistantMessage,
         ToolCall,
@@ -101,7 +102,11 @@ def test_a_malformed_document_is_one_incomplete_record() -> None:
     """Unparseable bytes are kept verbatim rather than silently dropped."""
     records = _read("{not json}")
 
-    assert [type(r) for r in records] == [TurnContext, ContextClear, IncompleteRecord]
+    assert [type(r) for r in records] == [
+        SessionContext,
+        ContextClear,
+        IncompleteRecord,
+    ]
 
 
 def test_the_document_round_trips_byte_exact() -> None:
@@ -231,7 +236,7 @@ def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
     authored, which is also what made the sniffer fail.
     """
     records = [
-        TurnContext(encoding={"ascii_escaped": True, "newline_terminated": True}),
+        SessionContext(encoding={"ascii_escaped": True, "newline_terminated": True}),
         UserMessage(content="hi"),
     ]
 
@@ -255,7 +260,9 @@ def test_a_call_stating_nothing_reads_as_an_unnamed_call_with_no_arguments() -> 
 def test_an_edited_turn_writes_its_new_content_and_time() -> None:
     text = _document({"id": "m1", "timestamp": "t0", "type": "user", "content": "hi"})
     edited = [
-        replace(r, content="bye", timestamp="t9") if isinstance(r, UserMessage) else r
+        replace(r, content="bye", timestamp=datetime(2026, 1, 1, tzinfo=UTC))
+        if isinstance(r, UserMessage)
+        else r
         for r in _read(text)
     ]
     out = StringIO()
@@ -263,7 +270,12 @@ def test_an_edited_turn_writes_its_new_content_and_time() -> None:
     gemini.denormalize(edited, out)
 
     assert json_loads(out.getvalue(), _Document)["messages"] == [
-        {"id": "m1", "timestamp": "t9", "type": "user", "content": "bye"},
+        {
+            "id": "m1",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "type": "user",
+            "content": "bye",
+        },
     ]
 
 
@@ -272,7 +284,7 @@ def test_another_cli_s_bookkeeping_is_no_gemini_message() -> None:
 
     gemini.denormalize(
         [
-            TurnContext(encoding={"newline_terminated": True}),
+            SessionContext(encoding={"newline_terminated": True}),
             UncategorizedRecord(kind="queue-operation", payload={"type": "x"}),
             UserMessage(content="hi"),
         ],
@@ -314,31 +326,34 @@ def test_a_gemini_cli_message_reads_its_time_and_rewrites_exactly() -> None:
     assert [r.timestamp for r in records if not isinstance(r, IncompleteRecord)][
         2:
     ] == [
-        "2026-11-13T10:00:01Z",
-        "2026-11-13T10:00:02Z",
-        "2026-11-13T10:00:02Z",
+        datetime(2026, 11, 13, 10, 0, 1, tzinfo=UTC),
+        datetime(2026, 11, 13, 10, 0, 2, tzinfo=UTC),
+        datetime(2026, 11, 13, 10, 0, 2, tzinfo=UTC),
     ]
     assert out.getvalue() == text
 
 
 def test_a_timestamp_survives_the_gemini_round_trip() -> None:
     """When a record states a time, converting must not silently discard it."""
-    records = [UserMessage(content="hi", timestamp="2026-01-01T00:00:00Z")]
+    records = [UserMessage(content="hi", timestamp=datetime(2026, 1, 1, tzinfo=UTC))]
 
     out = StringIO()
     gemini.denormalize(records, out)
 
     back = _read(out.getvalue())
     assert [r.timestamp for r in back if isinstance(r, UserMessage)] == [
-        "2026-01-01T00:00:00Z",
+        datetime(2026, 1, 1, tzinfo=UTC),
     ]
 
 
 def test_a_stamped_session_converts_to_gemini_losslessly() -> None:
     """The loss above is what ``convert`` measures, so it must report clean."""
     records = [
-        UserMessage(content="hi", timestamp="2026-01-01T00:00:00Z"),
-        AssistantMessage(content="yo", timestamp="2026-01-01T00:00:01Z"),
+        UserMessage(content="hi", timestamp=datetime(2026, 1, 1, tzinfo=UTC)),
+        AssistantMessage(
+            content="yo",
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=1),
+        ),
     ]
 
     out = StringIO()
@@ -389,18 +404,35 @@ def test_only_incomplete_records_are_written_verbatim() -> None:
 def test_a_tool_call_after_a_user_turn_gets_a_timestamped_gemini_turn() -> None:
     out = StringIO()
 
+    # A call another CLI's line spelled the time of, then one that keeps none.
+    called = ToolCall(
+        call_id="t",
+        name="run",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        extra={"$timestamp_as_written": "2026-01-01T00:00:00.000Z"},
+    )
     gemini.denormalize(
-        [UserMessage(content="go"), ToolCall(call_id="t", name="run", timestamp="t")],
+        [
+            UserMessage(content="go"),
+            called,
+            UserMessage(content="on"),
+            ToolCall(
+                call_id="u",
+                name="run",
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        ],
         out,
     )
 
     messages = json_loads(out.getvalue(), _Document)["messages"]
     assert list(messages[1].items()) == [
-        ("timestamp", "t"),
+        ("timestamp", "2026-01-01T00:00:00.000Z"),
         ("type", "gemini"),
         ("content", ""),
         ("toolCalls", [{"id": "t", "name": "run", "args": {}}]),
     ]
+    assert messages[3]["timestamp"] == "2026-01-01T00:00:00+00:00"
 
 
 def test_an_uncategorized_record_is_written_as_its_payload() -> None:
@@ -484,10 +516,10 @@ def test_a_top_level_array_is_kept_verbatim() -> None:
 
 
 def test_empty_text_and_empty_object_are_incomplete_documents() -> None:
-    assert [type(record) for record in _read("   ")] == [TurnContext, ContextClear]
+    assert [type(record) for record in _read("   ")] == [SessionContext, ContextClear]
     records = _read("{}")
     assert [type(record) for record in records] == [
-        TurnContext,
+        SessionContext,
         ContextClear,
         IncompleteRecord,
     ]
@@ -503,7 +535,7 @@ def test_a_document_with_no_session_opens_a_window_and_keeps_its_bytes(
     after: list[SessionRecord],
 ) -> None:
     assert _read(text) == [
-        TurnContext(encoding={"newline_terminated": True}),
+        SessionContext(encoding={"newline_terminated": True}),
         ContextClear(extra={"$opens": True}),
         *after,
     ]
@@ -512,7 +544,7 @@ def test_a_document_with_no_session_opens_a_window_and_keeps_its_bytes(
 def test_a_document_with_no_message_list_holds_no_messages() -> None:
     """A session yet to take a turn is a session, not unread bytes."""
     assert _read('{"sessionId":"s1"}') == [
-        TurnContext(
+        SessionContext(
             encoding={"newline_terminated": True},
             extra={"sessionId": "s1", "$compact": True},
         ),
@@ -549,27 +581,30 @@ def test_every_field_of_a_document_reads_where_its_record_keeps_it() -> None:
     records = _read(text)
 
     assert records[:2] == [
-        TurnContext(
+        SessionContext(
             encoding={"newline_terminated": True},
             extra={"sessionId": "s1", "projectHash": "p", "$compact": False},
         ),
         ContextClear(extra={"$opens": True}),
     ]
     turns = [r for r in records if isinstance(r, UserMessage | AssistantMessage)]
-    assert [(type(r), r.timestamp, r.content) for r in turns] == [
-        (UserMessage, "t0", "hi"),
-        (UserMessage, None, ""),
-        (AssistantMessage, "t1", "run"),
-        (AssistantMessage, None, ""),
-        (AssistantMessage, None, ""),
+    # ``t0`` and ``t1`` name no time: each is kept as its message spelled it.
+    assert [
+        (type(r), r.timestamp, r.extra.get("$timestamp_as_written"), r.content)
+        for r in turns
+    ] == [
+        (UserMessage, None, "t0", "hi"),
+        (UserMessage, None, None, ""),
+        (AssistantMessage, None, "t1", "run"),
+        (AssistantMessage, None, None, ""),
+        (AssistantMessage, None, None, ""),
     ]
     assert [r for r in records if isinstance(r, ToolCall | UncategorizedRecord)] == [
         ToolCall(
-            timestamp="t1",
             call_id="c1",
             name="f",
             arguments={"a": 1},
-            extra={"status": "ok"},
+            extra={"status": "ok", "$timestamp_as_written": "t1"},
         ),
         UncategorizedRecord(kind="", payload={"content": "untyped"}),
         UncategorizedRecord(kind="", payload={"$message": 7}),

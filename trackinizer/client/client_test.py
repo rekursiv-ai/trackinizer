@@ -4662,6 +4662,24 @@ def test_search_sessions_sends_the_query_arms_and_limit() -> None:
     ]
 
 
+def test_search_sessions_near_a_session_sends_the_session_in_place_of_words() -> None:
+    sent: list[httpx2.Request] = []
+    found: dict[str, PlainTree] = {"hits": [], "semantic": True, "degraded": False}
+    near = uuid.UUID(int=7)
+    with _recording(
+        sent,
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=found),
+    ) as client:
+        assert client.search_sessions(near, mode="vector", limit=3) == found
+        assert client.search_sessions(near, spawned="a/b") == found
+
+    assert [dict(r.url.params) for r in sent] == [
+        {"near": str(near), "mode": "vector", "limit": "3"},
+        {"near": str(near), "spawned": "a/b", "mode": "fused", "limit": "20"},
+    ]
+
+
 def test_search_inquiries_sends_the_query_arms_kind_and_limit() -> None:
     sent: list[httpx2.Request] = []
     found: dict[str, PlainTree] = {"hits": [], "semantic": True, "degraded": False}

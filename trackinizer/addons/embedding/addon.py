@@ -23,6 +23,7 @@ from trackinizer.addons.embedding.qwen3_0p6b import Qwen06BEmbedder
 from trackinizer.addons.embedding.search import Nearest
 from trackinizer.addons.embedding.sweep import Sweep
 from trackinizer.addons.embedding.units import Settings, settings_key
+from trackinizer.sagent.session.types import first_name, stored_names
 from trackinizer.server.store.search import INQUIRY_TEXT_COLUMNS
 
 
@@ -59,7 +60,7 @@ class EmbeddingAddon:
         session_kinds: tuple[str, ...] = (
             "UserMessage",
             "AssistantMessage",
-            "AgentToAgentMessage",
+            "AgentMessage",
         )
         """The session record kinds that get vectors. Tool calls and their results
         stay keyword-only."""
@@ -109,19 +110,24 @@ class EmbeddingAddon:
             (kind, tuple(columns)) for kind, columns in config.inquiry_fields.items()
         )
         self.settings = Settings(
+            # Keyed by each kind's first name: a class renamed since keeps the
+            # vectors its rows have, which a new key would embed again.
             key=settings_key(
                 model=self.model.name,
                 dim=self.model.dim,
                 chunk_chars=config.chunk_chars,
                 overlap_chars=config.overlap_chars,
-                session_kinds=config.session_kinds,
+                session_kinds=[first_name(kind) for kind in config.session_kinds],
                 inquiry_fields=inquiry_fields,
                 edge_notes=config.edge_notes,
             ),
             dim=self.model.dim,
             chunk_chars=config.chunk_chars,
             overlap_chars=config.overlap_chars,
-            session_kinds=config.session_kinds,
+            # Rows keep a renamed class's former kind until they are rewritten.
+            session_kinds=tuple(
+                name for kind in config.session_kinds for name in stored_names(kind)
+            ),
             inquiry_fields=inquiry_fields,
             edge_notes=config.edge_notes,
         )

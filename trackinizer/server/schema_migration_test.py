@@ -338,7 +338,7 @@ async def test_session_records_context_id_check_rejects_a_forward_reference(
 
     A context applies to the records that FOLLOW it, so a record naming a
     higher idx would be reading settings that did not exist yet. ``<=`` rather
-    than ``<`` because a claude TurnContext is appended at its own index and
+    than ``<`` because a claude SessionContext is appended at its own index and
     names itself.
     """
     async with integ_store.engine.acquire() as conn:
@@ -351,7 +351,7 @@ async def test_session_records_context_id_check_rejects_a_forward_reference(
         )
         insert = (
             "INSERT INTO session_records (session_id, part, idx, kind, "
-            "context_id, payload) VALUES ($1, 0, $2, 'TurnContext', $3, '{}')"
+            "context_id, payload) VALUES ($1, 0, $2, 'SessionContext', $3, '{}')"
         )
         with pytest.raises(asyncpg.IntegrityConstraintViolationError):
             await conn.execute(insert, sid, 4, 5)

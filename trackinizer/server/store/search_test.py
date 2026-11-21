@@ -34,12 +34,13 @@ from trackinizer.server.store.search import (
     _ArmHit,
     _fts_arm,
     _InquiryReader,
+    _kept_units,
     _merge,
     _semantic_arm,
     search_inquiries,
     search_sessions,
 )
-from trackinizer.server.store.session_feed import FeedScope
+from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
 from trackinizer.server.values import vetted_sql
 from trackinizer.wire.audience import AUDIENCES
 
@@ -237,12 +238,150 @@ async def test_fused_merges_both_arms() -> None:
 
     assert [(h.idx, h.source) for h in hits] == [(0, "both")]
     assert (searched, arm.asked) == (True, [("q", True, 20)])
-    assert [(each, "v.field = 'content'" in test) for each, test, _ in arm.kept] == [
-        (engine, True),
+    assert [(each, test) for each, test, _ in arm.kept] == [
+        (engine, _kept_units([], scope=WHOLE_FEED)),
     ]
     assert len(executed_sql(conn)) == 2
     assert conn.fetch.await_args is not None
     assert conn.fetch.await_args.args[1:3] == ("q", 20)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["fused", "vector"])
+async def test_a_search_near_a_session_asks_the_vector_arm_for_it_and_reads_no_text(
+    mode: SearchMode,
+) -> None:
+    """A session holds no words to search by: only its own vector is the query."""
+    conn = make_conn()
+    position = {"session_id": UUID(int=1), "part": 0, "idx": 0}
+    conn.fetch.return_value = [{**position, "snippet": "s", "title": "t"}]
+    arm = _Fixed(hits=[_unit(UUID(int=1), idx=0)])
+    near = UUID(int=7)
+
+    hits, searched = await search_sessions(
+        cast("DatabaseEngine", FakeEngine(conn)),
+        query=near,
+        mode=mode,
+        vectors=arm,
+        limit=5,
+    )
+
+    assert arm.asked == [(near, True, 5)]
+    assert ["left(r.text" in sql for sql in executed_sql(conn)] == [True]
+    assert [(h.idx, h.source) for h in hits] == [(0, "semantic")]
+    assert searched
+    # The arm's test: no unit of a session it spawned or was spawned by, then the
+    # reader's own.
+    ((_engine, test, params),) = arm.kept
+    readers: list[object] = [near]
+    assert test == vetted_sql(
+        "NOT EXISTS (SELECT 1 FROM edges e WHERE e.edge_kind = 'produced_by' "
+        "AND ((e.from_id = v.owner_id AND e.to_id = $1) "
+        "OR (e.from_id = $1 AND e.to_id = v.owner_id))) AND ",
+        _kept_units(readers, scope=WHOLE_FEED),
+    )
+    assert params == readers
+
+
+# Its own units are the nearest to a session's vector, and its test drops them all:
+# an index that offered only its nearest few candidates would answer with none.
+@pytest.mark.asyncio
+async def test_a_search_near_a_session_is_scanned_as_filtered_for_any_reader() -> None:
+    conn = make_conn()
+    conn.fetch.return_value = []
+    arm = _Fixed(hits=[])
+    near = UUID(int=7)
+
+    _ = await search_sessions(
+        cast("DatabaseEngine", FakeEngine(conn)),
+        query=near,
+        vectors=arm,
+        limit=3,
+        scope=FeedScope(reader=_EVERYTHING),
+    )
+
+    assert arm.asked == [(near, True, 3)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("found", "asked"),
+    [(str(UUID(int=9)), UUID(int=9)), (None, UUID(int=0))],
+    ids=["spawned", "none-spawned"],
+)
+async def test_a_search_near_what_a_session_spawned_asks_the_arm_for_the_one_found(
+    found: str | None,
+    asked: UUID,
+) -> None:
+    """With none found the arm is asked for the nil session, which holds no vector."""
+    conn = make_conn()
+    conn.fetchval.return_value = found
+    conn.fetch.return_value = []
+    arm = _Fixed(hits=[])
+
+    hits, searched = await search_sessions(
+        cast("DatabaseEngine", FakeEngine(conn)),
+        query=UUID(int=7),
+        spawned="a/b",
+        vectors=arm,
+        limit=5,
+    )
+
+    conn.fetchval.assert_awaited_once_with(
+        "WITH RECURSIVE down(id) AS ("
+        "SELECT from_id FROM edges WHERE to_id = $1 "
+        "AND edge_kind = 'produced_by' AND from_kind = 'AgentSession' "
+        "UNION SELECT edges.from_id FROM edges JOIN down ON edges.to_id = down.id "
+        "WHERE edges.edge_kind = 'produced_by' "
+        "AND edges.from_kind = 'AgentSession') "
+        "SELECT child.id FROM down JOIN inquiries AS child ON child.id = down.id "
+        "WHERE child.agentsession_cli_session_id = $2 "
+        "ORDER BY child.seq LIMIT 1",
+        UUID(int=7),
+        "a/b",
+    )
+    assert [(query, limit) for query, _, limit in arm.asked] == [(asked, 5)]
+    # The arm's test keeps apart what the session found spawned, not the one named.
+    assert arm.kept[0][2][0] == asked
+    assert (hits, searched) == ([], True)
+
+
+@pytest.mark.asyncio
+async def test_a_search_by_words_names_no_spawned_session() -> None:
+    engine = FakeEngine()
+    arm = _Fixed(hits=[])
+
+    with pytest.raises(
+        ValueError,
+        match=r"^only a session spawned another: give one, not words$",
+    ):
+        _ = await search_sessions(
+            cast("DatabaseEngine", engine),
+            query="words",
+            spawned="a/b",
+            vectors=arm,
+        )
+
+    assert (engine.conn.mock_calls, arm.asked) == ([], [])
+
+
+@pytest.mark.asyncio
+async def test_a_search_near_a_session_by_keyword_is_refused_before_any_read() -> None:
+    engine = FakeEngine()
+    arm = _Fixed(hits=[])
+
+    with pytest.raises(
+        ValueError,
+        match=r"^a session is searched near by its vector, not by keyword$",
+    ):
+        _ = await search_sessions(
+            cast("DatabaseEngine", engine),
+            query=UUID(int=7),
+            mode="keyword",
+            vectors=arm,
+        )
+
+    assert (engine.conn.mock_calls, arm.asked) == ([], [])
 
 
 @pytest.mark.asyncio
@@ -553,6 +692,71 @@ async def test_a_reader_never_gets_a_session_hit_it_may_not_read(store: Store) -
     assert [(hit.session_id, hit.source) for hit in hits] == [(shown, "both")]
     assert searched
     assert arm.filtered == [True]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_search_near_a_session_finds_neither_its_spawner_nor_what_it_spawned(
+    store: Store,
+) -> None:
+    """Each says what the session says; a start links them ``produced_by``, child to parent."""
+    asked, parent, child, other = [await _session(store) for _ in range(4)]
+    for idx, session_id in enumerate((parent, child, other)):
+        await _record(store, session_id, idx=idx, text="the same plan")
+    _ = await _note(store, asked, parent, "spawned")
+    _ = await _note(store, child, asked, "spawned")
+
+    hits, _searched = await search_sessions(
+        store.engine,
+        query=asked,
+        vectors=_Records(first=parent),
+        scope=_ANYONE,
+    )
+
+    assert [hit.session_id for hit in hits] == [other]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_what_a_session_spawned_is_found_at_any_depth_and_under_it_alone(
+    store: Store,
+) -> None:
+    """Three sessions hold one CLI id; the one found is the oldest under the session.
+
+    ``twin``, older still, is under another session. ``later`` is under the same
+    one: a start re-opens the first session a spawner holds under a CLI id
+    (``spawned_session``), so that one is where its records go. The arm is asked
+    near ``grand``: its spawner and what it spawned are kept apart, and the session
+    named, two levels up, is not.
+    """
+    sessions = [await _session(store) for _ in range(7)]
+    stranger, twin, root, child, grand, leaf, later = sessions
+    for below, above in (
+        (twin, stranger),
+        (child, root),
+        (grand, child),
+        (leaf, grand),
+        (later, child),
+    ):
+        _ = await _note(store, below, above, "spawned")
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_cli_session_id = 'r/c/g' "
+            "WHERE id = ANY($1::uuid[])",
+            [twin, grand, later],
+        )
+    for idx, session_id in enumerate((root, child, leaf)):
+        await _record(store, session_id, idx=idx, text="the same plan")
+
+    hits, _searched = await search_sessions(
+        store.engine,
+        query=root,
+        spawned="r/c/g",
+        vectors=_Records(first=root),
+        scope=_ANYONE,
+    )
+
+    assert [hit.session_id for hit in hits] == [root]
 
 
 _OPEN_READER: Final = SessionReader(audiences=frozenset({"open"}))
@@ -1099,7 +1303,7 @@ class _Units:
         self,
         engine: DatabaseEngine,
         *,
-        query: str,
+        query: str | UUID,
         kept: Kept,
         filtered: bool,
         limit: int,
@@ -1139,8 +1343,8 @@ class _Fixed:
     """A semantic arm that answers the same units for every query, recording each ask."""
 
     hits: list[VectorHit] | None
-    asked: list[tuple[str, bool, int]] = field(
-        default_factory=list[tuple[str, bool, int]],
+    asked: list[tuple[str | UUID, bool, int]] = field(
+        default_factory=list[tuple[str | UUID, bool, int]],
     )
     kept: list[tuple[object, str, list[object]]] = field(
         default_factory=list[tuple[object, str, list[object]]],
@@ -1150,7 +1354,7 @@ class _Fixed:
         self,
         engine: DatabaseEngine,
         *,
-        query: str,
+        query: str | UUID,
         kept: Kept,
         filtered: bool,
         limit: int,
@@ -1177,7 +1381,7 @@ class _Records:
         self,
         engine: DatabaseEngine,
         *,
-        query: str,
+        query: str | UUID,
         kept: Kept,
         filtered: bool,
         limit: int,

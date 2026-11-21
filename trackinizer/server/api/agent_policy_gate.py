@@ -219,7 +219,7 @@ def _halt(request: HTTPConnection, *, halt: Halt, live: Sequence[UUID]) -> None:
         try:
             _ = relay.send_input(
                 session_id,
-                NewInput(kind="Halt", payload={"py/object": "Halt"}),
+                NewInput(kind="ModelHalt", payload={"py/object": "ModelHalt"}),
                 author=_HALT_AUTHOR,
                 recipient="all",
             )

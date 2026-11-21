@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -17,8 +18,8 @@ from trackinizer.sagent.session.types import (
     AssistantMessage,
     ContextClear,
     ContextCompaction,
+    SessionContext,
     SessionRecord,
-    TurnContext,
     UserMessage,
 )
 
@@ -41,7 +42,7 @@ def _unfused(records: Iterable[SessionRecord]) -> list[list[SessionRecord]]:
 
 def _part(name: str, *records: SessionRecord) -> list[SessionRecord]:
     """Return a record stream whose opening settings declare it as ``name``."""
-    return [TurnContext(extra={"payload": {"id": name}}), *records]
+    return [SessionContext(extra={"payload": {"id": name}}), *records]
 
 
 def test_fusing_nothing_yields_no_records() -> None:
@@ -65,10 +66,10 @@ def test_a_seam_opens_a_window_between_the_parts() -> None:
     boundary = joined[2]
     assert isinstance(boundary, ContextClear)
     assert [type(r).__name__ for r in joined] == [
-        "TurnContext",
+        "SessionContext",
         "UserMessage",
         "ContextClear",
-        "TurnContext",
+        "SessionContext",
         "UserMessage",
     ]
 
@@ -190,7 +191,7 @@ def test_chain_keeps_every_part_that_forked_from_one_thread() -> None:
     # session that silently rebuilt short.
     root = _part("a", UserMessage(content="Hi."))
     forks = [
-        [TurnContext(extra={"payload": {"id": name, "forked_from_id": "a"}})]
+        [SessionContext(extra={"payload": {"id": name, "forked_from_id": "a"}})]
         for name in ("b", "c", "d")
     ]
 
@@ -206,8 +207,8 @@ def test_chain_orders_parts_by_the_thread_each_forked_from() -> None:
     # Codex names it, so the order is the provider's rather than a guess from
     # timestamps -- which a subagent writing concurrently would break.
     first = _part("a", UserMessage(content="Hi."))
-    second = [TurnContext(extra={"payload": {"id": "b", "forked_from_id": "a"}})]
-    third = [TurnContext(extra={"payload": {"id": "c", "forked_from_id": "b"}})]
+    second = [SessionContext(extra={"payload": {"id": "b", "forked_from_id": "a"}})]
+    third = [SessionContext(extra={"payload": {"id": "c", "forked_from_id": "b"}})]
 
     ordered = fuse.chain([third, first, second])
 
@@ -231,15 +232,17 @@ def test_names_of_a_stream_starting_at_a_seam_names_an_empty_root() -> None:
 
 
 def test_chain_deduplicates_a_cycle_and_keeps_the_cycle_component() -> None:
-    first = [TurnContext(extra={"payload": {"id": "a", "forked_from_id": "b"}})]
-    second = [TurnContext(extra={"payload": {"id": "b", "forked_from_id": "a"}})]
+    first = [SessionContext(extra={"payload": {"id": "a", "forked_from_id": "b"}})]
+    second = [SessionContext(extra={"payload": {"id": "b", "forked_from_id": "a"}})]
 
     assert fuse.chain([first, second]) == [first, second]
 
 
 def test_chain_deduplicates_a_successor_list_repeating_one_part() -> None:
     root = _part("root", UserMessage(content="root"))
-    child = [TurnContext(extra={"payload": {"id": "child", "forked_from_id": "root"}})]
+    child = [
+        SessionContext(extra={"payload": {"id": "child", "forked_from_id": "root"}}),
+    ]
 
     assert fuse.chain([root, child, child]) == [root, child]
 
@@ -278,31 +281,55 @@ def test_a_codex_fork_s_seam_states_what_crossed_it() -> None:
 
 
 @pytest.mark.parametrize(
-    ("second", "timestamp"),
+    ("second", "boundary"),
     [
         (
             [
-                TurnContext(timestamp="t1", extra={"payload": {"id": "b"}}),
-                TurnContext(timestamp="t2"),
+                SessionContext(
+                    timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                    extra={"payload": {"id": "b"}},
+                ),
+                SessionContext(timestamp=datetime(2026, 1, 2, tzinfo=UTC)),
                 UserMessage(content="fresh"),
             ],
-            "t1",
+            ContextClear(
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                extra={"$seam": ""},
+            ),
         ),
-        ([TurnContext(extra={"payload": {"id": "b"}}), UserMessage()], None),
+        (
+            [
+                SessionContext(
+                    timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                    extra={"$timestamp_as_written": "2026-01-01T00:00:00.000Z"},
+                ),
+                UserMessage(),
+            ],
+            # Its time is written as its part spelled it.
+            ContextClear(
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                extra={
+                    "$seam": "",
+                    "$timestamp_as_written": "2026-01-01T00:00:00.000Z",
+                },
+            ),
+        ),
+        (
+            [SessionContext(extra={"payload": {"id": "b"}}), UserMessage()],
+            ContextClear(extra={"$seam": ""}),
+        ),
     ],
-    ids=["stamped", "unstamped"],
+    ids=["stamped", "spelled-its-own-way", "unstamped"],
 )
 def test_a_fresh_seam_carries_no_summary_and_opens_when_its_part_did(
     second: list[SessionRecord],
-    timestamp: str | None,
+    boundary: ContextClear,
 ) -> None:
-    boundary = list(fuse.fuse([_part("a"), second]))[1]
-
-    assert boundary == ContextClear(timestamp=timestamp, extra={"$seam": ""})
+    assert list(fuse.fuse([_part("a"), second]))[1] == boundary
 
 
 def test_a_part_whose_payload_is_no_object_declares_nothing() -> None:
-    part: list[SessionRecord] = [TurnContext(extra={"payload": None})]
+    part: list[SessionRecord] = [SessionContext(extra={"payload": None})]
 
     assert fuse.chain([part]) == [part]
 
@@ -310,7 +337,7 @@ def test_a_part_whose_payload_is_no_object_declares_nothing() -> None:
 def test_only_the_roots_opening_settings_carry_its_name() -> None:
     root = _part(
         "a",
-        TurnContext(extra={"later": True}),
+        SessionContext(extra={"later": True}),
         UserMessage(content="Hi."),
         AssistantMessage(content="Hello."),
     )
@@ -328,7 +355,7 @@ def test_a_later_parts_own_seam_key_is_its_data_not_a_name() -> None:
     """Only the root's name is taken back off; a later part's key is the provider's."""
     parts = [
         _part("a", UserMessage(content="Hi.")),
-        [TurnContext(extra={"$seam": "kept"}), UserMessage(content="Again.")],
+        [SessionContext(extra={"$seam": "kept"}), UserMessage(content="Again.")],
     ]
 
     joined = list(fuse.fuse(parts, ["a.jsonl", "b.jsonl"]))
@@ -355,8 +382,8 @@ def test_a_seam_naming_a_path_is_refused(name: str) -> None:
 
 def test_a_repeated_part_skips_only_itself_not_the_forks_after_it() -> None:
     root = _part("a", UserMessage(content="Hi."))
-    child = [TurnContext(extra={"payload": {"id": "c", "forked_from_id": "a"}})]
-    sibling = [TurnContext(extra={"payload": {"id": "d", "forked_from_id": "a"}})]
+    child = [SessionContext(extra={"payload": {"id": "c", "forked_from_id": "a"}})]
+    sibling = [SessionContext(extra={"payload": {"id": "d", "forked_from_id": "a"}})]
     other = _part("e", UserMessage(content="Elsewhere."))
 
     assert fuse.chain([root, child, child, sibling, other]) == [
@@ -369,14 +396,14 @@ def test_a_repeated_part_skips_only_itself_not_the_forks_after_it() -> None:
 
 def test_an_empty_thread_id_is_an_id_a_fork_may_name() -> None:
     """Only a missing id is no id: ``""`` is what the part declared."""
-    fork = [TurnContext(extra={"payload": {"id": "f", "forked_from_id": ""}})]
-    root = [TurnContext(extra={"payload": {"id": ""}})]
+    fork = [SessionContext(extra={"payload": {"id": "f", "forked_from_id": ""}})]
+    root = [SessionContext(extra={"payload": {"id": ""}})]
 
     assert fuse.chain([fork, root]) == [root, fork]
 
 
 def test_a_fork_from_a_thread_outside_the_tree_is_a_root_in_its_place() -> None:
-    orphan = [TurnContext(extra={"payload": {"id": "o", "forked_from_id": "zzz"}})]
+    orphan = [SessionContext(extra={"payload": {"id": "o", "forked_from_id": "zzz"}})]
     root = _part("b", UserMessage(content="Hi."))
 
     assert fuse.chain([orphan, root]) == [orphan, root]
@@ -388,10 +415,19 @@ def test_chain_treats_a_part_without_context_as_a_root() -> None:
     assert fuse.chain([part]) == [part]
 
 
+def test_a_part_that_states_no_settings_opens_at_no_time() -> None:
+    turn = UserMessage(content="orphan")
+
+    assert fuse._boundary(iter([turn]), "b.jsonl", seam="$seam") == (
+        [turn],
+        ContextClear(extra={"$seam": "b.jsonl"}),
+    )
+
+
 def _declared_id(part: Sequence[SessionRecord]) -> str:
     """Return the thread id a part's launch settings name."""
     opening = part[0]
-    assert isinstance(opening, TurnContext)
+    assert isinstance(opening, SessionContext)
     payload = from_plain(opening.extra["payload"], dict[str, object])
     return from_plain(payload["id"], str)
 

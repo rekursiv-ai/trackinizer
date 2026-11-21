@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from io import StringIO
 from typing import Final, cast
 
@@ -22,7 +23,7 @@ from trackinizer.sagent.session.types import (
     IncompleteRecord,
     SessionRecord,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -38,10 +39,14 @@ def _read(*lines: dict[str, object] | str) -> list[SessionRecord]:
 
 
 _JOURNAL: Final = (
-    ContextClear(timestamp="2026-10-31T00:00:00Z", system_prompt="", history=()),
+    ContextClear(
+        timestamp=datetime(2026, 10, 31, tzinfo=UTC),
+        system_prompt="",
+        history=(),
+    ),
     UserMessage(content="hello", extra={"$inbound": {"source": "bob"}}),
     ToolCall(call_id="c1", name="Bash", arguments={"command": "ls"}),
-    ToolResult(
+    ToolMessage(
         call_id="c1",
         state="done",
         stdout=("a b",),
@@ -173,7 +178,7 @@ def test_a_record_stored_under_a_former_name_reads_as_today_s(former: str) -> No
 
     [record] = sagent.normalize(StringIO(line))
 
-    assert isinstance(record, ToolResult)
+    assert isinstance(record, ToolMessage)
     assert record.call_id == "c1"
     assert record == read_record(line.encode())
     assert sagent.is_sagent(line)

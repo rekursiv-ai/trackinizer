@@ -369,7 +369,8 @@ async def test_each_live_session_the_policy_names_is_halted_and_told_its_notice(
 
     # The halts first: a viewer of a chat that was not told would wait for its line.
     assert site.relay.sent == [
-        (each, "Halt", {"py/object": "Halt"}, "server", "all") for each in (adas, also)
+        (each, "ModelHalt", {"py/object": "ModelHalt"}, "server", "all")
+        for each in (adas, also)
     ]
     assert [record.getMessage() for record in caplog.records] == [
         f"could not halt session {full} now",

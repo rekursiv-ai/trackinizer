@@ -4,7 +4,7 @@ A session is its RECORDS -- no wrapping object, no metadata beside them -- so
 everything a consumer needs is stated IN the stream, by a record that precedes
 what it applies to:
 
-* :class:`TurnContext` states the settings in force, and recurs when they
+* :class:`SessionContext` states the settings in force, and recurs when they
   change (a model swap, a different CLI, a new escaping convention).
 * :class:`ContextClear` states the context a window opens with, and recurs at
   every reset.
@@ -26,8 +26,8 @@ import pytest
 from trackinizer.sagent.scripts.convert_session import claude, codex, gemini
 from trackinizer.sagent.session.types import (
     ContextClear,
+    SessionContext,
     SessionRecord,
-    TurnContext,
 )
 
 
@@ -106,10 +106,10 @@ def test_normalize_yields_records_rather_than_a_session(
 
 @pytest.mark.parametrize(("adapter", "native"), _cases())
 def test_settings_precede_the_acts_they_govern(adapter: _Adapter, native: str) -> None:
-    """A ``TurnContext`` opens the stream: state before what it applies to."""
+    """A ``SessionContext`` opens the stream: state before what it applies to."""
     records = _read(adapter, native)
 
-    assert isinstance(records[0], TurnContext)
+    assert isinstance(records[0], SessionContext)
 
 
 @pytest.mark.parametrize(("adapter", "native"), _cases())
@@ -131,13 +131,13 @@ def test_the_opening_context_states_the_file_encoding(
     """Encoding rides the settings, because a rewrite needs it and it moves.
 
     Which claude lines escape their Unicode is not knowable at line one; a
-    later ``TurnContext`` restates it and supersedes. Stating it here is what lets a writer reproduce the provider's
+    later ``SessionContext`` restates it and supersedes. Stating it here is what lets a writer reproduce the provider's
     own bytes without a session object to hang it on.
     """
     records = _read(adapter, native)
 
     opening = records[0]
-    assert isinstance(opening, TurnContext)
+    assert isinstance(opening, SessionContext)
     assert "newline_terminated" in opening.encoding
 
 

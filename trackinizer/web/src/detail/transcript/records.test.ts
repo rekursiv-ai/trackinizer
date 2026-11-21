@@ -48,9 +48,7 @@ test("messages show their prose under who wrote them", () => {
     { label: "Assistant" },
   );
   expect(
-    recordView(
-      record("AgentToAgentMessage", { sender: "craftax-arm", content: "done" }),
-    ),
+    recordView(record("AgentMessage", { sender: "craftax-arm", content: "done" })),
   ).toMatchObject({
     label: "From craftax-arm",
   });
@@ -218,11 +216,11 @@ test("an injected canvas context splits from what was said; a malformed one stil
 
 test("bookkeeping is the harness's records; a legacy turn and a model change are not (B5)", () => {
   const records = [
-    record("TurnContext", { model: "a" }),
+    record("SessionContext", { model: "a" }),
     record("UserMessage", { content: "hi" }),
-    record("TurnContext", { model: "a" }),
-    record("TurnContext", { model: null }),
-    record("TurnContext", { model: "b" }),
+    record("SessionContext", { model: "a" }),
+    record("SessionContext", { model: null }),
+    record("SessionContext", { model: "b" }),
     record("UncategorizedRecord", { kind: "legacy/UserMessage", payload: {} }),
     record("UncategorizedRecord", { kind: "queue-operation", payload: {} }),
     record("TokenUsage"),
@@ -329,9 +327,9 @@ test("a tool call is flagged failed by a shell's nonzero exit code or its provid
       toolResult(null, { state: "failed", stderr: ["RuntimeError: boom"] }),
     ),
   ).toBe(false);
-  expect(failed("ToolResult", toolResult(null, { state: "cancelled" }))).toBe(false);
+  expect(failed("ToolMessage", toolResult(null, { state: "cancelled" }))).toBe(false);
   expect(
-    failed("ToolResult", toolResult(null, { state: "pending", shown: "[running]" })),
+    failed("ToolMessage", toolResult(null, { state: "pending", shown: "[running]" })),
   ).toBe(false);
   expect(
     failed(
@@ -433,7 +431,7 @@ test("bookkeeping is one line, and a kind this view does not know still shows it
     tool: null,
     failed: false,
   });
-  expect(recordView(record("TurnContext"))).toEqual({
+  expect(recordView(record("SessionContext"))).toEqual({
     shape: "note",
     label: "Turn context",
     meta: "",
@@ -653,7 +651,7 @@ test("a message the harness wrote on the user's turn says so, and folds when lon
 
 test("a codex peer message shows its payload without the envelope codex wraps it in; a sealed one has nothing to read", () => {
   const peer = (content: string) =>
-    record("AgentToAgentMessage", {
+    record("AgentMessage", {
       content,
       sender: "/root/prototype",
       recipient: "/root",
@@ -760,7 +758,7 @@ test("a record with nothing to read, which no view draws or counts: sealed reaso
   const envelope =
     "Message Type: MESSAGE\nTask name: /root\nSender: /root/prototype\nPayload:\n";
   const peer = (content: string, attachments: unknown[] = []) =>
-    record("AgentToAgentMessage", {
+    record("AgentMessage", {
       content,
       sender: "/root/prototype",
       attachments: attachments,
@@ -1059,7 +1057,7 @@ test("a tool step is named by what it did: its result's kind, else its call's na
     "AgentSpawnResult",
     "UncategorizedToolResult",
     "ToolErrorResult",
-    "ToolResult",
+    "ToolMessage",
   ];
   expect(results.map(result)).toEqual([
     "command",
@@ -1084,7 +1082,7 @@ test("a tool step is named by what it did: its result's kind, else its call's na
   });
   expect(
     recordView(
-      record("ToolResult", toolResult(null, { state: "pending", shown: "[running]" })),
+      record("ToolMessage", toolResult(null, { state: "pending", shown: "[running]" })),
     ),
   ).toMatchObject({ label: "Tool", text: "[running]" });
   // A failed write keeps its path; what the model read is why it failed.
@@ -1155,9 +1153,7 @@ test("a person's long message folds to its first lines; the assistant's never do
     long: true,
   });
   expect(
-    recordView(
-      record("AgentToAgentMessage", { sender: "a", content: "y".repeat(2000) }),
-    ),
+    recordView(record("AgentMessage", { sender: "a", content: "y".repeat(2000) })),
   ).toMatchObject({ long: true });
   expect(recordView(record("AssistantMessage", { content: long }))).toMatchObject({
     long: false,

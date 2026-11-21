@@ -21,7 +21,7 @@ import pytest
 from trackinizer.sagent.session.types import (
     BashResult,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.types.edges import EDGE_POLICIES, kind_group_members
@@ -286,9 +286,9 @@ def test_a_session_starts_with_its_title_routing_and_first_turn_time() -> None:
         title="Measure the cache",
         produced_by="cache-issue",
         turns=(
-            UserMessage(timestamp=_NOW.isoformat(), content="Run the benchmark"),
+            UserMessage(timestamp=_NOW, content="Run the benchmark"),
             UserMessage(
-                timestamp=(_NOW + timedelta(seconds=1)).isoformat(),
+                timestamp=_NOW + timedelta(seconds=1),
                 content="Report the results",
             ),
         ),
@@ -414,7 +414,7 @@ def test_shell_records_pair_the_command_with_its_timestamped_output() -> None:
             name="Bash",
             arguments={"command": "measure retrieval --window 16"},
         ),
-        ToolResult(
+        ToolMessage(
             timestamp=seed_screenshots._when("11:22:36"),
             call_id="retrieval-run",
             state="done",

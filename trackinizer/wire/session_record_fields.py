@@ -8,7 +8,7 @@ backend`` already has: any element matching satisfies the clause.
 
 Which kinds qualify is DERIVED, not listed. A kind is a field iff its
 ``text`` projection is non-empty (``types/session_records.py::search_text``):
-a filter on ``TurnContext`` could never match, because nothing is indexed for
+a filter on ``SessionContext`` could never match, because nothing is indexed for
 it. Deriving it is what keeps a record class added upstream from needing a
 parallel edit here. A tool-call row is stored under its tool's legacy class
 name, such as ``BashResult`` (``types/session_records.py::record_kind``), so
@@ -23,8 +23,8 @@ import re
 
 from trackinizer.sagent.session.types import (
     ContextClear,
+    SessionContext,
     TokenUsage,
-    TurnContext,
     UncategorizedRecord,
 )
 from trackinizer.types.session_records import _BY_KIND
@@ -45,7 +45,7 @@ __all__ = [
 # untyped payload. ``session_record_fields_test`` checks the rest against
 # ``search_text``, so a kind added upstream is filterable unless it is listed here.
 _NO_TEXT: Final[frozenset[type[TraxRecord]]] = frozenset(
-    (TurnContext, ContextClear, TokenUsage, UncategorizedRecord),
+    (SessionContext, ContextClear, TokenUsage, UncategorizedRecord),
 )
 
 # Every kind whose record's ``text`` projection can be non-empty. Rows are stored

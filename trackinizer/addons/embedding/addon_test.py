@@ -9,11 +9,20 @@ from trackinizer.addons.embedding.qwen3_0p6b import Qwen06BEmbedder
 from trackinizer.addons.embedding.search import Nearest
 from trackinizer.addons.embedding.sweep import Sweep
 from trackinizer.addons.embedding.units import Settings, settings_key
+from trackinizer.sagent.session.types import (
+    AgentMessage,
+    first_name,
+    stored_names,
+)
 
 
 def test_the_default_model_is_qwen3_0p6b() -> None:
     addon = EmbeddingAddon.Config().make()
-    kinds = ("UserMessage", "AssistantMessage", "AgentToAgentMessage")
+    renamed = AgentMessage.__name__
+    # Keyed by the name the class first had, so a rename embeds nothing again; its
+    # rows are swept under every name they are stored by.
+    keyed = ("UserMessage", "AssistantMessage", first_name(renamed))
+    swept = ("UserMessage", "AssistantMessage", *stored_names(renamed))
     fields = (
         ("Issue", ("description",)),
         ("Belief", ("title", "description")),
@@ -27,14 +36,14 @@ def test_the_default_model_is_qwen3_0p6b() -> None:
             dim=1_024,
             chunk_chars=1_500,
             overlap_chars=200,
-            session_kinds=kinds,
+            session_kinds=keyed,
             inquiry_fields=fields,
             edge_notes=True,
         ),
         dim=1_024,
         chunk_chars=1_500,
         overlap_chars=200,
-        session_kinds=kinds,
+        session_kinds=swept,
         inquiry_fields=fields,
         edge_notes=True,
     )

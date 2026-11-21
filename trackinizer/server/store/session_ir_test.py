@@ -23,10 +23,10 @@ import pytest
 from trackinizer.conftest import executed_sql, make_store, set_field_row
 from trackinizer.lib import zstd_compat
 from trackinizer.sagent.session.types import (
+    SessionContext,
     SessionRecord,
     Thinking,
     ToolCall,
-    TurnContext,
     UserMessage,
 )
 from trackinizer.server.store import session_ir
@@ -591,9 +591,9 @@ async def test_purging_the_session_cascades_every_table(store: Store) -> None:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_context_naming_itself_is_accepted(store: Store) -> None:
-    """A claude ``TurnContext`` sits at its own ``idx`` and names it."""
+    """A claude ``SessionContext`` sits at its own ``idx`` and names it."""
     session_id = await _session(store)
-    record = TurnContext(context_id=0, model="opus")
+    record = SessionContext(context_id=0, model="opus")
 
     await store.append_session_records(
         session_id,
@@ -896,7 +896,6 @@ async def test_a_captured_nul_is_stored_as_a_replacement_character(
     client forever, so the append stores U+FFFD in its place.
     """
     session_id = await _session(store)
-    datetime(2026, 6, 1, tzinfo=UTC)
     records: list[SessionRecord] = [
         UserMessage(content="a\x00b"),
         ToolCall(call_id="c1", name="Read", arguments={"pa\x00th": "x\x00"}),
@@ -924,7 +923,7 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
 ) -> None:
     """Positions, stamps, ciphertext and bodies come along; the rest of a part stays."""
     source, target, key = await _session(store), await _session(store), uuid4()
-    at = datetime(2026, 10, 20, 9, tzinfo=UTC).isoformat()
+    at = datetime(2026, 10, 20, 9, tzinfo=UTC)
     parts: list[list[SessionRecord]] = [
         [
             UserMessage(content="a0", timestamp=at),

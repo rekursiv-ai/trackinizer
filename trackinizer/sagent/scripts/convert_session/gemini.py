@@ -26,7 +26,12 @@ from treekle import (
     mutable,
 )
 
-from trackinizer.sagent.scripts.convert_session.provider_fields import read_or_default
+from trackinizer.sagent.scripts.convert_session.provider_fields import (
+    Stamped,
+    kept_spelling,
+    read_or_default,
+    stamped,
+)
 from trackinizer.sagent.scripts.convert_session.unmodeled import (
     extract_unmodeled_fields,
     field_state,
@@ -36,16 +41,18 @@ from trackinizer.sagent.session.types import (
     AssistantMessage,
     ContextClear,
     IncompleteRecord,
+    SessionContext,
     SessionRecord,
     ToolCall,
-    TurnContext,
     UncategorizedRecord,
     UserMessage,
+    stated_timestamp,
+    timestamp_as_written,
 )
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 
 __all__ = ["denormalize", "normalize"]
@@ -93,7 +100,7 @@ def denormalize(
         # field: the declaration they carry is restored below.
         if not isinstance(record, ContextClear)
     ]
-    body = [record for record in ordered if not isinstance(record, TurnContext)]
+    body = [record for record in ordered if not isinstance(record, SessionContext)]
     if body and all(isinstance(record, IncompleteRecord) for record in body):
         # The document never parsed, so its bytes are all that was kept. Only
         # when they are ALL that was read: claude and codex both emit one of
@@ -105,7 +112,7 @@ def denormalize(
             _ = stream.write(record.text)
         return
     declared = next(
-        (record for record in ordered if isinstance(record, TurnContext)),
+        (record for record in ordered if isinstance(record, SessionContext)),
         None,
     )
     stored = mutable(declared.extra) if declared is not None else {}
@@ -142,7 +149,7 @@ def denormalize(
 
 # A ``gemini`` turn carries prose AND any calls it made, which axiom 3 keeps as sibling
 # records rather than one nested blob.
-def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
+def _read_message(message: Mapping[str, object]) -> Sequence[Stamped]:
     """Normalize one gemini message into its acts."""
     kind = read_or_default(message.get("type"), str, default="")
     if kind not in {"user", "gemini"}:
@@ -154,7 +161,7 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
         ]
     # A modeled field of the wrong type raises, and the caller keeps the message whole.
     content = from_plain(message["content"], str) if "content" in message else ""
-    stamp = from_plain(message["timestamp"], str) if "timestamp" in message else None
+    spelled = from_plain(message["timestamp"], str) if "timestamp" in message else None
     calls = (
         from_plain(message["toolCalls"], list[object]) if "toolCalls" in message else []
     )
@@ -168,29 +175,32 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
             },
         ),
     )
-    if kind == "user":
-        return [UserMessage(content=content, timestamp=stamp, extra=extra)]
-    return [
-        AssistantMessage(content=content, timestamp=stamp, extra=extra),
-        *(
-            ToolCall(
-                call_id=from_plain(call.get("id"), str, default=""),
-                name=from_plain(call.get("name"), str, default=""),
-                timestamp=stamp,
-                arguments=immutable(
-                    from_plain(
-                        call.get("args"),
-                        dict[str, object],
-                        default=dict[str, object](),
+    read: list[Stamped] = (
+        [UserMessage(content=content, extra=extra)]
+        if kind == "user"
+        else [
+            AssistantMessage(content=content, extra=extra),
+            *(
+                ToolCall(
+                    call_id=from_plain(call.get("id"), str, default=""),
+                    name=from_plain(call.get("name"), str, default=""),
+                    arguments=immutable(
+                        from_plain(
+                            call.get("args"),
+                            dict[str, object],
+                            default=dict[str, object](),
+                        ),
                     ),
-                ),
-                extra=immutable(
-                    extract_unmodeled_fields(call, ("id", "name", "args")),
-                ),
-            )
-            for call in (from_plain(value, dict[str, object]) for value in calls)
-        ),
-    ]
+                    extra=immutable(
+                        extract_unmodeled_fields(call, ("id", "name", "args")),
+                    ),
+                )
+                for call in (from_plain(value, dict[str, object]) for value in calls)
+            ),
+        ]
+    )
+    # Each record of the message holds the message's time, as gemini spelled it.
+    return read if spelled is None else [stamped(item, spelled) for item in read]
 
 
 # Every value THAWED: a record's residual is frozen to arbitrary depth, and ``json``
@@ -220,19 +230,29 @@ def _write_messages(
                 # folding it there claimed the person made the call. Asserting
                 # a turn was already open instead aborted the conversion.
                 if open_turn is None:
+                    # The turn is written at the call's time, as the call spells it.
                     open_turn = _written_message(
-                        AssistantMessage(timestamp=record.timestamp),
+                        AssistantMessage(
+                            timestamp=record.timestamp,
+                            extra=kept_spelling(stated_timestamp(record)),
+                        ),
                         "gemini",
                     )
                     out.append(open_turn)
                 calls = open_turn.setdefault("toolCalls", [])
                 assert isinstance(calls, list)
+                # A call has no time of its own in gemini's document, so the
+                # spelling it keeps is no key of gemini's.
                 calls.append(
                     {
                         "id": record.call_id,
                         "name": record.name,
                         "args": mutable(record.arguments),
-                        **mutable(record.extra),
+                        **{
+                            key: value
+                            for key, value in mutable(record.extra).items()
+                            if key != "$timestamp_as_written"
+                        },
                     },
                 )
             case UncategorizedRecord():
@@ -256,10 +276,12 @@ def _written_message(
     """Return the message a turn came from, its keys where gemini wrote them."""
     content = record.content or ""
     stored = mutable(record.extra)
+    written = timestamp_as_written(record.timestamp, stored)
+    _ = stored.pop("$timestamp_as_written", None)
     if field_state(stored, "type") is None:
         # Another CLI's turn, in gemini-cli's own key order.
         return {
-            **({"timestamp": record.timestamp} if record.timestamp is not None else {}),
+            **({"timestamp": written} if written is not None else {}),
             "type": kind,
             "content": content,
             **stored,
@@ -271,7 +293,7 @@ def _written_message(
                 {
                     "type": kind,
                     "content": content,
-                    "timestamp": record.timestamp,
+                    "timestamp": written,
                     "toolCalls": [],
                 },
             ),
@@ -285,7 +307,7 @@ def _read(text: str) -> list[SessionRecord]:
     # from. Gemini declares neither a prompt nor an escaping convention, so
     # both state only what the format itself fixes.
     out: list[SessionRecord] = [
-        TurnContext(encoding=immutable({"newline_terminated": True})),
+        SessionContext(encoding=immutable({"newline_terminated": True})),
         ContextClear(extra=immutable({"$opens": True})),
     ]
     if not text.strip():
@@ -318,7 +340,7 @@ def _read(text: str) -> list[SessionRecord]:
     extra["$compact"] = (
         json.dumps(decoded, ensure_ascii=False, separators=(",", ":")) == text
     )
-    out[0] = TurnContext(
+    out[0] = SessionContext(
         encoding=immutable({"newline_terminated": True}),
         extra=immutable(extra),
     )

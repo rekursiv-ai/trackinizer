@@ -58,7 +58,7 @@ _SETTINGS: Final = SettingsLine(settings=(Setting(name=("model",), help_short="m
 
 
 def _event(n: int) -> EventLine:
-    return EventLine(kind="ModelResponsePartial", payload={"text": str(n)})
+    return EventLine(kind="ModelResponseTextStreamed", payload={"text": str(n)})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -181,7 +181,7 @@ async def test_lines_go_up_in_order_as_one_frame_each() -> None:
 @pytest.mark.asyncio
 async def test_a_line_over_the_frame_limit_is_not_sent() -> None:
     big = EventLine(
-        kind="ModelResponsePartial",
+        kind="ModelResponseTextStreamed",
         payload={"text": "x" * MAX_FRAME_BYTES},
     )
     async with _relay() as relay, _socket(relay) as socket:
@@ -276,8 +276,8 @@ async def test_inputs_come_down_and_a_frame_that_is_not_one_is_passed_over() -> 
     sent = Input(
         id=UUID(int=3),
         author="ada@x.y",
-        kind="Halt",
-        payload={"py/object": "Halt"},
+        kind="ModelHalt",
+        payload={"py/object": "ModelHalt"},
     )
     async with _relay() as relay, _socket(relay) as socket:
         _ = await relay.until(1)

@@ -305,9 +305,9 @@ def _source_outputs(
     out = retype(
         record,
         timestamp=(
-            source.timestamp.isoformat()
+            source.timestamp
             if source.timestamp is not None
-            else source.created.isoformat()
+            else source.created
             if source.legacy_kind == "legacy/SlashCommand"
             else None
         ),
@@ -423,8 +423,8 @@ async def _insert_slash_commands(
         "SELECT $1, "
         "  (SELECT coalesce(max(seq) + 1, 0) FROM session_slash_commands "
         "   WHERE session_id = $1) + ordinality - 1, "
-        "  t.timestamp::timestamptz, t.command, t.args "
-        "FROM unnest($2::text[], $3::text[], $4::text[]) "
+        "  t.timestamp, t.command, t.args "
+        "FROM unnest($2::timestamptz[], $3::text[], $4::text[]) "
         "  WITH ORDINALITY AS t(timestamp, command, args, ordinality) "
         "ON CONFLICT (session_id, seq) DO NOTHING",
         session_id,

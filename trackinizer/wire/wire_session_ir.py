@@ -69,7 +69,7 @@ class RecordBody(BaseModel):
     ``BashResult`` (``session_records.record_kind``)."""
 
     context_id: int | None = Field(default=None, ge=0)
-    """The ``idx`` of the applying ``TurnContext``, within the same part. May
+    """The ``idx`` of the applying ``SessionContext``, within the same part. May
     EQUAL ``idx``: a claude context is appended at its own index and names
     itself."""
 
@@ -154,7 +154,7 @@ class ManifestBody(BaseModel):
     host must resolve to the same part."""
 
     metadata: JSON = Field(default_factory=dict)
-    """The ``TurnContext.encoding`` in force for the prefix read so far."""
+    """The ``SessionContext.encoding`` in force for the prefix read so far."""
 
     ir_id: UUID
     """The id the capturing client minted for this file."""
@@ -183,7 +183,7 @@ class PartBody(BaseModel):
     """What the source file declared, which a REWRITE needs verbatim.
 
     Not decoration: claude's ascii-escaping convention rides on the
-    ``TurnContext`` in force, and rewriting without it escapes different
+    ``SessionContext`` in force, and rewriting without it escapes different
     characters -- so the file differs from the captured one while every record
     matches. A resume hands the file back to the provider, which is entitled
     to reject a transcript it did not write.

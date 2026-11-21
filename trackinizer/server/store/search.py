@@ -103,7 +103,7 @@ class VectorSearch(Protocol):
         self,
         engine: DatabaseEngine,
         *,
-        query: str,
+        query: str | UUID,
         kept: Kept,
         filtered: bool,
         limit: int,
@@ -112,7 +112,8 @@ class VectorSearch(Protocol):
 
         Args:
           engine: The server's database.
-          query: The search text.
+          query: The search text. Or an owner: then the query is its own newest
+            unit that ``kept`` keeps, and no unit of its own is a hit.
           kept: The reader's and scope's test; it must be in the WHERE, before
             the LIMIT.
           filtered: ``kept`` may drop many candidates, so keep the index
@@ -173,7 +174,8 @@ class SessionSearchHit:
 async def search_sessions(
     engine: DatabaseEngine,
     *,
-    query: str,
+    query: str | UUID,
+    spawned: str = "",
     vectors: VectorSearch | None,
     mode: SearchMode = "fused",
     limit: int = 20,
@@ -183,7 +185,14 @@ async def search_sessions(
 
     Args:
       engine: The store's engine.
-      query: The search text; its terms feed the FTS arm.
+      query: The search text; its terms feed the FTS arm. Or a session: the
+        records of other sessions nearest what it last said, found by its own
+        vector, so by the semantic arm alone.
+      spawned: The CLI's own id of a session the ``query`` session spawned, at
+        any depth: the search is near that one instead. A CLI id alone names a
+        session of each key that sent it, so it is read only under a session.
+        With none such there are no hits, as for a session the reader does not
+        read.
       vectors: The semantic arm, or ``None`` to skip it.
       mode: The arms to run: both, ``keyword`` alone, or ``vector`` alone.
       limit: Maximum merged hits to return, in ``[1, 200]``.
@@ -194,8 +203,9 @@ async def search_sessions(
         caller may see. The semantic arm does the same, though its HNSW index offers
         hidden units among the nearest: for a scope that may not keep every session
         it is told so (``filtered``), and keeps the index offering candidates until
-        ``limit`` pass. A scope that keeps every session is searched as it always
-        was.
+        ``limit`` pass; so it is near a session, whose own units are the nearest
+        and are all dropped. A scope that keeps every session is otherwise
+        searched as it always was.
 
     Returns:
       hits: Merged, deduplicated hits ordered by descending score.
@@ -203,10 +213,20 @@ async def search_sessions(
         loaded.
 
     Raises:
-      ValueError: ``query`` is blank, or ``limit`` is outside ``[1, 200]``.
+      ValueError: ``query`` is blank, or a session searched by ``keyword``, or
+        words given with ``spawned``, or ``limit`` is outside ``[1, 200]``.
 
     """
     _refuse_malformed(query, limit=limit)
+    if isinstance(query, UUID) and mode == "keyword":
+        raise ValueError("a session is searched near by its vector, not by keyword")
+    if isinstance(query, str) and spawned:
+        raise ValueError("only a session spawned another: give one, not words")
+    if isinstance(query, UUID) and spawned:
+        # The nil id is no session's, so the arm answers as for one with no vector.
+        query = await _spawned_below(engine, query, cli_session_id=spawned) or UUID(
+            int=0,
+        )
     scope = replace(scope, kinds=())  # pragma: no mutate[truthiness]
     nearest = (
         None
@@ -214,8 +234,14 @@ async def search_sessions(
         else await vectors.nearest(
             engine,
             query=query,
-            kept=partial(_kept_units, scope=scope),
-            filtered=scope.names_sessions or not _reads_all(scope.reader),
+            kept=partial(_kept_units, scope=scope)
+            if isinstance(query, str)
+            else partial(_kept_apart, scope=scope, session_id=query),
+            # Near a session the test drops that session's own units, which are
+            # the nearest of all: for any reader the index must keep offering.
+            filtered=isinstance(query, UUID)
+            or scope.names_sessions
+            or not _reads_all(scope.reader),
             limit=limit,
         )
     )
@@ -223,7 +249,7 @@ async def search_sessions(
         semantic = [] if nearest is None else await _semantic_arm(conn, nearest)
         fts = (
             await _fts_arm(conn, query, limit=limit, scope=scope)
-            if mode in ("fused", "keyword")
+            if isinstance(query, str) and mode in ("fused", "keyword")
             else []
         )
     return _merge(semantic, fts, limit=limit), nearest is not None
@@ -352,11 +378,11 @@ _INQUIRY_KEYWORDS: Final = vetted_sql("to_tsvector('simple', ", _INQUIRY_TEXT, "
 _NOTE_KEYWORDS: Final = "to_tsvector('simple', e.note)"
 
 
-def _refuse_malformed(query: str, *, limit: int) -> None:
+def _refuse_malformed(query: str | UUID, *, limit: int) -> None:
     """Raise ``ValueError`` for a limit outside ``[1, 200]`` or a blank query."""
     if limit < 1 or limit > _MAX_LIMIT:
         raise ValueError(f"limit must be in [1, {_MAX_LIMIT}]")
-    if not query.strip():
+    if isinstance(query, str) and not query.strip():
         raise ValueError("query must not be blank")
 
 
@@ -504,6 +530,53 @@ def _kept_units(params: list[object], *, scope: FeedScope) -> str:
         "AND ",
         _kept(params, scope=scope),
     )
+
+
+# A start links a spawned session ``produced_by`` its spawner (``sessions_routes``):
+# each says much of what the other says, so near one the other is no find.
+# Audience: internal -- a SQL fragment; the semantic arm that embeds it carries the gate.
+def _kept_apart(params: list[object], *, scope: FeedScope, session_id: UUID) -> str:
+    """Return :func:`_kept_units`' test, less what ``session_id`` spawned or was spawned by."""
+    params.append(session_id)
+    session = f"${len(params)}"
+    return vetted_sql(
+        "NOT EXISTS (SELECT 1 FROM edges e WHERE e.edge_kind = 'produced_by' "
+        "AND ((e.from_id = v.owner_id AND e.to_id = ",
+        session,
+        ") OR (e.from_id = ",
+        session,
+        " AND e.to_id = v.owner_id))) AND ",
+        _kept_units(params, scope=scope),
+    )
+
+
+# ``UNION`` drops a session seen before, so a cycle of edges ends the walk. The
+# oldest, as ``SessionStore.spawned_session`` picks: a start re-opens that one, so it
+# is the session an agent's records go to.
+# Audience: internal -- it names a session and reads nothing of it; the semantic arm
+# asked near that session applies the reader's test to it.
+async def _spawned_below(
+    engine: DatabaseEngine,
+    root: UUID,
+    *,
+    cli_session_id: str,
+) -> UUID | None:
+    """Return the oldest session ``root``'s spawned, at any depth, under ``cli_session_id``."""
+    async with engine.acquire() as conn:
+        found = await conn.fetchval(
+            "WITH RECURSIVE down(id) AS ("
+            "SELECT from_id FROM edges WHERE to_id = $1 "
+            "AND edge_kind = 'produced_by' AND from_kind = 'AgentSession' "
+            "UNION SELECT edges.from_id FROM edges JOIN down ON edges.to_id = down.id "
+            "WHERE edges.edge_kind = 'produced_by' "
+            "AND edges.from_kind = 'AgentSession') "
+            "SELECT child.id FROM down JOIN inquiries AS child ON child.id = down.id "
+            "WHERE child.agentsession_cli_session_id = $2 "
+            "ORDER BY child.seq LIMIT 1",
+            root,
+            cli_session_id,
+        )
+    return None if found is None else from_plain(found, UUID)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

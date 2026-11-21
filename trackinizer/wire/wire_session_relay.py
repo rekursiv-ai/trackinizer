@@ -57,7 +57,7 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 Typical usage example:
 
   frame = pydantic.TypeAdapter(ProcessFrame).validate_json(message)
-  line = EventLine(kind="ModelResponsePartial", payload=payload).model_dump_json()
+  line = EventLine(kind="ModelResponseTextStreamed", payload=payload).model_dump_json()
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ keep-alive. A reader that hears nothing for 2.5 times this has lost the stream."
 MAX_REASON_CHARS: Final = 4_096
 """The most characters a daemon reports of why a process ended, and of its output."""
 
-type InputKind = Literal["UserMessage", "Halt", "Command"]
+type InputKind = Literal["UserMessage", "ModelHalt", "Command"]
 """What a person may send the root agent: a line, a stop of the turn, or a slash
 line."""
 
@@ -221,6 +221,10 @@ class BackgroundJob(BaseModel):
     awaited: bool = False
     """Whether its agent waits for it, by a ``BackgroundTask`` foreground call; that
     call is no job of its own."""
+
+    runs_until_stopped: bool = False
+    """Whether it ends only when it is stopped, as a watch for news does: it is
+    listed, and is no work the session is still to finish."""
 
 
 class TeamMember(BaseModel):
@@ -273,18 +277,21 @@ class AgentState(BaseModel):
     turn_ended: UtcDatetime | None = None
     """When the root agent last ended a turn: left with nothing to do, failed, or
     halted; ``None`` before its first. One that leaves a background job running has
-    not ended: it ends once the turn the job's result starts does."""
+    not ended: it ends once the turn the job's result starts does. A job that runs
+    until it is stopped, as a watch for news does, holds no turn open."""
 
     @computed_field
     @property
     def working(self) -> bool:
         """Whether anything of the session works: the root, a job, or a child agent.
 
-        A process too old to name its jobs and agents works while its root does.
+        A job that runs until it is stopped is none: it would hold the session
+        working for as long as it lives. A process too old to name its jobs and
+        agents works while its root does.
         """
         return (
             self.busy
-            or bool(self.jobs)
+            or any(not job.runs_until_stopped for job in self.jobs or ())
             or any(member.busy for member in self.team or ())
         )
 
@@ -490,7 +497,7 @@ class Input(BaseModel):
     payload: JSON
     recipient: str = ""
     """The agent it is for, by its label in the session; empty for the root. A
-    ``Halt`` for ``all`` halts every agent of the process: the server's, when the
+    ``ModelHalt`` for ``all`` halts every agent of the process: the server's, when the
     deployment's agent policy asks it to."""
 
     booked: MessageKind | None = None

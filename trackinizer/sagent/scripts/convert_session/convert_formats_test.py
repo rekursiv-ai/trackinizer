@@ -10,6 +10,7 @@ the tool that spawns the process, and its own tests pin what it can carry.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from io import StringIO
 from typing import TYPE_CHECKING, cast
 
@@ -130,8 +131,13 @@ def test_a_claude_session_becomes_a_journal_sagent_resumes(tmp_path: Path) -> No
         async with JsonlJournal(journal) as opened:
             return list(opened)
 
-    [said] = [r for r in asyncio.run(window()) if isinstance(r, UserMessage)]
-    assert (said.timestamp, said.content) == ("2026-01-01T00:00:00Z", "hi")
+    [message] = [r for r in asyncio.run(window()) if isinstance(r, UserMessage)]
+    assert (message.timestamp, message.content) == (
+        datetime(2026, 1, 1, tzinfo=UTC),
+        "hi",
+    )
+    # The journal stores the time as claude spelled it.
+    assert '"timestamp": "2026-01-01T00:00:00Z"' in journal.read_text()
 
 
 _CLAUDE_LINE = json.dumps(
@@ -198,7 +204,7 @@ def test_a_conversion_that_only_renumbers_contexts_is_not_lossy() -> None:
     """``context_id`` is an INDEX, so renumbering it loses no record.
 
     Axiom 5: a record names the settings that applied BY INDEX, and never
-    copies them. A session carrying no :class:`TurnContext` -- every gemini one
+    copies them. A session carrying no :class:`SessionContext` -- every gemini one
     and every hand-built one -- gains one when written as claude, moving every
     record's ``context_id`` from ``None`` to ``0``. The comparator read that as
     three records lost, so the CLI refused a conversion that dropped nothing.
@@ -301,7 +307,7 @@ def test_every_session_opens_with_a_clear(adapter: _Adapter, native: str) -> Non
     """
     records = list(adapter.normalize(StringIO(native)))
 
-    # After the ``TurnContext``: settings are stated before the acts they
+    # After the ``SessionContext``: settings are stated before the acts they
     # govern, and the clear is one of those acts.
     assert isinstance(records[1], ContextClear)
 

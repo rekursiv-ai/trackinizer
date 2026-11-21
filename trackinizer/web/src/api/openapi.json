@@ -195,7 +195,7 @@
       "title": "Turn Ended"
      },
      "working": {
-      "description": "Whether anything of the session works: the root, a job, or a child agent.\n\nA process too old to name its jobs and agents works while its root does.",
+      "description": "Whether anything of the session works: the root, a job, or a child agent.\n\nA job that runs until it is stopped is none: it would hold the session\nworking for as long as it lives. A process too old to name its jobs and\nagents works while its root does.",
       "readOnly": true,
       "title": "Working",
       "type": "boolean"
@@ -773,6 +773,11 @@
      "call_id": {
       "title": "Call Id",
       "type": "string"
+     },
+     "runs_until_stopped": {
+      "default": false,
+      "title": "Runs Until Stopped",
+      "type": "boolean"
      },
      "started": {
       "format": "date-time",
@@ -4153,7 +4158,7 @@
    "InputKind": {
     "enum": [
      "UserMessage",
-     "Halt",
+     "ModelHalt",
      "Command"
     ],
     "type": "string"
@@ -20297,15 +20302,43 @@
   },
   "/api/web/search_sessions": {
    "get": {
-    "description": "Hybrid session search: the deployment's vector arm + scoped tsvector, RRF-merged.\n\n``mode`` picks the arms: ``fused`` (the default) runs both, ``keyword`` the\nfull-text arm alone, ``vector`` the vector arm alone. The vector arm runs only\nwhen the deployment has one whose model is loaded. Without it the route answers\nwith what is left rather than fail -- a search never loads a model -- and flags\nthe degrade in the response (``degraded: true``, ``semantic: false``).\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  mode: The arms to run.\n  limit: Maximum merged hits, 1-200.\n  whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a\n    person searches their own, as the console opens on them, and the\n    configured assistant every one it reads, since it holds none of the\n    sessions it is asked about.\n  hidden: Search the ``private`` sessions the caller reads too.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose transcript the caller does not read has no hit.",
+    "description": "Hybrid session search: the deployment's vector arm + scoped tsvector, RRF-merged.\n\n``mode`` picks the arms: ``fused`` (the default) runs both, ``keyword`` the\nfull-text arm alone, ``vector`` the vector arm alone. The vector arm runs only\nwhen the deployment has one whose model is loaded. Without it the route answers\nwith what is left rather than fail -- a search never loads a model -- and flags\nthe degrade in the response (``degraded: true``, ``semantic: false``).\n\nA search takes words (``q``) or a session (``near``), never both. Near a\nsession, the query is the vector of what that session last said: the hits are\nthe records of other sessions nearest it, by the vector arm alone. A session\nthe caller does not read, or one with no vector yet, has no hits. With\n``spawned``, the session is the one ``near`` spawned, at any depth, under that\nCLI session id: an agent names another agent of its run so, knowing its own\nsession's id and the other's CLI id alone. With none such there are no hits.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  near: The session to search near, in place of ``q``.\n  spawned: The CLI session id of the session ``near`` spawned, to search\n    near in its place.\n  mode: The arms to run.\n  limit: Maximum merged hits, 1-200.\n  whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a\n    person searches their own, as the console opens on them, and the\n    configured assistant every one it reads, since it holds none of the\n    sessions it is asked about.\n  hidden: Search the ``private`` sessions the caller reads too.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose transcript the caller does not read has no hit.",
     "operationId": "web_search_sessions_api_web_search_sessions_get",
     "parameters": [
      {
       "in": "query",
       "name": "q",
-      "required": true,
+      "required": false,
       "schema": {
+       "default": "",
        "title": "Q",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "near",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "uuid",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Near"
+      }
+     },
+     {
+      "in": "query",
+      "name": "spawned",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Spawned",
        "type": "string"
       }
      },
