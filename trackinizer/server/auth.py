@@ -109,6 +109,7 @@ __all__ = [
     "request_user",
     "require_role",
     "revoke_api_key",
+    "revoke_host_login_keys",
     "revoke_host_process_keys",
     "revoke_process_key",
     "seed_no_auth_user",
@@ -960,6 +961,38 @@ async def revoke_host_process_keys(
         vetted_sql(
             "UPDATE api_keys AS credential SET revoked_at = clock_timestamp() "
             "WHERE credential.host_id = $1 AND credential.revoked_at IS NULL AND ",
+            PROCESS_KEY_SQL,
+            " RETURNING credential.id",
+        ),
+        host_id,
+    )
+    return [cast(uuid.UUID, row["id"]) for row in rows]
+
+
+async def revoke_host_login_keys(
+    conn: Conn,
+    *,
+    host_id: uuid.UUID,
+) -> list[uuid.UUID]:
+    """Revoke every key bound to a host that no start minted for a process: its logins.
+
+    A device login binds the key it issues to the host it logged in, and a KnowHost's
+    login is bound to its host the same way. Deleting the host would otherwise leave
+    each such key live and bound to nothing (``api_keys.host_id`` is ``ON DELETE SET
+    NULL``).
+
+    Args:
+      conn: Open database connection.
+      host_id: The host.
+
+    Returns:
+      revoked: The id of each live key revoked.
+
+    """
+    rows = await conn.fetch(
+        vetted_sql(
+            "UPDATE api_keys AS credential SET revoked_at = clock_timestamp() "
+            "WHERE credential.host_id = $1 AND credential.revoked_at IS NULL AND NOT ",
             PROCESS_KEY_SQL,
             " RETURNING credential.id",
         ),

@@ -255,6 +255,19 @@ def _save(name: str, url: str) -> None:
     profile.save_profile(name, Profile(url=url, api_key="trax_k"))
 
 
+@pytest.mark.parametrize(
+    ("url", "name"),
+    [
+        ("https://trax.example.com", "trax.example.com"),
+        ("https://Trax.Test:8443/", "trax.test-8443"),
+        ("http://[::1]:8765", "--1-8765"),
+    ],
+)
+def test_a_server_profile_is_named_for_its_host_and_port(url: str, name: str) -> None:
+    assert profile.server_profile(url) == name
+    profile.validate_profile_name(name)
+
+
 def test_a_shell_from_a_terminal_uses_the_saved_profile_for_its_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

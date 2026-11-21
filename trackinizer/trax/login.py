@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
 
 import re
 import time
@@ -24,6 +23,7 @@ from trackinizer.trax.profile import (
     has_usable_profile,
     read_profile,
     save_profile,
+    server_profile,
     switch_profile,
     validate_profile_name,
 )
@@ -100,7 +100,7 @@ def login(
     # ``server_url`` refuses plain http beyond this computer: the key, and the link
     # this prints, would be readable on the way, and a hop could swap the link.
     base = server_url(url, "login URL")
-    name = profile or _server_profile(base)
+    name = profile or server_profile(base)
     validate_profile_name(name)
     request = _validated(
         DeviceCodeRequest,
@@ -143,13 +143,6 @@ def _saved_author(name: str) -> str:
         return read_profile(name).author
     except ClientError:
         return ""
-
-
-def _server_profile(base: str) -> str:
-    """Return the profile name for a server: its host, and its port when it has one."""
-    parts = urlsplit(base)
-    host = re.sub(r"[^A-Za-z0-9._-]", "-", parts.hostname or "")
-    return host if parts.port is None else f"{host}-{parts.port}"
 
 
 def _await_key(

@@ -40,6 +40,7 @@ from trackinizer.server.api.session_access import resolve_asker
 from trackinizer.server.auth import (
     AuthIdentity,
     require_role,
+    revoke_host_login_keys,
     revoke_host_process_keys,
 )
 from trackinizer.server.host_auth import (
@@ -438,11 +439,11 @@ async def revoke_host(
 
 
 async def unregister_host(conn: Conn, *, name: str, owner: str) -> UUID | None:
-    """Revoke and delete ``owner``'s host ``name`` in the caller's transaction.
+    """Revoke and delete ``owner``'s host ``name``, and every key bound to it.
 
     For the server's own caller that made the host for its owner and has ended the
-    daemon it served, such as a KnowHost deleted: the name is free again and no
-    listing shows it. The caller tells the listing and closes the host's tool connections once
+    daemon it served, such as a KnowHost deleted: the name is free again, no
+    listing shows it, and no key it was signed in with still works. The caller tells the listing and closes the host's tool connections once
     the transaction commits.
 
     Args:
@@ -463,8 +464,10 @@ async def unregister_host(conn: Conn, *, name: str, owner: str) -> UUID | None:
         return None
     host_id = from_plain(host["id"], UUID)
     # Its processes' keys leave the bearer cache with the rest of the host, in the
-    # caller's ``host_closed`` once this commits.
+    # caller's ``host_closed`` once this commits. Its logins go too: the machine they
+    # signed in is gone, and the delete would leave each live and bound to nothing.
     await _out_of_service(conn, host_id)
+    _ = await revoke_host_login_keys(conn, host_id=host_id)
     await conn.execute("DELETE FROM hosts WHERE id = $1", host_id)
     return host_id
 
