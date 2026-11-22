@@ -891,3 +891,11 @@ def inline_refs(node: JsonValue, defs: Mapping[str, JsonValue]) -> JsonValue:
         for key, value in node.items()
         if key not in _SCHEMA_NOISE
     }
+
+
+class WorkstreamsPreference(_Strict):
+    """The user's workstream bar state."""
+
+    order: Annotated[list[_Id], Field(max_length=500)] = []
+    pinned: Annotated[list[_Id], Field(max_length=500)] = []
+    hidden: Annotated[list[_Id], Field(max_length=500)] = []
