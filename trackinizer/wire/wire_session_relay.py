@@ -590,6 +590,10 @@ class ServeSession(BaseModel):
     """Whether the server placed it with a remote agent service, whose daemon must
     confine it: one that confines nothing refuses it."""
 
+    watcher: bool = False
+    """Whether the person's ``watcher`` setting is on, which a remote agent service
+    tells its agent to start a watcher for."""
+
 
 class StopProcess(BaseModel):
     """A stop of a process a remote agent service runs, which its daemon carries out.

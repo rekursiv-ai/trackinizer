@@ -89,6 +89,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     },
     "autofix": True,
     "automerge": False,
+    "watcher": True,
     "hide_closed_pulls": True,
     "stars": [],
     "views": [],
@@ -828,8 +829,14 @@ def test_the_settings_an_agent_sees_are_every_assistant_key_whole_and_resettable
     schema = assistant_settings_schema()
     keys = from_plain(schema["properties"], dict[str, dict[str, JsonValue]])
     assert set(keys) == AGENT_KEYS
-    # What the next agent loads, and what agents do to pull requests, stay the person's.
-    assert {"cli_folder", "autofix", "automerge"} == ASSISTANT_KEYS - AGENT_KEYS
+    # What the next agent loads, what agents do to pull requests, and their watcher,
+    # stay the person's.
+    assert {
+        "cli_folder",
+        "autofix",
+        "automerge",
+        "watcher",
+    } == ASSISTANT_KEYS - AGENT_KEYS
     assert "$ref" not in to_json(schema).decode()
     assert (schema["type"], schema["additionalProperties"]) == ("object", False)
     for key, offered in keys.items():
