@@ -968,3 +968,158 @@ STATION_LABEL_PREFIX: Final = "station:"
 
 CONSOLE_RELAY_MARK: Final = "→ "
 """What a line relayed from a console is prefixed with in the chat."""
+
+
+class SessionRunState(BaseModel):
+    """What a run reports of itself, between its drains of the session's queue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: RunState
+    instance: str = Field(pattern=r"^[0-9a-f]{32}$")
+    """The run's own id, as its inbound drains name it. A report from a run other than
+    the one holding the session's lease changes nothing."""
+
+
+class InboundEnqueueRequest(BaseModel):
+    """A message a client asks trackinizer to inject into a live session.
+
+    The enqueue **request** carries ``text`` -- the one field the route delivers --
+    and, from the configured assistant alone, the ``asker`` it sends for. ``source``
+    is attested by the route from the authenticated principal (a client cannot forge
+    another sender), and ``room`` has no enqueue semantics (the direct-session
+    enqueue route discards it; routed delivery is the separate ``@actor:room``
+    send-message path). ``extra="forbid"`` makes a client-sent ``source`` or ``room``
+    a 422 rather than a silently-ignored field -- the request and response shapes are
+    deliberately distinct (the response :class:`InboundDrainItem` carries both
+    ``source`` and ``room``), so neither can be confused for the other.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
+    """The message as a person reads it: for ``answer`` the one-line form, "Yes" or
+    "No: <reason>"; for ``interrupt``, "interrupt"."""
+
+    kind: InboundKind = "line"
+    """What the message is; a person's line unless the client names another kind."""
+
+    payload: dict[str, object] | None = None
+    """The kind's structured data, as :data:`InboundKind` documents it; ``None`` for
+    the kinds that carry none."""
+
+    asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
+    """The account of the user the configured assistant sends this line for.
+
+    The server lets the assistant send to a session the assistant cannot read only
+    for a user who may write to it (that session's account, or a writer who holds its
+    audience), so the assistant names whom it speaks for. Any other sender's ``asker``
+    is ignored.
+    """
+
+    _validate_scalars = field_validator("asker", mode="after")(
+        staticmethod(_reject_blank),
+    )
+
+
+class ConsoleRelayReceipt(BaseModel):
+    """Whether the station's chat partner took a Console relay."""
+
+    delivered: bool
+    """False when the station has no chat, or its partner is not running or is full.
+    The agents already have the message, so this is not an error."""
+
+
+class InboundDrainItem(BaseModel):
+    """One message drained for a session, with its attested sender.
+
+    The drain **response** item: unlike the enqueue request, it carries
+    ``source`` -- the producer's attested ``--as`` / principal -- so the
+    poller can render the ``[room] sender:`` injection context. Inbound-only
+    and transient: it is **not** an ``agent_session_events`` row; when the
+    agent consumes it, the capture path logs it as a normal turn.
+    """
+
+    text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
+    """The message as a person reads it; see :attr:`InboundEnqueueRequest.text`."""
+
+    kind: InboundKind = "line"
+    """What the message is, as the enqueue named it; see :data:`InboundKind`."""
+
+    payload: dict[str, object] | None = None
+    """The kind's structured data, as :data:`InboundKind` documents it."""
+
+    source: str | None = None
+    source_role: str | None = None
+    """The sender's role (``viewer``, ``writer`` or ``admin``) as the server attested
+    it, beside ``source``; ``None`` for a sender the server cannot name, and from a
+    server that predates the field."""
+
+    room: str | None = None
+    """The room a routed message was scoped to, for the ``[room] sender:``
+    injection prefix; ``None`` for a direct (session-id) enqueue."""
+
+    context: WorkspaceMessageContext | None = None
+
+    _validate_room = field_validator("room", mode="after")(staticmethod(_reject_blank))
+
+
+class InboundEnqueueResponse(BaseModel):
+    """Receipt for an enqueued inbound message.
+
+    ``queued`` is the current count pending for the session after this enqueue,
+    including on an idempotent retry. It is
+    an honest receipt -- the message is queued for the session's poller, not
+    proven delivered; a session whose ``trax run`` is gone never drains it.
+    """
+
+    queued: int
+
+
+class DrainInboundResponse(BaseModel):
+    """The inbound messages drained for one session (oldest first)."""
+
+    messages: list[InboundDrainItem]
+
+
+SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
+
+
+SESSION_RUN_STATE_PATH: Final = "/api/sessions/{session_id}/run-state"
+
+
+SESSION_REATTACH_PATH: Final = "/api/sessions/{session_id}/reattach"
+
+
+SESSION_WORKSTREAM_PATH: Final = "/api/sessions/{session_id}/workstream"
+
+
+PROVIDER_IS_CLI: Final = "provider_is_cli"
+
+
+PROVIDER_IS_ASSISTANT: Final = "provider_is_assistant"
+
+
+PROVIDER_IS_OTHER_CLI: Final = "provider_is_other_cli"
+
+
+CHAT_RUN_LIVE: Final = "chat_run_live"
+
+
+CLI_REQUIRED: Final = "cli_required"
+
+
+SESSION_ENDED: Final = "session_ended"
+
+
+RUN_ENDING_REFUSALS: Final = frozenset(
+    {PROVIDER_IS_ASSISTANT, PROVIDER_IS_OTHER_CLI, CHAT_RUN_LIVE, SESSION_ENDED},
+)
+
+
+CHAT_TAKEN_OVER: Final = "chat_taken_over"
+
+
+CHAT_TAKEN_OVER_MESSAGE: Final = (
+    "taken over in a terminal; reattach from Chat or Console"
+)
