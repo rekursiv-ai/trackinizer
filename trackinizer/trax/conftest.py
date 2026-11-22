@@ -43,6 +43,8 @@ from trackinizer.wire.wire_sessions import (
     SessionStartResponse,
 )
 from trackinizer.wire.wire_terminals import TerminalHosts, TerminalOpened
+from trackinizer.wire import wire_code
+from trackinizer.wire.wire_code import CodeDiff, CodeFile
 
 
 if TYPE_CHECKING:
@@ -1269,6 +1271,29 @@ class FakeClient:
     def remove_author(self, target_id: uuid.UUID, author: str, *, actor: str) -> None:
         """Remove author."""
         self.calls.append(("remove_author", (target_id, author), {"actor": actor}))
+
+    def my_email(self) -> str:
+        """Return the account this fake answers as; the code store files blobs under it."""
+        self.calls.append(("my_email", (), {}))
+        return "ada@example.com"
+
+    def code_file(self, record_id: uuid.UUID, *, path: str) -> CodeFile | None:
+        """Record the read; this fake holds no snapshot, so it finds no file."""
+        self.calls.append(("code_file", (record_id,), {"path": path}))
+        return None
+
+    def code_diff(
+        self,
+        from_record: uuid.UUID,
+        to_record: uuid.UUID,
+        *,
+        context: int = wire_code.DEFAULT_DIFF_CONTEXT,
+    ) -> CodeDiff | None:
+        """Record the read; with no snapshots there is nothing to compare."""
+        self.calls.append(
+            ("code_diff", (from_record, to_record), {"context": context}),
+        )
+        return None
 
 
 @pytest.fixture
