@@ -543,3 +543,80 @@ def offer_record_visual(visuals: Canvas.Config) -> None:
     """
     if not any(isinstance(each, RecordVisual.Config) for each in visuals.visuals):
         visuals.visuals.append(RecordVisual.Config())
+
+
+class Workspace:
+    """The trusted composition of visual configs and its initial selection."""
+
+    class Config(Fig["Workspace"]):
+        visuals: list[Makeable[Visual]] = field(
+            default_factory=lambda: [
+                StaticVisual.Config(
+                    type="trax.browse",
+                    title="Browse",
+                    description="Browse trax records by kind and query.",
+                    record_kinds=[],
+                ),
+                ContextGraphVisual.Config(),
+                KnowledgeVisual.Config(),
+                TimelineVisual.Config(),
+                StaticVisual.Config(
+                    type="trax.artifact",
+                    title="Artifact",
+                    description="Read immutable shared Artifact content.",
+                    requires=["record"],
+                    record_kinds=["Artifact"],
+                ),
+                StaticVisual.Config(
+                    type="trax.summary",
+                    title="Campaign summary",
+                    description=(
+                        "What a campaign did, for readers who may not read its "
+                        "transcripts: its sessions, steps, phases and beliefs."
+                    ),
+                    requires=["record"],
+                    record_kinds=["Issue", "AgentSession"],
+                ),
+                FilesVisual.Config(),
+                TerminalVisual.Config(),
+                StaticVisual.Config(
+                    type="trax.blocks",
+                    title="Blocks",
+                    description=(
+                        "A distilled answer: blocks of knowledge and the flow "
+                        "between them, from the prompt's records."
+                    ),
+                ),
+            ],
+        )
+        """Configured visual modules available to a workspace."""
+
+        default_visual: str = "trax.browse"
+        """Visual type shown when a new workspace opens; it must need no record."""
+
+    def __init__(self, config: Config) -> None:
+        """Build the lightweight definitions and validate their identity."""
+        self.visuals = [visual.make().describe() for visual in config.visuals]
+        types = [visual.type for visual in self.visuals]
+        if len(types) != len(set(types)):
+            raise ValueError("Visual types must be unique.")
+        default = self.visual(config.default_visual)
+        if default is None:
+            raise ValueError("Default visual must be registered.")
+        if "record" in default.requires:
+            raise ValueError("Default visual cannot require a record.")
+        self.default_visual = config.default_visual
+
+    def visual(self, visual_type: str) -> VisualDescription | None:
+        """Return one registered description, or None when it is not registered."""
+        return next(
+            (visual for visual in self.visuals if visual.type == visual_type),
+            None,
+        )
+
+    def catalog(self) -> VisualCatalogBody:
+        """Project the trusted configuration as plain validated JSON fields."""
+        return VisualCatalogBody(
+            default_visual=self.default_visual,
+            visuals=self.visuals,
+        )
