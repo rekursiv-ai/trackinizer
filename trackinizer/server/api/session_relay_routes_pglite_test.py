@@ -701,6 +701,31 @@ async def test_a_start_hands_its_host_a_key_that_serves_the_session_and_only_the
     )
 
 
+async def test_a_process_on_the_remote_agent_service_holds_a_key_of_who_started_it(
+    world: _World,
+) -> None:
+    """Not the service's account, whose host runs it: what it starts is its person's."""
+    ada = await world.key(await world.person("ada@x.y"))
+    _ = await world.person(_AGENTS)
+    service = await world.host("remote-agents", owner=_AGENTS, facts=_SERVICE)
+    session_id = await world.session("ada@x.y")
+
+    started = await world.start(ada, session_id)
+    process = AgentProcess.model_validate(started.json())
+    served = await world.served(service)
+
+    assert started.status_code == 200, started.text
+    assert served.remote
+    async with world.store.engine.acquire() as conn:
+        key = await conn.fetchrow(
+            "SELECT k.host_id, u.email FROM api_keys k "
+            "JOIN users u ON u.id = k.user_id WHERE k.name = $1",
+            process_key_name(process.process_id, session_id=session_id),
+        )
+    assert key is not None
+    assert (key["host_id"], key["email"]) == (service.id, "ada@x.y")
+
+
 @pytest.mark.parametrize("host", [None, "remote-agents", "laptop"])
 async def test_a_start_while_one_starts_is_the_one_already_there(
     world: _World,

@@ -100,11 +100,14 @@ async def session_start_route(
     key, the assistant's or its starter's attach to a chat. An unknown id is 404.
 
     ``spawned_by`` names the session whose agent spawned this one, which the caller
-    must write (403 else; 404 for no session). The start re-opens the session already
+    must write, and, a science chat, may run or serve as its process (403 else; 404
+    for no session). The start re-opens the session already
     ``produced_by`` it under ``cli_session_id``, whichever key opened that, else opens
     one in its audience; either way it links this one ``produced_by`` it, ``note``
-    the edge's note. An agent process's key starts only such a session, spawned by a
-    session it acts for (``auth.process_reaches``).
+    the edge's note. A session it mints so takes a tab, opening nothing, in Chat on
+    each canvas of the chat it works for, unless it is a chat of its own (a
+    ``chat:`` id); one it re-opens takes none. An agent process's key starts only
+    such a session, spawned by a session it acts for (``auth.process_reaches``).
 
     Args:
       body: Session metadata (title, cli, cli_session_id, attach, started, rooms,
@@ -190,6 +193,8 @@ async def session_start_route(
         keep_audience=body.keep_audience or spawner is not None,
         principal=await request_principal(request, identity),
     )
+    row = await require_session(store, session_id)
+    require_session_write_access(identity, row)
     if spawner is not None:
         _ = await store.add_edge(
             from_id=session_id,
@@ -199,8 +204,6 @@ async def session_start_route(
             api_key_id=identity.api_key_id,
             actor=_actor(identity, body.actor),
         )
-    row = await require_session(store, session_id)
-    require_session_write_access(identity, row)
     return SessionStartResponse(
         id=session_id,
         # The event log's continuation seq: 0 for a fresh session, ``max(seq)+1``
