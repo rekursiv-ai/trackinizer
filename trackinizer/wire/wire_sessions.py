@@ -855,3 +855,19 @@ class ConsoleRelay(BaseModel):
             for target in self.targets
         )
         return f"{CONSOLE_RELAY_MARK}{names}: {self.text}"
+
+
+class ConsoleTarget(BaseModel):
+    """An agent a Console line was sent to, as ``@actor`` or ``@actor:room``."""
+
+    actor: str = Field(min_length=1)
+    room: str | None = None
+
+    _validate_scalars = field_validator("actor", "room", mode="after")(
+        staticmethod(_reject_blank),
+    )
+
+
+type InboundKind = Literal["line", "command", "answer", "settings", "interrupt"]
+"""What an inbound item is: a person's line, a slash command, an answer to an ask,
+a settings change, or an interrupt."""

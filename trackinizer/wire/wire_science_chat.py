@@ -276,3 +276,7 @@ class ChatHead(BaseModel):
     may_delete: bool
     """Whether the caller may delete the chat: an admin, the key that opened it, or
     its starter while every person's line in it is theirs."""
+
+
+type ChatProvider = Literal["assistant", "claude", "codex"]
+"""Who answers a chat: the shared assistant, or a CLI run on a machine of the user's."""

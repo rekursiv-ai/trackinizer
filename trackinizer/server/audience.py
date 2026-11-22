@@ -587,3 +587,55 @@ def members_reader(
         every_chat=orgs == "single",
         assistant=assistant,
     )
+
+
+def reader_for(
+    email: str,
+    *,
+    audiences: frozenset[str],
+    admin: bool,
+    orgs: ChatOrgs,
+    assistant: str,
+    hosted_domain: str | None,
+    delegated: bool = False,
+    hidden: bool = True,
+) -> SessionReader:
+    """Describe a caller as the transcript test reads it on a server in ``orgs`` mode.
+
+    A person is any caller but the assistant and a service account. Only a person has
+    an organisation, and only on a ``domain`` server, and only a person oversees. A
+    read the assistant makes for a person (``delegated``) is that person's, less what
+    no chat may copy out: their oversight and the every-chat grant.
+
+    Args:
+      email: The caller's email.
+      audiences: The audiences the caller holds.
+      admin: Whether the caller is an admin.
+      orgs: The server's organisation mode.
+      assistant: The configured assistant's email; empty when none.
+      hosted_domain: Google's ``hd`` claim from the caller's last login, which
+        makes them a member of their email domain's organisation (:func:`org_of`).
+      delegated: The assistant reads for this caller.
+      hidden: Keep private sessions.
+
+    Returns:
+      reader: The caller, as :func:`visible_sql` tests it.
+
+    """
+    email = email.lower()
+    the_assistant = bool(assistant) and email == assistant
+    person = not the_assistant and not is_service_address(email)
+    return SessionReader(
+        audiences=audiences,
+        email=email,
+        org=(
+            org_of(email, hosted_domain=hosted_domain)
+            if person and orgs == "domain"
+            else None
+        ),
+        every_session=orgs == "single",
+        every_chat=orgs == "single" and (person or the_assistant) and not delegated,
+        oversight=person and not delegated and (STAFF in audiences or admin),
+        hidden=hidden,
+        assistant=assistant,
+    )
