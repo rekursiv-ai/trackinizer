@@ -63,6 +63,8 @@ ASSISTANT_KEYS: Final = frozenset(
         "cli_folder",
         "default_host",
         "chat_view",
+        "chat_provider",
+        "chat_tool_calls",
         "autofix",
         "automerge",
     },
