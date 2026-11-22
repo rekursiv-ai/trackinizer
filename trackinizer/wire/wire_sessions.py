@@ -26,6 +26,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
+from trackinizer.wire.wire_science_chat import ChatForkAt
 
 
 _MAX_MESSAGE_CHARS: Final = 16_384
