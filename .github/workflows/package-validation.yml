@@ -16,8 +16,11 @@ on:
 permissions:
   contents: read
 
+# A PR run cancels the one it supersedes. A push to main is grouped by commit: the
+# export waits on CI for the commit it merged, and a later push must neither
+# cancel that run nor replace it while it waits to start.
 concurrency:
-  group: package-validation-${{ github.workflow }}-${{ github.ref }}
+  group: package-validation-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -28,10 +31,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Outranks the checkout's .python-version, which pins a newer one.
+          python-version: "3.12"
       - name: Cache apt packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -50,16 +56,8 @@ jobs:
           timeout 120 sudo apt-get update
           timeout 300 sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-client-18 postgresql-18-pgvector
       - name: Validate package
+        # The same for every package; a package's own checks are its tests.
         run: |
-          # Lint/type/test checks come from this package's own .pre-commit-config.yaml.
-          # Restating each tool here means a newly added hook silently goes unrun.
-          uv sync --frozen --all-groups --all-extras
-          uv run pre-commit run --all-files --hook-stage pre-commit
-          uv run pre-commit run --all-files --hook-stage pre-push
-          uv run python -c "import trackinizer"
-          (cd trackinizer/web && ./npm ci --no-audit --no-fund && ./npm run typecheck && ./npm test && ./npm run build)
-          rm -rf dist
-          uv build --out-dir dist
-          uv run python -m zipfile -l dist/trackinizer-*.whl | grep -q trackinizer/web/dist/index.html
-          wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --no-project --with "$wheel" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import importlib.metadata as m, importlib.util as u, re, trackinizer.trax.cli, trackinizer.client.client; extra = [re.match(r'[A-Za-z0-9_.-]+', r)[0].replace('-', '_') for r in m.requires('trackinizer') if 'server' in r.partition(';')[2]]; assert extra, 'the wheel has no server extra'; leaked = [name for name in extra if u.find_spec(name)]; assert not leaked, leaked; print(trackinizer.__file__)"
-          wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --no-project --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "${wheel}[server]" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import trackinizer.server.server; print(trackinizer.__file__)"
+          uv sync --frozen --all-groups --compile-bytecode
+          SKIP=ty-check,pyrefly-check uv run pre-commit run --all-files --hook-stage pre-commit
+          SKIP=pytest-global,pytest-slow-global,pytest-ci-smoke-global,pytest-integration-global uv run pre-commit run --all-files --hook-stage pre-push

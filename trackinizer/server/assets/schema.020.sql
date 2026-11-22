@@ -45,9 +45,13 @@ END IF;
 -- capture never recorded. The original discriminator survives as
 -- ``legacy/<Kind>``.
 --
--- The ``py/object`` tag is REQUIRED -- ``DataclassCodec`` dispatches on it and
--- an untagged payload does not decode at all. ``schema_backfill_test.py`` pins
--- the dotted name against what the codec emits.
+-- The ``py/object`` tag is REQUIRED -- the reader dispatches on it and an
+-- untagged payload does not decode at all. ``schema_backfill_test.py`` pins
+-- the name against what ``stored_payload`` writes: the class's bare name. A
+-- database that ran this file before classes were stored by name holds an
+-- import path instead; the ledger skips an applied file by name alone, so this
+-- text never reruns there, and the operator's tag rewrite
+-- (``private/tag_runner.py``) renames those rows.
 --
 -- ``jsonb_build_object`` then cast to ``json``: the builder exists only in
 -- jsonb, while the column is ``json`` to preserve key order for byte-exact
@@ -63,7 +67,7 @@ INSERT INTO session_records
     (session_id, part, idx, kind, timestamp, created, model, payload, text)
 SELECT session_id, -1, seq, 'UncategorizedRecord', timestamp, created, model,
        jsonb_build_object(
-           'py/object', 'trackinizer.lib.agent.types.sessions.UncategorizedRecord',
+           'py/object', 'UncategorizedRecord',
            'context_id', NULL,
            'timestamp', NULL,
            'kind', 'legacy/' || kind,

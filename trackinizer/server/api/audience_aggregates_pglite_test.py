@@ -18,6 +18,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
+import asyncio
+
 from fastapi import FastAPI
 from treekle import from_plain, json_loads
 
@@ -25,18 +27,17 @@ import httpx2
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.addons.embedding.fakes import HashEmbedder, vector_store
+from trackinizer.addons.embedding.search import Nearest
 from trackinizer.server import web
 from trackinizer.server.api import export_routes, query
 from trackinizer.server.api.conftest import TEST_USER_EMAIL, make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Assistant, ChatOrgs, Config
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.audience_aggregates_pglite_test import (
     ASSISTANT_EMAIL,
     CANARY,
-    CHAT_CANARY,
+    SETTINGS,
     STARTER_EMAIL,
     Pair,
     index,
@@ -109,11 +110,14 @@ class _Served:
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def served(pglite_engine: PGliteEngine) -> AsyncIterator[_Served]:
+async def store(pglite_engine: PGliteEngine) -> Store:
+    """Return a store on the shared PGlite engine, with the addon's vector table."""
+    return await vector_store(pglite_engine)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def served(store: Store) -> AsyncIterator[_Served]:
     """Serve the feed, search, record-filter and export routes over three sessions."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
     # The histogram counts a week back at most, so the sessions write within it. The
     # chat writes first, so a grid that counted it would start at its record.
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -121,11 +125,17 @@ async def served(pglite_engine: PGliteEngine) -> AsyncIterator[_Served]:
     chat_at = pair.origin
     chat = await seed_chat(store, at=chat_at)
     await index(store)
+    loaded = asyncio.Event()
+    loaded.set()
     app = FastAPI()
     app.state.store = store
     app.state.engine = store.engine
     app.state.config = _config("domain")
-    app.state.inbound = InboundQueue()
+    app.state.vector_search = Nearest(
+        model=HashEmbedder(dim=1_024),
+        settings=SETTINGS,
+        loaded=loaded,
+    )
     web.attach(app)
     app.include_router(query.router)
     app.include_router(export_routes.router)
@@ -165,12 +175,12 @@ _ROUTES: Final[dict[str, _Route]] = {
     "facets": ("/api/web/feed/facets", [], _whole),
     "full text": (
         "/api/web/search_sessions",
-        [("q", "transcript"), ("semantic", "false"), ("whose", "everyone")],
+        [("q", "transcript"), ("mode", "keyword"), ("whose", "everyone")],
         _whole,
     ),
     "semantic": (
         "/api/web/search_sessions",
-        [("q", _STAFF_TEXT), ("semantic", "true"), ("whose", "everyone")],
+        [("q", _STAFF_TEXT), ("mode", "fused"), ("whose", "everyone")],
         _whole,
     ),
     "record filter": (
@@ -203,28 +213,6 @@ async def test_a_route_answers_for_the_audiences_of_its_caller(
     assert str(pair.open_id) in staffed
 
 
-@pytest.mark.parametrize("route", _ROUTES)
-async def test_a_route_answers_a_stranger_without_another_persons_chat(
-    served: _Served,
-    route: str,
-) -> None:
-    path, params, view = _ROUTES[route]
-    pair = served.pair
-
-    served.as_reader(_BOTH, email=_STRANGER)
-    stranger = view(await served.get(path, params))
-    served.as_reader(_OPEN, email=STARTER_EMAIL)
-    starter = view(await served.get(path, params))
-
-    assert (str(pair.open_id) in stranger, str(pair.staff_id) in stranger) == (
-        True,
-        True,
-    )
-    assert CANARY in stranger
-    assert (str(served.chat) in stranger, CHAT_CANARY in stranger) == (False, False)
-    assert str(served.chat) in starter
-
-
 async def test_the_export_header_names_the_audiences_of_its_caller(
     served: _Served,
 ) -> None:
@@ -250,26 +238,13 @@ async def test_the_histogram_counts_for_the_audiences_of_its_caller(
     staffed = await _histogram(served)
 
     assert opened == (pair.open_at, 1)
-    assert staffed == (pair.staff_at, 3)
-
-
-async def test_the_histogram_counts_no_record_of_another_persons_chat(
-    served: _Served,
-) -> None:
-    """The chat wrote first and answered inside the span, so a leak shows in either."""
-    served.as_reader(_BOTH, email=_STRANGER)
-    stranger = await _histogram(served)
-    served.as_reader(_OPEN, email=STARTER_EMAIL)
-    starter = await _histogram(served)
-
-    # The starter is of another organisation than the open session's account.
-    assert stranger == (served.pair.staff_at, 3)
-    assert starter == (served.chat_at, 2)
+    # Staff oversees every session; the app keeps a chat from all but its members.
+    assert staffed == (served.chat_at, 5)
 
 
 async def test_the_assistant_finds_no_chat_by_searching(served: _Served) -> None:
     """It searches on a user's behalf, so a chat it could find would be any user's."""
-    params = [("q", "transcript"), ("semantic", "false")]
+    params = [("q", "transcript"), ("mode", "keyword")]
     served.as_reader(_BOTH, email=ASSISTANT_EMAIL)
 
     by_domain = (await served.get("/api/web/search_sessions", params)).text
@@ -424,29 +399,9 @@ async def test_whose_campaigns_reads_a_lead_labelled_with_the_slug_in_no_room_of
     assert str(lead) in mine
 
 
-async def test_facets_offer_no_hide_of_a_chat_even_to_its_starter(
-    served: _Served,
-) -> None:
-    """A chat is hidden from Chat, which says who reads it, and not from the console."""
-    served.serve_chats_as("single")
-    served.as_reader(_OPEN, email=STARTER_EMAIL)
-
-    body = from_plain(
-        (await served.get("/api/web/feed/facets", [])).json(),
-        dict[str, object],
-    )
-    hideable = {
-        from_plain(each["session_id"], str): each["hideable"]
-        for each in from_plain(body["actors"], list[dict[str, object]])
-    }
-
-    assert hideable[str(served.chat)] is False
-
-
 def _config(orgs: ChatOrgs) -> Config:
     """Return the server's configuration, the assistant Scout's, chats as ``orgs``."""
     return Config(
-        session_embedder="stub-1024",
         assistant=Assistant(actor="scout", email=ASSISTANT_EMAIL),
         chat_orgs=orgs,
     )

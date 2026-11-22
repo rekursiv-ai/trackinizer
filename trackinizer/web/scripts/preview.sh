@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run the local preview: a trackinizer server serving the web app's latest build at
-# /app/, with `vite build --watch` keeping that build current.
+# /trax/, with `vite build --watch` keeping that build current.
 #
-#   scripts/preview.sh      # from web/, then open :8765/app/
+#   scripts/preview.sh      # from web/, then open :8765/trax/
 #
 # The database is persistent PGlite under /opt/scratch/runs, so seeded data
 # survives restarts (seed it with scripts/seed_local.py). --no-auth makes every

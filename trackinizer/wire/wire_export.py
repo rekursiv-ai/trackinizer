@@ -80,7 +80,7 @@ EXPORT_SELECTOR_FIELDS: Final = frozenset({"labels"})
 """What a selector may filter on.
 
 Labels alone, because a label is what the deployments in the request
-partition by (``org:<x>``, ``machine:<host>``). Every other column selects
+partition by (``org:<x>``, ``host:<host>``). Every other column selects
 rows that share a value rather than a partition, and a subgraph carved on
 ``priority`` or ``title`` is a question nobody has asked. Widening this is
 one line when someone does."""
@@ -106,34 +106,32 @@ EXPORT_TABLES: Final = (
 
 Left out on purpose, and why:
 
-* ``inquiry_embeddings``, ``session_embeddings`` -- derived from each row's
-  text by the embedder, and specific to the model that produced them.
-* ``session_index_state`` -- embedding-progress bookkeeping, derived from
-  ``session_embeddings``.
+* The embedding add-on's ``embedding.vectors`` -- derived from each row's text by
+  its model, and specific to the settings that produced them.
 * ``session_ciphertext``, ``session_bodies`` -- encrypted / cold replay-only
   blobs, which retention exists to drop.
-* ``users``, ``api_keys``, ``allowlist``, ``inquiry_lock_log`` -- credentials
-  and access control, not the graph. A row's ``locked`` flag is a column of
-  ``inquiries`` and is exported; who set it is not.
+* ``users``, ``api_keys``, ``allowlist`` -- credentials and access control, not
+  the graph. A row's ``locked`` flag is a column of ``inquiries`` and is exported;
+  who set it is not. That history is ``change_log`` rows of the protected kinds
+  ``locked`` and ``unlocked``, which ``change_log``'s export leaves out.
 * ``variables`` -- launch configuration, not graph records; a secret row names
   a value that lives outside the database, so a restored export could not
   carry it.
-* ``visual_workspaces``, ``visual_workspace_operations`` -- per-user stations
+* ``visual_canvases``, ``visual_canvas_operations`` -- per-user canvases
   (named canvases) and operation receipts, not account-agnostic graph records. A Chat conversation is an
   AgentSession, so its lines export with the sessions.
 * ``science_chat_shares``, ``science_chat_tombstones`` -- who may post into which
   science chat, and which chats were deleted: access control, like ``allowlist``.
-* ``credit_entries``, ``credit_grace`` -- what each person was given, bought and
-  spent, and who is on grace: money and billing terms, which the database's own
-  backups keep and a graph export would show to everyone who can read it.
+  A row's ``filed_from_chat`` is a column of ``inquiries`` and is exported, so a
+  row filed from a chat still names it wherever the file is read back.
 * ``visual_reports``, ``visual_report_revisions`` -- shared report presentation
   and author identity; the linked Artifact and graph citations export above.
 * ``session_liveness`` -- when each live session was last heard from, which
   the session reaper keeps; runtime state, meaningless once restored elsewhere.
-* ``variables``, ``machines`` -- deployment configuration (the launch
+* ``variables``, ``hosts`` -- deployment configuration (the launch
   environment, and where campaigns may run), not graph records; a secret's
   value is not in the database at all.
-* ``machine_enrollments``, ``machine_credentials`` -- hashes of the secrets a
+* ``host_enrollments``, ``host_credentials`` -- hashes of the secrets a
   host joins and authenticates with: access control, like ``api_keys``.
 * ``device_logins`` -- the open codes a program polls with to be given an API key,
   each gone within ten minutes: access control, like ``api_keys``.
@@ -145,5 +143,8 @@ Left out on purpose, and why:
   them, and the hashes of the campaign-box credentials that submit them: what
   each person ran and was charged, and hashes that open a node, which the database's own
   backups keep and a graph export would show to everyone who can read it.
+* ``host_jobs`` -- the jobs each person ran on their own hosts: what ran where,
+  and from which repository, which the database's own backups keep and a graph export
+  would show to everyone who can read it.
 * ``applied_migrations`` -- carried in the header instead.
 """

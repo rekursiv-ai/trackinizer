@@ -1,7 +1,16 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { type FeedCursor, type FeedEvent, type FeedFilters, type FeedPage, type FeedRead, readFeed, type SessionRecord } from "../api/sessions";
+import {
+  type FeedCursor,
+  type FeedEvent,
+  type FeedFilters,
+  type FeedPage,
+  type FeedRead,
+  readFeed,
+  type SessionRecord,
+} from "../api/sessions";
 import type { Batch, Later } from "../live/serial";
 import { type Level, levelOf } from "./levels";
+import { must } from "../must";
 
 /** Records a read asks for, as the old console's did. */
 const PAGE = 300;
@@ -20,10 +29,21 @@ const FILL_PAGES = 5;
  * which survives older records dropping), its key, the event, and the event as a
  * transcript record, for the transcript's views.
  */
-export type Held = { readonly n: number; readonly key: string; readonly event: FeedEvent; readonly record: SessionRecord };
+export type Held = {
+  readonly n: number;
+  readonly key: string;
+  readonly event: FeedEvent;
+  readonly record: SessionRecord;
+};
 
 /** What the console follows: the live tail, or a window of history (ISO times; either end may be open). */
-export type Range = { readonly live: true } | { readonly live: false; readonly since: string | null; readonly until: string | null };
+export type Range =
+  | { readonly live: true }
+  | {
+      readonly live: false;
+      readonly since: string | null;
+      readonly until: string | null;
+    };
 
 /** What the console has read: its records, whether the first read is under way or failed, and whether more may follow. */
 export type FeedState = {
@@ -39,7 +59,10 @@ export type FeedState = {
  * seq (seq restarts in each part). Past `MAX_HELD`, the oldest drop. Nothing new
  * gives back `held` itself.
  */
-export function appendEvents(held: readonly Held[], events: readonly FeedEvent[]): readonly Held[] {
+export function appendEvents(
+  held: readonly Held[],
+  events: readonly FeedEvent[],
+): readonly Held[] {
   const seen = new Set(held.map(({ key }) => key));
   let n = held.at(-1)?.n ?? -1;
   const fresh: Held[] = [];
@@ -96,14 +119,17 @@ export class ConsoleFeed {
    * next page. Cancelled, they end with an error nobody is left to show.
    */
   dispose(): void {
-    for (const queryKey of this.#reading) void this.#client.cancelQueries({ queryKey, exact: true });
+    for (const queryKey of this.#reading)
+      void this.#client.cancelQueries({ queryKey, exact: true });
   }
 
   /** Read the first page: the newest, live (`#tail`); the window's oldest, history. A failure is kept for the view to show. */
   async load(): Promise<void> {
     this.#set({ ...this.#state, loading: true, error: null });
     try {
-      this.#take(await (this.#range.live ? this.#tail() : this.#read(this.#window(), true)));
+      this.#take(
+        await (this.#range.live ? this.#tail() : this.#read(this.#window(), true)),
+      );
       this.#set({ ...this.#state, loading: false });
     } catch (error) {
       this.#set({ ...this.#state, loading: false, error: asError(error) });
@@ -127,7 +153,10 @@ export class ConsoleFeed {
    * being read, wait for it, since it may predate the change; after it failed,
    * there is nothing to read past until the view's Retry loads it again.
    */
-  async update({ gap }: Batch, open: () => boolean = () => true): Promise<Later | null> {
+  async update(
+    { gap }: Batch,
+    open: () => boolean = () => true,
+  ): Promise<Later | null> {
     if (this.#state.loading) return { afterMs: 1000 };
     if (this.#state.error && !this.#state.held.length) return null;
     let page: FeedPage;
@@ -138,7 +167,10 @@ export class ConsoleFeed {
     } while (page.events.length >= PAGE);
     if (gap) {
       const newest = await this.#read({ tail: true, limit: PAGE }, false);
-      this.#set({ ...this.#state, held: replaceEvents(this.#state.held, newest.events) });
+      this.#set({
+        ...this.#state,
+        held: replaceEvents(this.#state.held, newest.events),
+      });
     }
     return null;
   }
@@ -153,16 +185,33 @@ export class ConsoleFeed {
   async #tail(): Promise<FeedPage> {
     const newest = await this.#read({ tail: true, limit: PAGE }, true);
     let [page, events] = [newest, newest.events];
-    for (let pages = 1; pages < FILL_PAGES && page.events.length >= PAGE && this.#shown(events) < FILL; pages++) {
-      const oldest = page.events[0]!;
-      page = await this.#read({ tail: true, before: { created: oldest.created, session_id: oldest.session_id, part: oldest.part, seq: oldest.seq }, limit: PAGE }, true);
+    for (
+      let pages = 1;
+      pages < FILL_PAGES && page.events.length >= PAGE && this.#shown(events) < FILL;
+      pages++
+    ) {
+      const oldest = must(page.events[0]);
+      page = await this.#read(
+        {
+          tail: true,
+          before: {
+            created: oldest.created,
+            session_id: oldest.session_id,
+            part: oldest.part,
+            seq: oldest.seq,
+          },
+          limit: PAGE,
+        },
+        true,
+      );
       events = [...page.events, ...events];
     }
     return { ...newest, events };
   }
 
   #shown(events: readonly FeedEvent[]): number {
-    return new Set(events.filter((event) => levelOf(event) <= this.#level).map(keyOf)).size;
+    return new Set(events.filter((event) => levelOf(event) <= this.#level).map(keyOf))
+      .size;
   }
 
   /** The next read past the cursor, within the window when there is one. */
@@ -184,7 +233,11 @@ export class ConsoleFeed {
    * records).
    */
   #read(read: FeedRead, retry: boolean): Promise<FeedPage> {
-    const filtered = { ...read, ...this.#filter, ...(this.#level === 1 ? { kind: [], conversation: true } : {}) };
+    const filtered = {
+      ...read,
+      ...this.#filter,
+      ...(this.#level === 1 ? { kind: [], conversation: true } : {}),
+    };
     const queryKey = ["console", "feed", filtered] as const;
     this.#reading.add(queryKey);
     return this.#client
@@ -200,7 +253,11 @@ export class ConsoleFeed {
 
   #take(page: FeedPage): void {
     this.#cursor = page.next_after ?? this.#cursor;
-    this.#set({ ...this.#state, held: appendEvents(this.#state.held, page.events), more: page.events.length >= PAGE });
+    this.#set({
+      ...this.#state,
+      held: appendEvents(this.#state.held, page.events),
+      more: page.events.length >= PAGE,
+    });
   }
 
   #set(state: FeedState): void {
@@ -210,7 +267,10 @@ export class ConsoleFeed {
 }
 
 /** `held` with each record of `events` in place of the one held under its key, keeping its place `n`. */
-function replaceEvents(held: readonly Held[], events: readonly FeedEvent[]): readonly Held[] {
+function replaceEvents(
+  held: readonly Held[],
+  events: readonly FeedEvent[],
+): readonly Held[] {
   const again = new Map(events.map((event) => [keyOf(event), event]));
   return held.map((one) => {
     const event = again.get(one.key);

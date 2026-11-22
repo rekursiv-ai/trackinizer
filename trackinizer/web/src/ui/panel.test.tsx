@@ -1,8 +1,20 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommandList, useCommands } from "../commands/registry";
-import { type PanelSpec, PanelStrip, PanelToggle, panelCommand, usePanel } from "./panel";
+import {
+  CommandRegistry,
+  CommandRegistryContext,
+  Shortcuts,
+  useCommandList,
+  useCommands,
+} from "../commands/registry";
+import {
+  type PanelSpec,
+  PanelStrip,
+  PanelToggle,
+  panelCommand,
+  usePanel,
+} from "./panel";
 
 afterEach(() => {
   cleanup();
@@ -10,7 +22,12 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-const RESULTS: PanelSpec = { id: "test.results", name: "search results", side: "left", keys: ["["] };
+const RESULTS: PanelSpec = {
+  id: "test.results",
+  name: "search results",
+  side: "left",
+  keys: ["["],
+};
 
 /** A panel as a view holds it: its toggle in a bar, the panel hidden while collapsed, its command mounted. */
 function View({ spec = RESULTS }: { spec?: PanelSpec }) {
@@ -27,7 +44,13 @@ function View({ spec = RESULTS }: { spec?: PanelSpec }) {
 }
 
 function Titles() {
-  return <output>{useCommandList().map((command) => `${command.title} (${command.section})`).join(",")}</output>;
+  return (
+    <output>
+      {useCommandList()
+        .map((command) => `${command.title} (${command.section})`)
+        .join(",")}
+    </output>
+  );
 }
 
 function show(view = <View />) {
@@ -65,7 +88,9 @@ test("a panel opened on demand starts collapsed", () => {
 test("its key toggles it too, and the palette lists the command under Panels by what it will do; the title names the key", async () => {
   const user = show();
   expect(toggle().title).toBe("Collapse search results ([)");
-  expect(screen.getByRole("status").textContent).toBe("Collapse search results (Panels)");
+  expect(screen.getByRole("status").textContent).toBe(
+    "Collapse search results (Panels)",
+  );
   // user-event spells the [ key "[[".
   await user.keyboard("[[");
   expect(toggle().getAttribute("aria-expanded")).toBe("false");
@@ -141,7 +166,9 @@ test("a collapsed pop-in panel leaves a strip: the same landmark, holding the bu
   // The button that went had the focus; the one that took its place takes it.
   expect(document.activeElement).toBe(toggle());
   await user.click(toggle());
-  expect(screen.getByRole("complementary", { name: "Peek" }).classList).not.toContain("panel-strip");
+  expect(screen.getByRole("complementary", { name: "Peek" }).classList).not.toContain(
+    "panel-strip",
+  );
   expect(document.activeElement).toBe(toggle());
 });
 
@@ -169,7 +196,9 @@ test("a pop-in panel's key hands the focus it holds to the button that takes its
   );
   screen.getByRole("button", { name: "Outside" }).focus();
   await user.keyboard("[[");
-  expect(screen.getByRole("complementary", { name: "Peek" }).classList).toContain("panel-strip");
+  expect(screen.getByRole("complementary", { name: "Peek" }).classList).toContain(
+    "panel-strip",
+  );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Outside" }));
   await user.keyboard("[[");
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Outside" }));

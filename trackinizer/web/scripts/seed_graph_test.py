@@ -45,6 +45,19 @@ if TYPE_CHECKING:
     from trackinizer.wire.wire_sessions import SessionEnd
 
 
+@pytest.fixture(scope="module")
+def committed() -> Structure:
+    """Return the committed structure, loaded once: a load takes ~150 ms."""
+    return load(GRAPH_STRUCTURE.read_text())
+
+
+@pytest.fixture(scope="module")
+def committed_seed(committed: Structure) -> tuple[_FakeClient, SeededGraph]:
+    """Seed the committed structure once; tests only read what it wrote."""
+    client = _FakeClient()
+    return client, seed_graph(client, committed, actor="ada@example.com")
+
+
 def test_islands_are_the_issues_atop_narrows_and_what_they_produced() -> None:
     found = islands(_STRUCTURE)
     assert found.roots == (6, 0)
@@ -161,10 +174,18 @@ def test_claims_fills_the_committed_thin_islands_without_turning_any_verdict() -
 @pytest.mark.parametrize("structure", ["small", "committed"])
 def test_nodes_are_created_in_order_and_every_edge_once_with_its_sign(
     structure: str,
+    committed: Structure,
+    committed_seed: tuple[_FakeClient, SeededGraph],
 ) -> None:
-    seeding = _STRUCTURE if structure == "small" else load(GRAPH_STRUCTURE.read_text())
-    client = _FakeClient()
-    seeded = seed_graph(client, seeding, actor="ada@example.com")
+    if structure in {"small", "two_carriers"}:
+        seeding, client = (
+            (_STRUCTURE if structure == "small" else _TWO_CARRIERS),
+            _FakeClient(),
+        )
+        seeded = seed_graph(client, seeding, actor="ada@example.com")
+    else:
+        seeding = committed
+        client, seeded = committed_seed
     assert [kind for kind, _ in client.items] == [n.kind for n in seeding.nodes]
     index = {node: n for n, node in enumerate(seeded.ids)}
     written = {
@@ -213,16 +234,28 @@ def test_every_person_is_an_example_address() -> None:
 def test_roots_take_written_titles_and_the_showcase_its_own_text() -> None:
     client, _ = _seeded()
     contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
-    written = from_plain(contents.get("roots"), list[str], default=[])
-    shown = from_plain(contents.get("showcase"), dict[str, object], default={})
+    written = from_plain(contents.get("roots"), list[str], default=list[str]())
+    shown = from_plain(
+        contents.get("showcase"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     titles = [body["title"] for _, body in client.items]
     assert titles[6] == written[0]
     assert (
-        from_plain(shown.get("root"), dict[str, object], default={}).items()
+        from_plain(
+            shown.get("root"),
+            dict[str, object],
+            default=dict[str, object](),
+        ).items()
         <= client.items[0][1].items()
     )
     assert (
-        from_plain(shown.get("belief"), dict[str, object], default={}).items()
+        from_plain(
+            shown.get("belief"),
+            dict[str, object],
+            default=dict[str, object](),
+        ).items()
         <= client.items[3][1].items()
     )
     assert all(titles)
@@ -302,20 +335,35 @@ def test_a_kind_takes_its_built_titles_in_order() -> None:
     titles = _titles(from_plain(kinds.get("Experiment"), dict[str, object]))
     experiments = [body["title"] for kind, body in client.items if kind == "Experiment"]
     assert experiments == titles[:2]
+    # Past the list, the titles come round again in the same order.
+    many = _FakeClient()
+    seed_graph(many, _TWO_CARRIERS, actor="ada@example.com")
+    experiments = [body["title"] for kind, body in many.items if kind == "Experiment"]
+    assert len(experiments) > len(titles)
+    assert experiments == [titles[k % len(titles)] for k in range(len(experiments))]
 
 
-def test_no_kind_repeats_a_built_title_before_it_has_used_every_one() -> None:
+def test_no_kind_repeats_a_built_title_before_it_has_used_every_one(
+    committed_seed: tuple[_FakeClient, SeededGraph],
+) -> None:
     # Lists show the newest rows of a kind together: a title repeated among them
     # reads as a placeholder.
-    client = _FakeClient()
-    seed_graph(client, load(GRAPH_STRUCTURE.read_text()), actor="ada@example.com")
+    client, _ = committed_seed
     contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
-    shown = from_plain(contents.get("showcase"), dict[str, object], default={})
+    shown = from_plain(
+        contents.get("showcase"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     written = {
-        *from_plain(contents.get("roots"), list[str], default=[]),
+        *from_plain(contents.get("roots"), list[str], default=list[str]()),
         *(
             from_plain(
-                from_plain(shown.get(part), dict[str, object], default={}).get("title"),
+                from_plain(
+                    shown.get(part),
+                    dict[str, object],
+                    default=dict[str, object](),
+                ).get("title"),
                 str,
                 default="",
             )
@@ -488,13 +536,33 @@ def test_the_showcase_counts_only_evidence_on_a_belief() -> None:
     assert showcase(structure, islands(structure)) == Showcase(root=0, belief=3)
 
 
-def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root() -> None:
-    structure = load(GRAPH_STRUCTURE.read_text())
-    found = islands(structure)
-    picked = showcase(structure, found)
+def test_a_graph_with_no_evidence_against_a_belief_has_no_showcase() -> None:
+    structure = Structure(
+        nodes=_STRUCTURE.nodes,
+        edges=tuple(
+            Link(
+                from_index=link.from_index,
+                to_index=link.to_index,
+                kind=link.kind,
+                sign=abs(link.sign),
+            )
+            for link in _STRUCTURE.edges
+        ),
+    )
+    with pytest.raises(ValueError, match="no island has evidence against a Belief"):
+        showcase(structure, islands(structure))
+
+
+def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root(
+    committed: Structure,
+) -> None:
+    found = islands(committed)
+    picked = showcase(committed, found)
     assert found.home[picked.belief] == picked.root
     contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
-    assert len(from_plain(contents.get("roots"), list[str], default=[])) >= len(
+    assert len(
+        from_plain(contents.get("roots"), list[str], default=list[str]()),
+    ) >= len(
         found.roots,
     )
 
@@ -533,6 +601,28 @@ _STRUCTURE = Structure(
         Link(from_index=5, to_index=6, kind="produced_by", sign=0),
         Link(from_index=7, to_index=6, kind="produced_by", sign=0),
         Link(from_index=9, to_index=6, kind="produced_by", sign=0),
+    ),
+)
+
+
+# More edges than one batch holds, so two carriers each take a share. The chain hangs
+# off no root, so the islands and their showcase stay those of ``_STRUCTURE``.
+_TWO_CARRIERS = Structure(
+    nodes=(
+        *_STRUCTURE.nodes,
+        *[Node(kind="Experiment", status="complete")] * (BATCH_MAX_ITEMS + 1),
+    ),
+    edges=(
+        *_STRUCTURE.edges,
+        *(
+            Link(
+                from_index=len(_STRUCTURE.nodes) + k + 1,
+                to_index=len(_STRUCTURE.nodes) + k,
+                kind="produced_by",
+                sign=0,
+            )
+            for k in range(BATCH_MAX_ITEMS)
+        ),
     ),
 )
 

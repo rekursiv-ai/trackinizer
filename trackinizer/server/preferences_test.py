@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from unittest.mock import AsyncMock
 
 import uuid
 
 from pydantic import JsonValue
+from pydantic_core import to_json
+from treekle import from_plain
 
 import pydantic
 import pytest
 
+from trackinizer.mock_test_support import AsyncMockProtocol, MockConnection
 from trackinizer.server.preferences import (
+    AGENT_KEYS,
     ASSISTANT_KEYS,
     SETTING,
+    ChatView,
     Preferences,
+    assistant_settings_schema,
+    assistant_view,
+    inline_refs,
+    read_preferences,
     stored_preferences,
     write_preferences,
 )
@@ -28,13 +37,59 @@ if TYPE_CHECKING:
 _DEFAULTS: dict[str, JsonValue] = {
     "theme": "dark",
     "skin": "default",
+    "scanlines": True,
+    "terminal_colors": {
+        "text": "#00ff00",
+        "background": "#000000",
+        "bold": None,
+        "palette": [
+            "#171421",
+            "#c01c28",
+            "#26a269",
+            "#a2734c",
+            "#12488b",
+            "#a347ba",
+            "#2aa1b3",
+            "#d0cfcc",
+            "#5e5c64",
+            "#f66151",
+            "#33d17a",
+            "#e9ad0c",
+            "#2a7bde",
+            "#c061cb",
+            "#33c7de",
+            "#ffffff",
+        ],
+        "bold_is_bright": True,
+    },
     "chat_side": "left",
+    "app_bar": "top",
+    "app_bar_width": 220,
+    "app_bar_folded": False,
+    "app_bar_pinned": True,
+    "font": "system",
+    "interface_text_size": 14,
+    "chat_text_size": 13,
+    "canvas_text_size": 14,
+    "display_text_sizes": {},
     "highlight_mentions": True,
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
     "home": "graph",
-    "chat_provider": "assistant",
-    "chat_tool_calls": False,
+    "assistant_prompt": "sagent",
+    "cli_folder": "",
+    "default_host": "",
+    "chat_view": {
+        "view": "chat",
+        "density": "auto",
+        "thinking": False,
+        "output_lines": "tool",
+        "times": False,
+        "tool_groups": "open",
+    },
+    "autofix": True,
+    "automerge": False,
+    "hide_closed_pulls": True,
     "stars": [],
     "views": [],
     "console_views": [],
@@ -42,11 +97,26 @@ _DEFAULTS: dict[str, JsonValue] = {
     "people": {},
     "read": {"boundary": None, "marks": []},
     "collapsed": [],
+    "dismissed": [],
+    "unread_tabs": [],
     "lens": None,
     "drafts": {},
     "create_draft": None,
+    "workspaces": {
+        "order": [],
+        "hidden": [],
+        "colors": {},
+        "expanded": [],
+        "tabs": [],
+        "last_canvas": {},
+    },
+    # The workstream bar: the groups you ordered, pinned and hid.
     "workstreams": {"order": [], "pinned": [], "hidden": []},
     "settings_artifact_id": None,
+    # A new chat's provider, and whether Chat draws a card per tool call: the canvas's
+    # own two settings, which `chat_view` does not say.
+    "chat_provider": "assistant",
+    "chat_tool_calls": False,
 }
 
 _VIEW_REQUEST: dict[str, JsonValue] = {
@@ -109,22 +179,121 @@ def test_a_value_its_key_does_not_take_is_refused() -> None:
         Preferences.model_validate({"chat_side": "middle"})
 
 
+@pytest.mark.parametrize(
+    "change",
+    [{"app_bar": "bottom"}, {"app_bar_width": 159}, {"app_bar_width": 401}],
+)
+def test_the_app_bar_stands_top_or_left_at_a_width_it_can_hold(
+    change: dict[str, JsonValue],
+) -> None:
+    left = Preferences.model_validate(
+        {"app_bar": "left", "app_bar_width": 400, "app_bar_folded": True},
+    )
+    assert (left.app_bar, left.app_bar_width, left.app_bar_folded) == (
+        "left",
+        400,
+        True,
+    )
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate(change)
+
+
 def test_a_skin_is_one_of_the_named_looks() -> None:
     assert Preferences.model_validate({"skin": "dos"}).skin == "dos"
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"skin": "cyber"})
 
 
-def test_workstream_preferences_keep_order_pin_and_visibility() -> None:
+def test_terminal_colors_are_gnome_green_on_black_until_changed_and_hold_a_terminals_shape() -> (
+    None
+):
+    colors = stored_preferences(None).terminal_colors
+    assert (colors.text, colors.background, colors.bold) == ("#00ff00", "#000000", None)
+    assert (colors.palette[1], colors.palette[14], colors.bold_is_bright) == (
+        "#c01c28",
+        "#33c7de",
+        True,
+    )
+    assert "terminal_colors" in ASSISTANT_KEYS
+    whole = colors.model_dump()
+    tango = ["#2e3436", *["#cc0000"] * 15]
+    chosen = Preferences.model_validate(
+        {"terminal_colors": {**whole, "palette": tango, "bold": "#ffffff"}},
+    ).terminal_colors
+    assert (chosen.palette, chosen.bold, chosen.text) == (tango, "#ffffff", "#00ff00")
+    for wrong in (
+        {**whole, "palette": tango[:15]},
+        {**whole, "palette": [*tango, "#000000"]},
+        {**whole, "text": "green"},
+        {**whole, "background": "#FFFFFF"},
+        {**whole, "bold": "#fff"},
+        {**whole, "cursor": "#ffffff"},
+        {"palette": tango},
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            Preferences.model_validate({"terminal_colors": wrong})
+
+
+def test_terminal_colors_default_is_a_copy_each_time() -> None:
+    first = stored_preferences(None).terminal_colors
+    first.palette[0] = "#ffffff"
+    assert stored_preferences(None).terminal_colors.palette[0] == "#171421"
+
+
+def test_scanlines_are_on_until_the_user_turns_them_off() -> None:
+    assert stored_preferences(None).scanlines is True
+    assert stored_preferences({"scanlines": False}).scanlines is False
+    assert "scanlines" in ASSISTANT_KEYS
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"scanlines": "off"})
+
+
+def test_native_sagent_is_the_default_and_legacy_lead_round_trips() -> None:
+    assert stored_preferences(None).assistant_prompt == "sagent"
+    assert (
+        stored_preferences({"assistant_prompt": "sagent"}).assistant_prompt == "sagent"
+    )
+    assert "assistant_prompt" in ASSISTANT_KEYS
+    assert stored_preferences({"assistant_prompt": "lead"}).model_dump(
+        mode="json",
+        include={"assistant_prompt"},
+    ) == {"assistant_prompt": "lead"}
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"assistant_prompt": "claude"})
+
+
+def test_workspace_preferences_keep_the_tab_bars_groups_tabs_and_last_canvas() -> None:
+    group, tab = (
+        "22222222-2222-2222-2222-222222222222",
+        "44444444-4444-4444-4444-444444444444",
+    )
     saved = {
-        "order": ["22222222-2222-2222-2222-222222222222"],
-        "pinned": ["22222222-2222-2222-2222-222222222222"],
+        "order": [group],
         "hidden": ["33333333-3333-3333-3333-333333333333"],
+        "colors": {group: "purple"},
+        "expanded": [group],
+        "tabs": [tab],
+        "last_canvas": {group: tab},
     }
     assert (
-        Preferences.model_validate({"workstreams": saved}).workstreams.model_dump()
+        Preferences.model_validate({"workspaces": saved}).workspaces.model_dump()
         == saved
     )
+
+
+@pytest.mark.parametrize(
+    "workspaces",
+    [
+        {"colors": {"g": "teal"}},
+        {"pinned": []},
+        {"tabs": ["t"] * 501},
+    ],
+)
+def test_a_group_colour_is_one_of_chromes_and_workspace_pins_are_gone(
+    workspaces: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"workspaces": workspaces})
 
 
 def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> None:
@@ -136,81 +305,162 @@ def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> No
     assert marked == ASSISTANT_KEYS
 
 
-def test_a_new_chat_starts_on_the_assistant_unless_the_user_picked_a_cli() -> None:
-    assert stored_preferences(None).chat_provider == "assistant"
-    assert stored_preferences({"chat_provider": "codex"}).chat_provider == "codex"
+@pytest.mark.parametrize("folder", ["", "~", "~/work/web", "/srv/repo"])
+def test_a_run_folder_is_home_or_a_path_a_run_takes(folder: str) -> None:
+    assert stored_preferences({"cli_folder": folder}).cli_folder == folder
+
+
+@pytest.mark.parametrize("folder", ["work/web", "~/a\nb", "/" + "a" * 1_024])
+def test_a_run_folder_a_run_would_refuse_is_refused(folder: str) -> None:
     with pytest.raises(pydantic.ValidationError):
-        Preferences.model_validate({"chat_provider": "gemini"})
+        Preferences.model_validate({"cli_folder": folder})
+
+
+@pytest.mark.parametrize("host", ["", "dans-macbook-pro", "gpu1", "a" * 63])
+def test_a_default_host_is_unset_or_a_hosts_name(host: str) -> None:
+    assert stored_preferences({"default_host": host}).default_host == host
+
+
+def test_the_person_or_their_agent_when_asked_picks_the_default_host() -> None:
+    assert "default_host" in AGENT_KEYS
+
+
+@pytest.mark.parametrize("host", [None, "Dans Mac", "-gpu", "gpu_1", "a" * 64, 3])
+def test_a_default_host_no_host_could_be_named_is_refused(host: object) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"default_host": host})
 
 
 @pytest.mark.asyncio
-async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_provider": "claude"}})
-    written = await write_preferences(
-        cast("Conn", conn),
-        user_id=_USER,
-        change={"chat_provider": "claude"},
-    )
-    assert written is not None
-    assert written.chat_provider == "claude"
-    conn.fetchrow.assert_awaited_once_with(
-        "UPDATE users SET preferences = "
-        "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
-        "WHERE id = $3 RETURNING preferences",
-        {"chat_provider": "claude"},
-        ["chat_style"],
-        _USER,
-    )
-    with pytest.raises(ValueError, match="chat_provider: "):
+@pytest.mark.parametrize(
+    ("key", "stored", "sent"),
+    [("terminal_placement", "side", "bottom")],
+)
+async def test_a_retired_key_reads_as_nothing_and_is_refused_on_write(
+    key: str,
+    stored: str,
+    sent: str,
+) -> None:
+    assert key not in stored_preferences({key: stored}).model_dump()
+    conn = cast(MockConnection, AsyncMock())
+    with pytest.raises(ValueError, match=f"No such preference: {key}"):
         await write_preferences(
             cast("Conn", conn),
             user_id=_USER,
-            change={"chat_provider": "gemini"},
+            change={key: sent},
         )
+    conn.fetchrow.assert_not_awaited()
 
 
-def test_tool_calls_in_chat_are_off_until_the_user_turns_them_on() -> None:
-    assert stored_preferences(None).chat_tool_calls is False
-    assert stored_preferences({"chat_tool_calls": True}).chat_tool_calls is True
-    assert "chat_tool_calls" in ASSISTANT_KEYS
+_TERMINAL: Final = {
+    "view": "terminal",
+    "density": "verbose",
+    "thinking": True,
+    "output_lines": [3, 1],
+    "times": True,
+    "tool_groups": "folded",
+}
+"""A ``chat_view`` that sets every option away from its default."""
+
+
+def test_chat_draws_its_own_lines_until_the_user_picks_another_view() -> None:
+    assert stored_preferences(None).chat_view == ChatView()
+    assert (
+        stored_preferences({"chat_view": _TERMINAL}).chat_view.model_dump() == _TERMINAL
+    )
+    assert "chat_view" in ASSISTANT_KEYS
+    # It says how Chat reads a line, not whether a tool call gets a card of its own:
+    # ``chat_tool_calls`` is still the switch for that.
+    assert stored_preferences({"chat_tool_calls": True}).chat_tool_calls
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        {"view": "tui"},
+        {"density": "dense"},
+        {"thinking": "yes"},
+        {"output_lines": "some"},
+        {"output_lines": [1]},
+        {"output_lines": [1, 2, 3]},
+        {"output_lines": [1, -1]},
+        {"times": 1},
+        {"tool_groups": "closed"},
+        {"tool_groups": False},
+        {"theme": "dark"},
+    ],
+)
+def test_a_chat_view_takes_only_its_options_each_of_its_type(
+    view: dict[str, object],
+) -> None:
     with pytest.raises(pydantic.ValidationError):
-        Preferences.model_validate({"chat_tool_calls": "yes"})
+        Preferences.model_validate({"chat_view": view})
+
+
+def test_autofix_is_on_until_the_user_or_their_agent_turns_it_off() -> None:
+    assert stored_preferences(None).autofix is True
+    assert stored_preferences({"autofix": False}).autofix is False
+    # A canvas's agent sets it when the person asks it to.
+    assert "autofix" in ASSISTANT_KEYS
+    assert Preferences.model_json_schema()["properties"]["autofix"]["x-setting"]
+
+
+def test_automerge_is_off_until_the_user_or_their_agent_turns_it_on() -> None:
+    assert stored_preferences(None).automerge is False
+    assert stored_preferences({"automerge": True}).automerge is True
+    # A canvas's agent sets it when the person asks it to, as it sets ``autofix``.
+    assert "automerge" in ASSISTANT_KEYS
+    assert Preferences.model_json_schema()["properties"]["automerge"]["x-setting"]
 
 
 @pytest.mark.asyncio
-async def test_a_write_turns_tool_calls_in_chat_on_and_back_to_the_default() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_tool_calls": True}})
+async def test_a_write_picks_a_chat_view_and_puts_it_back_dropping_the_retired_keys() -> (
+    None
+):
+    conn = cast(
+        MockConnection,
+        AsyncMock(
+            fetchrow=AsyncMock(return_value={"preferences": {"chat_view": _TERMINAL}}),
+        ),
+    )
     written = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
-        change={"chat_tool_calls": True},
+        change={"chat_view": _TERMINAL},
     )
     assert written is not None
-    assert written.chat_tool_calls is True
+    assert written.chat_view.view == "terminal"
     conn.fetchrow.assert_awaited_once_with(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
-        {"chat_tool_calls": True},
-        ["chat_style"],
+        {"chat_view": _TERMINAL},
+        ["chat_style", "chat_tool_calls", "chat_provider", "terminal_placement"],
         _USER,
     )
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"theme": "light"}})
+    conn.fetchrow = cast(
+        AsyncMockProtocol[object],
+        AsyncMock(return_value={"preferences": {"theme": "light"}}),
+    )
     reset = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
-        change={"theme": "light", "chat_tool_calls": None},
+        change={"theme": "light", "chat_view": None},
     )
     assert reset is not None
-    assert reset.chat_tool_calls is False
+    assert reset.chat_view == ChatView()
     conn.fetchrow.assert_awaited_once_with(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_tool_calls", "chat_style"],
+        [
+            "chat_view",
+            "chat_style",
+            "chat_tool_calls",
+            "chat_provider",
+            "terminal_placement",
+        ],
         _USER,
     )
 
@@ -229,13 +479,117 @@ def test_any_other_terminal_font_size_is_refused(size: str) -> None:
         Preferences.model_validate({"terminal_font_size": size})
 
 
+def test_the_app_bar_is_pinned_until_the_user_or_their_agent_unpins_it() -> None:
+    assert stored_preferences(None).app_bar_pinned is True
+    assert stored_preferences({"app_bar_pinned": False}).app_bar_pinned is False
+    assert "app_bar_pinned" in ASSISTANT_KEYS
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"app_bar_pinned": "no"})
+
+
+@pytest.mark.parametrize("font", ["system", "inter", "source_sans_3", "nunito_sans"])
+def test_a_font_is_the_systems_or_one_the_app_serves(font: str) -> None:
+    assert Preferences.model_validate({"font": font}).font == font
+    assert "font" in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize("font", ["Inter", "comic_sans", "", "ibm-plex-sans"])
+def test_any_other_font_is_refused(font: str) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"font": font})
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"interface_text_size": 11},
+        {"interface_text_size": 20},
+        {"chat_text_size": 10},
+        {"chat_text_size": 24},
+        {"canvas_text_size": 11},
+        {"canvas_text_size": 20},
+    ],
+)
+def test_text_sizes_take_their_whole_px_bounds(change: dict[str, JsonValue]) -> None:
+    key = next(iter(change))
+    assert Preferences.model_validate(change).model_dump()[key] == change[key]
+    assert key in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"interface_text_size": 10},
+        {"interface_text_size": 21},
+        {"chat_text_size": 9},
+        {"chat_text_size": 25},
+        {"chat_text_size": 13.5},
+        {"chat_text_size": "13"},
+        {"chat_text_size": None},
+        {"canvas_text_size": 10},
+        {"canvas_text_size": 21},
+    ],
+)
+def test_a_text_size_past_its_bounds_or_not_whole_px_is_refused(
+    change: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate(change)
+
+
+def test_a_display_keeps_its_own_sizes_and_follows_the_default_for_the_rest() -> None:
+    sizes = {
+        "2560x1440": {
+            "label": "2560 × 1440",
+            "interface_text_size": 16,
+            "chat_text_size": None,
+        },
+        "1512x982": {
+            "label": "Built-in Retina Display",
+            "chat_text_size": 15,
+            "canvas_text_size": 12,
+        },
+    }
+    read = stored_preferences({"display_text_sizes": sizes})
+    assert read.display_text_sizes["2560x1440"].interface_text_size == 16
+    assert read.display_text_sizes["2560x1440"].chat_text_size is None
+    assert read.display_text_sizes["1512x982"].interface_text_size is None
+    assert read.display_text_sizes["1512x982"].canvas_text_size == 12
+    assert read.display_text_sizes["2560x1440"].canvas_text_size is None
+    assert read.chat_text_size == 13
+    # The user's own record, which Settings' displays manage: not the assistant's.
+    assert "display_text_sizes" not in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize(
+    "sizes",
+    [
+        {"wide": {"label": "x"}},
+        {"0x900": {"label": "x"}},
+        {"1440x900": {"label": "x", "chat_text_size": 30}},
+        {"1440x900": {"label": "x", "interface_text_size": 10}},
+        {"1440x900": {"label": "x", "canvas_text_size": 21}},
+        {"1440x900": {"chat_text_size": 14}},
+        {"1440x900": {"label": "x", "zoom": 2}},
+        {f"{1000 + n}x900": {"label": "x"} for n in range(51)},
+    ],
+)
+def test_a_display_that_is_not_a_size_or_holds_a_size_past_bounds_is_refused(
+    sizes: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"display_text_sizes": sizes})
+
+
 _USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 
 @pytest.mark.asyncio
 async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"theme": "light"}})
+    conn = cast(
+        MockConnection,
+        AsyncMock(fetchrow=AsyncMock(return_value={"preferences": {"theme": "light"}})),
+    )
 
     written = await write_preferences(
         cast("Conn", conn),
@@ -249,15 +603,20 @@ async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_side", "chat_style"],
+        [
+            "chat_side",
+            "chat_style",
+            "chat_tool_calls",
+            "chat_provider",
+            "terminal_placement",
+        ],
         _USER,
     )
 
 
 @pytest.mark.asyncio
 async def test_a_write_for_a_user_who_is_gone_is_none() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
+    conn = cast(MockConnection, AsyncMock(fetchrow=AsyncMock(return_value=None)))
     assert (
         await write_preferences(
             cast("Conn", conn),
@@ -284,10 +643,36 @@ async def test_a_key_or_value_the_preferences_do_not_take_writes_nothing(
     change: dict[str, object],
     message: str,
 ) -> None:
-    conn = AsyncMock()
+    conn = cast(MockConnection, AsyncMock())
     with pytest.raises(ValueError, match=message):
         await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
     assert not conn.fetchrow.called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"colour": "red", "size": 3}, "No such preference: colour, size"),
+        (
+            {
+                "theme": "blue",
+                "display_text_sizes": {
+                    "1440x900": {"label": "x", "chat_text_size": 30},
+                },
+            },
+            "theme: [^;]+; display_text_sizes.1440x900.chat_text_size: ",
+        ),
+    ],
+    ids=["unknown keys", "bad values"],
+)
+async def test_a_refused_write_names_every_key_and_where_in_it_the_value_is_wrong(
+    change: dict[str, object],
+    message: str,
+) -> None:
+    conn = cast(MockConnection, AsyncMock())
+    with pytest.raises(ValueError, match=f"^{message}"):
+        await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
 
 
 def test_the_user_data_keys_round_trip_whole() -> None:
@@ -352,7 +737,17 @@ def test_a_console_window_may_be_open_or_end_where_it_starts(
     assert kept.console_views[0].range.model_dump() == window
 
 
-def _key_of(change: dict[str, JsonValue]) -> str:
+def test_a_time_with_no_offset_is_refused_and_says_why() -> None:
+    with pytest.raises(pydantic.ValidationError) as refused:
+        Preferences.model_validate(
+            {"console_views": [{**_CONSOLE_VIEW, "created": "2026-10-01T09:00:00"}]},
+        )
+    assert [error["msg"] for error in refused.value.errors()] == [
+        "Value error, is a time with no offset",
+    ]
+
+
+def _change_key(change: dict[str, JsonValue]) -> str:
     return next(iter(change))
 
 
@@ -418,13 +813,82 @@ def _key_of(change: dict[str, JsonValue]) -> str:
         {"create_draft": {**_CREATE_DRAFT, "kind": None}},
         {"lens": 3},
     ],
-    ids=_key_of,
+    ids=_change_key,
 )
 def test_a_value_past_its_bound_or_type_is_refused(
     change: dict[str, JsonValue],
 ) -> None:
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate(change)
+
+
+def test_the_settings_an_agent_sees_are_every_assistant_key_whole_and_resettable() -> (
+    None
+):
+    schema = assistant_settings_schema()
+    keys = from_plain(schema["properties"], dict[str, dict[str, JsonValue]])
+    assert set(keys) == AGENT_KEYS
+    # What the next agent loads, and what agents do to pull requests, stay the person's.
+    assert {"cli_folder", "autofix", "automerge"} == ASSISTANT_KEYS - AGENT_KEYS
+    assert "$ref" not in to_json(schema).decode()
+    assert (schema["type"], schema["additionalProperties"]) == ("object", False)
+    for key, offered in keys.items():
+        members = from_plain(offered["anyOf"], list[dict[str, JsonValue]])
+        assert members[1] == {"type": "null"}, key
+        # Said once, beside the choices: a model's own docstring may stay inside.
+        assert members[0].get("description") != offered["description"], key
+        assert offered["description"] == (Preferences.model_fields[key].description), (
+            key
+        )
+    canvas = from_plain(keys["canvas_text_size"]["anyOf"], list[dict[str, JsonValue]])
+    assert (canvas[0]["minimum"], canvas[0]["maximum"]) == (11, 20)
+
+
+def test_inlining_replaces_every_ref_in_lists_objects_and_definitions() -> None:
+    defs: dict[str, JsonValue] = {
+        "Size": {"type": "integer", "minimum": 10, "title": "Size"},
+        "Pair": {"type": "array", "prefixItems": [{"$ref": "#/$defs/Size"}]},
+    }
+    schema: JsonValue = {
+        "title": "Change",
+        "anyOf": [{"$ref": "#/$defs/Pair"}, {"type": "null"}],
+        "properties": {"size": {"$ref": "#/$defs/Size", "x-setting": True}},
+        "enum": ["a", "b"],
+    }
+
+    assert inline_refs(schema, defs) == {
+        "anyOf": [
+            {"type": "array", "prefixItems": [{"type": "integer", "minimum": 10}]},
+            {"type": "null"},
+        ],
+        "properties": {"size": {"type": "integer", "minimum": 10}},
+        "enum": ["a", "b"],
+    }
+
+
+def test_a_canvas_agent_sees_the_ui_settings_alone_the_defaults_filling_the_rest() -> (
+    None
+):
+    view = assistant_view({"font": "geist", "stars": ["a"], "retired_key": 1})
+    assert set(view) == ASSISTANT_KEYS
+    assert (view["font"], view["chat_text_size"]) == ("geist", 13)
+    assert assistant_view(None)["canvas_text_size"] == 14
+
+
+@pytest.mark.asyncio
+async def test_a_users_preferences_are_read_as_stored() -> None:
+    conn = cast(
+        MockConnection,
+        AsyncMock(fetchval=AsyncMock(return_value={"home": "empty"})),
+    )
+
+    stored = await read_preferences(cast("Conn", conn), user_id=_USER)
+
+    assert stored == {"home": "empty"}
+    conn.fetchval.assert_awaited_once_with(
+        "SELECT preferences FROM users WHERE id = $1",
+        _USER,
+    )
 
 
 if __name__ == "__main__":

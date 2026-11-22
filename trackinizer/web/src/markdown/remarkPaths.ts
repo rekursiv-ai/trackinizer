@@ -14,7 +14,11 @@ import { findAndReplace } from "mdast-util-find-and-replace";
  */
 export function remarkPaths() {
   return (tree: Root) => {
-    findAndReplace(tree, [[IN_TEXT, (path: string) => ({ type: "inlineCode", value: path })]], { ignore: ["link", "linkReference"] });
+    findAndReplace(
+      tree,
+      [[IN_TEXT, (path: string) => ({ type: "inlineCode", value: path })]],
+      { ignore: ["link", "linkReference"] },
+    );
     mark(tree);
   };
 }
@@ -29,6 +33,7 @@ const WHOLE = new RegExp(`^${PATH}$`);
 
 /** Each inline code span in `node` that is one path, marked `md-path`. */
 function mark(node: Nodes): void {
-  if (node.type === "inlineCode" && WHOLE.test(node.value)) node.data = { hProperties: { className: ["md-path"] } };
+  if (node.type === "inlineCode" && WHOLE.test(node.value))
+    node.data = { hProperties: { className: ["md-path"] } };
   else if ("children" in node) for (const child of node.children) mark(child);
 }

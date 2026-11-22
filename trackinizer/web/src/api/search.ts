@@ -14,7 +14,9 @@ export type SearchRequest<Field extends string = string> = {
 };
 
 /** A hit with the keys `Field` names, or a whole row when the search named none. */
-export type SearchHit<Field extends string = string> = string extends Field ? DetailRow : Pick<DetailRow, Field>;
+export type SearchHit<Field extends string = string> = string extends Field
+  ? DetailRow
+  : Pick<DetailRow, Field>;
 
 /**
  * Search `kind`, or every kind, with `GET /api/web/search`: rows whose title or
@@ -40,7 +42,14 @@ export async function searchInquiries<Field extends string = string>(
   const [one] = kind === undefined ? [] : inquiryKinds([kind]);
   const rows = await send(TIMEOUT_MS.search, signal, (signal) =>
     client.GET("/api/web/search", {
-      params: { query: { q, ...(one && { kind: one }), limit, ...(fields && { fields: [...fields] }) } },
+      params: {
+        query: {
+          q,
+          ...(one && { kind: one }),
+          limit,
+          ...(fields && { fields: [...fields] }),
+        },
+      },
       signal,
     }),
   );

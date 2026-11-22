@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { bootQueries, useProfile } from "../app/boot";
 import { ReadError } from "../settings/account";
-import { CloseSheet } from "../settings/CloseSheet";
 import { Icon } from "../ui/icons";
 import { EmptyState, ViewHeader } from "../ui/view";
 import { AllowlistSection } from "./Allowlist";
@@ -22,9 +21,7 @@ export function AdminView() {
   const admin = useProfile().role === "admin";
   return (
     <div className="view">
-      <ViewHeader icon={<Icon name="shield" />} title="Admin">
-        <CloseSheet label="Close admin" />
-      </ViewHeader>
+      <ViewHeader icon={<Icon name="shield" />} title="Admin" />
       <div className="scroll">
         {admin ? (
           <div className="st">
@@ -40,7 +37,9 @@ export function AdminView() {
           </div>
         ) : (
           <EmptyState icon={<Icon name="shield" size={24} />} title="Admins only">
-            <p>Users and the allowlist are managed by admins. Ask an admin for access.</p>
+            <p>
+              Users and the allowlist are managed by admins. Ask an admin for access.
+            </p>
             <ReadError read={refetched} />
           </EmptyState>
         )}

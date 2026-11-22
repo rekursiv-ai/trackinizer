@@ -51,7 +51,11 @@ export class Serial {
   /** The time a run was put off to. */
   #later: { at: number; timer: ReturnType<typeof setTimeout> } | null = null;
   /** Failed work, waiting out its backoff. */
-  #retry: { ids: Set<string>; gap: boolean; timer: ReturnType<typeof setTimeout> } | null = null;
+  #retry: {
+    ids: Set<string>;
+    gap: boolean;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
 
   constructor(query: LiveQuery, open: () => boolean = () => true) {
     this.#query = query;
@@ -67,7 +71,8 @@ export class Serial {
 
   /** Run what is queued, if nothing is running and updates may run. */
   resume(): void {
-    if (!this.#running && !this.#disposed && this.#open() && this.#queued()) void this.#run();
+    if (!this.#running && !this.#disposed && this.#open() && this.#queued())
+      void this.#run();
   }
 
   /** Stop for good: drop what is queued and any timer. */
@@ -125,10 +130,14 @@ export class Serial {
     this.#retry = {
       ids: new Set([...(this.#retry?.ids ?? []), ...batch.ids]),
       gap: this.#retry?.gap === true || batch.gap,
-      timer: setTimeout(() => this.#retryNow(), RETRY_DELAYS_MS[Math.min(this.#failures, RETRY_DELAYS_MS.length - 1)]),
+      timer: setTimeout(
+        () => this.#retryNow(),
+        RETRY_DELAYS_MS[Math.min(this.#failures, RETRY_DELAYS_MS.length - 1)],
+      ),
     };
     this.#failures += 1;
-    if (this.#failures >= FAILURES_SHOWN) this.#query.failing?.({ error, retry: () => this.#retryNow() });
+    if (this.#failures >= FAILURES_SHOWN)
+      this.#query.failing?.({ error, retry: () => this.#retryNow() });
   }
 
   /** Try the failed work now. */

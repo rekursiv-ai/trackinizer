@@ -29,7 +29,9 @@ test("value types come from each route's body", () => {
     type: "string",
     format: "date-time",
   });
-  expect(editableFields("CodeChange").sha?.path).toBe("/api/codechange/{target_id}/sha");
+  expect(editableFields("CodeChange").sha?.path).toBe(
+    "/api/codechange/{target_id}/sha",
+  );
 });
 
 test("a field without a PUT route is not editable", () => {

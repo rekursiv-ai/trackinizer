@@ -71,6 +71,29 @@ class TestTx:
         assert engine.notify_calls == []
 
     @pytest.mark.asyncio
+    async def test_a_nested_buffer_joins_the_outer_one(self) -> None:
+        # Only the outermost transaction publishes: an inner commit is not final.
+        engine = FakeEngine()
+        subject = new_uuid()
+        async with notify_after_commit():
+            outer = NOTIFICATION_BUFFER.get()
+            async with notify_after_commit():
+                inner = NOTIFICATION_BUFFER.get()
+                assert inner is not None
+                assert inner is outer
+                inner.append(
+                    Notification(
+                        engine=cast(DatabaseEngine, engine),
+                        subject_id=subject,
+                    ),
+                )
+            assert engine.notify_calls == []
+        assert NOTIFICATION_BUFFER.get() is None
+        assert [json.loads(payload) for _, payload in engine.notify_calls] == [
+            {"id": str(subject)},
+        ]
+
+    @pytest.mark.asyncio
     async def test_publish_notifications_swallows_engine_errors(self) -> None:
         engine = FakeEngine()
         engine.notify_calls.clear()

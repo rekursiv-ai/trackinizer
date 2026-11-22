@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-import socket
-
 from treekle import json_loads
 
 import httpx2
 import pytest
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.posix import hostname
 from trackinizer.trax.login import LoginResult, login
 from trackinizer.trax.profile import (
     Profile,
@@ -83,7 +82,7 @@ class _Time:
         self.now += seconds
 
 
-def _approved(*, role: str = "writer", machine_token: str = "") -> DeviceToken:
+def _approved(*, role: str = "writer", host_token: str = "") -> DeviceToken:
     return DeviceToken(
         status="approved",
         issued=IssuedKey.model_validate(
@@ -91,13 +90,13 @@ def _approved(*, role: str = "writer", machine_token: str = "") -> DeviceToken:
                 "api_key": _KEY,
                 "role": role,
                 "email": "jp@example.com",
-                "machine_token": machine_token,
+                "host_token": host_token,
             },
         ),
     )
 
 
-def _transport_of(
+def _server_transport(
     server: Callable[[httpx2.Request], httpx2.Response],
 ) -> Callable[..., httpx2.MockTransport]:
     """Return what stands in for ``httpx2.HTTPTransport``: it answers from ``server``."""
@@ -115,16 +114,16 @@ def _log_in(
     *,
     url: str = "https://trackinizer.example",
     profile: str = "",
-    machine: str | None = None,
+    host: str | None = None,
     client: str = "trax",
 ) -> LoginResult:
     # The client builds its transport from httpx2's, so the server answers there.
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(httpx2, "HTTPTransport", _transport_of(server))
+        patch.setattr(httpx2, "HTTPTransport", _server_transport(server))
         return login(
             url,
             profile=profile,
-            machine=machine,
+            host=host,
             client=client,
             sleep=clock.sleep,
             clock=clock.clock,
@@ -134,7 +133,7 @@ def _log_in(
 @pytest.fixture(autouse=True)
 def _no_pinned_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
-    monkeypatch.setattr(socket, "gethostname", lambda: "Dev_box.local")
+    monkeypatch.setattr(hostname, "stable_hostname", lambda: "Dev_box.local")
 
 
 def test_a_login_saves_the_key_under_the_servers_host_and_makes_it_current(
@@ -154,7 +153,7 @@ def test_a_login_saves_the_key_under_the_servers_host_and_makes_it_current(
     assert clock.slept == [5, 5]
     out = capsys.readouterr().out
     assert "https://trackinizer.example/auth/device?user_code=BCDF-GHJK" in out
-    assert "BCDF-GHJK" in out
+    assert "approve the code BCDF-GHJK" in out
     assert _KEY not in out
 
 
@@ -163,12 +162,12 @@ def test_the_request_names_the_program_and_the_computer_and_carries_no_credentia
 ):
     server = _Server([_approved()])
 
-    _log_in(server, _Time(), client="rai-shell")
+    _log_in(server, _Time(), client="host-hostname")
 
     first, second = server.requests
     assert "authorization" not in first.headers
     assert server.bodies() == [
-        {"client": "rai-shell", "host": "Dev_box", "machine": None},
+        {"client": "host-hostname", "hostname": "Dev_box", "host": None},
         {"device_code": _CODE.device_code},
     ]
     assert second.method == "POST"
@@ -206,24 +205,27 @@ def test_an_existing_profile_keeps_its_actor_when_the_key_is_renewed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("hostname", "host"),
+    ("full", "sent"),
     [
         ("_build-7.corp", "build-7"),
         ("--ci-box", "ci-box"),
         ("Dev_box.local", "Dev_box"),
+        ("Ada's Mac", "Ada-s-Mac"),
+        ("Xserve.lan", "Xserve"),
+        ("h" * 64, "h" * 63),
     ],
 )
 def test_a_host_name_the_server_would_refuse_is_cleaned_before_it_is_sent(
     monkeypatch: pytest.MonkeyPatch,
-    hostname: str,
-    host: str,
+    full: str,
+    sent: str,
 ) -> None:
-    monkeypatch.setattr(socket, "gethostname", lambda: hostname)
+    monkeypatch.setattr(hostname, "stable_hostname", lambda: full)
     server = _Server([_approved()])
 
     _log_in(server, _Time())
 
-    assert server.bodies()[0]["host"] == host
+    assert server.bodies()[0]["hostname"] == sent
 
 
 @pytest.mark.parametrize(
@@ -235,7 +237,7 @@ def test_plain_http_beyond_this_computer_is_refused_before_any_request(
 ) -> None:
     server = _Server([_approved()])
 
-    with pytest.raises(ClientError, match="plain http"):
+    with pytest.raises(ClientError, match=r"^login URL '.*' is plain http;"):
         _log_in(server, _Time(), url=url)
 
     assert server.requests == []
@@ -252,13 +254,30 @@ def test_plain_http_to_this_computer_is_allowed(url: str) -> None:
     assert result.role == "writer"
 
 
-def test_a_login_without_a_program_name_is_trax_logging_in() -> None:
+def test_a_login_naming_no_program_or_profile_is_traxs_named_for_its_server() -> None:
     # What ``trax profile NAME login URL`` sends: it names no program of its own.
     server = _Server([_approved()])
+    clock = _Time()
 
-    _log_in(server, _Time())
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(httpx2, "HTTPTransport", _server_transport(server))
+        result = login(
+            "https://trackinizer.example",
+            sleep=clock.sleep,
+            clock=clock.clock,
+        )
 
     assert server.bodies()[0]["client"] == "trax"
+    assert result.profile == "trackinizer.example"
+
+
+def test_a_program_name_the_server_would_refuse_is_refused_before_any_request() -> None:
+    server = _Server([_approved()])
+
+    with pytest.raises(ClientError, match=r"^login request returned a malformed"):
+        _log_in(server, _Time(), client="Not A Program")
+
+    assert server.requests == []
 
 
 def test_a_server_with_a_port_is_named_with_it() -> None:
@@ -285,21 +304,21 @@ def test_a_pinned_profile_stays_current(monkeypatch: pytest.MonkeyPatch) -> None
     assert current_profile() == "lab"
 
 
-def test_a_login_that_names_a_machine_returns_its_enrollment_token() -> None:
-    server = _Server([_approved(machine_token=_ENROLLMENT)])
+def test_a_login_that_names_a_host_returns_its_enrollment_token() -> None:
+    server = _Server([_approved(host_token=_ENROLLMENT)])
 
-    result = _log_in(server, _Time(), machine="dev-box")
+    result = _log_in(server, _Time(), host="dev-box")
 
-    assert result.machine_token == _ENROLLMENT
-    assert server.bodies()[0]["machine"] == "dev-box"
+    assert result.host_token == _ENROLLMENT
+    assert server.bodies()[0]["host"] == "dev-box"
     assert _ENROLLMENT not in repr(result)
 
 
-def test_a_machine_the_server_did_not_enroll_saves_nothing() -> None:
+def test_a_host_the_server_did_not_enroll_saves_nothing() -> None:
     server = _Server([_approved()])
 
-    with pytest.raises(ClientError, match="enrolled no token for machine 'devbox'"):
-        _log_in(server, _Time(), machine="devbox")
+    with pytest.raises(ClientError, match="enrolled no token for host 'devbox'"):
+        _log_in(server, _Time(), host="devbox")
 
     assert list_profiles() == []
 
@@ -350,7 +369,10 @@ def test_a_malformed_answer_is_reported_without_quoting_it() -> None:
         del request
         return httpx2.Response(201, json={"device_code": "SECRETMARKER"})
 
-    with pytest.raises(ClientError, match="malformed payload") as raised:
+    with pytest.raises(
+        ClientError,
+        match=f"^{DEVICE_CODE_PATH} returned a malformed payload$",
+    ) as raised:
         _log_in(garbled, _Time())
 
     assert "SECRETMARKER" not in str(raised.value)

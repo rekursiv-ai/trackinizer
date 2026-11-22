@@ -313,8 +313,10 @@ storage name: bare for base fields (`status`, `title`, `owner`,
 kind-specific ones (`belief_judgement`, `paper_source`,
 `experiment_codechanges`, ...). Non-field events keep verbs: `created`,
 `purged`, `edge_added`, `edge_removed`, `edge_annotation_changed`,
-`dependency_changed`, `implicit_subs_opened`/`closed`. There is no separate
-`change_kind` metadata -- it is derived from the storage name.
+`dependency_changed`, `implicit_subs_opened`/`closed`, and the protected
+`locked`/`unlocked` (`Change.PROTECTED_KINDS`: admin-only to read, never exported or
+pushed). There is no separate `change_kind` metadata -- it is derived from the
+storage name.
 
 `change_log` also splits **principal** (`api_key_id`, server-stamped) from
 **actor** (`actor TEXT`, free-form provenance); see Auth.
@@ -422,10 +424,9 @@ the same cascade but never auto-flips it -- an author reviews and sets
 unmet (non-terminal) `requires` prerequisites.
 
 SSE (`/api/change_log/stream`, `/api/web/subscribe`) streams mutated-inquiry
-ids over Postgres `LISTEN/NOTIFY` (or PGlite's in-process bus). Subscribers
-with a live `trax run` session receive change envelopes pushed into their
-stdin ([`design_subscriber.md`](design_subscriber.md)); offline agents catch
-up via the `change_log` filtered by `subscribers_snapshot`.
+ids over Postgres `LISTEN/NOTIFY` (or PGlite's in-process bus). A subscriber
+catches up via the `change_log` filtered by `subscribers_snapshot`; no change is
+pushed into a live session.
 
 ## Auth
 
@@ -454,6 +455,18 @@ Bootstrap: when `users` is empty and `TRACKINIZER_BOOTSTRAP_ADMIN` is set,
 the first boot seeds an allowlist row, an admin user, and an api_key, and
 writes the secret once to a mode-0600 `bootstrap_token` file. Idempotent.
 
+Service keys: `TRACKINIZER_SERVICE_KEYS` names the deployment's service accounts as
+`NAME:ROLE` pairs (`chat:writer,gpu-broker:writer`), and `TRACKINIZER_SERVICE_KEY_DIR` is
+where their keys live. Every start makes a missing account, keeps the key in its
+mode-0600 file when it still works, else mints and writes one, and revokes the account's
+other keys. A service reads its file through `TRACKINIZER_TOKEN_FILE`, which systemd's
+`LoadCredential=` hands it; no admin key is involved. Rotate by deleting the file and
+restarting the server, then every service that reads the key: `LoadCredential=` copies the
+file when a service starts, so one left running keeps the revoked key. A session advisory
+lock spans each start's file reads, minting and file writes, so two servers starting at
+once take turns. The server reads both settings into `Config.service_keys`
+(`server/config.py`); `server/service_keys.py` keeps the keys.
+
 `--no-auth` (`TRACKINIZER_NO_AUTH=1`) short-circuits to a synthetic admin:
 single-user local mode, bound to `127.0.0.1` by default -- never on a shared
 network.
@@ -464,8 +477,8 @@ Single store: Postgres + pgvector, with PGlite as the default in-process
 substrate for prototyping. Same SQL and schema; only DSN acquisition and
 pub/sub differ.
 
-- `vector(384)` embeddings in `inquiry_embeddings` keyed by
-  `(inquiry_id, model)`, so multiple embedders coexist per inquiry.
+- `halfvec` embeddings in the embedding add-on's `embedding.vectors`, one
+  partial HNSW index per settings key.
 - `LISTEN/NOTIFY` for subscription fan-out.
 - Recursive CTEs for decomposition rollups and blocker checks.
 - No separate vector DB, search engine, or graph DB.

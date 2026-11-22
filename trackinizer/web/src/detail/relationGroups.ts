@@ -31,13 +31,30 @@ export type RailPeer = { readonly peer: Peer; readonly edges: readonly RailEdge[
  * told apart by the direction's arrow. Peers sort by the edge's priority, unset
  * last, then kind and seq.
  */
-export function relationGroups(detail: Detail, topology: EdgeTopology): RelationGroup[] {
-  const kinds = [...new Set([...Object.keys(topology), ...Object.keys(detail.edges), ...Object.keys(detail.backlinks)])];
+export function relationGroups(
+  detail: Detail,
+  topology: EdgeTopology,
+): RelationGroup[] {
+  const kinds = [
+    ...new Set([
+      ...Object.keys(topology),
+      ...Object.keys(detail.edges),
+      ...Object.keys(detail.backlinks),
+    ]),
+  ];
   return kinds.flatMap((edgeKind) => {
     const rule = topology[edgeKind];
     const sides = [
-      { direction: "out", peers: detail.edges[edgeKind], name: rule?.forward ?? edgeKind },
-      { direction: "in", peers: detail.backlinks[edgeKind], name: rule?.inverse ?? edgeKind },
+      {
+        direction: "out",
+        peers: detail.edges[edgeKind],
+        name: rule?.forward ?? edgeKind,
+      },
+      {
+        direction: "in",
+        peers: detail.backlinks[edgeKind],
+        name: rule?.inverse ?? edgeKind,
+      },
     ] as const;
     return sides
       .filter(({ peers }) => peers?.length)
@@ -66,7 +83,10 @@ export function isRailEdge(edgeKind: string): boolean {
  * peer once, in the order of its first edge among `groups`, with every lineage
  * edge joining it, so a `narrows` and `produced_by` pair is one row.
  */
-export function railPeers(groups: readonly RelationGroup[], direction: RelationGroup["direction"]): RailPeer[] {
+export function railPeers(
+  groups: readonly RelationGroup[],
+  direction: RelationGroup["direction"],
+): RailPeer[] {
   const peers = new Map<string, { peer: Peer; edges: RailEdge[] }>();
   for (const group of groups) {
     if (group.direction !== direction || !isRailEdge(group.edgeKind)) continue;
@@ -86,5 +106,9 @@ export function sentence(name: string): string {
 }
 
 function byEdgePriority(a: Peer, b: Peer): number {
-  return (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.kind.localeCompare(b.kind) || a.seq - b.seq;
+  return (
+    (a.priority ?? Infinity) - (b.priority ?? Infinity) ||
+    a.kind.localeCompare(b.kind) ||
+    a.seq - b.seq
+  );
 }

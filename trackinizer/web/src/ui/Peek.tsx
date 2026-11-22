@@ -1,6 +1,6 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, Suspense, useId, useRef, useState } from "react";
 import { CommandRegistry, CommandRegistryContext } from "../commands/registry";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { DetailView } from "../router/views";
 import { Icon } from "./icons";
 import { type Panel, type PanelSpec, PanelStrip, PanelToggle } from "./panel";
@@ -111,7 +111,12 @@ export function Peek({
   // A registry of its own, bound to no keys, keeps the peek from acting as a page.
   const [detailCommands] = useState(() => new CommandRegistry());
   const close = (
-    <button type="button" className="icon-btn" onClick={onClose} aria-label="Close peek">
+    <button
+      type="button"
+      className="icon-btn"
+      onClick={onClose}
+      aria-label="Close peek"
+    >
       <Icon name="x" />
     </button>
   );

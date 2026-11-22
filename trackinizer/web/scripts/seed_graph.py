@@ -44,7 +44,7 @@ from trackinizer.web.scripts.graph_structure import Link, Node, Structure
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -558,8 +558,6 @@ def _write(
             ),
         )
         _end_sessions(client, structure, ids, start=carrier)
-    if pending:
-        raise ValueError(f"{len(pending)} edges found no batch")
     return ids
 
 
@@ -867,10 +865,18 @@ def _titles(vocabulary: Mapping[str, object]) -> list[str]:
     """Every title a kind's templates and word lists make, in the order of their hashes."""
     words = [
         from_plain(row, list[str])
-        for row in from_plain(vocabulary.get("words"), list[object], default=[])
+        for row in from_plain(
+            vocabulary.get("words"),
+            list[object],
+            default=list[object](),
+        )
     ]
     titles: set[str] = set()
-    for template in from_plain(vocabulary.get("templates"), list[str], default=[]):
+    for template in from_plain(
+        vocabulary.get("templates"),
+        list[str],
+        default=list[str](),
+    ):
         slots = sorted(
             {
                 int(f)

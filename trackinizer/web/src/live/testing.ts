@@ -7,6 +7,7 @@ import { type Sent, stubFetch } from "../api/testing";
 import { serverText } from "../lists/pages";
 import type { Filter } from "../query/query";
 import { micros, serverOrder } from "./rows";
+import { must } from "../must";
 
 /**
  * A stand-in for the browser's `EventSource`: tests open, drop and refuse it,
@@ -87,7 +88,11 @@ export function testClient(): QueryClient {
  */
 export function mount(client: QueryClient, key: QueryKey, rows: unknown): () => void {
   client.setQueryData(key, rows);
-  return new QueryObserver(client, { queryKey: key, enabled: false, staleTime: Infinity }).subscribe(() => {});
+  return new QueryObserver(client, {
+    queryKey: key,
+    enabled: false,
+    staleTime: Infinity,
+  }).subscribe(() => {});
 }
 
 /** A stable, distinct UUID for test number `n`. */
@@ -97,7 +102,9 @@ export function uuid(n: number): string {
 
 /** An Issue row number `seq`, created `seq` minutes after a fixed time, so higher is newer. */
 export function issue(seq: number, fields: Partial<InquiryRow> = {}): InquiryRow {
-  const created = new Date(Date.UTC(2026, 8, 20, 0, seq)).toISOString().replace("Z", "+00:00");
+  const created = new Date(Date.UTC(2026, 8, 20, 0, seq))
+    .toISOString()
+    .replace("Z", "+00:00");
   return {
     id: uuid(seq),
     kind: "Issue",
@@ -121,7 +128,9 @@ export function issue(seq: number, fields: Partial<InquiryRow> = {}): InquiryRow
 export function change(n: number, fields: Partial<LoggedChange> = {}): LoggedChange {
   return {
     id: uuid(100_000 + n),
-    created: new Date(Date.UTC(2026, 8, 20, 0, 0, n)).toISOString().replace("Z", "+00:00"),
+    created: new Date(Date.UTC(2026, 8, 20, 0, 0, n))
+      .toISOString()
+      .replace("Z", "+00:00"),
     actor: "ada@example.com",
     kind: "created",
     subject_id: uuid(n),
@@ -142,7 +151,8 @@ export function change(n: number, fields: Partial<LoggedChange> = {}): LoggedCha
  */
 export function serveChanges(
   changes: () => readonly LoggedChange[],
-  other: (request: Request) => Response = () => Response.json({ detail: "not found" }, { status: 404 }),
+  other: (request: Request) => Response = () =>
+    Response.json({ detail: "not found" }, { status: 404 }),
 ): Sent[] {
   return stubFetch((request) => {
     const url = new URL(request.url);
@@ -150,8 +160,16 @@ export function serveChanges(
     const query = url.searchParams;
     const since = query.get("since");
     const body = changes()
-      .filter((row) => query.getAll("kind").includes(row.kind) && (since === null || micros(row.created) >= micros(since)))
-      .toSorted((a, b) => micros(b.created) - micros(a.created) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+      .filter(
+        (row) =>
+          query.getAll("kind").includes(row.kind) &&
+          (since === null || micros(row.created) >= micros(since)),
+      )
+      .toSorted(
+        (a, b) =>
+          micros(b.created) - micros(a.created) ||
+          (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+      )
       .slice(0, Number(query.get("limit")));
     return Response.json(body);
   });
@@ -165,18 +183,24 @@ export function serveChanges(
  */
 export function serveRows(
   rows: () => readonly InquiryRow[],
-  other: (request: Request) => Response = () => Response.json({ detail: "not found" }, { status: 404 }),
+  other: (request: Request) => Response = () =>
+    Response.json({ detail: "not found" }, { status: 404 }),
 ): Sent[] {
   return stubFetch((request) => answerRows(rows(), request) ?? other(request));
 }
 
 /** `GET /api/inquiries` answered from `rows`, as `serveRows` does; null for any other request. */
-export function answerRows(rows: readonly InquiryRow[], request: Request): Response | null {
+export function answerRows(
+  rows: readonly InquiryRow[],
+  request: Request,
+): Response | null {
   const url = new URL(request.url);
   if (url.pathname !== "/api/inquiries") return null;
   const query = url.searchParams;
   const filters = query.getAll("filter").map((raw) => JSON.parse(raw) as Filter);
-  const ranges = query.getAll("seq_range").map((range) => range.split("..").map(Number));
+  const ranges = query
+    .getAll("seq_range")
+    .map((range) => range.split("..").map(Number));
   const limit = Number(query.get("limit") ?? 50);
   const offset = Number(query.get("offset") ?? 0);
   const body = query.getAll("kind").flatMap((kind) =>
@@ -185,7 +209,10 @@ export function answerRows(rows: readonly InquiryRow[], request: Request): Respo
         (row) =>
           row.kind === kind &&
           filters.every((filter) => matches(row, filter)) &&
-          (ranges.length === 0 || ranges.some(([start, stop]) => row.seq >= start! && row.seq <= stop!)),
+          (ranges.length === 0 ||
+            ranges.some(
+              ([start, stop]) => row.seq >= must(start) && row.seq <= must(stop),
+            )),
       )
       .toSorted(serverOrder)
       .slice(offset, offset + limit),
@@ -208,7 +235,11 @@ export function listParams(sent: Sent) {
 /** Whether `row` passes `filter`; a list field passes when any element does. */
 function matches(row: InquiryRow, { field, op, value }: Filter): boolean {
   const raw = (row as { readonly [field: string]: unknown })[field];
-  const values = Array.isArray(raw) ? raw.map(String) : raw == null ? [] : [String(raw)];
+  const values = Array.isArray(raw)
+    ? raw.map(String)
+    : raw == null
+      ? []
+      : [String(raw)];
   switch (op) {
     case "is":
       return values.includes(value);

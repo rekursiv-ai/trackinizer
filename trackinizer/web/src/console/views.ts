@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { newUuid } from "../api/idempotency";
-import { choosePreferences, preferences, receivePreferences, usePreferences } from "../preferences";
+import {
+  choosePreferences,
+  preferences,
+  receivePreferences,
+  usePreferences,
+} from "../preferences";
 import type { KeptView } from "./legacyViews";
 import type { Selection } from "./facets";
 import type { Range } from "./feed";
-import { useLayout } from "../visuals/stationLayout";
 import type { Level } from "./levels";
 import { micros } from "../live/rows";
 
@@ -36,10 +40,8 @@ export function orderViews(views: readonly View[]): View[] {
  * (`src/preferences.ts`) so any browser finds them, and every hook showing them
  * follows a change made in any tab. The open view is the stored one with this
  * tab's id, so another tab's edit shows here and its delete opens the first view
- * left. That id lives in the station's layout, so a reload, or another browser,
- * opens it again; a station with none opens the first view, or a fresh one. A tab
- * that kept the id in its `sessionStorage`, as an older build did, hands it to the
- * station once and forgets it. A fresh view ("Untitled view", every agent's
+ * left. That id lives in this tab's `sessionStorage`, so a reload opens it again;
+ * a tab with none opens the first view, or a fresh one. A fresh view ("Untitled view", every agent's
  * messages, live) is stored on its first change, as a new conversation is. When
  * the server refuses a change, the open view still shows it, unsaved.
  */
@@ -56,33 +58,31 @@ export function useViews(): {
 } {
   const { console_views: stored } = usePreferences();
   const views = useMemo(() => orderViews(stored), [stored]);
-  const [layout, changeLayout] = useLayout();
-  const openId = layout.console ?? null;
-  useEffect(() => {
-    const legacy = readOpenId();
-    if (legacy === null) return;
-    if (layout.console === undefined) changeLayout({ console: legacy }, { now: true });
-    try {
-      sessionStorage.removeItem(OPEN_KEY);
-    } catch {
-      // Storage is off: there is nothing to forget.
-    }
-  }, []);
+  const [openId, setOpenId] = useState(readOpenId);
   // The view this tab holds unstored: a fresh one, or a change the server refused.
   const [unsaved, setUnsaved] = useState(freshView);
-  const open = views.find(({ id }) => id === openId) ?? (unsaved.id === openId ? unsaved : (views[0] ?? unsaved));
+  const open =
+    views.find(({ id }) => id === openId) ??
+    (unsaved.id === openId ? unsaved : (views[0] ?? unsaved));
   const show = useCallback((id: string) => {
-    changeLayout({ console: id });
-  }, [changeLayout]);
+    setOpenId(id);
+    try {
+      sessionStorage.setItem(OPEN_KEY, id);
+    } catch {
+      // Storage is off: a reload opens the first view.
+    }
+  }, []);
   return {
     views,
     open,
     change: (view) => {
       // Shown as the stored one now; a later delete in any tab must not leave a copy here.
       setUnsaved(freshView());
-      void store((all) => [...all.filter(({ id }) => id !== view.id), kept(view)]).then((saved) => {
-        if (!saved) setUnsaved(view);
-      });
+      void store((all) => [...all.filter(({ id }) => id !== view.id), kept(view)]).then(
+        (saved) => {
+          if (!saved) setUnsaved(view);
+        },
+      );
       show(view.id);
     },
     openView: (id) => {
@@ -103,7 +103,9 @@ export function useViews(): {
  * Show and send `change` of the views the preferences hold now; whether the
  * server kept it. One it refused is taken back, so the rail lists what is kept.
  */
-async function store(change: (views: readonly KeptView[]) => KeptView[]): Promise<boolean> {
+async function store(
+  change: (views: readonly KeptView[]) => KeptView[],
+): Promise<boolean> {
   const before = preferences().console_views;
   if (await choosePreferences({ console_views: change(before) })) return true;
   receivePreferences({ ...preferences(), console_views: before });
@@ -112,7 +114,12 @@ async function store(change: (views: readonly KeptView[]) => KeptView[]): Promis
 
 /** `view` as the preferences keep it: lists the page may not change are copied. */
 function kept(view: View): KeptView {
-  return { ...view, agents: [...view.agents], rooms: [...view.rooms], clis: [...view.clis] };
+  return {
+    ...view,
+    agents: [...view.agents],
+    rooms: [...view.rooms],
+    clis: [...view.clis],
+  };
 }
 
 /** The id this tab kept in its `sessionStorage`, or null when there is none or storage is off. */
@@ -124,7 +131,7 @@ function readOpenId(): string | null {
   }
 }
 
-/** The id the open view was kept under in a tab's `sessionStorage` before the station held it. */
+/** The tab's open view, by id. */
 const OPEN_KEY = "trackinizer.v2.console.open";
 
 function freshView(): View {

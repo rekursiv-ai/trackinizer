@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
 import { App } from "../app/App";
 import { FakeEventSource } from "../live/testing";
+import { currentRoute } from "../router/addressBar";
 import { AdminView } from "../router/views";
 
 /**
@@ -118,7 +119,7 @@ test("an admin has the Admin entry, and the link opens users and the allowlist",
   await screen.findByRole("button", { name: /^Account:/ });
   await user.click(screen.getByRole("button", { name: /^Account:/ }));
   await user.click(within(screen.getByRole("dialog", { name: "Account" })).getByRole("link", { name: "Admin" }));
-  await waitFor(() => expect(location.hash).toBe("#/admin"));
+  await waitFor(() => expect(currentRoute()).toBe("#/admin"));
   expect(screen.queryByRole("dialog", { name: "Account" })).toBeNull();
   expect(await screen.findByRole("region", { name: "Users" })).toBeTruthy();
   expect(screen.getByRole("region", { name: "Allowlist" })).toBeTruthy();

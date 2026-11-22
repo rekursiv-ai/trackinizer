@@ -5,11 +5,7 @@
   "kind": "SystemMessage",
   "model": null,
   "payload": {
-    "attachments": {
-      "py/tuple": []
-    },
     "content": "claude waits for trust in ~/proj",
-    "context_id": null,
     "extra": {
       "$interaction": {
         "cli": "claude",
@@ -18,7 +14,7 @@
         "input": {
           "folder": "~/proj"
         },
-        "machine": "gx10",
+        "host": "gx10",
         "plan": null,
         "questions": null,
         "remembered": false,
@@ -27,7 +23,7 @@
         "type": "trust"
       }
     },
-    "py/object": "trackinizer.lib.agent.types.sessions.SystemMessage",
+    "py/object": "SystemMessage",
     "subtype": "interaction",
     "timestamp": "2026-10-20T00:00:00+00:00"
   },

@@ -2,15 +2,21 @@ import { QueryObserver } from "@tanstack/react-query";
 import { expect, test } from "vitest";
 import { refetchFresh } from "./cache";
 import { testClient } from "./testing";
+import { must } from "../must";
 
 test("a refetch runs once more only for the queries already fetching when it began", async () => {
   const client = testClient();
   const calls = { idle: 0, busy: 0 };
   const answers: (() => void)[] = [];
-  new QueryObserver(client, { queryKey: ["x", "idle"], queryFn: async () => ++calls.idle, staleTime: Infinity }).subscribe(() => {});
+  new QueryObserver(client, {
+    queryKey: ["x", "idle"],
+    queryFn: async () => ++calls.idle,
+    staleTime: Infinity,
+  }).subscribe(() => {});
   new QueryObserver(client, {
     queryKey: ["x", "busy"],
-    queryFn: () => new Promise<number>((answer) => answers.push(() => answer(++calls.busy))),
+    queryFn: () =>
+      new Promise<number>((answer) => answers.push(() => answer(++calls.busy))),
     staleTime: Infinity,
   }).subscribe(() => {});
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -18,9 +24,9 @@ test("a refetch runs once more only for the queries already fetching when it beg
   expect(calls.idle).toBe(1);
   // "busy" is fetching: the refetch joins that fetch, which may predate the change, then runs it once more.
   const done = refetchFresh(client, { queryKey: ["x"] });
-  answers.shift()!();
+  must(answers.shift())();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  answers.shift()!();
+  must(answers.shift())();
   await done;
   expect(calls).toEqual({ idle: 2, busy: 2 });
 });

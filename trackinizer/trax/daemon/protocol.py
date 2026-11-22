@@ -15,19 +15,17 @@ from typing import TYPE_CHECKING, Final, Self, cast, override
 
 import hashlib
 import json
-import os
-import stat
 
+from trackinizer.lib.files.source_version import source_version
+from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.lib.userdirs import config_dir, state_dir
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     import socket
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 PROTOCOL_VERSION: Final = 1
@@ -41,20 +39,12 @@ _MAX_FRAME_BYTES: Final = 64 * 1024 * 1024
 room while keeping a corrupt or hostile length prefix from sizing a buffer
 that exhausts memory before the read fails."""
 
-_UNIX_SOCKET_PATH_MAX_BYTES: Final = 103
-"""Portable pathname payload for ``sockaddr_un.sun_path``.
-
-Darwin and the BSDs provide 104 bytes including the trailing NUL. Linux is
-slightly larger, but using its limit would leave the same path broken on a
-developer's Mac.
-"""
-
 # The environment a verb reads. Shipped from the caller and bound around the
 # request, so the daemon resolves the INVOKING user's identity and profile
 # rather than whichever shell happened to spawn it: ``USER``/``USERNAME``
 # back ``resolve_actor``; ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL``
-# back the connection chain in ``cli.connect``; ``TRAX_WORKSPACE`` and its
-# ``LC_`` twin back ``trax workspace`` with no id; ``TRAX_SERVER`` and
+# back the connection chain in ``connection.connect``; ``TRAX_CANVAS`` and its
+# ``LC_`` twin back ``trax canvas`` with no id; ``TRAX_SERVER`` and
 # ``LC_TRAX_SERVER`` name the server a terminal's shell came from.
 #
 # The XDG variables are deliberately ABSENT; these should only be accessed
@@ -64,8 +54,8 @@ FORWARDED_ENV: Final[tuple[str, ...]] = (
     "USERNAME",
     "TRACKINIZER_PROFILE",
     "TRACKINIZER_URL",
-    "TRAX_WORKSPACE",
-    "LC_TRAX_WORKSPACE",
+    "TRAX_CANVAS",
+    "LC_TRAX_CANVAS",
     "TRAX_SERVER",
     "LC_TRAX_SERVER",
 )
@@ -75,6 +65,9 @@ KEY_ENV: Final = "TRACKINIZER_TOKEN"
 cross the socket, so the client runs in-process only when it is set with
 ``TRACKINIZER_URL``, the one case that reads it, and the daemon claims the name
 without a value."""
+
+KEY_FILE_ENV: Final = "TRACKINIZER_TOKEN_FILE"
+"""The file a key is read from when ``KEY_ENV`` is unset; held to ``KEY_ENV``'s rule."""
 
 
 class Request:
@@ -178,7 +171,7 @@ class Request:
           ProtocolVersionError: The peer speaks a different frame shape. A
             distinct type so the daemon can answer it rather than dropping
             the connection, which would look like "no daemon" to the client.
-          ValueError: The frame is not a well-formed request.
+          MalformedFrameError: The frame is not a well-formed request.
 
         """
         payload = _decode_object(raw, "request")
@@ -273,6 +266,10 @@ class ProtocolVersionError(ValueError):
     """A peer framed its request under a different protocol version."""
 
 
+class MalformedFrameError(ValueError):
+    """A peer sent a frame that is not the protocol: garbage, not a caller's bug."""
+
+
 def write_frame(conn: socket.socket, payload: bytes) -> None:
     """Send one length-prefixed frame.
 
@@ -326,30 +323,6 @@ def socket_path() -> Path:
     return socket_address(logical_path)
 
 
-def socket_address(logical_path: Path) -> Path:
-    """Return a bindable AF_UNIX address for a logical state path.
-
-    Long user state roots exceed ``sockaddr_un.sun_path`` on macOS even though
-    the filesystem accepts them. A stable alias in an owner-only runtime
-    directory points to the logical parent, shortening the kernel address while
-    keeping the socket inode in the state directory selected through
-    :mod:`userdirs`.
-
-    Args:
-      logical_path: Desired socket location in per-user state.
-
-    Returns:
-      path: Direct path when it fits, otherwise a stable short alias.
-
-    Raises:
-      OSError: The temporary root cannot safely hold a short alias.
-
-    """
-    if len(os.fsencode(logical_path)) <= _UNIX_SOCKET_PATH_MAX_BYTES:
-        return logical_path
-    return _aliased_socket_path(logical_path)
-
-
 def package_root() -> Path:
     """Root of the distribution whose behavior the daemon serves.
 
@@ -390,154 +363,47 @@ def daemon_source_version() -> str:
     )
 
 
-def source_version(root: Path, *, outside: Sequence[str] = ()) -> str:
-    """Fingerprint a source tree, for stale-daemon detection.
-
-    A daemon outliving an edit keeps serving the old behavior, which looks
-    like correct output and is the sharpest failure mode this design
-    introduces. Every delegated ``trax`` call pays for this, so it must stay
-    cheap and import nothing.
-
-    Size and mtime catch an edit without reading the file, except a same-size
-    rewrite within one timestamp tick: a filesystem stamping whole seconds
-    (or kernel ticks) gives both writes the same mtime. Any write after a
-    fingerprint lands in the tree's newest tick or a later one, so only the
-    modules sharing the newest mtime are read and hashed -- git's racy-clean
-    rule, measured from that mtime rather than the clock. A clock-relative
-    window would read a module on one call and not the next as it aged, and
-    the changed value would restart a daemon for nothing. Test modules are
-    left out: the daemon imports none, so editing one must not restart it.
-
-    Args:
-      root: Package root directory; its non-test modules are walked.
-      outside: Further modules, as paths relative to ``root``.
-
-    Returns:
-      version: 128-bit hex digest of each module's path relative to ``root``,
-        size, and mtime, plus the contents of those in the newest tick.
-
-    """
-    prefix = len(str(root)) + 1
-    walked = sorted(
-        os.path.join(directory, name)[prefix:]  # noqa: PTH118 -- pathlib adds 0.4ms to every trax call.
-        for directory, _, files in os.walk(root)
-        for name in files
-        if name.endswith(".py")
-        and not name.endswith("_test.py")
-        and name != "conftest.py"
-    )
-    modules: list[tuple[str, os.stat_result]] = []
-    for name in (*walked, *outside):
-        try:
-            status = os.stat(os.path.join(root, name))  # noqa: PTH116, PTH118 -- pathlib adds 0.4ms to every trax call.
-        except OSError:
-            continue  # Deleted between the listing and the stat.
-        modules.append((name, status))
-    newest = max((status.st_mtime_ns for _, status in modules), default=None)
-    digest = hashlib.blake2b(digest_size=16)
-    for name, status in modules:
-        contents = _read(root / name) if status.st_mtime_ns == newest else b""
-        record = (name, status.st_size, status.st_mtime_ns, len(contents))
-        digest.update(repr(record).encode())
-        digest.update(contents)
-    return digest.hexdigest()
-
-
-def _aliased_socket_path(logical_path: Path) -> Path:
-    """Create a short, secure alias to a long socket parent directory."""
-    logical_parent = logical_path.parent.absolute()
-    logical_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-
-    # Imported only for the exceptional long-path case. Importing tempfile on
-    # every thin-client invocation would consume part of the latency the daemon
-    # exists to remove.
-    import tempfile  # noqa: PLC0415 -- Protocol-only dependencies are loaded on the daemon execution path.
-
-    alias_root = Path(tempfile.gettempdir()) / f"t-{os.getuid():x}"
-    alias_root.mkdir(mode=0o700, exist_ok=True)
-    root_info = alias_root.lstat()
-    if (
-        not stat.S_ISDIR(root_info.st_mode)
-        or root_info.st_uid != os.getuid()
-        or root_info.st_mode & 0o077
-    ):
-        raise PermissionError(f"unsafe traxd socket alias root: {alias_root}")
-
-    alias_name = hashlib.blake2b(os.fsencode(logical_parent), digest_size=8).hexdigest()
-    alias_parent = alias_root / alias_name
-    try:
-        alias_parent.symlink_to(logical_parent, target_is_directory=True)
-    except FileExistsError:
-        if (
-            not alias_parent.is_symlink()
-            or alias_parent.resolve() != logical_parent.resolve()
-        ):
-            raise OSError(f"unsafe traxd socket alias: {alias_parent}") from None
-
-    address = alias_parent / logical_path.name
-    if len(os.fsencode(address)) > _UNIX_SOCKET_PATH_MAX_BYTES:
-        raise OSError(f"temporary directory is too long for AF_UNIX: {address}")
-    return address
-
-
-# A module deleted or locked between its ``stat`` and this read falls back to that stat
-# alone. Raising would fail the ``trax`` call over a race the next call no longer sees.
-def _read(path: Path) -> bytes:
-    """Return the file's bytes, or none if it can no longer be read."""
-    try:
-        return path.read_bytes()
-    except OSError:
-        return b""
-
-
 # The shared typed-JSON extractor is the house tool for this, but it pulls in the import
-# graph this module exists to avoid, so the narrowing is spelled out here instead. A
-# non-object frame raises ``ValueError`` rather than ``TypeError``: every malformed-
-# frame failure is one thing to the caller -- a peer that sent garbage.
+# graph this module exists to avoid, so the narrowing is spelled out here instead.
 def _decode_object(raw: bytes, where: str) -> dict[str, object]:
-    """Decode one frame into a JSON object, or raise ``ValueError``."""
+    """Decode one frame into a JSON object, or raise :class:`MalformedFrameError`."""
     try:
         payload = cast(object, json.loads(raw))
     except ValueError as err:
-        raise ValueError(f"malformed {where} frame: {err}") from err
+        raise MalformedFrameError(f"malformed {where} frame: {err}") from err
     if not isinstance(payload, dict):
-        raise ValueError(f"malformed {where} frame: {payload!r}")  # noqa: TRY004 -- a non-object frame is malformed input, not a caller type error.
+        raise MalformedFrameError(f"malformed {where} frame: {payload!r}")
     return cast(dict[str, object], payload)
 
 
 def _require(payload: dict[str, object], key: str, where: str) -> object:
     """Return ``payload[key]``, or raise if the peer omitted it."""
     if key not in payload:
-        raise ValueError(f"malformed {where} frame: missing {key!r}")
+        raise MalformedFrameError(f"malformed {where} frame: missing {key!r}")
     return payload[key]
 
 
-# Every helper below narrows one JSON value decoded from a REMOTE peer, so a
-# wrong type is malformed input rather than a caller passing the wrong
-# argument. ``ValueError`` keeps every bad-frame failure one type the socket
-# layer can catch; a ``TypeError`` here would escape that handler and kill
-# the connection with a traceback instead of a diagnostic.
 def _str(value: object) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"expected a string, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+        raise MalformedFrameError(f"expected a string, got {value!r}")
     return value
 
 
 def _int(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"expected an integer, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+        raise MalformedFrameError(f"expected an integer, got {value!r}")
     return value
 
 
 def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
-        raise ValueError(f"expected a list, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+        raise MalformedFrameError(f"expected a list, got {value!r}")
     return [_str(item) for item in cast(list[object], value)]
 
 
 def _str_map(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
-        raise ValueError(f"expected an object, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+        raise MalformedFrameError(f"expected an object, got {value!r}")
     return {
         _str(key): _str(item) for key, item in cast(dict[object, object], value).items()
     }

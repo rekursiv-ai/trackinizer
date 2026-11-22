@@ -6,6 +6,11 @@ without round-tripping Google again. The cookie body is signed with
 ``itsdangerous.URLSafeTimedSerializer`` so the server can verify integrity
 and reject any cookie older than the configured TTL.
 
+The cookie also carries the user's ``users.session_generation`` as it was when the
+cookie was signed. A logout raises it, so every cookie signed before is refused
+(:func:`auth.lookup_user_by_id`): a stateless cookie cannot be revoked alone, so a
+logout ends every browser session of that person, not only this one.
+
 Cookie attributes follow the Phase 3 spec in the Auth section of ``docs/design.md``:
 ``HttpOnly`` (no JS access), ``Secure`` (HTTPS only), ``SameSite=Lax``
 (safe under top-level cross-site GETs but blocked on form POSTs from
@@ -26,7 +31,7 @@ Both cookies are opaque to clients; only the server holds the signing key.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, Protocol, cast
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from treekle import ReadError, from_plain
@@ -72,6 +77,7 @@ __all__ = [
     "OAUTH_STATE_COOKIE_NAME",
     "OAUTH_STATE_MAX_AGE_SECONDS",
     "SESSION_COOKIE_NAME",
+    "SessionCookie",
     "clear_oauth_state_cookie",
     "clear_session_cookie",
     "issue_oauth_state",
@@ -94,10 +100,19 @@ _OAUTH_STATE_SALT: Final[str] = "trackinizer.oauth_state.v1"
 OAUTH_STATE_MAX_AGE_SECONDS: Final[int] = 10 * 60
 
 
+class SessionCookie(NamedTuple):
+    """What a valid session cookie names: its user, and the generation it was signed at."""
+
+    user_id: str
+
+    generation: int
+
+
 def set_session_cookie(
     response: _SetsCookies,
     *,
     user_id: str,
+    generation: int,
     secret: str,
     max_age_seconds: int,
 ) -> None:
@@ -108,6 +123,8 @@ def set_session_cookie(
         appended via ``Set-Cookie``.
       user_id: ``users.id`` of the authenticated principal. Stringified
         in the cookie payload so the format is JSON-friendly.
+      generation: The user's ``users.session_generation`` now; a logout raises
+        it, and the cookie is refused from then on.
       secret: HMAC key used to sign the cookie. Must come from
         :attr:`Config.session_secret`; rotating it invalidates every
         live session.
@@ -119,7 +136,7 @@ def set_session_cookie(
     serializer = URLSafeTimedSerializer(secret, salt=_SESSION_SALT)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
-        value=serializer.dumps({"user_id": user_id}),
+        value=serializer.dumps({"user_id": user_id, "generation": generation}),
         max_age=max_age_seconds,
         httponly=True,
         secure=True,
@@ -133,8 +150,8 @@ def read_session_cookie(
     *,
     secret: str,
     max_age_seconds: int,
-) -> str | None:
-    """Return the ``user_id`` stored in the session cookie, or ``None``.
+) -> SessionCookie | None:
+    """Return the user and generation the session cookie names, or ``None``.
 
     Args:
       cookies: Mapping of cookie name to value; pass ``request.cookies``
@@ -148,8 +165,8 @@ def read_session_cookie(
         shapes all fall through to ``None``.
 
     Returns:
-      user_id: Stringified ``users.id`` when the cookie is valid and
-        unexpired, else ``None``.
+      session: The stringified ``users.id`` and the generation the cookie was
+        signed at, when it is valid and unexpired, else ``None``.
 
     """
     raw = cookies.get(SESSION_COOKIE_NAME, "")
@@ -160,9 +177,13 @@ def read_session_cookie(
         # Itsdangerous returns Any; conversion below validates the payload shape.
         loaded = cast(object, serializer.loads(raw, max_age=max_age_seconds))
         payload = from_plain(loaded, dict[str, object])
-        return from_plain(payload.get("user_id"), str, default=None)
+        user_id = from_plain(payload.get("user_id"), str, default=None)
+        # A cookie signed before generations existed names none: it reads as the
+        # first, so the change signed nobody out, and the next logout ends it.
+        generation = from_plain(payload.get("generation", 0), int)
     except (BadSignature, ReadError):
         return None
+    return None if user_id is None else SessionCookie(user_id, generation)
 
 
 def clear_session_cookie(response: _SetsCookies) -> None:

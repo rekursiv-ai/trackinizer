@@ -1,11 +1,4 @@
-"""Shared trax CLI test fixtures.
-
-``tmp_config_dir`` is autouse: every test gets a fresh tmp directory
-in place of the real config dir so profile reads and writes
-cannot bleed into the developer's real config. This closes the latent
-class of "test mutated my real profile" failures and unblocks the
-profile-related GRAMMAR.md examples once their xfails are lifted.
-"""
+"""Shared trax CLI fixtures over the parent's ``isolate_user_dirs`` fixture."""
 
 from __future__ import annotations
 
@@ -20,6 +13,7 @@ import pytest
 
 from trackinizer.client.client import ArtifactRevision, Client, EdgeWrite
 
+from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (
@@ -42,23 +36,22 @@ from trackinizer.wire.wire_session_ir import (
     ManifestBody,
     PartBody,
     RecordBody,
-    SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import (
-    InboundDrainItem,
-    InboundKind,
+    SearchMode,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
     SessionStartResponse,
 )
-from trackinizer.wire.wire_terminals import TerminalMachines, TerminalOpened
+from trackinizer.wire.wire_terminals import TerminalHosts, TerminalOpened
+from trackinizer.wire import wire_code
+from trackinizer.wire.wire_code import CodeDiff, CodeFile
 
 
 if TYPE_CHECKING:
     from trackinizer.wire.wire_code import CodeDiff, CodeFile
     from collections.abc import Callable, Iterator, Mapping, Sequence
-    from pathlib import Path
     from types import TracebackType
 
     from trackinizer.wire.seq_ranges import SeqRange
@@ -66,6 +59,7 @@ if TYPE_CHECKING:
         MetricMaskClause,
         MetricRankRow,
     )
+    from trackinizer.wire.wire_sessions import MessageKind, SessionAgent
     from trackinizer.wire.wire_terminals import OpenTerminal
 
 
@@ -100,25 +94,13 @@ def _storage_view(row: dict[str, object]) -> dict[str, object]:
 
 
 @pytest.fixture(autouse=True)
-def tmp_config_dir(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Isolate profile state so tests cannot touch the real config.
-
-    Redirects ``XDG_CONFIG_HOME`` rather than patching module globals: the
-    module builds each path inline from ``config_dir``, so moving the env var
-    exercises the same resolution production uses. Also clears
-    ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL`` so an exported shell
-    variable does not bleed into the test process.
-    """
-    root = tmp_path
-    # A test fixture repointing userdirs.
-    monkeypatch.setenv(
-        "XDG_CONFIG_HOME",
-        str(root),
-    )  # house-ignore[xdg-literal] -- A test fixture repointing userdirs.
-    (root / "rekursiv-ai" / "trax" / "profiles").mkdir(parents=True, exist_ok=True)
+def profile_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed the isolated profile store and clear ambient connection selectors."""
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles").mkdir(
+        parents=True,
+        exist_ok=True,
+        mode=0o700,
+    )
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
     monkeypatch.delenv("TRACKINIZER_URL", raising=False)
 
@@ -288,6 +270,22 @@ class FakeClient:
                     "source": "both",
                     "snippet": "advisory lock acquired",
                     "title": "deploy log",
+                },
+            ],
+            "semantic": True,
+            "degraded": False,
+        }
+        self.inquiry_hits: dict[str, object] = {
+            "hits": [
+                {
+                    "inquiry_id": str(self.target_id),
+                    "kind": "Issue",
+                    "seq": 7,
+                    "title": "lock bug",
+                    "field": "edge:narrows:x",
+                    "score": 0.0164,
+                    "source": "both",
+                    "snippet": "held lock",
                 },
             ],
             "semantic": True,
@@ -651,6 +649,11 @@ class FakeClient:
         yield '{"format":"trackinizer-export","version":1,"migrations":[]}'
         yield '{"table":"inquiries","row":{"title":"canned"}}'
 
+    def download_session(self, session_id: uuid.UUID) -> Iterator[str]:
+        """Yield a canned download: its header, and no record."""
+        self.calls.append(("download_session", (session_id,), {}))
+        yield f'{{"session_id":"{session_id}","seq":0,"parts":[]}}'
+
     def wait_until_ready(
         self,
         *,
@@ -688,30 +691,58 @@ class FakeClient:
 
     def search_sessions(
         self,
-        query: str,
+        query: str | uuid.UUID,
         *,
-        semantic: bool = True,
+        spawned: str = "",
+        mode: SearchMode = "fused",
         limit: int = 20,
     ) -> dict[str, PlainTree]:
         """Search sessions."""
         self.calls.append(
-            ("search_sessions", (query,), {"semantic": semantic, "limit": limit}),
+            (
+                "search_sessions",
+                (query,),
+                {"spawned": spawned, "mode": mode, "limit": limit},
+            ),
         )
         return cast("dict[str, PlainTree]", cast(object, dict(self.session_hits)))
 
-    def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
+    def search_inquiries(
+        self,
+        query: str,
+        *,
+        mode: SearchMode = "fused",
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, PlainTree]:
+        """Search inquiries."""
+        self.calls.append(
+            (
+                "search_inquiries",
+                (query,),
+                {"mode": mode, "kind": kind, "limit": limit},
+            ),
+        )
+        return cast("dict[str, PlainTree]", cast(object, dict(self.inquiry_hits)))
+
+    def inquiry_cost(
+        self,
+        target_id: uuid.UUID,
+        *,
+        deep: bool = False,
+    ) -> dict[str, float]:
         """Cost for."""
-        self.calls.append(("cost_for", (target_id,), {"deep": deep}))
+        self.calls.append(("inquiry_cost", (target_id,), {"deep": deep}))
         return dict(self.cost_payload)
 
-    def confidence_for(self, target_id: uuid.UUID) -> float:
+    def derived_confidence(self, target_id: uuid.UUID) -> float:
         """Record a confidence query; the fake reports a fixed score."""
-        self.calls.append(("confidence_for", (target_id,), {}))
+        self.calls.append(("derived_confidence", (target_id,), {}))
         return self.confidence_payload
 
-    def authority_for(self, target_id: uuid.UUID) -> dict[str, float]:
+    def derived_authority(self, target_id: uuid.UUID) -> dict[str, float]:
         """Record an authority query; the fake reports fixed scores."""
-        self.calls.append(("authority_for", (target_id,), {}))
+        self.calls.append(("derived_authority", (target_id,), {}))
         return dict(self.authority_payload)
 
     def edit(
@@ -882,8 +913,6 @@ class FakeClient:
         name: str = "",
         manifest: ManifestBody | None = None,
         records: Sequence[RecordBody] = (),
-        restart: bool = False,
-        slash_commands: Sequence[SlashCommandBody] = (),
     ) -> AppendRecordsResponse:
         """Record an IR append; resolve a part per file, as the server does.
 
@@ -899,8 +928,6 @@ class FakeClient:
                     "name": name,
                     "manifest": manifest,
                     "records": records,
-                    "restart": restart,
-                    "slash_commands": slash_commands,
                 },
             ),
         )
@@ -909,7 +936,6 @@ class FakeClient:
             part=part,
             written=len(list(records)),
             skipped=0,
-            slash_commands=len(list(slash_commands)),
         )
 
     def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
@@ -1044,56 +1070,18 @@ class FakeClient:
         self.calls.append(("session_end", (session_id, body), {}))
         return SessionEndResponse(id=session_id)
 
-    def enqueue_inbound(
-        self,
-        session_id: uuid.UUID,
-        text: str,
-        *,
-        kind: InboundKind = "line",
-        payload: dict[str, object] | None = None,
-    ) -> int:
-        """Enqueue inbound."""
-        self.calls.append(
-            ("enqueue_inbound", (session_id, text), {"kind": kind, "payload": payload}),
-        )
-        return 1
-
-    def drain_inbound(
-        self,
-        session_id: uuid.UUID,
-        *,
-        wait_sec: float = 0.0,
-        run: str | None = None,
-        machine: str | None = None,
-        cwd: str | None = None,
-        cli: str | None = None,
-        instance: str | None = None,
-    ) -> list[InboundDrainItem]:
-        """Drain inbound."""
-        self.calls.append(
-            (
-                "drain_inbound",
-                (session_id,),
-                {
-                    "wait_sec": wait_sec,
-                    "run": run,
-                    "machine": machine,
-                    "cwd": cwd,
-                    "cli": cli,
-                    "instance": instance,
-                },
-            ),
-        )
-        return []
-
-    def terminal_machines(
+    def terminal_hosts(
         self,
         *,
-        workspace: uuid.UUID | None = None,
-    ) -> TerminalMachines:
-        """Terminal machines."""
-        self.calls.append(("terminal_machines", (), {"workspace": workspace}))
-        return TerminalMachines(machines=[])
+        canvas: uuid.UUID | None = None,
+        owner: str | None = None,
+    ) -> TerminalHosts:
+        """Terminal hosts."""
+        asked: dict[str, object] = {"canvas": canvas}
+        if owner is not None:
+            asked["owner"] = owner
+        self.calls.append(("terminal_hosts", (), asked))
+        return TerminalHosts(hosts=[])
 
     def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
         """Open terminal."""
@@ -1111,68 +1099,118 @@ class FakeClient:
         self.calls.append(("send_message", (actor, text), {"room": room}))
         return [self.target_id]
 
-    def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
-        """Read workspace."""
-        self.calls.append(("read_workspace", (workspace_id,), {}))
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
-
-    def apply_workspace_operation(
+    def message_agent(
         self,
-        workspace_id: uuid.UUID,
+        to: SessionAgent,
+        text: str,
+        *,
+        from_session: uuid.UUID | None = None,
+        from_label: str = "",
+        booked: MessageKind | None = None,
+        key: uuid.UUID | None = None,
+    ) -> list[uuid.UUID]:
+        """Message agent."""
+        self.calls.append(
+            (
+                "message_agent",
+                (to, text),
+                {
+                    "from_session": from_session,
+                    "from_label": from_label,
+                    "booked": booked,
+                    "key": key,
+                },
+            ),
+        )
+        return [self.target_id]
+
+    def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
+        """Read canvas."""
+        self.calls.append(("read_canvas", (canvas_id,), {}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
+
+    def apply_canvas_operation(
+        self,
+        canvas_id: uuid.UUID,
         *,
         operation: Mapping[str, object],
     ) -> dict[str, PlainTree]:
-        """Apply workspace operation."""
+        """Apply canvas operation."""
         self.calls.append(
             (
-                "apply_workspace_operation",
-                (workspace_id,),
+                "apply_canvas_operation",
+                (canvas_id,),
                 {"operation": dict(operation)},
             ),
         )
-        return {"id": str(workspace_id), "revision": 1, "visuals": []}
+        return {"id": str(canvas_id), "revision": 1, "visuals": []}
 
     def navigate(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         route: str,
     ) -> dict[str, PlainTree]:
         """Navigate."""
-        self.calls.append(("navigate", (workspace_id,), {"route": route}))
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+        self.calls.append(("navigate", (canvas_id,), {"route": route}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
     def highlight(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         ids: Sequence[uuid.UUID],
     ) -> dict[str, PlainTree]:
         """Highlight."""
-        self.calls.append(("highlight", (workspace_id,), {"ids": list(ids)}))
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+        self.calls.append(("highlight", (canvas_id,), {"ids": list(ids)}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
     def chat_window(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         hidden: bool,
     ) -> dict[str, PlainTree]:
         """Hide or show Chat."""
-        self.calls.append(("chat_window", (workspace_id,), {"hidden": hidden}))
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+        self.calls.append(("chat_window", (canvas_id,), {"hidden": hidden}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
     def set_preferences(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         change: Mapping[str, object],
     ) -> dict[str, PlainTree]:
-        """Change the station owner's preferences."""
+        """Change the canvas owner's preferences."""
         self.calls.append(
-            ("set_preferences", (workspace_id,), {"change": dict(change)}),
+            ("set_preferences", (canvas_id,), {"change": dict(change)}),
         )
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
+
+    def list_canvases(self) -> list[dict[str, PlainTree]]:
+        """List canvases."""
+        self.calls.append(("list_canvases", (), {}))
+        return []
+
+    def rename_canvas(self, canvas_id: uuid.UUID, *, name: str) -> dict[str, PlainTree]:
+        """Rename a canvas."""
+        self.calls.append(("rename_canvas", (canvas_id,), {"name": name}))
+        return {"name": name}
+
+    def list_workspaces(self) -> list[dict[str, PlainTree]]:
+        """List workspaces."""
+        self.calls.append(("list_workspaces", (), {}))
+        return []
+
+    def rename_workspace(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        title: str,
+    ) -> dict[str, PlainTree]:
+        """Rename a workspace."""
+        self.calls.append(("rename_workspace", (workspace_id,), {"title": title}))
+        return {"id": str(workspace_id), "title": title}
 
     def add_subscriber(
         self,
@@ -1257,6 +1295,29 @@ class FakeClient:
     def remove_author(self, target_id: uuid.UUID, author: str, *, actor: str) -> None:
         """Remove author."""
         self.calls.append(("remove_author", (target_id, author), {"actor": actor}))
+
+    def my_email(self) -> str:
+        """Return the account this fake answers as; the code store files blobs under it."""
+        self.calls.append(("my_email", (), {}))
+        return "ada@example.com"
+
+    def code_file(self, record_id: uuid.UUID, *, path: str) -> CodeFile | None:
+        """Record the read; this fake holds no snapshot, so it finds no file."""
+        self.calls.append(("code_file", (record_id,), {"path": path}))
+        return None
+
+    def code_diff(
+        self,
+        from_record: uuid.UUID,
+        to_record: uuid.UUID,
+        *,
+        context: int = wire_code.DEFAULT_DIFF_CONTEXT,
+    ) -> CodeDiff | None:
+        """Record the read; with no snapshots there is nothing to compare."""
+        self.calls.append(
+            ("code_diff", (from_record, to_record), {"context": context}),
+        )
+        return None
 
 
 @pytest.fixture

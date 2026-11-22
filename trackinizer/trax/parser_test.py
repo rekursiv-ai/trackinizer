@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+import argparse
 import contextlib
 import uuid
 
@@ -33,13 +34,16 @@ from trackinizer.trax.grammar import (
     MetricMask,
     ReadField,
     RelationAction,
+    RemoveList,
     SetField,
 )
 from trackinizer.trax.parser import (
     consume_edge_target,
     consume_ref,
     parse_actions,
+    parse_backfill_timestamp,
     parse_bulk_apply,
+    parse_export_selector,
     parse_list_query,
     parse_metric_action,
     parse_subject_list,
@@ -260,6 +264,29 @@ def test_kindless_query_binds_ranges_after_explicit_kinds() -> None:
         "Issue": (SeqRange(start=1, stop=3),),
         "CodeChange": (SeqRange(start=5, stop=7),),
     }
+
+
+@pytest.mark.parametrize("op", ["isnull", "notnull"])
+def test_export_selector_presence_clauses_preserve_neighbors(op: FilterOp) -> None:
+    assert parse_export_selector(
+        [
+            "label",
+            "is",
+            "Research",
+            "kind",
+            op,
+            "owner",
+            "is",
+            "Ada",
+            "subscriber",
+            op,
+        ],
+    ) == (
+        Filter(field="labels", op="is", value="Research"),
+        Filter(field="issue_kind", op=op, value=""),
+        Filter(field="owner", op="is", value="Ada"),
+        Filter(field="subscribers", op=op, value=""),
+    )
 
 
 def test_parse_list_query_filter_missing_value_raises() -> None:
@@ -654,6 +681,11 @@ def test_edge_priority_bad_value_raises_client_error() -> None:
         parse_actions(["blocked_by", "issue", "5", "edge", "priority", "to", "oops"])
 
 
+def test_a_scalar_field_set_twice_in_one_edit_is_rejected() -> None:
+    with pytest.raises(ClientError, match=r"^scalar field 'title' set more than once$"):
+        parse_actions(["title", "to", "a", "title", "to", "b"])
+
+
 def test_inline_create_rejects_duplicate_scalar_field() -> None:
     with pytest.raises(ClientError, match="scalar field 'title' set more than once"):
         parse_actions(["blocked_by", "issue", "title", "to", "a", "title", "to", "b"])
@@ -724,11 +756,19 @@ def test_edge_metadata_labels_del_removes_value() -> None:
     # marker.
     actions = parse_actions(
         [
-            "blocked_by", "issue", "5",
-            "edge", "labels", "add", "a",
-            "edge", "labels", "del", "a",
+            "blocked_by",
+            "issue",
+            "5",
+            "edge",
+            "labels",
+            "add",
+            "a",
+            "edge",
+            "labels",
+            "del",
+            "a",
         ],
-    )  # fmt: skip
+    )
     edge = actions[0]
     assert isinstance(edge, EdgeAction)
     assert edge.metadata.get("labels") == []
@@ -737,11 +777,19 @@ def test_edge_metadata_labels_del_removes_value() -> None:
 def test_edge_metadata_labels_del_resolves_csv() -> None:
     actions = parse_actions(
         [
-            "blocked_by", "issue", "5",
-            "edge", "labels", "add", "a,b,c",
-            "edge", "labels", "del", "a,c",
+            "blocked_by",
+            "issue",
+            "5",
+            "edge",
+            "labels",
+            "add",
+            "a,b,c",
+            "edge",
+            "labels",
+            "del",
+            "a,c",
         ],
-    )  # fmt: skip
+    )
     edge = actions[0]
     assert isinstance(edge, EdgeAction)
     assert edge.metadata.get("labels") == ["b"]
@@ -922,7 +970,7 @@ def test_parse_range_csv_round_trips_through_bulk_apply() -> None:
 
 def test_consume_ref_empty_raises() -> None:
 
-    with pytest.raises(ClientError, match="expected reference"):
+    with pytest.raises(ClientError, match=r"^expected reference$"):
         consume_ref([], 0)
 
 
@@ -1147,11 +1195,21 @@ def test_inline_create_carries_own_cost_deep() -> None:
     """
     actions = parse_actions(
         [
-            "produced", "websearch", "query", "to", "q",
-            "agent-cost", "add", "0.89",
-            "produced", "paper", "title", "to", "p",
+            "produced",
+            "websearch",
+            "query",
+            "to",
+            "q",
+            "agent-cost",
+            "add",
+            "0.89",
+            "produced",
+            "paper",
+            "title",
+            "to",
+            "p",
         ],
-    )  # fmt: skip
+    )
     assert len(actions) == 1, "one tail: the cost rides the websearch, not the root"
     outer = actions[0]
     assert isinstance(outer, EdgeAction)
@@ -1173,13 +1231,30 @@ def test_node_note_binds_to_its_producer_edge_without_grouping() -> None:
     belief = "00000000-0000-4000-8000-000000000001"
     actions = parse_actions(
         [
-            "produced", "websearch", "query", "to", "q",
-            "agent-cost", "add", "1.33",
-            "note", "to", "verdict",
-            "produced", "paper", "title", "to", "p",
-            "favors", "belief", belief, "note", "to", "w",
+            "produced",
+            "websearch",
+            "query",
+            "to",
+            "q",
+            "agent-cost",
+            "add",
+            "1.33",
+            "note",
+            "to",
+            "verdict",
+            "produced",
+            "paper",
+            "title",
+            "to",
+            "p",
+            "favors",
+            "belief",
+            belief,
+            "note",
+            "to",
+            "w",
         ],
-    )  # fmt: skip
+    )
     assert len(actions) == 1, "one belief->websearch producer edge (deep spine)"
     outer = actions[0]
     assert isinstance(outer, EdgeAction)
@@ -1206,15 +1281,45 @@ def test_two_papers_need_begin_end_only_for_width() -> None:
     belief = "00000000-0000-4000-8000-000000000001"
     actions = parse_actions(
         [
-            "produced", "websearch", "query", "to", "q",
-            "agent-cost", "add", "0.89",
-            "note", "to", "verdict",
-            "produced", "begin", "paper", "title", "to", "p1",
-            "disfavors", "belief", belief, "note", "to", "n1", "end",
-            "produced", "begin", "paper", "title", "to", "p2",
-            "disfavors", "belief", belief, "note", "to", "n2", "end",
+            "produced",
+            "websearch",
+            "query",
+            "to",
+            "q",
+            "agent-cost",
+            "add",
+            "0.89",
+            "note",
+            "to",
+            "verdict",
+            "produced",
+            "begin",
+            "paper",
+            "title",
+            "to",
+            "p1",
+            "disfavors",
+            "belief",
+            belief,
+            "note",
+            "to",
+            "n1",
+            "end",
+            "produced",
+            "begin",
+            "paper",
+            "title",
+            "to",
+            "p2",
+            "disfavors",
+            "belief",
+            belief,
+            "note",
+            "to",
+            "n2",
+            "end",
         ],
-    )  # fmt: skip
+    )
     assert len(actions) == 1
     outer = actions[0]
     assert isinstance(outer, EdgeAction)
@@ -1242,21 +1347,49 @@ def test_inline_create_fields_metadata_cost_interleave_in_any_order() -> None:
     belief = "00000000-0000-4000-8000-000000000001"
     fields_first = parse_actions(
         [
-            "produced", "websearch", "query", "to", "q",
-            "status", "to", "complete", "agent-cost", "add", "0.5",
-            "note", "to", "n", "favors", "belief", belief,
+            "produced",
+            "websearch",
+            "query",
+            "to",
+            "q",
+            "status",
+            "to",
+            "complete",
+            "agent-cost",
+            "add",
+            "0.5",
+            "note",
+            "to",
+            "n",
+            "favors",
+            "belief",
+            belief,
         ],
-    )  # fmt: skip
+    )
     # A create must LEAD with a field (the dispatch recognizes a create by a
     # field right after the kind); after that first field, note/cost/fields
     # interleave in any order.
     meta_first = parse_actions(
         [
-            "produced", "websearch", "query", "to", "q",
-            "note", "to", "n", "agent-cost", "add", "0.5",
-            "status", "to", "complete", "favors", "belief", belief,
+            "produced",
+            "websearch",
+            "query",
+            "to",
+            "q",
+            "note",
+            "to",
+            "n",
+            "agent-cost",
+            "add",
+            "0.5",
+            "status",
+            "to",
+            "complete",
+            "favors",
+            "belief",
+            belief,
         ],
-    )  # fmt: skip
+    )
     for actions in (fields_first, meta_first):
         outer = actions[0]
         assert isinstance(outer, EdgeAction)
@@ -1283,10 +1416,19 @@ def test_inline_create_field_after_edge_is_rejected() -> None:
     with pytest.raises(ClientError, match="appears after an edge"):
         parse_actions(
             [
-                "produced", "paper", "title", "to", "p",
-                "favors", "belief", belief, "status", "to", "complete",
+                "produced",
+                "paper",
+                "title",
+                "to",
+                "p",
+                "favors",
+                "belief",
+                belief,
+                "status",
+                "to",
+                "complete",
             ],
-        )  # fmt: skip
+        )
 
 
 def test_inline_create_cost_then_field_interleaves() -> None:
@@ -1299,11 +1441,19 @@ def test_inline_create_cost_then_field_interleaves() -> None:
     """
     actions = parse_actions(
         [
-            "produced", "websearch", "query", "to", "q",
-            "agent-cost", "add", "0.5",
-            "status", "to", "complete",
+            "produced",
+            "websearch",
+            "query",
+            "to",
+            "q",
+            "agent-cost",
+            "add",
+            "0.5",
+            "status",
+            "to",
+            "complete",
         ],
-    )  # fmt: skip
+    )
     assert len(actions) == 1
     outer = actions[0]
     assert isinstance(outer, EdgeAction)
@@ -1356,7 +1506,7 @@ def test_unambiguous_meta_needs_no_marker_after_ref() -> None:
     belief = "00000000-0000-4000-8000-000000000001"
     actions = parse_actions(
         ["favors", "belief", belief, "note", "to", "adjacent", "valence", "to", "0.5"],
-    )  # fmt: skip
+    )
     act = actions[0]
     assert isinstance(act, EdgeAction)
     assert act.metadata.get("note") == "adjacent"
@@ -1368,7 +1518,7 @@ def test_edge_marker_also_accepted_on_unambiguous_meta() -> None:
     belief = "00000000-0000-4000-8000-000000000001"
     actions = parse_actions(
         ["favors", "belief", belief, "edge", "note", "to", "adjacent"],
-    )  # fmt: skip
+    )
     act = actions[0]
     assert isinstance(act, EdgeAction)
     assert act.metadata.get("note") == "adjacent"
@@ -1378,7 +1528,7 @@ def test_collision_word_in_create_body_is_a_vertex_field() -> None:
     """Bare `priority` in a create BODY is the new row's field (vertex)."""
     actions = parse_actions(
         ["produced", "issue", "title", "to", "X", "priority", "to", "high"],
-    )  # fmt: skip
+    )
     outer = actions[0]
     assert isinstance(outer, EdgeAction)
     node = outer.target
@@ -1392,10 +1542,17 @@ def test_edge_marker_in_create_body_sets_the_producer_edge() -> None:
     """`edge priority` in a create body annotates the PRODUCER edge, not the row."""
     actions = parse_actions(
         [
-            "produced", "issue", "title", "to", "X",
-            "edge", "priority", "to", "high",
+            "produced",
+            "issue",
+            "title",
+            "to",
+            "X",
+            "edge",
+            "priority",
+            "to",
+            "high",
         ],
-    )  # fmt: skip
+    )
     outer = actions[0]
     assert isinstance(outer, EdgeAction)
     node = outer.target
@@ -1431,7 +1588,7 @@ def test_edge_metadata_before_and_after_target_merge() -> None:
     """Pre-target and post-target metadata on the same edge merge."""
     actions = parse_actions(
         ["favors", "note", "to", "n", "belief", "3", "valence", "to", "0.5"],
-    )  # fmt: skip
+    )
     act = actions[0]
     assert isinstance(act, EdgeAction)
     assert act.metadata.get("note") == "n"
@@ -1467,9 +1624,19 @@ def test_edge_metadata_pre_and_post_merge_post_wins_same_key() -> None:
     belief = "00000000-0000-4000-8000-000000000001"
     # Priority high (=10) pre-target, critical (=0) post-target via the marker.
     act = parse_actions(
-        ["narrows", "priority", "to", "high",
-         "issue", "3", "edge", "priority", "to", "critical"],
-    )[0]  # fmt: skip
+        [
+            "narrows",
+            "priority",
+            "to",
+            "high",
+            "issue",
+            "3",
+            "edge",
+            "priority",
+            "to",
+            "critical",
+        ],
+    )[0]
     assert isinstance(act, EdgeAction)
     assert act.metadata.get("priority") == 0, "post-target priority wins the tie"
 
@@ -1604,12 +1771,22 @@ _ALPHABET: list[str] = sorted(
         *LIST_FIELDS,
         *COST_FIELDS,
         *EDGE_ALIASES,
-        "to", "add", "del", "edge", "begin", "end",
+        "to",
+        "add",
+        "del",
+        "edge",
+        "begin",
+        "end",
         # Values of each shape the coercers care about.
-        "0.5", "-0.5", "abc", "high", "0", "3",
+        "0.5",
+        "-0.5",
+        "abc",
+        "high",
+        "0",
+        "3",
         "00000000-0000-4000-8000-000000000001",
     },
-)  # fmt: skip
+)
 
 
 @settings(max_examples=400, deadline=None)
@@ -2016,6 +2193,142 @@ class TestParseMetricAction:
     def test_unknown_leading_token_errors(self) -> None:
         with pytest.raises(ClientError):
             parse_metric_action(["bogus"])
+
+
+class TestBackfillTimestamp:
+    def test_a_past_aware_timestamp_keeps_its_zone(self) -> None:
+        stamp = "2020-01-02T03:04:05-07:00"
+        assert parse_backfill_timestamp(stamp) == stamp
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("last tuesday", "expected an ISO 8601 timestamp"),
+            ("2020-01-02T03:04:05", "requires an explicit timezone"),
+            ("2999-01-01T00:00:00+00:00", "must be in the past"),
+        ],
+    )
+    def test_refuses_an_unusable_timestamp(self, value: str, message: str) -> None:
+        with pytest.raises(argparse.ArgumentTypeError, match=message):
+            parse_backfill_timestamp(value)
+
+
+class TestExportSelector:
+    def test_a_valueless_operator_takes_no_operand(self) -> None:
+        assert parse_export_selector(["owner", "isnull", "title", "re", "x"]) == (
+            Filter(field="owner", op="isnull", value=""),
+            Filter(field="title", op="re", value="x"),
+        )
+
+    def test_a_clause_the_filter_refuses_is_a_client_error(self) -> None:
+        with pytest.raises(ClientError, match="regex"):
+            parse_export_selector(["title", "re", "("])
+
+    @pytest.mark.parametrize(
+        ("tokens", "message"),
+        [
+            (["title"], "clause 'title' needs an operator"),
+            (["title", "about", "x"], "unknown filter operator 'about' after field"),
+            (["title", "re"], "clause 'title re' needs a value"),
+        ],
+    )
+    def test_refuses_an_incomplete_clause(
+        self,
+        tokens: list[str],
+        message: str,
+    ) -> None:
+        with pytest.raises(ClientError, match=message):
+            parse_export_selector(tokens)
+
+
+class TestListFieldActions:
+    def test_to_seeds_a_plain_list_with_one_value(self) -> None:
+        assert parse_actions(["label", "to", "x"]) == [
+            SetField(field="labels", value=("x",)),
+        ]
+
+    def test_del_removes_one_value_from_a_plain_list(self) -> None:
+        assert parse_actions(["label", "del", "x"]) == [
+            RemoveList(field="label", value="x"),
+        ]
+
+    def test_del_without_a_value_is_refused(self) -> None:
+        with pytest.raises(ClientError, match="del requires a value for list field"):
+            parse_actions(["label", "del"])
+
+    def test_a_ref_list_takes_a_typed_ref_on_to_and_del(self) -> None:
+        ref = SeqRef(kind="CodeChange", seq=7)
+        assert parse_actions(["codechange", "to", "codechange", "7"]) == [
+            SetField(field="codechanges", value=(ref,)),
+        ]
+        assert parse_actions(["codechange", "del", "7"]) == [
+            RemoveList(field="codechange", value="7", ref=ref),
+        ]
+
+    def test_an_inline_create_seeds_its_ref_list_with_a_typed_ref(self) -> None:
+        [action] = parse_actions(
+            ["produced", "issue", "title", "to", "x", "codechange", "to", "7"],
+        )
+        assert isinstance(action, EdgeAction)
+        assert isinstance(action.target, InlineCreate)
+        assert action.target.fields == (
+            SetField(field="title", value="x"),
+            SetField(field="codechanges", value=(SeqRef(kind="CodeChange", seq=7),)),
+        )
+
+
+def test_ref_text_spells_a_uuid_ref_as_its_uuid() -> None:
+    value = uuid.uuid4()
+    assert ref_text(UuidRef(uuid=value)) == str(value)
+
+
+@pytest.mark.parametrize(
+    ("tokens", "message"),
+    [
+        (["narrows", "issue", "3", "edge", "bogus"], "'edge' must be followed by"),
+        (
+            ["narrows", "begin", "issue", "title", "to", "x"],
+            "'begin' group must be closed by 'end'",
+        ),
+        (["narrows", "begin", "issue", "end"], "requires at least one field"),
+        (
+            ["produced", "issue", "title", "to", "x", "agent-cost"],
+            "inline create cost 'agent-cost' must use add VALUE",
+        ),
+        (
+            ["narrows", "note", "to", "x", "issue", "3", "del"],
+            "cannot combine edge metadata with 'del'",
+        ),
+    ],
+)
+def test_parse_actions_refuses_a_malformed_edge(
+    tokens: list[str],
+    message: str,
+) -> None:
+    with pytest.raises(ClientError, match=message):
+        parse_actions(tokens)
+
+
+def test_a_kindless_query_on_fields_no_one_kind_carries_is_refused() -> None:
+    with pytest.raises(ClientError, match="no kind carries every filtered field"):
+        parse_list_query(None, ["judgement", "is", "proven", "query", "is", "x"])
+
+
+@pytest.mark.parametrize("field", ["agent-cost", "resource-cost"])
+def test_cost_replacement_is_refused(field: str) -> None:
+    with pytest.raises(
+        ClientError,
+        match="cost fields use add with a signed USD delta",
+    ):
+        parse_actions([field, "to", "1"])
+
+
+@pytest.mark.parametrize(
+    ("field", "payload"),
+    [("label", "labels"), ("subscriber", "subscribers"), ("codechange", "codechanges")],
+)
+def test_bare_list_field_projects_its_payload_name(field: str, payload: str) -> None:
+    assert parse_actions([field]) == [ReadField(field=payload)]
 
 
 if __name__ == "__main__":

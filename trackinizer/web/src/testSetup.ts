@@ -3,8 +3,18 @@ import { focusManager, onlineManager } from "@tanstack/react-query";
 import { cleanup } from "@testing-library/react";
 import { configure, getConfig } from "@testing-library/dom";
 import { beforeAll, vi } from "vitest";
+import { followLinks } from "./router/addressBar";
 
 const PRINT_LATER = Symbol.for("testSetup.printLater");
+const FOLLOWS_LINKS = Symbol.for("testSetup.followsLinks");
+
+// A click on a link to a page of the app moves its router, as `main.tsx` has it
+// do in the app; jsdom would otherwise try to load the page. The document
+// outlives this file, so the listener is added once.
+if (!Reflect.has(document, FOLLOWS_LINKS)) {
+  followLinks();
+  Reflect.set(document, FOLLOWS_LINKS, true);
+}
 
 // Test files share their worker (`isolate: false`), so React, jsdom and Testing
 // Library load and warm up once per worker, not once per file. What a fresh worker
@@ -43,14 +53,19 @@ beforeAll(() => {
 if (!Reflect.has(getConfig().getElementError, PRINT_LATER)) {
   const { getElementError } = getConfig();
   const printLater = (message: string | null, container: Element): Error => {
-    if (Reflect.get(getConfig(), "_disableExpensiveErrorDiagnostics") !== true) return getElementError(message, container);
+    if (Reflect.get(getConfig(), "_disableExpensiveErrorDiagnostics") !== true)
+      return getElementError(message, container);
     const error = new Error();
     error.name = "TestingLibraryElementError";
     Object.defineProperty(error, "message", {
       configurable: true,
       get: () => {
         const { message: printed } = getElementError(message, container);
-        Object.defineProperty(error, "message", { configurable: true, writable: true, value: printed });
+        Object.defineProperty(error, "message", {
+          configurable: true,
+          writable: true,
+          value: printed,
+        });
         return printed;
       },
     });

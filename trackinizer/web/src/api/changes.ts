@@ -49,7 +49,15 @@ export async function listChanges(
   const kinds = typeof kind === "string" ? [kind] : [...kind];
   const rows = await send(TIMEOUT_MS.read, signal, (signal) =>
     client.GET("/api/change_log", {
-      params: { query: { kind: kinds, after_id: afterId, since, limit, ...(brief && { brief }) } },
+      params: {
+        query: {
+          kind: kinds,
+          after_id: afterId,
+          since,
+          limit,
+          ...(brief && { brief }),
+        },
+      },
       signal,
     }),
   );

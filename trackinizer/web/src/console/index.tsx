@@ -1,4 +1,9 @@
-import { keepPreviousData, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  type QueryClient,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   memo,
   type RefObject,
@@ -11,25 +16,25 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { chatHandleOf, getChatHead, isChatHandle } from "../api/chats";
+import { isChatHandle } from "../api/chats";
 import { ApiError } from "../api/client";
 import { newUuid } from "../api/idempotency";
-import { relayToStation } from "../api/stations";
 import {
   type FeedActorFacet,
   type FeedEvent,
   type FeedFacets,
   type FeedFilters,
   type MessageTarget,
+  NOT_LIVE,
   readFeedFacets,
-  sendRoutedMessage,
+  sendMessage,
   SESSION_NOT_OWNER,
   SESSION_STAFF,
   type SessionAudienceChange,
   setSessionAudience,
   type Whose,
 } from "../api/sessions";
-import { useMeta, useProfile, useWriteMode } from "../app/boot";
+import { useMeta, useWriteMode } from "../app/boot";
 import { useCommands } from "../commands/registry";
 import { Composer } from "../composer/Composer";
 import { useDrawnFrom } from "../detail/transcript/drawing";
@@ -45,19 +50,24 @@ import { type PanelSpec, PanelToggle, panelCommand, usePanel } from "../ui/panel
 import { type ShowToast, useToast } from "../ui/toast";
 import { ViewHeader } from "../ui/view";
 import { ACTIVE, type Active, AgentsSection, PickSection } from "./FacetsRail";
-import { feedFilter, picked, remember, roomsOf, type Selection, shown, toTargets } from "./facets";
+import {
+  feedFilter,
+  picked,
+  remember,
+  roomsOf,
+  type Selection,
+  shown,
+  toTargets,
+} from "./facets";
 import { ConsoleFeed, type FeedState, type Held, type Range } from "./feed";
 import { type Level, LEVELS, levelCounts, levelOf } from "./levels";
 import { MentionField } from "./MentionField";
 import { Minimap } from "./Minimap";
-import { parseLine, receipt, targetName } from "./send";
+import { type Outcome, parseLine, receipt, sessionOf, targetName } from "./send";
 import { useViews } from "./views";
-import { UNNAMED } from "../stations/names";
-import { useStation } from "../stations/useStation";
-import { useContinueInChat } from "../visuals/continueChat";
-import { useReattach } from "../visuals/reattach";
 import { ViewsSection } from "./ViewsRail";
 import "./console.css";
+import { must } from "../must";
 
 /**
  * The console (`#/console`): every session's captured records as one live feed,
@@ -74,18 +84,18 @@ import "./console.css";
  * window only finds agents: a pattern picks among every agent the facets have
  * listed while the console is open (`remember`), so a narrower window drops none.
  *
- * Every read is scoped: to a station's agents, or by whose sessions they are
- * (`Whose`): the person's own (Mine, where the console opens outside a named
- * station), those of the campaigns they launched, or every one the server lets
+ * Every read is scoped by whose sessions they are (`Whose`): the person's own
+ * (Mine), those of the campaigns they launched, or every one the server lets
  * them read. Sessions their owners made private are left out unless Show private
  * is on; the person flips one of their own between Public and Private in the rail.
  *
  * A line with no target goes to the To chips, the view's agents that have not
  * ended, less those left out of that view; `@agent`, `@agent:room`, `@a,@b`, and
  * `@*` for every agent shown, still work, and `@` lists what it may complete
- * to, the view's own agents first (`MentionField`). One request goes per
- * target, each under a key. A retry goes to the targets the first send went
- * to, under the same keys, whatever shows by then.
+ * to, the view's own agents first (`MentionField`). Each target names its
+ * agent's session, and the line goes to each session once, as an input
+ * (`sendMessage`), which is never sent again: a line that failed somewhere
+ * keeps its draft and says where it went.
  */
 export function ConsoleView() {
   const hub = useContext(LiveContext);
@@ -96,43 +106,42 @@ export function ConsoleView() {
   const rail = usePanel(RAIL);
   useCommands([panelCommand(rail)]);
   const [active, setActive] = useState<Active>("1h");
-  // Each station and view opens on its own scope (`openingScope`), kept while it stays open whatever the view picks
-  // later; one control switches it, for the station and view it was switched in.
-  // Only a user with the canvas has stations; the first read waits for the one this tab shows, so no feed is read unscoped first.
-  const profile = useProfile();
-  const stationRead = useStation({ enabled: profile.visual_workspace_enabled });
-  const station = stationRead.data ?? null;
-  const scopeKey = `${station?.id ?? ""} ${view.id}`;
-  const [scopeFor, setScopeFor] = useState<{ readonly key: string; readonly scope: Scope } | null>(null);
-  const scope: Scope = scopeFor?.key === scopeKey ? scopeFor.scope : openingScope(station, view);
-  if (scopeFor?.key !== scopeKey) setScopeFor({ key: scopeKey, scope });
-  const stationId = scope === "station" ? station?.id : undefined;
+  // Each view opens on its own scope (`openingScope`), kept while it stays open whatever the view picks later;
+  // one control switches it, for the view it was switched in.
+  const [scopeFor, setScopeFor] = useState<{
+    readonly key: string;
+    readonly scope: Whose;
+  } | null>(null);
+  const scope: Whose = scopeFor?.key === view.id ? scopeFor.scope : openingScope(view);
+  if (scopeFor?.key !== view.id) setScopeFor({ key: view.id, scope });
   const [showHidden, setShowHidden] = useState(false);
-  // A station's agents are the assistant's, under no person's account, so its scope reads whoever's they are.
-  const reach: FeedFilters = { ...(stationId ? { station: stationId } : {}), whose: scope === "station" ? "everyone" : scope, ...(showHidden ? { hidden: true } : {}) };
-  // The station's own chat is the Chat column, not an agent: widened, its lines are hidden and it is no target.
-  const ownChat = station?.conversation_id ? chatHandleOf(station.conversation_id) : null;
-  const facets = useFacets(view.range, active, stationRead.isLoading ? null : { ...EVERY_AGENT, ...reach });
-  const agents = useMemo(() => (facets.data?.actors ?? []).filter(({ actor }) => actor !== ownChat), [facets.data, ownChat]);
+  const reach: FeedFilters = { whose: scope, ...(showHidden ? { hidden: true } : {}) };
+  const facets = useFacets(view.range, active, { ...EVERY_AGENT, ...reach });
+  const agents = useMemo(() => facets.data?.actors ?? [], [facets.data]);
   const seen = useSeen(agents);
   // A pattern picks among the agents the facets know, so its feed waits for them.
-  const waiting = stationRead.isLoading || (!facets.data && [...view.agents, ...view.rooms].some((pick) => pick.includes("*")));
+  const waiting =
+    !facets.data && [...view.agents, ...view.rooms].some((pick) => pick.includes("*"));
   const picks = waiting ? undefined : feedFilter(view, seen);
   const filter = picks && { ...picks, ...reach };
   // Bumped by a hide or an unhide, which changes what every read lists: the feed is then read afresh.
   const [reread, setReread] = useState(0);
   const hide = useHide(() => setReread((n) => n + 1));
-  const toast = useToast();
-  const { reattach, busy: reattaching } = useReattach(useCallback((message: string) => toast(message, { failed: true }), [toast]));
   const feed = useFeed(view.range, filter, view.level, reread);
-  const state = useSyncExternalStore(feed?.subscribe ?? noSubscription, feed?.getSnapshot ?? emptyFeed);
+  const state = useSyncExternalStore(
+    feed?.subscribe ?? noSubscription,
+    feed?.getSnapshot ?? emptyFeed,
+  );
   const [failure, setFailure] = useState<Failure | null>(null);
   useEffect(() => {
     if (!feed) return;
     void feed.load();
     if (!hub || !view.range.live) return () => feed.dispose();
     // A captured record wakes the stream with its session's id; any batch may be one.
-    const registration = hub.register({ update: (batch, open) => feed.update(batch, open), failing: setFailure });
+    const registration = hub.register({
+      update: (batch, open) => feed.update(batch, open),
+      failing: setFailure,
+    });
     return () => {
       registration.dispose();
       feed.dispose();
@@ -140,70 +149,104 @@ export function ConsoleView() {
     };
   }, [feed, hub, view.range.live]);
   const visible = useMemo(
-    () => state.held.filter(({ event }) => levelOf(event) <= view.level && event.actor !== ownChat),
-    [state.held, view.level, ownChat],
+    () => state.held.filter(({ event }) => levelOf(event) <= view.level),
+    [state.held, view.level],
   );
   // Counted under the view's picks, its records by kind are its own; with no picks, it is the read above.
-  const counting = useFacets(view.range, active, filter ? { actor: filter.actor, room: filter.room, cli: filter.cli, ...reach } : null);
+  const counting = useFacets(
+    view.range,
+    active,
+    filter
+      ? { actor: filter.actor, room: filter.room, cli: filter.cli, ...reach }
+      : null,
+  );
   // A view that reads nothing counts nothing, whatever counts the last picks kept.
   const counted = filter ? counting.data : undefined;
   const counts = counted
     ? levelCounts({
         conversation: sum(counted.actors, "conversation"),
         count: sum(counted.actors, "count"),
-        kinds: Object.fromEntries(counted.kinds.map(({ kind, count }) => [kind, count])),
+        kinds: Object.fromEntries(
+          counted.kinds.map(({ kind, count }) => [kind, count]),
+        ),
       })
     : [];
   const showing = shown(view, seen);
   const rooms = picked(view.rooms, roomsOf(seen));
-  // Only agents are told things from here: a chat's own box is its station's.
-  const targets = showing.everyone ? [] : toTargets(showing.agents.filter(({ actor }) => !isChatHandle(actor)), rooms);
+  // Only agents are told things from here: the server refuses a line to a chat.
+  const targets = showing.everyone
+    ? []
+    : toTargets(
+        showing.agents.filter(({ actor }) => !isChatHandle(actor)),
+        rooms,
+      );
   // The chips left out of each view, by its id.
-  const [leftOut, setLeftOut] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  const [leftOut, setLeftOut] = useState<ReadonlyMap<string, ReadonlySet<string>>>(
+    new Map(),
+  );
   const out = leftOut.get(view.id) ?? new Set<string>();
   const to = targets.filter((target) => !out.has(targetName(target)));
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  // Each draft's route, by the key the composer gave the draft, so its Retry
-  // sends to the targets it first went to, each under the key it went under.
-  const routes = useRef(new Map<string, Route>());
   const shownEvents = useMemo(() => visible.map(({ event }) => event), [visible]);
   // The line whose agent was last clicked, for the message box to address; stable, so the lines stay memoised.
   const [adding, setAdding] = useState<{ readonly line: FeedEvent } | null>(null);
   const mention = useCallback((line: FeedEvent) => setAdding({ line }), []);
-  const continueIn = useContinueInChat();
 
-  async function send(line: string, key: string): Promise<string> {
-    const route = routes.current.get(key) ?? routeOf(line, shownEvents, to);
-    routes.current.set(key, route);
-    const results = await Promise.allSettled(route.targets.map((target) => sendRoutedMessage(target.target, route.text, target.key)));
-    const sent = receipt(route.targets.map(({ target }) => target), results);
-    // The station's chat is told once, what went to the agents that took it. A send that failed
-    // for a target threw above, so a Retry sends every target again under its keys, and tells it then.
-    const accepted = route.targets.filter((_, k) => {
-      const result = results[k];
-      return result?.status === "fulfilled" && result.value.delivered.length > 0;
-    }).map(({ target }) => target);
-    if (!station || !accepted.length) return sent;
-    // Only a chat the person posts into is told: the station may hold one it forks by typing, which is not theirs to speak into.
-    const told = await ownsChat(station.conversation_id)
-      && await relayToStation(station.id, accepted, route.text, route.relayKey).catch(() => false);
-    return told ? sent : `${sent}; Chat not told`;
+  async function send(line: string): Promise<string> {
+    const parsed = parseLine(line, shownEvents, to);
+    if ("problem" in parsed) throw new Error(parsed.problem);
+    // Each session takes the line once, however many targets name it.
+    const sends = new Map<string, Promise<boolean>>();
+    const outcomes = await Promise.all(
+      parsed.targets.map(async (target): Promise<Outcome> => {
+        const session = sessionOf(target, seen);
+        if (session === null) return { target, reached: null };
+        const sending =
+          sends.get(session) ?? delivered(sendMessage(session, parsed.text, newUuid()));
+        sends.set(session, sending);
+        try {
+          return { target, reached: (await sending) ? session : null };
+        } catch (error) {
+          return {
+            target,
+            reached: error instanceof Error ? error : new Error(String(error)),
+          };
+        }
+      }),
+    );
+    return receipt(outcomes);
   }
 
   return (
     <div className="view console">
       <ViewHeader icon={<Icon name="terminal" />} title={`Console · ${view.name}`}>
-        <span className="console-mark" data-live={view.range.live && !failure && !paused}>
+        <span
+          className="console-mark"
+          data-live={view.range.live && !failure && !paused}
+        >
           {view.range.live ? (failure || paused ? "○ Offline" : "● Live") : "History"}
         </span>
         <PanelToggle panel={rail} controls="console-rail" />
       </ViewHeader>
       <LiveFailureBar failure={failure} />
       <div className="console-body">
-        <aside id="console-rail" className="console-rail" aria-label="Views and filters" hidden={rail.collapsed}>
-          <ViewsSection views={views} open={view} onOpen={openView} onEdit={edit} onRemove={remove} />
-          {facets.error ? <ReadFailure error={facets.error} retry={() => void facets.refetch()} /> : null}
+        <aside
+          id="console-rail"
+          className="console-rail"
+          aria-label="Views and filters"
+          hidden={rail.collapsed}
+        >
+          <ViewsSection
+            views={views}
+            open={view}
+            onOpen={openView}
+            onEdit={edit}
+            onRemove={remove}
+          />
+          {facets.error ? (
+            <ReadFailure error={facets.error} retry={() => void facets.refetch()} />
+          ) : null}
           <AgentsSection
             agents={agents}
             picks={view.agents}
@@ -211,37 +254,57 @@ export function ConsoleView() {
             active={active}
             onActive={view.range.live ? setActive : null}
             onHide={hide}
-            onReattach={mode === "enabled" ? (agent) => void reattach(agent.session_id).then((done) => done && toast(`Reattached ${agent.actor} to Chat.`)) : null}
-            reattaching={reattaching}
           />
           <PickSection
             label="Rooms"
-            items={(facets.data?.rooms ?? []).map(({ room, count }) => ({ name: room, count }))}
+            items={(facets.data?.rooms ?? []).map(({ room, count }) => ({
+              name: room,
+              count,
+            }))}
             picks={view.rooms}
             onPicks={(picks) => change({ ...view, rooms: picks })}
             find
           />
-          <PickSection label="CLI" items={clis(agents)} picks={view.clis} onPicks={(picks) => change({ ...view, clis: picks })} />
+          <PickSection
+            label="CLI"
+            items={clis(agents)}
+            picks={view.clis}
+            onPicks={(picks) => change({ ...view, clis: picks })}
+          />
         </aside>
         <section className="console-stream">
           <div className="console-tools">
             <div className="console-seg" role="group" aria-label="Level">
               {LEVELS.map(({ level, name }) => (
-                <button key={level} type="button" aria-pressed={view.level === level} onClick={() => change({ ...view, level })}>
+                <button
+                  key={level}
+                  type="button"
+                  aria-pressed={view.level === level}
+                  onClick={() => change({ ...view, level })}
+                >
                   {name}
-                  {counts[level - 1] === undefined ? null : <span className="console-n">{counts[level - 1]!.toLocaleString("en")}</span>}
+                  {counts[level - 1] === undefined ? null : (
+                    <span className="console-n">
+                      {must(counts[level - 1]).toLocaleString("en")}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
-            <RangeControls key={JSON.stringify(view.range)} range={view.range} onRange={(range) => change({ ...view, range })} />
+            <RangeControls
+              key={JSON.stringify(view.range)}
+              range={view.range}
+              onRange={(range) => change({ ...view, range })}
+            />
             <div className="console-seg" role="group" aria-label="Scope">
-              {station ? (
-                <button type="button" aria-pressed={scope === "station"} title="Only the agents this station's chat started" onClick={() => setScopeFor({ key: scopeKey, scope: "station" })}>
-                  This station
-                </button>
-              ) : null}
               {WHOSE.map(({ whose, label, title }) => (
-                <button key={whose} type="button" aria-pressed={scope === whose} title={title} onClick={() => setScopeFor({ key: scopeKey, scope: whose })}>
+                <button
+                  key={whose}
+                  type="button"
+                  aria-pressed={scope === whose}
+                  title={title}
+                  onClick={() => setScopeFor({ key: view.id, scope: whose })}
+                >
                   {label}
                 </button>
               ))}
@@ -259,9 +322,22 @@ export function ConsoleView() {
           {filter ? (
             <Minimap
               filters={filter}
-              shown={visible.length ? { since: visible[0]!.event.created, until: view.range.live ? null : visible.at(-1)!.event.created } : null}
-              onSeek={(time) => change({ ...view, range: { live: false, since: time, until: null } })}
-              onWindow={(since, until) => change({ ...view, range: { live: false, since, until } })}
+              shown={
+                visible.length
+                  ? {
+                      since: must(visible[0]).event.created,
+                      until: view.range.live
+                        ? null
+                        : must(visible.at(-1)).event.created,
+                    }
+                  : null
+              }
+              onSeek={(time) =>
+                change({ ...view, range: { live: false, since: time, until: null } })
+              }
+              onWindow={(since, until) =>
+                change({ ...view, range: { live: false, since, until } })
+              }
             />
           ) : null}
           <div
@@ -272,23 +348,27 @@ export function ConsoleView() {
               stick.current = scrollHeight - scrollTop - clientHeight < 40;
             }}
           >
-            {state.error ? <ReadFailure error={state.error} retry={() => void (state.held.length ? feed?.more() : feed?.load())} /> : null}
-            <FeedNote
-              filter={filter}
-              state={state}
-              empty={!visible.length}
-            />
+            {state.error ? (
+              <ReadFailure
+                error={state.error}
+                retry={() => void (state.held.length ? feed?.more() : feed?.load())}
+              />
+            ) : null}
+            <FeedNote filter={filter} state={state} empty={!visible.length} />
             <Lines
               key={`${JSON.stringify(filter)}|${view.level}`}
               held={visible}
               kinds={kinds}
               onMention={mode === "hidden" ? null : mention}
-              onContinue={continueIn}
               scroller={scroller}
               stick={stick}
             />
             {!view.range.live && state.more ? (
-              <button type="button" className="btn console-more" onClick={() => void feed?.more()}>
+              <button
+                type="button"
+                className="btn console-more"
+                onClick={() => void feed?.more()}
+              >
                 Load more
               </button>
             ) : null}
@@ -296,7 +376,17 @@ export function ConsoleView() {
           {mode !== "hidden" ? (
             <div className="console-send">
               {targets.length ? (
-                <ToChips to={to} onLeaveOut={(target) => setLeftOut(new Map([...leftOut, [view.id, new Set([...out, targetName(target)])]]))} />
+                <ToChips
+                  to={to}
+                  onLeaveOut={(target) =>
+                    setLeftOut(
+                      new Map([
+                        ...leftOut,
+                        [view.id, new Set([...out, targetName(target)])],
+                      ]),
+                    )
+                  }
+                />
               ) : null}
               <Composer
                 send={send}
@@ -306,6 +396,7 @@ export function ConsoleView() {
                 }}
                 target="console"
                 enabled={mode === "enabled"}
+                retryable={() => false}
                 placeholder={
                   to.length
                     ? `Message ${to.map(({ actor, room }) => (room === null ? actor : `${actor}:${room}`)).join(", ")}… (@agent, @agent:room and @* still work)`
@@ -316,7 +407,14 @@ export function ConsoleView() {
                   <MentionField
                     field={props}
                     edit={edit}
-                    context={{ agents: seen.filter(({ actor }) => !isChatHandle(actor)), lines: shownEvents, shown: showing.everyone ? [] : showing.agents.map(({ actor }) => actor), rooms }}
+                    context={{
+                      agents: seen.filter(({ actor }) => !isChatHandle(actor)),
+                      lines: shownEvents,
+                      shown: showing.everyone
+                        ? []
+                        : showing.agents.map(({ actor }) => actor),
+                      rooms,
+                    }}
                     adding={adding}
                   />
                 )}
@@ -341,11 +439,20 @@ export function clock(iso: string): string {
  * + Output and All read the same records, so their feed fills its first read
  * with records + Output shows, the fewer. A new `reread` reads it afresh too.
  */
-function useFeed(range: Range, filter: FeedFilters | null | undefined, level: Level, reread: number): ConsoleFeed | null {
+function useFeed(
+  range: Range,
+  filter: FeedFilters | null | undefined,
+  level: Level,
+  reread: number,
+): ConsoleFeed | null {
   const client = useQueryClient();
   const reads = JSON.stringify([range, filter ?? null, Math.min(level, 3), reread]);
   return useMemo(() => {
-    const [kept, picks, filling] = JSON.parse(reads) as [Range, FeedFilters | null, Level];
+    const [kept, picks, filling] = JSON.parse(reads) as [
+      Range,
+      FeedFilters | null,
+      Level,
+    ];
     return picks ? new ConsoleFeed(client, kept, picks, filling) : null;
   }, [client, reads]);
 }
@@ -358,36 +465,62 @@ function useFeed(range: Range, filter: FeedFilters | null | undefined, level: Le
  */
 function useHide(reread: () => void): (agent: FeedActorFacet) => void {
   const hiding = { client: useQueryClient(), toast: useToast(), reread };
-  return (agent) => void changeAudience(hiding, agent, agent.audience === "private" ? "open" : "private");
+  return (agent) =>
+    void changeAudience(
+      hiding,
+      agent,
+      agent.audience === "private" ? "open" : "private",
+    );
 }
 
 /** What a hide needs: the query cache, a toast, and a way to read the feed afresh. */
-type Hiding = { readonly client: QueryClient; readonly toast: ShowToast; readonly reread: () => void };
+type Hiding = {
+  readonly client: QueryClient;
+  readonly toast: ShowToast;
+  readonly reread: () => void;
+};
 
-async function changeAudience(hiding: Hiding, agent: FeedActorFacet, audience: SessionAudienceChange): Promise<void> {
+async function changeAudience(
+  hiding: Hiding,
+  agent: FeedActorFacet,
+  audience: SessionAudienceChange,
+): Promise<void> {
   const { client, toast, reread } = hiding;
   try {
     await setSessionAudience(agent.session_id, audience, newUuid());
   } catch (error) {
-    toast(hideRefusal(error) || `Could not make ${agent.actor} ${audience === "private" ? "private" : "public"}.`, { failed: true, error });
+    toast(
+      hideRefusal(error) ||
+        `Could not make ${agent.actor} ${audience === "private" ? "private" : "public"}.`,
+      { failed: true, error },
+    );
     return;
   }
   reread();
   void client.invalidateQueries({ queryKey: ["console"] });
   if (audience === "open") toast(`${agent.actor} is public again.`);
-  else toast(`Made ${agent.actor} private: only you, staff and admins read its transcript now.`, { undo: () => void changeAudience(hiding, { ...agent, audience }, "open") });
+  else
+    toast(
+      `Made ${agent.actor} private: only you, staff and admins read its transcript now.`,
+      { undo: () => void changeAudience(hiding, { ...agent, audience }, "open") },
+    );
 }
 
 /** What a refused switch says, in words for its code, which the server sends alone; "" for any other failure. */
 function hideRefusal(error: unknown): string {
   if (!(error instanceof ApiError)) return "";
-  if (error.code === SESSION_NOT_OWNER) return "Only the session's owner can make it public or private.";
-  return error.code === SESSION_STAFF ? "A staff session keeps its audience: it is never made public or private." : "";
+  if (error.code === SESSION_NOT_OWNER)
+    return "Only the session's owner can make it public or private.";
+  return error.code === SESSION_STAFF
+    ? "A staff session keeps its audience: it is never made public or private."
+    : "";
 }
 
 /** Every agent the facets have listed while the console is open, one row per name (`remember`). */
 function useSeen(agents: readonly FeedActorFacet[]): FeedActorFacet[] {
-  const [known, setKnown] = useState<ReadonlyMap<string, FeedActorFacet>>(() => new Map());
+  const [known, setKnown] = useState<ReadonlyMap<string, FeedActorFacet>>(
+    () => new Map(),
+  );
   const seen = useMemo(() => remember(known, agents), [known, agents]);
   useEffect(() => setKnown(seen), [seen]);
   return useMemo(() => [...seen.values()], [seen]);
@@ -412,7 +545,7 @@ function useFacets(range: Range, active: Active, scope: FeedFilters | null) {
     () => ["console", "facets", live ? active : [since, until], scopeText],
     [live, active, since, until, scopeText],
   );
-  const back = ACTIVE.find(({ value }) => value === active)!.ms;
+  const back = must(ACTIVE.find(({ value }) => value === active)).ms;
   const query = useQuery({
     queryKey,
     enabled: scope !== null,
@@ -425,14 +558,24 @@ function useFacets(range: Range, active: Active, scope: FeedFilters | null) {
         // A facets read counts every record in its window: the whole history, which
         // a range with no start would read, took 8.8 s on 9 million records.
         const earliest = (until ? Date.parse(until) : Date.now()) - RANGE_FACETS_MS;
-        const start = since && Date.parse(since) >= earliest ? since : new Date(earliest).toISOString();
-        return readFeedFacets({ since: start, until: until ?? undefined, ...picks }, { signal });
+        const start =
+          since && Date.parse(since) >= earliest
+            ? since
+            : new Date(earliest).toISOString();
+        return readFeedFacets(
+          { since: start, until: until ?? undefined, ...picks },
+          { signal },
+        );
       }
-      return readFeedFacets({ since: new Date(Date.now() - back).toISOString(), ...picks }, { signal });
+      return readFeedFacets(
+        { since: new Date(Date.now() - back).toISOString(), ...picks },
+        { signal },
+      );
     },
   });
+  const scoped = scope !== null;
   useEffect(() => {
-    if (!hub || !live || scope === null) return;
+    if (!hub || !live || !scoped) return;
     let readAt = Date.now();
     const update = async ({ gap }: Batch): Promise<Later | null> => {
       const wait = readAt + 10_000 - Date.now();
@@ -444,58 +587,92 @@ function useFacets(range: Range, active: Active, scope: FeedFilters | null) {
     const registration = hub.register({ update });
     return () => registration.dispose();
     // `scope` is in `queryKey`, as text, so the effect follows it there.
-  }, [hub, client, queryKey, live, scope === null]);
+  }, [hub, client, queryKey, live, scoped]);
   return query;
 }
 
 /** A facets read of every agent, room and CLI. */
 const EVERY_AGENT: FeedFilters = { actor: [], room: [], cli: [] };
 
-/** What the console reads: a station's agents, or whose sessions among those the person reads. */
-type Scope = "station" | Whose;
-
 /**
- * The scope a station and a view open on: a named station's agents; else Everyone for a view that picks agents,
- * rooms or CLIs, which names them whoever's they are, often a campaign's or a colleague's; else Mine.
+ * The scope a view opens on: Everyone for a view that picks agents, rooms or CLIs, which names them whoever's
+ * they are, often a campaign's or a colleague's; else Mine.
  */
-function openingScope(station: { readonly name: string } | null, view: Selection): Scope {
-  if (station && !UNNAMED.test(station.name)) return "station";
-  return view.agents.length || view.rooms.length || view.clis.length ? "everyone" : "mine";
+function openingScope(view: Selection): Whose {
+  return view.agents.length || view.rooms.length || view.clis.length
+    ? "everyone"
+    : "mine";
 }
 
-/** The scope's choices besides This station, each with what it reads. */
-const WHOSE: readonly { readonly whose: Whose; readonly label: string; readonly title: string }[] = [
+/** The scope's choices, each with what it reads. */
+const WHOSE: readonly {
+  readonly whose: Whose;
+  readonly label: string;
+  readonly title: string;
+}[] = [
   { whose: "mine", label: "Mine", title: "The sessions under your account" },
-  { whose: "campaigns", label: "My campaigns", title: "The sessions of the campaigns you launched" },
+  {
+    whose: "campaigns",
+    label: "My campaigns",
+    title: "The sessions of the campaigns you launched",
+  },
   { whose: "everyone", label: "Everyone", title: "Every session you may read" },
 ];
 
 /** The rail as a panel: on the left, and `[` collapses or expands it. */
-const RAIL: PanelSpec = { id: "console.rail", name: "views and filters", side: "left", keys: ["["] };
+const RAIL: PanelSpec = {
+  id: "console.rail",
+  name: "views and filters",
+  side: "left",
+  keys: ["["],
+};
 
 /** The most of a history range the facets count: the 7 days before its end. */
 const RANGE_FACETS_MS = 7 * 24 * 3_600_000;
 
 /** Why the feed shows nothing, when it does not: still loading, no agent picked, or nothing matching. */
-function FeedNote({ filter, state, empty }: { filter: FeedFilters | null | undefined; state: FeedState; empty: boolean }) {
-  if (filter === null) return <p className="unset">No agent matches this view's picks.</p>;
-  if (filter === undefined || (state.loading && !state.held.length)) return <p className="unset">Loading…</p>;
+function FeedNote({
+  filter,
+  state,
+  empty,
+}: {
+  filter: FeedFilters | null | undefined;
+  state: FeedState;
+  empty: boolean;
+}) {
+  if (filter === null)
+    return <p className="unset">No agent matches this view's picks.</p>;
+  if (filter === undefined || (state.loading && !state.held.length))
+    return <p className="unset">Loading…</p>;
   if (state.error || !empty) return null;
   return <p className="unset">No records match this view.</p>;
 }
 
 /** Where a line with no target goes, each chip with a button that leaves it out of this view's sends. */
-export function ToChips({ to, onLeaveOut }: { to: readonly MessageTarget[]; onLeaveOut: (target: MessageTarget) => void }) {
+export function ToChips({
+  to,
+  onLeaveOut,
+}: {
+  to: readonly MessageTarget[];
+  onLeaveOut: (target: MessageTarget) => void;
+}) {
   return (
     <div className="console-to" role="group" aria-label="To">
       <span className="console-label">To</span>
       <ul className="console-picked">
         {to.map((target) => (
           <li key={targetName(target)} className="console-chip">
-            <span className={`console-actor console-name a${hue(target.actor)}`} title={targetName(target)}>
+            <span
+              className={`console-actor console-name a${hue(target.actor)}`}
+              title={targetName(target)}
+            >
               {targetName(target)}
             </span>
-            <button type="button" aria-label={`Leave out ${targetName(target)}`} onClick={() => onLeaveOut(target)}>
+            <button
+              type="button"
+              aria-label={`Leave out ${targetName(target)}`}
+              onClick={() => onLeaveOut(target)}
+            >
               <Icon name="x" size={11} />
             </button>
           </li>
@@ -514,14 +691,12 @@ function Lines({
   held,
   kinds,
   onMention,
-  onContinue,
   scroller,
   stick,
 }: {
   held: readonly Held[];
   kinds: readonly string[];
   onMention: ((line: FeedEvent) => void) | null;
-  onContinue: ((sessionId: string) => void) | null;
   scroller: RefObject<HTMLDivElement | null>;
   stick: RefObject<boolean>;
 }) {
@@ -532,7 +707,11 @@ function Lines({
   });
   return (
     <ol className="console-lines">
-      {held.map((one) => (one.n >= from ? <ConsoleLine key={one.key} held={one} kinds={kinds} onMention={onMention} onContinue={onContinue} /> : null))}
+      {held.map((one) =>
+        one.n >= from ? (
+          <ConsoleLine key={one.key} held={one} kinds={kinds} onMention={onMention} />
+        ) : null,
+      )}
     </ol>
   );
 }
@@ -552,16 +731,15 @@ export const ConsoleLine = memo(function ConsoleLine({
   held,
   kinds,
   onMention,
-  onContinue = null,
 }: {
   held: Held;
   kinds: readonly string[];
   onMention: ((line: FeedEvent) => void) | null;
-  onContinue?: ((sessionId: string) => void) | null;
 }) {
   const { event, record } = held;
   const drawn = recordView(record);
-  const view = drawn.shape === "message" ? { ...drawn, long: isLong(drawn.text) } : drawn;
+  const view =
+    drawn.shape === "message" ? { ...drawn, long: isLong(drawn.text) } : drawn;
   const at = event.timestamp ?? event.created;
   const agent = `console-actor console-name a${hue(event.actor)}`;
   return (
@@ -569,7 +747,13 @@ export const ConsoleLine = memo(function ConsoleLine({
       <div className="turn-h">
         <time dateTime={at}>{clock(at)}</time>
         {onMention && !isChatHandle(event.actor) ? (
-          <button type="button" className={agent} title={event.actor} aria-label={`Message ${event.actor}`} onClick={() => onMention(event)}>
+          <button
+            type="button"
+            className={agent}
+            title={event.actor}
+            aria-label={`Message ${event.actor}`}
+            onClick={() => onMention(event)}
+          >
             {event.actor}
           </button>
         ) : (
@@ -577,11 +761,6 @@ export const ConsoleLine = memo(function ConsoleLine({
             {event.actor}
           </b>
         )}
-        {onContinue && isChatHandle(event.actor) ? (
-          <button type="button" className="btn ghost console-continue" onClick={() => onContinue(event.session_id)}>
-            Open station
-          </button>
-        ) : null}
       </div>
       <div className="turn-h">
         {event.rooms?.length ? (
@@ -595,8 +774,12 @@ export const ConsoleLine = memo(function ConsoleLine({
         ) : null}
         <span>{view.label}</span>
         {/* A tool step's own line says where it acted and how it went (`ToolStep`). */}
-        {!view.tool && "source" in view && view.source ? <span className="mono turn-src">{view.source}</span> : null}
-        {!view.tool && "meta" in view && view.meta ? <span className="turn-meta">{view.meta}</span> : null}
+        {!view.tool && "source" in view && view.source ? (
+          <span className="mono turn-src">{view.source}</span>
+        ) : null}
+        {!view.tool && "meta" in view && view.meta ? (
+          <span className="turn-meta">{view.meta}</span>
+        ) : null}
       </div>
       <RecordBody view={view} kinds={kinds} />
     </li>
@@ -604,7 +787,13 @@ export const ConsoleLine = memo(function ConsoleLine({
 });
 
 /** Live, or a window from and to local times (either may be open), its boxes starting from `range`'s own. */
-function RangeControls({ range, onRange }: { range: Range; onRange: (range: Range) => void }) {
+function RangeControls({
+  range,
+  onRange,
+}: {
+  range: Range;
+  onRange: (range: Range) => void;
+}) {
   const [since, setSince] = useState(range.live ? "" : localOf(range.since));
   const [until, setUntil] = useState(range.live ? "" : localOf(range.until));
   const [unset, setUnset] = useState(false);
@@ -621,14 +810,25 @@ function RangeControls({ range, onRange }: { range: Range; onRange: (range: Rang
       >
         Live
       </button>
-      <input type="datetime-local" aria-label="From" value={since} onChange={(event) => setSince(event.currentTarget.value)} />
-      <input type="datetime-local" aria-label="To" value={until} onChange={(event) => setUntil(event.currentTarget.value)} />
+      <input
+        type="datetime-local"
+        aria-label="From"
+        value={since}
+        onChange={(event) => setSince(event.currentTarget.value)}
+      />
+      <input
+        type="datetime-local"
+        aria-label="To"
+        value={until}
+        onChange={(event) => setUntil(event.currentTarget.value)}
+      />
       <button
         type="button"
         className="btn"
         onClick={() => {
           setUnset(!since && !until);
-          if (since || until) onRange({ live: false, since: isoOf(since), until: isoOf(until) });
+          if (since || until)
+            onRange({ live: false, since: isoOf(since), until: isoOf(until) });
         }}
       >
         Apply
@@ -638,29 +838,32 @@ function RangeControls({ range, onRange }: { range: Range; onRange: (range: Rang
   );
 }
 
-/** Where a line goes: its text, and each target with the idempotency key it goes under. */
-type Route = {
-  readonly text: string;
-  readonly targets: readonly { readonly target: MessageTarget; readonly key: string }[];
-  /** The key the station's chat is told under, so a Retry tells it once. */
-  readonly relayKey: string;
-};
-
-/** `line` read against the events `shown` and the To targets (`parseLine`), each under a fresh key; a line it cannot send throws why. */
-function routeOf(line: string, shown: readonly FeedEvent[], to: readonly MessageTarget[]): Route {
-  const parsed = parseLine(line, shown, to);
-  if ("problem" in parsed) throw new Error(parsed.problem);
-  return { text: parsed.text, targets: parsed.targets.map((target) => ({ target, key: newUuid() })), relayKey: newUuid() };
+/** Whether a session took an input: true once it did, false when no agent process serves it (409 `not_live`). */
+async function delivered(sending: Promise<void>): Promise<boolean> {
+  try {
+    await sending;
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409 && error.code === NOT_LIVE)
+      return false;
+    throw error;
+  }
 }
 
 /** Each CLI among `agents`, with its records, the busiest first. */
 function clis(agents: readonly FeedActorFacet[]): { name: string; count: number }[] {
   const counts = new Map<string, number>();
-  for (const { cli, count } of agents) if (cli) counts.set(cli, (counts.get(cli) ?? 0) + count);
-  return [...counts].map(([name, count]) => ({ name, count })).toSorted((a, b) => b.count - a.count);
+  for (const { cli, count } of agents)
+    if (cli) counts.set(cli, (counts.get(cli) ?? 0) + count);
+  return [...counts]
+    .map(([name, count]) => ({ name, count }))
+    .toSorted((a, b) => b.count - a.count);
 }
 
-function sum(agents: readonly FeedActorFacet[], field: "count" | "conversation"): number {
+function sum(
+  agents: readonly FeedActorFacet[],
+  field: "count" | "conversation",
+): number {
   return agents.reduce((total, agent) => total + agent[field], 0);
 }
 
@@ -680,7 +883,9 @@ function isoOf(local: string): string | null {
 function localOf(iso: string | null): string {
   if (!iso) return "";
   const time = new Date(iso);
-  return new Date(time.getTime() - time.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return new Date(time.getTime() - time.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16);
 }
 
 function noSubscription(): () => void {
@@ -693,14 +898,9 @@ function emptyFeed(): FeedState {
   return EMPTY_FEED;
 }
 
-const CLOCK = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
-
-/** Whether the person's typing joins this conversation: its head says they read it. */
-async function ownsChat(conversation: string | null): Promise<boolean> {
-  if (conversation === null) return false;
-  try {
-    return (await getChatHead(conversation))?.forks_on_typing === false;
-  } catch {
-    return false;
-  }
-}
+const CLOCK = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});

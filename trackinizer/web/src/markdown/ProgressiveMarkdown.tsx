@@ -7,7 +7,13 @@ import { Markdown } from "./Markdown";
  * parsed in one task took 527 ms with the CPU slowed 4x, so no task now parses
  * more than one part. A source of one part renders as `Markdown` does.
  */
-export function ProgressiveMarkdown({ source, kinds }: { source: string; kinds: readonly string[] }) {
+export function ProgressiveMarkdown({
+  source,
+  kinds,
+}: {
+  source: string;
+  kinds: readonly string[];
+}) {
   const parts = useMemo(() => markdownParts(source), [source]);
   const [shown, setShown] = useState(1);
   useEffect(() => {
@@ -20,6 +26,7 @@ export function ProgressiveMarkdown({ source, kinds }: { source: string; kinds: 
     <div className="md">
       {parts.slice(0, shown).map((part, index) => (
         // Keyed by place, so after an edit only the parts whose text changed parse again.
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts of one streamed text, only ever appended
         <Markdown key={index} source={part} kinds={kinds} className="md-part" />
       ))}
     </div>
@@ -35,7 +42,8 @@ export function ProgressiveMarkdown({ source, kinds }: { source: string; kinds: 
  * whole.
  */
 export function markdownParts(source: string): string[] {
-  if (source.length <= LONG || source.includes("]:") || source.includes("[^")) return [source];
+  if (source.length <= LONG || source.includes("]:") || source.includes("[^"))
+    return [source];
   const parts: string[] = [];
   let part: string[] = [];
   let size = 0;
@@ -44,7 +52,13 @@ export function markdownParts(source: string): string[] {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (marker && !fence) fence = marker;
     // A fence closes on a run of its own character, as long or longer, with nothing after it.
-    else if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.trim().slice(marker.length)) fence = "";
+    else if (
+      marker &&
+      marker[0] === fence[0] &&
+      marker.length >= fence.length &&
+      !line.trim().slice(marker.length)
+    )
+      fence = "";
     else if (!fence && size >= PART && /^#{1,6}(\s|$)/.test(line)) {
       parts.push(part.join("\n"));
       part = [];

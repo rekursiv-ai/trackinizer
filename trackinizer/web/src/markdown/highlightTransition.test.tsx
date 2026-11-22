@@ -20,7 +20,12 @@ vi.mock("react", async (original) => {
 vi.mock("./highlight", () => ({
   prepare: async () => {},
   rehypeHighlightCode: () => (tree: { children: unknown[] }) => {
-    tree.children.push({ type: "element", tagName: "hr", properties: { className: ["highlighted"] }, children: [] });
+    tree.children.push({
+      type: "element",
+      tagName: "hr",
+      properties: { className: ["highlighted"] },
+      children: [],
+    });
   },
 }));
 
@@ -32,7 +37,13 @@ test("code drawn before the highlighter arrived takes its colours in a backgroun
       <Markdown source={"```py\nx = 1\n```"} kinds={[]} />
     </ToastProvider>,
   );
-  expect([container.querySelector(".highlighted"), transitions.count]).toEqual([null, 0]);
-  await vi.waitFor(() => expect(container.querySelector(".highlighted")).not.toBeNull(), { interval: 5 });
+  expect([container.querySelector(".highlighted"), transitions.count]).toEqual([
+    null,
+    0,
+  ]);
+  await vi.waitFor(
+    () => expect(container.querySelector(".highlighted")).not.toBeNull(),
+    { interval: 5 },
+  );
   expect(transitions.count).toBe(1);
 });

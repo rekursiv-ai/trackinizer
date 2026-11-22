@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { must } from "../must";
 import { type Batch, type Later, Serial } from "./serial";
 
 beforeEach(() => {
@@ -34,7 +35,14 @@ function heldQuery() {
       });
     },
   };
-  return { query, batches, finish, fail, most: () => most };
+  // The n-th update's resolve and reject, once it has started.
+  return {
+    query,
+    batches,
+    finish: (n: number, later: Later | null) => must(finish[n])(later),
+    fail: (n: number, error: Error) => must(fail[n])(error),
+    most: () => most,
+  };
 }
 
 /** Let resolved updates run their continuations. */
@@ -49,13 +57,13 @@ test("one update at a time; ids that arrive meanwhile run once more afterwards, 
   serial.push(["b"]);
   serial.push(["c"], true);
   expect(batches).toEqual([{ ids: ["a"], gap: false }]);
-  finish[0]!(null);
+  finish(0, null);
   await settle();
   expect(batches).toEqual([
     { ids: ["a"], gap: false },
     { ids: ["b", "c"], gap: true },
   ]);
-  finish[1]!(null);
+  finish(1, null);
   await settle();
   expect(batches).toHaveLength(2);
   expect(most()).toBe(1);
@@ -65,12 +73,12 @@ test("an update that put work off runs again after the time it asked for, with w
   const { query, batches, finish } = heldQuery();
   const serial = new Serial(query);
   serial.push(["a", "b"]);
-  finish[0]!({ afterMs: 2_000 });
+  finish(0, { afterMs: 2_000 });
   await settle();
   await vi.advanceTimersByTimeAsync(1_999);
   expect(batches).toHaveLength(1);
   serial.push(["c"]);
-  finish[1]!(null);
+  finish(1, null);
   await vi.advanceTimersByTimeAsync(1);
   expect(batches.map((batch) => batch.ids)).toEqual([["a", "b"], ["c"], []]);
 });
@@ -79,13 +87,13 @@ test("the work put off runs once, at the earliest time asked", async () => {
   const { query, batches, finish } = heldQuery();
   const serial = new Serial(query);
   serial.push(["a"]);
-  finish[0]!({ afterMs: 2_000 });
+  finish(0, { afterMs: 2_000 });
   await settle();
   serial.push(["b"]);
-  finish[1]!({ afterMs: 500 });
+  finish(1, { afterMs: 500 });
   await vi.advanceTimersByTimeAsync(500);
   expect(batches.map((batch) => batch.ids)).toEqual([["a"], ["b"], []]);
-  finish[2]!(null);
+  finish(2, null);
   await vi.advanceTimersByTimeAsync(5_000);
   expect(batches).toHaveLength(3);
 });
@@ -96,7 +104,7 @@ test("a failed update keeps its ids, and is tried again after 1, 3 and 10 s, the
   serial.push(["a"], true);
   const waits: number[] = [];
   for (let n = 0; n < 5; n++) {
-    fail[n]!(new Error("503"));
+    fail(n, new Error("503"));
     const before = batches.length;
     let waited = 0;
     while (batches.length === before && waited < 60_000) {
@@ -107,7 +115,7 @@ test("a failed update keeps its ids, and is tried again after 1, 3 and 10 s, the
   }
   expect(waits).toEqual([1_000, 3_000, 10_000, 30_000, 30_000]);
   expect(batches.at(-1)).toEqual({ ids: ["a"], gap: true });
-  finish[5]!(null);
+  finish(5, null);
   await vi.advanceTimersByTimeAsync(60_000);
   expect(batches).toHaveLength(6);
 });
@@ -116,21 +124,21 @@ test("an update that only put work off does not reset the wait between failed tr
   const { query, batches, finish, fail } = heldQuery();
   const serial = new Serial(query);
   serial.push(["a"]);
-  fail[0]!(new Error("503"));
+  fail(0, new Error("503"));
   await vi.advanceTimersByTimeAsync(1_000);
   // The retry is put off, as a membership check waiting out its 2 s is.
-  finish[1]!({ afterMs: 1_000 });
+  finish(1, { afterMs: 1_000 });
   await vi.advanceTimersByTimeAsync(1_000);
-  fail[2]!(new Error("503"));
+  fail(2, new Error("503"));
   await vi.advanceTimersByTimeAsync(2_999);
   expect(batches).toHaveLength(3);
   await vi.advanceTimersByTimeAsync(1);
   expect(batches).toHaveLength(4);
   // An update that finishes its work starts the waits afresh.
-  finish[3]!(null);
+  finish(3, null);
   await settle();
   serial.push(["b"]);
-  fail[4]!(new Error("503"));
+  fail(4, new Error("503"));
   await vi.advanceTimersByTimeAsync(1_000);
   expect(batches).toHaveLength(6);
 });
@@ -151,7 +159,7 @@ test("disposed, it runs nothing more, not even what was put off", async () => {
   const { query, batches, finish } = heldQuery();
   const serial = new Serial(query);
   serial.push(["a"]);
-  finish[0]!({ afterMs: 2_000 });
+  finish(0, { afterMs: 2_000 });
   await settle();
   serial.dispose();
   serial.push(["c"]);
@@ -163,14 +171,14 @@ test("an update that succeeds while failed work waits out its backoff does not s
   const { query, batches, finish, fail } = heldQuery();
   const serial = new Serial(query);
   serial.push(["a"]);
-  fail[0]!(new Error("503"));
+  fail(0, new Error("503"));
   await settle();
   // Other work runs and succeeds while "a" waits for its first retry.
   serial.push(["b"]);
-  finish[1]!(null);
+  finish(1, null);
   await vi.advanceTimersByTimeAsync(1_000);
   expect(batches.map((batch) => batch.ids)).toEqual([["a"], ["b"], ["a"]]);
-  fail[2]!(new Error("503"));
+  fail(2, new Error("503"));
   await vi.advanceTimersByTimeAsync(2_999);
   expect(batches).toHaveLength(3);
   await vi.advanceTimersByTimeAsync(1);
@@ -181,13 +189,13 @@ test("work put off for less time than a failed update's backoff runs then withou
   const { query, batches, finish, fail } = heldQuery();
   const serial = new Serial(query);
   serial.push(["a"]);
-  fail[0]!(new Error("503"));
+  fail(0, new Error("503"));
   await settle();
   serial.push(["b"]);
-  finish[1]!({ afterMs: 100 });
+  finish(1, { afterMs: 100 });
   await vi.advanceTimersByTimeAsync(100);
   expect(batches.map((batch) => batch.ids)).toEqual([["a"], ["b"], []]);
-  finish[2]!(null);
+  finish(2, null);
   await vi.advanceTimersByTimeAsync(899);
   expect(batches).toHaveLength(3);
   await vi.advanceTimersByTimeAsync(1);
@@ -200,7 +208,7 @@ test("an update the tab hid under runs again, with its batch, once the tab is ba
   const serial = new Serial(query, () => open);
   serial.push(["a"], true);
   open = false;
-  finish[0]!(null);
+  finish(0, null);
   await vi.advanceTimersByTimeAsync(60_000);
   expect(batches).toHaveLength(1);
   open = true;
@@ -223,18 +231,18 @@ test("updates that keep failing say so after the first try and two retries, with
     },
   });
   serial.push(["a"]);
-  fail[0]!(new Error("first"));
+  fail(0, new Error("first"));
   await vi.advanceTimersByTimeAsync(1_000);
-  fail[1]!(new Error("second"));
+  fail(1, new Error("second"));
   await vi.advanceTimersByTimeAsync(3_000);
   expect(heard).toEqual([]);
-  fail[2]!(new Error("503 Service Unavailable"));
+  fail(2, new Error("503 Service Unavailable"));
   await settle();
   expect(heard).toEqual(["503 Service Unavailable"]);
   // Retry runs now, not after the 10 s wait.
   retry();
   expect(batches).toHaveLength(4);
-  finish[3]!(null);
+  finish(3, null);
   await settle();
   expect(heard).toEqual(["503 Service Unavailable", null]);
 });

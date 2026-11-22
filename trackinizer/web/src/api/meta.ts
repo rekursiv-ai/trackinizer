@@ -25,12 +25,18 @@ export type EdgeTopology = { readonly [edgeKind: string]: EdgeRule };
 
 /** Fetch `GET /api/meta/enums`. */
 export async function getEnums({ signal }: CallOptions = {}): Promise<Enums> {
-  return send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/meta/enums", { signal }));
+  return send(TIMEOUT_MS.read, signal, (signal) =>
+    client.GET("/api/meta/enums", { signal }),
+  );
 }
 
 /** Fetch `GET /api/meta/fields`. */
-export async function getFieldOwners({ signal }: CallOptions = {}): Promise<FieldOwners> {
-  return send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/meta/fields", { signal }));
+export async function getFieldOwners({
+  signal,
+}: CallOptions = {}): Promise<FieldOwners> {
+  return send(TIMEOUT_MS.read, signal, (signal) =>
+    client.GET("/api/meta/fields", { signal }),
+  );
 }
 
 /**
@@ -39,7 +45,9 @@ export async function getFieldOwners({ signal }: CallOptions = {}): Promise<Fiel
  * Written by hand from `edges_route` in `server/api/meta_routes.py`: the schema
  * types each rule as a map of strings and string lists.
  */
-export async function getEdgeTopology({ signal }: CallOptions = {}): Promise<EdgeTopology> {
+export async function getEdgeTopology({
+  signal,
+}: CallOptions = {}): Promise<EdgeTopology> {
   const topology = await send(TIMEOUT_MS.read, signal, (signal) =>
     client.GET("/api/meta/edges", { signal }),
   );

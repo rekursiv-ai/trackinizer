@@ -6,7 +6,7 @@ description: ALWAYS invoke this skill when authoring a trackinizer AgentSession 
 # AgentSession — authoring expectations
 
 An `AgentSession` is a captured agent-CLI session envelope, citeable like any
-other artifact. Produced by `trax run <cli>`.
+other artifact. Produced by an agent runner wrapping a CLI.
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
 `../SKILL.md`.

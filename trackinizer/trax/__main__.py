@@ -19,7 +19,7 @@ while [ "$_trax_dir" != "/" ]; do
   fi
   _trax_dir=$(dirname "$_trax_dir")
 done
-exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Command-line client for the trackinizer server.
 
 Grammar:

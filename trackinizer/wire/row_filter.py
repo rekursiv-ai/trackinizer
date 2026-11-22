@@ -324,9 +324,7 @@ def _compiled(pattern: str) -> re.Pattern[str]:
 # exposes every element, so ``label is <x>`` matches any element rather than the whole-
 # list repr.
 def _candidate_items(value: object) -> tuple[object, ...]:
-    """Yield the comparable items from a single row value."""
-    if value is None:
-        return ()
+    """Yield the comparable items from a single non-NULL row value."""
     if isinstance(value, str) or not isinstance(value, Sequence):
         return (value,)
     return tuple(value)
@@ -354,21 +352,18 @@ def _matches_order(value: object, op: str, expected: str) -> bool:
     return _ordered(str(value), op, expected)
 
 
-# An assert rather than a trailing ``return left >= right``: that fallthrough would make
-# an unrecognized op MEAN ``ge`` and return a boolean the caller cannot tell from a real
-# answer. ``reject_inadmissible`` refuses an unknown op upstream, so reaching here with
-# one is a broken invariant.
+# A lookup rather than a chain ending in ``return left >= right``: that fallthrough would
+# make an unrecognized op MEAN ``ge`` and return a boolean the caller cannot tell from a
+# real answer. ``reject_inadmissible`` refuses an unknown op upstream, so a ``KeyError``
+# here is a broken invariant.
 def _ordered[T: (float, Decimal, str)](left: T, op: str, right: T) -> bool:
-    """Apply one order op, asserting the op is one."""
-    if op == "lt":
-        return left < right
-    if op == "le":
-        return left <= right
-    if op == "gt":
-        return left > right
-    if op != "ge":
-        raise ValueError(f"unreachable order op {op!r}")
-    return left >= right
+    """Apply one order op; an op that is not one raises ``KeyError``."""
+    return {
+        "lt": left < right,
+        "le": left <= right,
+        "gt": left > right,
+        "ge": left >= right,
+    }[op]
 
 
 # Both ends: a magnitude past the ceiling becomes ``inf`` and one past the floor becomes

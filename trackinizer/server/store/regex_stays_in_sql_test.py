@@ -15,7 +15,7 @@ slow query.
 
 from __future__ import annotations
 
-from trackinizer.server.api.query import _filter_columns_for
+from trackinizer.server.api.query import _filter_columns
 from trackinizer.server.store.read import _partition_filters
 from trackinizer.types.errors import ValidationError
 from trackinizer.types.inquiries import KIND_TO_CLASS
@@ -30,7 +30,7 @@ def test_no_filterable_column_routes_a_regex_to_python() -> None:
     cannot lower -- precisely the columns at risk. Iterating it asked whether
     the safe columns are safe.
     """
-    columns = {column for kind in KIND_TO_CLASS for column in _filter_columns_for(kind)}
+    columns = {column for kind in KIND_TO_CLASS for column in _filter_columns(kind)}
     assert "experiment_config" in columns, "the JSONB column must be in scope"
 
     escaped: list[tuple[str, str]] = []

@@ -12,25 +12,25 @@ the regex, and the ciphertext that must never be matchable.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from treekle import immutable
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
+    AgentMessage,
+    BashResult,
     ContextCompaction,
     SessionRecord,
-    ShellCommandResult,
     Thinking,
     ToolCall,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import AUDIENCES
@@ -38,21 +38,19 @@ from trackinizer.wire.filters import Filter
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.core import Store
 
 
 # Reads every session's transcript: a filter here is of what it matches, not who reads.
 _ANYONE = SessionReader(audiences=AUDIENCES, every_session=True, oversight=True)
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store on the shared integration database."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session_with(
@@ -110,13 +108,20 @@ async def test_a_phrase_in_a_tool_result_matches(store: Store) -> None:
     """The prose a tool printed is searchable, and scoped to its record kind."""
     hit = await _session_with(
         store,
-        [ShellCommandResult(call_id="c", command=("ls",), stdout="pg_advisory_lock")],
+        [
+            ToolMessage(
+                call_id="c",
+                state="done",
+                stdout=("pg_advisory_lock",),
+                result=BashResult(command=("ls",)),
+            ),
+        ],
     )
     miss = await _session_with(store, [UserMessage(content="unrelated")])
 
     found = await _matching(
         store,
-        Filter(field="shell_command_result", op="re", value="advisory"),
+        Filter(field="bash_result", op="re", value="advisory"),
     )
 
     assert hit in found
@@ -309,6 +314,44 @@ async def test_a_record_kind_scopes_the_match(store: Store) -> None:
 
     assert session_id in as_user
     assert session_id not in as_tool
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_row_stored_under_a_former_class_name_matches_in_both_evaluators(
+    store: Store,
+) -> None:
+    session_id = uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
+            "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
+            "'tester@example.com', 's', 'open')",
+            session_id,
+        )
+    row = SessionRecordRow.of(
+        session_id=session_id,
+        part=0,
+        idx=0,
+        record=AgentMessage(sender="lead", content="formerly sent"),
+    )
+    await store.append_session_records(
+        session_id,
+        [replace(row, kind="AgentToAgentMessage")],
+    )
+    _ = await store.upsert_session_manifest(
+        session_id,
+        name="s.jsonl",
+        metadata=immutable({}),
+        ir_id=uuid4(),
+        format="claude",
+        records=1,
+    )
+    clause = Filter(field="agent_message", op="re", value="formerly")
+
+    assert session_id in await _matching(store, clause, lowering=False)
+    assert session_id in await _matching(store, clause)
 
 
 if __name__ == "__main__":

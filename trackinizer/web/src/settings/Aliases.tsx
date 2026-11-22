@@ -25,11 +25,18 @@ export function AliasesSection() {
   const [typed, setTyped] = useState("");
   const [all, setAll] = useState(false);
   const query = typed.trim().toLowerCase();
-  const matches = (suggested.data ?? []).filter(({ name }) => name.toLowerCase().includes(query));
+  const matches = (suggested.data ?? []).filter(({ name }) =>
+    name.toLowerCase().includes(query),
+  );
   const shown = all || query ? matches : matches.slice(0, SHOWN);
-  const change = (next: (aliases: string[]) => string[]) => update((state) => ({ ...state, aliases: next(state.aliases) }));
-  const add = (name: string) => change((names) => (names.includes(name) || name === email ? names : [...names, name]));
-  const remove = (name: string) => change((names) => names.filter((alias) => alias !== name));
+  const change = (next: (aliases: string[]) => string[]) =>
+    update((state) => ({ ...state, aliases: next(state.aliases) }));
+  const add = (name: string) =>
+    change((names) =>
+      names.includes(name) || name === email ? names : [...names, name],
+    );
+  const remove = (name: string) =>
+    change((names) => names.filter((alias) => alias !== name));
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const name = typed.trim();
@@ -39,7 +46,10 @@ export function AliasesSection() {
   };
   return (
     <Section title="Names that mean you">
-      <p className="st-note">Filters for “me” match your email and these names. Assigning or subscribing “me” writes your email.</p>
+      <p className="st-note">
+        Filters for “me” match your email and these names. Assigning or subscribing “me”
+        writes your email.
+      </p>
       <ul className="st-chips" aria-label="Your names">
         <li className="st-chip">
           {email}
@@ -48,7 +58,12 @@ export function AliasesSection() {
         {aliases.map((alias) => (
           <li key={alias} className="st-chip">
             {alias}
-            <button type="button" className="st-chip-x" aria-label={`Remove ${alias}`} onClick={() => remove(alias)}>
+            <button
+              type="button"
+              className="st-chip-x"
+              aria-label={`Remove ${alias}`}
+              onClick={() => remove(alias)}
+            >
               <Icon name="x" size={12} />
             </button>
           </li>
@@ -70,7 +85,9 @@ export function AliasesSection() {
       <h4 className="st-sub">Owner names on rows under your account</h4>
       <ReadError read={suggested} />
       {suggested.data === undefined ? (
-        suggested.isError ? null : <p className="st-note">Looking through rows under your account…</p>
+        suggested.isError ? null : (
+          <p className="st-note">Looking through rows under your account…</p>
+        )
       ) : suggested.data.length === 0 ? (
         <p className="st-note">No other owner names on rows under your account.</p>
       ) : matches.length === 0 ? (
@@ -84,7 +101,9 @@ export function AliasesSection() {
                   <input
                     type="checkbox"
                     checked={aliases.includes(name)}
-                    onChange={(event) => (event.target.checked ? add(name) : remove(name))}
+                    onChange={(event) =>
+                      event.target.checked ? add(name) : remove(name)
+                    }
                   />
                   <span title={name}>{name}</span>
                   <span className="muted num">
@@ -95,7 +114,11 @@ export function AliasesSection() {
             ))}
           </ul>
           {shown.length < matches.length ? (
-            <button type="button" className="btn ghost st-more" onClick={() => setAll(true)}>
+            <button
+              type="button"
+              className="btn ghost st-more"
+              onClick={() => setAll(true)}
+            >
               Show all {matches.length}
             </button>
           ) : null}

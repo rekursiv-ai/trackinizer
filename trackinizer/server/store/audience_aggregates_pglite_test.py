@@ -30,21 +30,20 @@ from treekle import from_plain, json_loads
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.addons.embedding.fakes import HashEmbedder, vector_store
+from trackinizer.addons.embedding.search import (
+    _ITERATIVE_SCAN,
+    Nearest,
+    ensure_index,
+)
+from trackinizer.addons.embedding.sweep import SweepState, sweep_once
+from trackinizer.addons.embedding.units import Settings, settings_key
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.audience import SessionReader, TranscriptPings
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import iter_sse_events
-from trackinizer.server.semantic_mapper_footprint import FootprintMapper
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.read import _record_texts
-from trackinizer.server.store.session_embed import sweep_session_embeddings
+from trackinizer.server.store.search import SessionSearchHit, search_sessions
 from trackinizer.server.store.session_feed import FeedScope
-from trackinizer.server.store.session_search import (
-    _ITERATIVE_SCAN,
-    SessionSearchHit,
-    search_session_records,
-)
 from trackinizer.server.values import vec_to_text
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
@@ -57,6 +56,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 
     from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.server.store.core import Store
     from trackinizer.server.store.export import GraphExport
     from trackinizer.wire.filters import FilterOp
     from trackinizer.wire.wire_sessions import FeedHistogramResponse
@@ -80,14 +80,12 @@ _STARTER: Final = SessionReader(
     audiences=_HELD,
     email=STARTER_EMAIL,
     every_session=True,
-    assistant=ASSISTANT_EMAIL,
 )
 # A colleague of the sessions' account who holds staff, and no member of the chat.
 _STRANGER: Final = SessionReader(
     audiences=AUDIENCES,
     email="sid@example.com",
     org="example.com",
-    assistant=ASSISTANT_EMAIL,
 )
 _OWNER: Final = SessionReader(audiences=_HELD, email=OWNER_EMAIL, org="example.com")
 _OVERSEER: Final = SessionReader(
@@ -100,9 +98,29 @@ _OVERSEER: Final = SessionReader(
 _OPEN_TEXT: Final = "an open transcript"
 _STAFF_TEXT: Final = f"{CANARY} the staff transcript"
 
-_MAPPER: Final = FootprintMapper().name
-_MODEL: Final = StubEmbedder(dim=1024).name
-_DIM: Final = StubEmbedder(dim=1024).dim
+# The vector arm is the embedding addon's own, over its own table: what a deployment
+# with it serves. The sweep embeds the records with a hash model.
+_MODEL: Final = HashEmbedder(dim=1_024)
+SETTINGS: Final = Settings(
+    key=settings_key(
+        model=_MODEL.name,
+        dim=_MODEL.dim,
+        chunk_chars=1_500,
+        overlap_chars=200,
+        session_kinds=("UserMessage", "AssistantMessage"),
+    ),
+    dim=_MODEL.dim,
+    chunk_chars=1_500,
+    overlap_chars=200,
+    session_kinds=("UserMessage", "AssistantMessage"),
+)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def store(pglite_engine: PGliteEngine) -> Store:
+    """Return a store on the shared PGlite engine, with the addon's vector table."""
+    return await vector_store(pglite_engine)
+
 
 # A UTC midnight, so an hour's bucket starts on it.
 _ORIGIN: Final = datetime(2026, 9, 1, tzinfo=UTC)
@@ -134,15 +152,6 @@ class Pair:
     def until(self) -> datetime:
         """The end of the span a histogram counts."""
         return self.origin + timedelta(hours=6)
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
 
 
 async def _session(
@@ -282,7 +291,7 @@ async def seed_chat(store: Store, *, at: datetime) -> UUID:
             "agentsession_cli, agentsession_rooms, agentsession_audience, "
             "agentsession_cli_session_id, agentsession_opened_by_api_key_id) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "$2, 'a chat', 'chat-ann', 'sagent', '{}', 'open', $3, $4)",
+            "$2, 'a chat', 'chat-ann', 'assistant', '{}', 'open', $3, $4)",
             session_id,
             STARTER_EMAIL,
             f"chat:{conversation}",
@@ -363,12 +372,25 @@ async def _records_after(store: Store, session_id: UUID, *, texts: list[str]) ->
 
 
 async def index(store: Store) -> None:
-    """Embed every seeded record through the production sweep."""
-    await sweep_session_embeddings(
-        store.engine,
-        mapper=FootprintMapper(),
-        embedder=StubEmbedder(dim=1024),
-    )
+    """Embed every seeded record through the addon's sweep, then build its index."""
+    await _swept(store)
+    async with store.engine.acquire() as conn:
+        await ensure_index(conn, SETTINGS)
+
+
+async def _swept(store: Store) -> None:
+    """Embed every seeded record through the addon's sweep."""
+    state = SweepState()
+    while (
+        state := await sweep_once(
+            store.engine,
+            model=_MODEL,
+            settings=SETTINGS,
+            state=state,
+            slice_units=64,
+        )
+    ).worked:
+        pass
 
 
 def _open_only(shown: str, pair: Pair) -> None:
@@ -478,16 +500,44 @@ async def _search(
     vector: list[float] | None = None,
     limit: int = 20,
 ) -> list[SessionSearchHit]:
-    return await search_session_records(
+    """Search by ``text``, or with the vector arm alone for a query at ``vector``."""
+    hits, _searched = await search_sessions(
         store.engine,
-        query_vector=vector,
-        query_text=text,
-        mapper=_MAPPER,
-        model=_MODEL,
-        dim=_DIM,
+        query=text if vector is None else _UNMATCHED,
+        vectors=None if vector is None else _toward(vector),
         limit=limit,
         scope=FeedScope(reader=reader),
     )
+    return hits
+
+
+# No record holds the word, so a search for it reaches no record by keyword.
+_UNMATCHED: Final = "unmatchedqueryword"
+
+
+def _toward(vector: list[float]) -> Nearest:
+    """Return the addon's vector arm, loaded, every query of it embedded at ``vector``."""
+    loaded = asyncio.Event()
+    loaded.set()
+    return Nearest(model=_Pointed(vector=vector), settings=SETTINGS, loaded=loaded)
+
+
+@dataclass(slots=True, kw_only=True)
+class _Pointed:
+    """A model whose every query is one vector, for a search placed where a test wants."""
+
+    vector: list[float]
+    dim: int = 1_024
+    name: str = "pointed@1024"
+
+    async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed nothing as a document; only the sweep's model does."""
+        raise AssertionError(f"the search embedded {len(texts)} documents")
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Return :attr:`vector`, whatever ``text`` is."""
+        del text
+        return self.vector
 
 
 async def test_the_full_text_arm_omits_a_session_its_reader_may_not_read(
@@ -507,7 +557,7 @@ async def test_the_semantic_arm_omits_a_session_its_reader_may_not_read(
 ) -> None:
     pair = await seed(store)
     await index(store)
-    nearest_staff = await StubEmbedder(dim=1024).embed(_STAFF_TEXT)
+    nearest_staff = await _MODEL.embed_query(_STAFF_TEXT)
 
     opened = await _search(store, _OPEN, vector=nearest_staff)
     staffed = await _search(store, _BOTH, vector=nearest_staff)
@@ -536,8 +586,7 @@ async def _move_near(store: Store, session_id: UUID, vector: list[float]) -> Non
     """Put every embedded unit of ``session_id`` just beside ``vector``, each distinct."""
     async with store.engine.acquire() as conn:
         units = await conn.fetch(
-            "SELECT part, idx, field, chunk FROM session_embeddings "
-            "WHERE session_id = $1",
+            "SELECT part, idx, field, chunk FROM embedding.vectors WHERE owner_id = $1",
             session_id,
         )
         for number, unit in enumerate(units, start=1):
@@ -547,8 +596,8 @@ async def _move_near(store: Store, session_id: UUID, vector: list[float]) -> Non
                 for dimension, value in enumerate(vector)
             ]
             await conn.execute(
-                "UPDATE session_embeddings SET embedding = $1::halfvec "
-                "WHERE session_id = $2 AND part = $3 AND idx = $4 "
+                "UPDATE embedding.vectors SET embedding = $1::halfvec "
+                "WHERE owner_id = $2 AND part = $3 AND idx = $4 "
                 "AND field = $5 AND chunk = $6",
                 vec_to_text(nearby),
                 session_id,
@@ -574,33 +623,14 @@ async def _staff_units_nearest(store: Store) -> tuple[Pair, list[float]]:
         pair.staff_id,
         texts=[f"{CANARY} staff line {i}" for i in range(offered + 20)],
     )
-    nearest_staff = await StubEmbedder(dim=1024).embed(_STAFF_TEXT)
+    nearest_staff = await _MODEL.embed_query(_STAFF_TEXT)
     # PGlite keeps an HNSW index current at about 13 ms per 1024-dim unit written, and
     # each staff unit is written twice here; one build afterwards takes about 50 ms.
-    async with _index_built_last(store):
-        await index(store)
-        await _move_near(store, pair.staff_id, nearest_staff)
-    return pair, nearest_staff
-
-
-@asynccontextmanager
-async def _index_built_last(store: Store) -> AsyncGenerator[None]:
-    """Drop the stub model's HNSW index for the block, then build it from its definition."""
-    name = "idx_session_embeddings_hnsw_stub_1024"
+    await _swept(store)
+    await _move_near(store, pair.staff_id, nearest_staff)
     async with store.engine.acquire() as conn:
-        definition = from_plain(
-            await conn.fetchval(
-                "SELECT indexdef FROM pg_indexes WHERE indexname = $1",
-                name,
-            ),
-            str,
-        )
-        await conn.execute(f"DROP INDEX {name}")
-    try:
-        yield
-    finally:
-        async with store.engine.acquire() as conn:
-            await conn.execute(definition)
+        await ensure_index(conn, SETTINGS)
+    return pair, nearest_staff
 
 
 @asynccontextmanager
@@ -652,7 +682,7 @@ async def test_the_installed_pgvector_is_asked_once_and_the_answer_kept(
     """The bundled extension is 0.8 or later, so a restricted reader scans iteratively."""
     monkeypatch.delitem(_ITERATIVE_SCAN, store.engine, raising=False)
 
-    _ = await _search(store, _OPEN, vector=await StubEmbedder(dim=1024).embed("any"))
+    _ = await _search(store, _OPEN, vector=await _MODEL.embed_query("any"))
 
     assert _ITERATIVE_SCAN[store.engine] is True
 
@@ -921,7 +951,7 @@ async def test_a_read_that_names_no_reader_reads_nothing(store: Store) -> None:
     """Leaving the reader out hides every transcript rather than showing one."""
     pair = await seed(store)
     await index(store)
-    nearest_staff = await StubEmbedder(dim=1024).embed(_STAFF_TEXT)
+    nearest_staff = await _MODEL.embed_query(_STAFF_TEXT)
 
     feed = await store.read_feed()
     facets = await store.read_feed_facets(since=None, until=None, scope=FeedScope())
@@ -932,13 +962,10 @@ async def test_a_read_that_names_no_reader_reads_nothing(store: Store) -> None:
         buckets=6,
         scope=FeedScope(),
     )
-    hits = await search_session_records(
+    hits, _searched = await search_sessions(
         store.engine,
-        query_vector=nearest_staff,
-        query_text="transcript",
-        mapper=_MAPPER,
-        model=_MODEL,
-        dim=_DIM,
+        query="transcript",
+        vectors=_toward(nearest_staff),
     )
     exported = await store.export_graph()
     listed = await store.list_kind(
@@ -1094,7 +1121,7 @@ async def _view(
         case "full text":
             return repr(await _search(store, reader, text="transcript"))
         case "semantic":
-            nearest = await StubEmbedder(dim=1024).embed(f"{CHAT_CANARY} the chat")
+            nearest = await _MODEL.embed_query(f"{CHAT_CANARY} the chat")
             return repr(await _search(store, reader, vector=nearest))
         case "export":
             return _transcript(await store.export_graph(reader=reader))

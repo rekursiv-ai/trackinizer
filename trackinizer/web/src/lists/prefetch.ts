@@ -33,7 +33,11 @@ export class DetailWarmer {
     const query = detailQueries.detail(id);
     const state = this.#client.getQueryState(query.queryKey);
     const now = Date.now();
-    if (state?.fetchStatus === "fetching" || (state?.data !== undefined && now - state.dataUpdatedAt < FRESH_MS)) return;
+    if (
+      state?.fetchStatus === "fetching" ||
+      (state?.data !== undefined && now - state.dataUpdatedAt < FRESH_MS)
+    )
+      return;
     this.#reads = this.#reads.filter((at) => now - at < MINUTE_MS);
     if (this.#reads.length >= CAP) return;
     this.#reads.push(now);

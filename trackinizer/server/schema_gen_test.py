@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import Literal
 
 import re
 
 import pytest
 
+from trackinizer.server import schema_gen
 from trackinizer.server.schema_gen import (
     CHANGE_LOG_COLUMN_ORDER,
     SEQ_FOR_KIND,
+    column_check_body,
     generate_edge_metadata_columns,
     generate_edge_metadata_mirror_new,
     generate_edge_metadata_mirror_old,
@@ -21,8 +23,8 @@ from trackinizer.server.schema_gen import (
 )
 from trackinizer.server.sql import load_sql, schema_migrations
 from trackinizer.types.change_log import Snapshot
-from trackinizer.types.columns import column_specs
-from trackinizer.types.inquiries import AgentSession
+from trackinizer.types.columns import ColumnSpec, column_specs
+from trackinizer.types.inquiries import AccessGroup, AgentSession
 from trackinizer.wire.audience import AUDIENCE_SHAPE
 
 
@@ -68,6 +70,21 @@ def test_change_log_column_order_covers_every_audited_snapshot_field() -> None:
 
 
 class TestPureFunctions:
+    def test_inquiry_kind_order_rejects_missing_builtin(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            schema_gen,
+            "INQUIRY_KIND_ORDER",
+            tuple(kind for kind in schema_gen.INQUIRY_KIND_ORDER if kind != "Artifact"),
+        )
+        with pytest.raises(
+            AssertionError,
+            match=r"INQUIRY_KIND_ORDER missing.*Artifact",
+        ):
+            generate_inquiry_kind_columns()
+
     def test_seq_for_kind_covers_every_kind(self) -> None:
         kinds = {
             "Artifact",
@@ -79,6 +96,7 @@ class TestPureFunctions:
             "WebResult",
             "WebSearch",
             "AgentSession",
+            "AccessGroup",
         }
         assert set(SEQ_FOR_KIND.keys()) == kinds
 
@@ -86,13 +104,8 @@ class TestPureFunctions:
 class TestSchema:
     def test_schema_has_expected_tables(self) -> None:
         sql = load_sql("schema")
-        for table in ("inquiries", "edges", "change_log", "inquiry_embeddings"):
+        for table in ("inquiries", "edges", "change_log"):
             assert f"TABLE IF NOT EXISTS {table}" in sql
-
-    def test_schema_inquiry_embeddings_pk_and_dim(self) -> None:
-        sql = load_sql("schema")
-        assert "vector(384)" in sql
-        assert "PRIMARY KEY (inquiry_id, model)" in sql
 
     def test_schema_allows_many_to_many_supersedes_edges(self) -> None:
         sql = load_sql("schema")
@@ -239,6 +252,31 @@ class TestSchema:
             "schema.054.sql",
             "schema.055.sql",
             "schema.056.sql",
+            "schema.057.sql",
+            "schema.058.sql",
+            "schema.059.sql",
+            "schema.060.sql",
+            "schema.061.sql",
+            "schema.062.sql",
+            "schema.063.sql",
+            "schema.064.sql",
+            "schema.065.sql",
+            "schema.066.sql",
+            "schema.067.sql",
+            "schema.068.sql",
+            "schema.069.sql",
+            "schema.070.sql",
+            "schema.071.sql",
+            "schema.072.sql",
+            "schema.073.sql",
+            "schema.074.sql",
+            "schema.075.sql",
+            "schema.076.sql",
+            "schema.077.sql",
+            "schema.078.sql",
+            "schema.079.sql",
+            "schema.080.sql",
+            "schema.081.sql",
         ]
 
     def test_the_pin_check_spells_the_wire_shape(self) -> None:
@@ -295,6 +333,42 @@ class TestCLIHelpers:
             quote_literal(int)
         with pytest.raises(AssertionError, match="non-string members"):
             quote_literal(Literal[1, 2, 3])
+
+
+def test_column_check_body_joins_the_value_check_and_the_cardinality_bound() -> None:
+    authors = ColumnSpec(
+        applies_to_inquiry_kinds=frozenset({"Paper"}),
+        sql_check="authors <> '{}'",
+        min_items=1,
+    )
+    assert column_check_body("paper_authors", authors) == (
+        "paper_authors <> '{}' AND cardinality(paper_authors) >= 1"
+    )
+    assert column_check_body("labels", ColumnSpec()) == ""
+
+
+def test_an_access_group_domain_is_lowercase_and_held_by_a_system_group() -> None:
+    domain = column_specs(AccessGroup)["domain"]
+    assert column_check_body("accessgroup_domain", domain) == (
+        "accessgroup_domain = lower(accessgroup_domain) AND accessgroup_system"
+    )
+
+
+def test_an_edge_column_without_a_value_check_is_checked_by_kind_alone() -> None:
+    spec = ColumnSpec(
+        sql_type="TEXT",
+        applies_to_edge_kinds=frozenset({"proves", "favors"}),
+    )
+    assert schema_gen._edge_column_check_body(
+        "new_edge_note",
+        spec,
+        edge_kind_col="edge_kind",
+    ) == ("edge_kind IN ('favors', 'proves')")
+    assert schema_gen._edge_column_check_body(
+        "new_edge_notes",
+        replace(spec, sql_type="TEXT[]", min_items=1),
+        edge_kind_col="edge_kind",
+    ) == ("cardinality(new_edge_notes) >= 1 AND edge_kind IN ('favors', 'proves')")
 
 
 if __name__ == "__main__":

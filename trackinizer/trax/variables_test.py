@@ -18,6 +18,7 @@ from trackinizer.client import client as client_module
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli
+from trackinizer.trax.context import CWD, LOCAL_INPUT
 from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.wire.wire_variables import MAX_VALUE_BYTES, Variable
 
@@ -191,6 +192,41 @@ def test_secret_value_from_stdin(
     captured = capsys.readouterr()
     assert captured.out == "set: env API_TOKEN (secret)\n"
     assert _CANARY not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("words", [["REGION"], ["secret", "API_TOKEN"]])
+def test_local_input_is_refused_where_it_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    words: list[str],
+) -> None:
+    """An agent's tool reads neither its process's stdin nor the files around it."""
+    client = _StubClient()
+    stdin = _stdin_bytes(monkeypatch, data=b"value\n")
+    with _local_sources(tmp_path, local_input=False) as sources:
+        refusals = [
+            str(_refusal([*words, "to", source], client=client)) for source in sources
+        ]
+
+    assert refusals == [
+        "- reads no local input here",
+        *["@FILE reads no local input here"] * 3,
+    ]
+    assert stdin.tell() == 0
+    assert client.calls == []
+
+
+def test_local_input_is_read_where_it_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _StubClient()
+    _stdin(monkeypatch, text="value\n")
+    with _local_sources(tmp_path, local_input=True) as sources:
+        for source in sources:
+            _run(["REGION", "to", source], client=client)
+
+    assert client.calls == [("put", "REGION", "value", False)] * 4
 
 
 def test_secret_value_from_a_file(
@@ -598,6 +634,21 @@ def _connected(server: _Server) -> Generator[Client]:
             transport=httpx2.MockTransport(server),
         )
         yield client
+
+
+@contextmanager
+def _local_sources(root: Path, *, local_input: bool) -> Generator[list[str]]:
+    """Yield ``-`` and a relative, absolute and upward ``@path`` holding ``value``."""
+    folder = root / "work"
+    folder.mkdir()
+    (folder / "here.txt").write_text("value")
+    (root / "up.txt").write_text("value")
+    cwd_token, input_token = CWD.set(str(folder)), LOCAL_INPUT.set(local_input)
+    try:
+        yield ["-", "@here.txt", f"@{root / 'up.txt'}", "@../up.txt"]
+    finally:
+        CWD.reset(cwd_token)
+        LOCAL_INPUT.reset(input_token)
 
 
 if __name__ == "__main__":

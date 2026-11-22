@@ -21,29 +21,14 @@ import uuid
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import UserMessage
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.bodies import SubmitAgentSession, SubmitIssue
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PGliteEngine
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    yield store
+    from trackinizer.server.store.core import Store
 
 
 async def _table_exists(store: Store, table: str) -> bool:
@@ -103,7 +88,7 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
     )
     assert await store.get_inquiry(session_id) is not None
 
-    written, _skipped, _slash = await store.append_session_records(
+    written, _skipped = await store.append_session_records(
         session_id,
         [
             SessionRecordRow.of(

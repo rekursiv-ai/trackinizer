@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Self, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import hashlib
 import json
@@ -19,6 +19,8 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
+from trackinizer.lib.postgres.substrate import Conn
+from trackinizer.server.access_policy import DefaultPolicy, Principal
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
@@ -166,13 +168,13 @@ def test_finding_requires_cited_evidence() -> None:
 
 def test_measured_outcome_requires_positive_denominator() -> None:
     """A zero denominator cannot describe a measured result."""
+    outcome: dict[str, object] = {
+        "result": "0 wins",
+        "denominator": 0,
+        "split": "held-out",
+    }
     with pytest.raises(ValidationError):
-        ArtifactFindingDraft.model_validate(
-            {
-                **_finding(),
-                "outcome": {"result": "0 wins", "denominator": 0, "split": "held-out"},
-            },
-        )
+        ArtifactFindingDraft.model_validate({**_finding(), "outcome": outcome})
 
 
 def test_historical_zero_denominator_report_remains_readable() -> None:
@@ -255,10 +257,97 @@ async def test_read_artifact_content_returns_the_stored_revision_or_none() -> No
     revision = await read_artifact_content(store, artifact_id)
     assert revision is not None
     assert (revision.revision, revision.html) == (2, "<h1>Hi</h1>")
+    assert engine.conn.fetchrow.call_args is not None
     sql, *params = engine.conn.fetchrow.call_args.args
     assert sql == _READ
     assert params == [artifact_id]
     assert await read_artifact_content(store, uuid.uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_a_reader_reads_only_the_content_of_an_artifact_they_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store's policy gates the content as it gates the Artifact's row."""
+    store, engine = make_store()
+    store.access_policy = DefaultPolicy()
+    monkeypatch.setattr(DefaultPolicy, "read_filter", Mock(return_value="FALSE"))
+    artifact_id = uuid.uuid4()
+    queue_field_rows(engine.conn, None)
+
+    found = await read_artifact_content(
+        store,
+        artifact_id,
+        principal=Principal(email="wes@example.com", role="writer"),
+    )
+
+    assert found is None
+    assert engine.conn.fetchrow.call_args is not None
+    sql, *params = engine.conn.fetchrow.call_args.args
+    assert from_plain(sql, str).startswith(_READ)
+    assert from_plain(sql, str).removeprefix(_READ) == (
+        " AND (EXISTS (SELECT 1 FROM inquiries readable_inquiry "
+        "WHERE readable_inquiry.id = revisions.artifact_id AND (FALSE)))"
+    )
+    assert params == [artifact_id]
+
+
+def test_an_evidence_citation_names_its_claim_and_edge_together() -> None:
+    claim = str(uuid.uuid4())
+    record = str(uuid.uuid4())
+    for half in ({"claim_id": claim}, {"edge_kind": "proves"}):
+        with pytest.raises(ValidationError, match="need a claim and edge kind"):
+            ArtifactCitationRef.model_validate({"record_id": record, **half})
+    both = ArtifactCitationRef.model_validate(
+        {"record_id": record, "claim_id": claim, "edge_kind": "favors"},
+    )
+    assert both.edge_kind == "favors"
+
+
+@pytest.mark.parametrize(
+    ("section", "message"),
+    [
+        ({"title": "  "}, "Section text must not be blank"),
+        (
+            {
+                "findings": [
+                    {
+                        **_finding(),
+                        "outcome": {"result": " ", "denominator": 1, "split": "x"},
+                    },
+                ],
+            },
+            "Outcome text must not be blank",
+        ),
+    ],
+)
+def test_invisible_section_or_outcome_text_is_rejected(
+    section: dict[str, object],
+    message: str,
+) -> None:
+    draft = _draft()
+    sections = from_plain(draft["sections"], list[dict[str, object]])
+    with pytest.raises(ValidationError, match=message):
+        PublishArtifactContent.model_validate(
+            {**draft, "sections": [{**sections[0], **section}]},
+        )
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"format": "html", "sections": []}, "HTML Artifacts need HTML"),
+        ({"format": "html", "html": "<p>x</p>"}, "HTML Artifacts need HTML"),
+        ({"html": "<p>x</p>"}, "Structured Artifacts need sections and no HTML"),
+        ({"sections": []}, "Structured Artifacts need sections and no HTML"),
+    ],
+)
+def test_a_format_carries_only_its_own_content(
+    body: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        PublishArtifactContent.model_validate({**_draft(), **body})
 
 
 def test_nested_citations_have_a_global_limit() -> None:
@@ -675,14 +764,17 @@ class _Db:
 
     answers: dict[str, list[object]]
     calls: list[tuple[str, str, tuple[object, ...]]] = field(default_factory=list)
-    conn: AsyncMock = field(init=False)
+    conn: Conn = field(init=False)
 
     def __post_init__(self) -> None:
-        self.conn = AsyncMock(
-            execute=AsyncMock(side_effect=self.execute),
-            fetch=AsyncMock(side_effect=self.fetch),
-            fetchval=AsyncMock(side_effect=self.fetchval),
-            fetchrow=AsyncMock(side_effect=self.fetchrow),
+        self.conn = cast(
+            Conn,
+            AsyncMock(
+                execute=AsyncMock(side_effect=self.execute),
+                fetch=AsyncMock(side_effect=self.fetch),
+                fetchval=AsyncMock(side_effect=self.fetchval),
+                fetchrow=AsyncMock(side_effect=self.fetchrow),
+            ),
         )
 
     async def execute(self, sql: str, *args: object) -> str:
@@ -716,6 +808,7 @@ class _FakeStore:
     """The two ``Store`` writes ``publish_artifact_content`` delegates."""
 
     db: _Db
+    access_policy: DefaultPolicy = field(default_factory=DefaultPolicy)
     artifact_id: uuid.UUID = field(default_factory=uuid.uuid4)
     submitted: list[tuple[SubmitArtifact, dict[str, object]]] = field(
         default_factory=list,
@@ -727,7 +820,7 @@ class _FakeStore:
         return self
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncGenerator[AsyncMock]:
+    async def acquire(self) -> AsyncGenerator[Conn]:
         yield self.db.conn
 
     async def submit_artifact(
@@ -736,14 +829,18 @@ class _FakeStore:
         *,
         api_key_id: uuid.UUID | None,
         actor: str,
-        conn: AsyncMock,
+        conn: Conn,
     ) -> uuid.UUID:
         self.submitted.append(
             (req, {"api_key_id": api_key_id, "actor": actor, "conn": conn}),
         )
         return self.artifact_id
 
-    async def insert_edge_and_audit(self, conn: AsyncMock, **kwargs: object) -> bool:
+    async def insert_edge_and_audit(
+        self,
+        conn: Conn,
+        **kwargs: object,
+    ) -> bool:
         self.edges.append({"conn": conn, **kwargs})
         return True
 

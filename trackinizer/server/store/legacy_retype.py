@@ -16,7 +16,7 @@ mapping without a database.
 
 Fan-out: the old ``AssistantMessage`` nested text, thinking, and tool calls
 in one message; the IR states each act as its own record (axiom 3 of
-``trackinizer/lib/agent/types/sessions.py``). One legacy record therefore becomes
+``trackinizer/sagent/session/types.py``). One legacy record therefore becomes
 one OR SEVERAL records, in the order the acts occurred: prose, thinking,
 tool calls, token usage.
 
@@ -32,12 +32,13 @@ Thinking record's own idx, which is the live convention.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from treekle import from_plain, immutable
 
-from trackinizer.lib.agent.types.sessions import (
-    AgentToAgentMessage,
+from trackinizer.sagent.session.types import (
+    AgentMessage,
     AssistantMessage,
     Attachment,
     ContextCompaction,
@@ -46,6 +47,7 @@ from trackinizer.lib.agent.types.sessions import (
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolMessage,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -93,7 +95,7 @@ class SlashCommandOut:
     that table instead of the record stream.
     """
 
-    timestamp: str | None = None
+    timestamp: datetime | None = None
     command: str = ""
     args: str = ""
 
@@ -117,7 +119,7 @@ class Retyped:
 def retype(
     record: UncategorizedRecord,
     *,
-    timestamp: str | None = None,
+    timestamp: datetime | None = None,
     ciphertext: str = "",
 ) -> Retyped:
     """Map one ``legacy/*`` record to its typed IR records.
@@ -125,7 +127,7 @@ def retype(
     Args:
       record: An :class:`UncategorizedRecord` whose ``kind`` is a member of
         :data:`LEGACY_KINDS`.
-      timestamp: The ROW's timestamp, ISO-8601. 020 wrote ``'timestamp',
+      timestamp: The ROW's timestamp. 020 wrote ``'timestamp',
         NULL`` inside every payload (``schema.020.sql:68``) -- the real value
         survives only on the ``session_records.timestamp`` column, so the
         runner must pass it; ``record.timestamp`` is ``None`` on every
@@ -170,7 +172,7 @@ def retype(
         case "legacy/AgentSendMessage":
             return Retyped(
                 records=(
-                    AgentToAgentMessage(
+                    AgentMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
                         content=from_plain(payload.get("text"), str, default=""),
@@ -203,14 +205,19 @@ def retype(
                 ),
             )
         case "legacy/ToolResult":
+            content = from_plain(payload.get("content"), str, default="")
             return Retyped(
                 records=(
-                    UncategorizedToolResult(
+                    ToolMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
                         call_id=from_plain(payload.get("call_id"), str, default=""),
-                        content=from_plain(payload.get("content"), str, default=""),
-                        attachments=_attachments(payload),
+                        state="done",
+                        stdout=(
+                            *((content,) if content else ()),
+                            *_attachments(payload),
+                        ),
+                        result=UncategorizedToolResult(),
                         # Only receipt fields the provider actually set: the
                         # old union's defaults (False, "") are noise a reader
                         # would mistake for provenance.
@@ -303,7 +310,7 @@ def _assistant_fan_out(
     record: UncategorizedRecord,
     payload: Mapping[str, object],
     *,
-    timestamp: str | None,
+    timestamp: datetime | None,
     ciphertext: str,
 ) -> tuple[SessionRecord, ...]:
     """Split one legacy assistant turn into its acts, in act order."""
@@ -332,13 +339,17 @@ def _assistant_fan_out(
             call_id=from_plain(call.get("id"), str, default=""),
             name=from_plain(call.get("name"), str, default=""),
             arguments=immutable(
-                from_plain(call.get("args"), dict[str, object], default={}),
+                from_plain(
+                    call.get("args"),
+                    dict[str, object],
+                    default=dict[str, object](),
+                ),
             ),
         )
         for call in from_plain(
             payload.get("tool_calls"),
             list[dict[str, object]],
-            default=[],
+            default=list[dict[str, object]](),
         )
     )
     tokens = {
@@ -346,7 +357,7 @@ def _assistant_fan_out(
         for key, value in from_plain(
             payload.get("tokens"),
             dict[str, object],
-            default={},
+            default=dict[str, object](),
         ).items()
         if isinstance(value, int) and not isinstance(value, bool) and (count := value)
     }
@@ -368,7 +379,11 @@ def _assistant_fan_out(
 # rather than guessing at the union member's codec shape unverified.
 def _attachments(payload: Mapping[str, object]) -> tuple[Attachment, ...]:
     """Rebuild inline attachments; raise on any shape never seen in the wild."""
-    items = from_plain(payload.get("attachments"), list[dict[str, object]], default=[])
+    items = from_plain(
+        payload.get("attachments"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
     if items:
         raise ValueError(
             "legacy attachment encountered; the live corpus carried none and "

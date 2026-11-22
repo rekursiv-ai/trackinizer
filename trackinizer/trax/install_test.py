@@ -6,13 +6,13 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import json
 import shutil
 
-from treekle import json_loads, to_plain
+from treekle import json_dumps, json_loads
 
 import pytest
 
+from trackinizer.lib.posix.rename import rename_noreplace
 from trackinizer.trax.install import (
     TARGETS,
     InstallError,
@@ -328,8 +328,8 @@ def test_publish_failure_rolls_back(
     (bundle / "SKILL.md").write_text("new version")
     monkeypatch.setattr(
         install_module,
-        "_rename_noreplace",
-        _failing_rename(install_module._rename_noreplace, rollback=False),
+        "rename_noreplace",
+        _failing_rename(rename_noreplace, rollback=False),
     )
     with pytest.raises(InstallError, match="publish failed"):
         install(TARGETS["claude"])
@@ -346,15 +346,18 @@ def test_failed_rollback_retains_recoverable_backup(
     (bundle / "SKILL.md").write_text("new version")
     monkeypatch.setattr(
         install_module,
-        "_rename_noreplace",
-        _failing_rename(install_module._rename_noreplace, rollback=True),
+        "rename_noreplace",
+        _failing_rename(rename_noreplace, rollback=True),
     )
-    with pytest.raises(InstallError, match="previous") as error:
+    with pytest.raises(InstallError) as error:
         install(TARGETS["claude"])
     backups = list(destination.parent.glob(".trax-*/previous/SKILL.md"))
     assert len(backups) == 1
     assert backups[0].read_bytes() == previous
-    assert str(backups[0].parent) in str(error.value)
+    assert str(error.value) == (
+        f"could not publish {destination}: publish failed; restore failed: "
+        f"publish failed; previous installation retained at {backups[0].parent}"
+    )
 
 
 def test_published_install_reports_retained_cleanup(
@@ -482,6 +485,7 @@ def test_check_distinguishes_existing_ownership(
         "ancestor",
         "file-path",
         "hash",
+        "receipt-file",
         "json",
         "symlink",
     ],
@@ -512,6 +516,8 @@ def test_invalid_receipt_cannot_authorize_removal(
         fields["files"] = {"../outside/sentinel": "0" * 64}
     elif damage == "hash":
         fields["files"] = {"SKILL.md": "invalid"}
+    elif damage == "receipt-file":
+        fields["files"] = {".trax-install.json": "0" * 64}
     if damage == "json":
         receipt.write_text("{")
     elif damage == "symlink":
@@ -519,7 +525,7 @@ def test_invalid_receipt_cannot_authorize_removal(
         receipt.rename(external)
         receipt.symlink_to(external)
     else:
-        receipt.write_text(json.dumps(to_plain(fields)))
+        receipt.write_text(json_dumps(fields))
     assert install_module.check_skills(TARGETS["claude"]).status == "unmanaged"
     with pytest.raises(InstallError, match="unmanaged"):
         uninstall(TARGETS["claude"])
@@ -636,14 +642,14 @@ def test_edit_during_publication_retains_recoverable_backup(
 ) -> None:
     destination, _ = install(TARGETS["claude"])
     (bundle / "SKILL.md").write_text("new package version")
-    rename = install_module._rename_noreplace
+    rename = rename_noreplace
 
-    def edit_previous(path: Path, target: Path) -> Path:
+    def edit_previous(path: Path, target: Path) -> None:
         if path.name == "replacement":
             (path.parent / "previous/SKILL.md").write_text("late local edit")
-        return rename(path, target)
+        rename(path, target)
 
-    monkeypatch.setattr(install_module, "_rename_noreplace", edit_previous)
+    monkeypatch.setattr(install_module, "rename_noreplace", edit_previous)
     with pytest.raises(InstallError, match="retained") as error:
         install(TARGETS["claude"])
     assert (destination / "SKILL.md").read_text() == "new package version"
@@ -660,20 +666,23 @@ def test_restore_preserves_a_destination_that_appeared(
     destination, _ = install(TARGETS["claude"])
     previous = (destination / "SKILL.md").read_bytes()
     (bundle / "SKILL.md").write_text("new package version")
-    rename = install_module._rename_noreplace
+    rename = rename_noreplace
 
-    def create_conflict(path: Path, target: Path) -> Path:
-        return _create_conflict(path, target=target, rename=rename)
+    def create_conflict(path: Path, target: Path) -> None:
+        _create_conflict(path, target=target, rename=rename)
 
-    monkeypatch.setattr(install_module, "_rename_noreplace", create_conflict)
-    with pytest.raises(InstallError, match="retained") as error:
+    monkeypatch.setattr(install_module, "rename_noreplace", create_conflict)
+    with pytest.raises(InstallError) as error:
         install(TARGETS["claude"])
     assert destination.is_dir()
     assert list(destination.iterdir()) == []
     backups = list(destination.parent.glob(".trax-*/previous/SKILL.md"))
     assert len(backups) == 1
     assert backups[0].read_bytes() == previous
-    assert str(backups[0].parent) in str(error.value)
+    assert str(error.value) == (
+        f"publish failed; destination appeared at {destination}; "
+        f"previous installation retained at {backups[0].parent}"
+    )
 
 
 def test_publication_preserves_a_concurrent_empty_directory(
@@ -686,10 +695,10 @@ def test_publication_preserves_a_concurrent_empty_directory(
     appeared: list[int] = []
     monkeypatch.setattr(
         install_module,
-        "_rename_noreplace",
+        "rename_noreplace",
         partial(
             _appear_before_rename,
-            rename=install_module._rename_noreplace,
+            rename=rename_noreplace,
             appeared=appeared,
         ),
     )
@@ -702,13 +711,13 @@ def test_publication_preserves_a_concurrent_empty_directory(
 @pytest.fixture
 def custom(tmp_path: Path) -> Skill:
     """Supply a skill that is not trax: a tree plus one loose file beside it."""
-    source = tmp_path / "custom/skills/rai-shell"
+    source = tmp_path / "custom/skills/host-host"
     (source / "notes").mkdir(parents=True)
     (source / "SKILL.md").write_text("shell guidance")
     (source / "notes/SKILL.md").write_text("shell notes")
     extra = tmp_path / "custom/EXTRA.md"
     extra.write_text("loose file")
-    return Skill(name="rai-shell", source=source, extras=(extra,))
+    return Skill(name="host-host", source=source, extras=(extra,))
 
 
 def test_custom_skill_installs_under_its_own_name(
@@ -716,7 +725,7 @@ def test_custom_skill_installs_under_its_own_name(
     custom: Skill,
 ) -> None:
     destination, count = install(TARGETS["claude"], skill=custom)
-    assert destination == fake_home / ".claude/skills/rai-shell"
+    assert destination == fake_home / ".claude/skills/host-host"
     assert count == 3
     assert {
         path.relative_to(destination).as_posix(): path.read_text()
@@ -772,6 +781,179 @@ def test_custom_skill_with_a_missing_extra_preserves_the_install(
     assert (destination / "EXTRA.md").read_text() == "loose file"
 
 
+def test_a_bundled_manual_that_is_not_a_file_is_missing(bundle: Path) -> None:
+    manual = bundle.parent.parent / "grammar.lark"
+    manual.unlink()
+    manual.mkdir()
+
+    with pytest.raises(InstallError, match="bundled skills missing at"):
+        install(TARGETS["claude"])
+
+
+def test_a_bundle_holding_a_symlink_is_refused(fake_home: Path, bundle: Path) -> None:
+    (bundle / "alias.md").symlink_to(bundle / "SKILL.md")
+
+    with pytest.raises(InstallError, match="bundled skills contain unsupported"):
+        install(TARGETS["claude"])
+
+    assert list(fake_home.iterdir()) == []
+
+
+def test_a_project_only_target_refuses_a_user_wide_install(bundle: Path) -> None:
+    del bundle
+    target = install_module.Target(
+        name="ide",
+        label="Some IDE",
+        user=None,
+        project=".ide/skills",
+    )
+
+    with pytest.raises(InstallError, match="Some IDE reads project-local skills only"):
+        install(target)
+
+
+def test_a_failed_install_reports_a_parent_it_could_not_clean(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    monkeypatch.setattr(shutil, "copytree", _copy_failed)
+    monkeypatch.setattr(
+        Path,
+        "rmdir",
+        _rmdir_failed(Path.rmdir, parent=fake_home / ".claude/skills"),
+    )
+
+    with pytest.raises(InstallError, match="copy failed; parent cleanup failed"):
+        install(TARGETS["claude"])
+
+
+def test_parents_removed_during_a_failed_install_are_reported_not_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    """Someone deleted ``~/.claude`` mid-install: staging and parents are gone."""
+    del bundle
+
+    def removed_mid_copy(*_args: object, **_kwargs: object) -> None:
+        shutil.rmtree(fake_home / ".claude")
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(shutil, "copytree", removed_mid_copy)
+
+    with pytest.raises(InstallError, match="copy failed; cleanup failed") as error:
+        install(TARGETS["claude"])
+
+    assert "retained cleanup at" in str(error.value)
+    assert list(fake_home.iterdir()) == []
+
+
+def test_a_bundle_changed_while_copying_is_not_published(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    copy2 = shutil.copy2
+
+    def copy_then_change(source: Path, target: Path) -> None:
+        copy2(source, target)
+        (target.parent / "late.md").write_text("added during the copy")
+
+    monkeypatch.setattr(shutil, "copy2", copy_then_change)
+
+    with pytest.raises(InstallError, match="bundled skills changed while copying"):
+        install(TARGETS["claude"])
+
+    assert not (fake_home / ".claude/skills/trax").exists()
+
+
+def test_a_destination_created_after_inspection_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    destination = fake_home / ".claude/skills/trax"
+    inspect = install_module._inspect
+
+    def appear_after_inspection(path: Path, *, boundary: Path) -> object:
+        result = inspect(path, boundary=boundary)
+        destination.mkdir(parents=True)
+        return result
+
+    monkeypatch.setattr(install_module, "_inspect", appear_after_inspection)
+
+    with pytest.raises(InstallError, match="destination changed while installing"):
+        install(TARGETS["claude"])
+
+    assert list(destination.iterdir()) == []
+    assert [path.name for path in destination.parent.iterdir()] == ["trax"]
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_a_destination_created_before_publication_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+    *,
+    refresh: bool,
+) -> None:
+    destination = fake_home / ".claude/skills/trax"
+    if refresh:
+        install(TARGETS["claude"])
+        (bundle / "SKILL.md").write_text("new package version")
+    quarantine = install_module._quarantine
+
+    def appear_after_quarantine(
+        path: Path,
+        *,
+        previous: Path,
+        receipt: install_module._Receipt | None,
+        boundary: Path,
+    ) -> None:
+        quarantine(path, previous=previous, receipt=receipt, boundary=boundary)
+        destination.mkdir()
+
+    monkeypatch.setattr(install_module, "_quarantine", appear_after_quarantine)
+
+    with pytest.raises(InstallError) as error:
+        install(TARGETS["claude"])
+
+    changed = f"destination changed while installing at {destination}"
+    assert list(destination.iterdir()) == []
+    if refresh:
+        backups = list(destination.parent.glob(".trax-*/previous"))
+        assert len(backups) == 1
+        assert (backups[0] / "SKILL.md").read_text() == "router: belief/SKILL.md"
+        assert str(error.value) == (
+            f"{changed}; destination appeared at {destination}; "
+            f"previous installation retained at {backups[0]}"
+        )
+    else:
+        assert str(error.value) == changed
+        assert [path.name for path in destination.parent.iterdir()] == ["trax"]
+
+
+def test_uninstall_leaves_a_created_parent_since_replaced_by_a_link(
+    tmp_path: Path,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    destination, _ = install(TARGETS["claude"])
+    shared = tmp_path / "shared"
+    (fake_home / ".claude").rename(shared)
+    (fake_home / ".claude").symlink_to(shared, target_is_directory=True)
+
+    assert uninstall(TARGETS["claude"]) == destination
+
+    assert (fake_home / ".claude").is_symlink()
+    assert list(shared.iterdir()) == []
+
+
 @pytest.mark.parametrize("name", ["", ".", "..", "a/b", "/abs", "../x"])
 def test_skill_name_must_be_one_path_segment(tmp_path: Path, name: str) -> None:
     with pytest.raises(InstallError, match="one path segment"):
@@ -780,15 +962,15 @@ def test_skill_name_must_be_one_path_segment(tmp_path: Path, name: str) -> None:
 
 def _appear_before_rename(
     path: Path,
-    *,
     target: Path,
-    rename: Callable[[Path, Path], Path],
+    *,
+    rename: Callable[[Path, Path], None],
     appeared: list[int],
-) -> Path:
+) -> None:
     if path.name == "replacement":
         target.mkdir()
         appeared.append(target.stat().st_ino)
-    return rename(path, target)
+    rename(path, target)
 
 
 def _copy_failed(*_args: object, **_kwargs: object) -> None:
@@ -799,23 +981,23 @@ def _create_conflict(
     path: Path,
     *,
     target: Path,
-    rename: Callable[[Path, Path], Path],
-) -> Path:
+    rename: Callable[[Path, Path], None],
+) -> None:
     if path.name == "replacement":
         target.mkdir()
         raise OSError("publish failed")
-    return rename(path, target)
+    rename(path, target)
 
 
 def _failing_rename(
-    original: Callable[[Path, Path], Path],
+    original: Callable[[Path, Path], None],
     *,
     rollback: bool,
-) -> Callable[[Path, Path], Path]:
-    def rename(path: Path, target: Path) -> Path:
+) -> Callable[[Path, Path], None]:
+    def rename(path: Path, target: Path) -> None:
         if path.name in ({"replacement", "previous"} if rollback else {"replacement"}):
             raise OSError("publish failed")
-        return original(path, target)
+        original(path, target)
 
     return rename
 

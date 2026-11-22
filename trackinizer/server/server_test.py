@@ -26,12 +26,10 @@ from trackinizer.server.config import (
     ConfigError,
     build_engine,
 )
-from trackinizer.server.embedders.registry import EMBEDDERS
 from trackinizer.server.route_iter import registered_paths
 from trackinizer.server.server import (
     _configure_logging,
     _parse_args,
-    _session_embedder_choices,
     _SuppressZeroTaskCancel,
     logger,
     main,
@@ -61,27 +59,6 @@ def restore_global_log_levels() -> Iterator[None]:
     yield
     root.setLevel(root_level)
     logger.setLevel(package_level)
-
-
-class TestSessionEmbedderChoices:
-    def test_choices_are_empty_then_stubs_then_identities_then_bare_slugs(
-        self,
-    ) -> None:
-        choices = _session_embedder_choices()
-        identities = sorted(EMBEDDERS)
-        slugs = sorted({identity.partition("@")[0] for identity in identities})
-        assert choices[:3] == ["", "stub", "stub-1024"]
-        assert choices[3 : 3 + len(identities)] == identities
-        assert choices[3 + len(identities) :] == slugs
-        assert all("@" in identity for identity in identities)
-        assert all("@" not in slug for slug in slugs)
-
-    def test_the_bare_slug_is_cut_at_the_first_at_sign(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(server, "EMBEDDERS", {"slug@1024@extra": object})
-        assert _session_embedder_choices()[-1] == "slug"
 
 
 class TestPureFunctions:
@@ -124,7 +101,6 @@ class TestPureFunctions:
         assert flags.engine == "pglite"
         assert flags.host == "127.0.0.1"
         assert flags.port == 8765
-        assert flags.embedder == "stub"
         assert remaining == []
 
     def test_session_ttl_env_typo_exits_cleanly(
@@ -175,6 +151,19 @@ class TestPureFunctions:
 
         assert flags.session_max_age_seconds == 600
 
+    def test_session_ttl_flag_overrides_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "600")
+
+        flags, _ = _parse_args(
+            argparse.ArgumentParser(),
+            ["--session-max-age-seconds", "90"],
+        )
+
+        assert flags.session_max_age_seconds == 90
+
     @pytest.mark.parametrize(
         ("env", "argv", "auth_disabled"),
         [
@@ -207,13 +196,13 @@ class TestPureFunctions:
         monkeypatch.delenv("TRACKINIZER_ASSISTANT", raising=False)
         flags, remaining = _parse_args(
             argparse.ArgumentParser(),
-            ["--assistant", "scout=kb@example.com"],
+            ["--assistant", "scout=kb@service.invalid"],
         )
 
         assert remaining == []
         assert Config.from_args(flags).assistant == Assistant(
             actor="scout",
-            email="kb@example.com",
+            email="kb@service.invalid",
         )
         assert (
             Config.from_args(_parse_args(argparse.ArgumentParser(), [])[0]).assistant
@@ -224,15 +213,21 @@ class TestPureFunctions:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "scout=kb@example.com")
+        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "scout=kb@service.invalid")
 
         flags, _ = _parse_args(argparse.ArgumentParser(), [])
         assert Config.from_args(flags).assistant == Assistant(
             actor="scout",
-            email="kb@example.com",
+            email="kb@service.invalid",
         )
-        flags, _ = _parse_args(argparse.ArgumentParser(), ["--assistant", "s=x@y.z"])
-        assert Config.from_args(flags).assistant == Assistant(actor="s", email="x@y.z")
+        flags, _ = _parse_args(
+            argparse.ArgumentParser(),
+            ["--assistant", "s=x@service.invalid"],
+        )
+        assert Config.from_args(flags).assistant == Assistant(
+            actor="s",
+            email="x@service.invalid",
+        )
 
     def test_staff_flag_names_who_holds_the_staff_audience(
         self,
@@ -287,7 +282,7 @@ class TestPureFunctions:
         fresh = FastAPI()
         monkeypatch.setattr(server, "app", fresh)
         server._configure_app(flags)
-        assert "/app/{path:path}" in registered_paths(fresh)
+        assert "/trax/{path:path}" in registered_paths(fresh)
 
     def test_the_packaged_build_is_served_unless_app_dir_names_another(
         self,
@@ -315,7 +310,9 @@ class TestPureFunctions:
 
         server._configure_app(flags)
 
-        assert not any(path.startswith("/app") for path in registered_paths(fresh))
+        assert not any(
+            path.startswith(("/trax", "/app")) for path in registered_paths(fresh)
+        )
 
     def test_the_packaged_build_is_the_built_app_beside_the_package(
         self,
@@ -419,6 +416,25 @@ class TestLogLevelReachesUvicorn:
         main()
         assert called["log_level"] == logging.ERROR
 
+    @pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+    def test_a_level_below_warning_keeps_uvicorn_at_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        level: str,
+    ) -> None:
+        """Uvicorn's per-request access log stays off when the package logs below WARNING."""
+        called: dict[str, object] = {}
+
+        def fake_run(app: object, **kwargs: object) -> None:
+            del app
+            called.update(kwargs)
+
+        monkeypatch.delenv("TRACKINIZER_LOG_LEVEL", raising=False)
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+        monkeypatch.setattr("sys.argv", ["trackinizer", "--log-level", level])
+        main()
+        assert called["log_level"] == logging.WARNING
+
     def test_unset_leaves_uvicorn_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -453,7 +469,7 @@ class TestLogLevelReachesUvicorn:
 class TestMainAppliesEveryStartupInvariant:
     """One process serves everything, so ``main`` owns every startup step.
 
-    There is no worker fan-out: the inbound queue and the subscriber sweep are
+    There is no worker fan-out: the live session relay and the replay receipts are
     in-process state, so uvicorn is handed the configured app object rather
     than an import string it would re-import in forked children. Anything not
     applied here is applied nowhere.
@@ -515,6 +531,30 @@ class TestMainAppliesEveryStartupInvariant:
             main()
 
         assert "--workers" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--embedder", "stub"],
+            ["--session-embedder", "qwen3-embedding-0.6b@1024"],
+            ["--session-embedder-dim", "256"],
+            ["--session-embedders", "qwen3-embedding-4b@1024"],
+        ],
+    )
+    def test_rejects_an_embedder_flag_that_sets_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        argv: list[str],
+    ) -> None:
+        """The embedding addon names its model; no server flag does."""
+        monkeypatch.setattr(uvicorn, "run", _ignore_run)
+        monkeypatch.setattr("sys.argv", ["trackinizer", *argv])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert argv[0] in capsys.readouterr().err
 
     def test_applies_the_requested_log_level(
         self,
@@ -588,13 +628,13 @@ def _write_build(root: Path, *, marker: str) -> Path:
 
 
 def _served_index(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> str:
-    """Configure a fresh app from ``argv``; return its ``/app/`` to a signed-in user."""
+    """Configure a fresh app from ``argv``; return ``/trax/`` to a signed-in user."""
     flags, _ = _parse_args(argparse.ArgumentParser(), argv)
     fresh = FastAPI()
     monkeypatch.setattr(server, "app", fresh)
     server._configure_app(flags)
     fresh.dependency_overrides[web.optional_identity] = _signed_in
-    return TestClient(fresh).get("/app/").text
+    return TestClient(fresh).get("/trax/").text
 
 
 async def _signed_in() -> AuthIdentity:

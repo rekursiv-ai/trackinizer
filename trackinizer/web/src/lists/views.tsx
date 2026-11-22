@@ -20,6 +20,9 @@ export function offeredViews(kinds: readonly string[]): readonly View[] {
   // Code shows no rows at all: it is the session's own source, which belongs beside the
   // changes recorded in it rather than in a place of its own.
   return kinds[0] === CODE_KIND ? ["list", "code"] : ["list"];
+  return kinds.length === 1 && kinds[0] === "Issue"
+    ? ["list", "streams", "outline", "columns"]
+    : ["list"];
 }
 
 /** The kind whose list offers Code: a session's source sits beside the changes made in it. */
@@ -44,7 +47,12 @@ export function ViewSwitch({
   return (
     <div className="view-seg" role="group" aria-label="View">
       {offered.map((value) => (
-        <button key={value} type="button" aria-pressed={value === view} onClick={() => onChange(value)}>
+        <button
+          key={value}
+          type="button"
+          aria-pressed={value === view}
+          onClick={() => onChange(value)}
+        >
           {VIEW_NAMES[value]}
         </button>
       ))}

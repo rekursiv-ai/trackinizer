@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS inquiries (
     -- never a DB-side stand-in.
     account        TEXT NOT NULL,
     status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN (
-                       'active', 'complete', 'abandoned', 'invalid'
+                       'active', 'complete', 'stopped', 'abandoned', 'invalid'
                    )),
     title          TEXT NOT NULL,
     description    TEXT,
@@ -63,6 +63,15 @@ CREATE TABLE IF NOT EXISTS inquiries (
                        app IS NULL
                        OR jsonb_typeof(app) = 'object' AND octet_length(app::text) <= 65536
                    ),
+    -- The session that began the science chat the assistant filed the row from: while
+    -- that chat is not ``open``, the row is read as the chat is, and by its own account.
+    -- Mirrors ``Inquiry.filed_from_chat``. No FK: a deleted chat takes its sessions, and
+    -- its rows stay hidden rather than open. Added in 077.
+    filed_from_chat UUID,
+    -- The transaction that inserted the row or last changed a text the embedding
+    -- sweep reads: a text column (``inquiries_stamp_change``) or the note of an edge
+    -- the row starts from (``edges_stamp_owner``). NULL on rows older than 080.
+    changed_xid    xid8,
     marginal_cost_agent_usd    NUMERIC(14, 6) NOT NULL DEFAULT 0,
     marginal_cost_resource_usd NUMERIC(14, 6) NOT NULL DEFAULT 0,
     -- Derived load-bearing (PageRank) scores, one per citation-relation graph.
@@ -119,6 +128,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_inquiries_live_session_owner
     ON inquiries (owner)
     WHERE kind = 'AgentSession' AND owner IS NOT NULL
           AND agentsession_ended IS NULL;
+-- One AccessGroup per verified company domain.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inquiries_accessgroup_domain
+    ON inquiries (accessgroup_domain)
+    WHERE accessgroup_domain IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_inquiries_judgement
     ON inquiries (belief_judgement) WHERE belief_judgement IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_inquiries_confidence
@@ -135,141 +148,45 @@ CREATE INDEX IF NOT EXISTS idx_inquiries_subscribers_gin
 CREATE INDEX IF NOT EXISTS idx_inquiries_created_id
     ON inquiries (created DESC, id DESC);
 
+-- Only the columns an inquiry's text is made of stamp the row, so an update that
+-- names none of them (scores, labels, status, the lock) never calls this.
+CREATE OR REPLACE FUNCTION inquiries_stamp_change() RETURNS trigger
+LANGUAGE plpgsql AS $stamp$
+BEGIN
+    IF TG_OP = 'INSERT'
+        OR NEW.title IS DISTINCT FROM OLD.title
+        OR NEW.description IS DISTINCT FROM OLD.description
+        OR NEW.paper_abstract IS DISTINCT FROM OLD.paper_abstract
+    THEN
+        NEW.changed_xid := pg_current_xact_id();
+    END IF;
+    RETURN NEW;
+END
+$stamp$;
+
+CREATE OR REPLACE TRIGGER inquiries_stamp_change
+    BEFORE INSERT OR UPDATE OF title, description, paper_abstract ON inquiries
+    FOR EACH ROW EXECUTE FUNCTION inquiries_stamp_change();
+
+-- No index on ``changed_xid``, so an edge trigger's stamp is a HOT update; the
+-- sweep's owner delta scans inquiries instead.
+
+-- The keyword surface of every inquiry text that gets a vector, cut to 100,000
+-- characters: to_tsvector refuses a text whose tsvector passes 1 MB, and a refusing
+-- index expression would refuse the row's every write (schema.080.sql has the sizes).
+CREATE INDEX IF NOT EXISTS idx_inquiries_search ON inquiries USING GIN (
+    to_tsvector('simple', left(
+        coalesce(title, '') || ' ' || coalesce(description, '') || ' '
+        || coalesce(paper_abstract, ''), 100000))
+);
+
 -- Pre-refactor cleanup: the embedding column used to live on inquiries.
--- It now lives in inquiry_embeddings (one row per (inquiry, model)).
--- Self-heal databases that predate the split. This lives in the baseline
+-- Self-heal databases that predate its removal. This lives in the baseline
 -- (not a numbered migration) because the baseline is the only step
 -- guaranteed to run before every numbered migration: migration 007 joins on
 -- ``change_log.api_key_id``, so the auth-v2 column self-heals below must
 -- precede it, which only a baseline placement guarantees.
 ALTER TABLE inquiries DROP COLUMN IF EXISTS embedding;
-
-
--- Per-inquiry, per-model embeddings. Multiple rows per inquiry allow
--- side-by-side comparison of embedding approaches. All vectors here share
--- ``vector(384)``; when a non-384 model lands, add a sibling table
--- ``inquiry_embeddings_<dim>`` and route by dim.
-CREATE TABLE IF NOT EXISTS inquiry_embeddings (
-    inquiry_id  UUID NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
-    model       TEXT NOT NULL,
-    embedding   vector(384) NOT NULL,
-    created     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (inquiry_id, model)
-);
-
-CREATE INDEX IF NOT EXISTS idx_inquiry_embeddings_model
-    ON inquiry_embeddings (model);
-
-
--- Per-record session embeddings: the vector surface over ``session_records``.
--- One row per INDEX UNIT -- a
--- record's field ("content" whole/chunked, or a machine-output "head") as
--- selected by a SemanticMapper policy (server/semantic_mapper.py).
---
--- ``halfvec`` (dimension-free, no typmod): several session embedders with
--- DIFFERENT native dims coexist here, keyed by ``model`` -- Qwen/Octen truncate
--- to 1024, jina-v5-text-nano stores 768, jina-v5-text-small stores 1024. A
--- dimension-free column cannot carry ONE global HNSW index (pgvector rejects it:
--- "column does not have dimensions"), so each model gets a PARTIAL index casting
--- to its fixed dim (below). Requires pgvector >= 0.7 (production 0.8.6, pglite
--- 0.8.1). Deliberately NOT 384 or a second ``vector``
--- column: the measured unit inventory (2026-09-19) at 2560 fp32 is ~40 GB of
--- index for <1 MTEB point over 1024.
---
--- ``mapper`` names the POLICY that produced the unit, ``model`` the embedder;
--- both key the row so a policy change and a model change are separately
--- re-backfillable, side by side, like ``inquiry_embeddings.model``.
---
--- ``text_md5`` is the re-embed trigger: a claude compaction rewrites a part's
--- records in place (``restart`` upserts), so a sweep re-embeds exactly the
--- rows where ``md5(r.text) IS DISTINCT FROM e.text_md5`` -- one predicate
--- serves both backfill and live ingest.
---
--- No FK to ``session_records``: the retype runner and compaction restarts
--- DELETE+reinsert record rows, and a CASCADE would silently drop vectors that
--- one ``text_md5`` sweep would otherwise reconcile. Orphans are reaped by the
--- same sweep. The session-level FK still bounds the lifetime.
-CREATE TABLE IF NOT EXISTS session_embeddings (
-    session_id  UUID NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
-    part        INTEGER NOT NULL,
-    idx         INTEGER NOT NULL,
-    field       TEXT NOT NULL,
-    chunk       INTEGER NOT NULL DEFAULT 0 CHECK (chunk >= 0),
-    mapper      TEXT NOT NULL,
-    model       TEXT NOT NULL,
-    embedding   halfvec NOT NULL,
-    text_md5    TEXT NOT NULL,
-    created     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (session_id, part, idx, field, chunk, mapper, model)
-);
-
--- One partial HNSW per shipped model over cosine distance (``<=>``), each
--- casting the dimension-free column to that model's stored dim. A query hits its
--- partial only with the same cast expression (server/store/session_search.py).
--- Future models are indexed by the idempotent code-side ensure-step
--- (store/session_index.ensure_model_index); these seven are the shipped set the
--- migration parity gate covers. Kept in step with schema.023.sql.
-CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_stub_1024
-    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
-    WHERE model = 'stub-1024';
-
-CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_qwen3_embedding_0_6b_1024
-    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
-    WHERE model = 'qwen3-embedding-0.6b@1024';
-
-CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_qwen3_embedding_4b_1024
-    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
-    WHERE model = 'qwen3-embedding-4b@1024';
-
-CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_qwen3_embedding_8b_1024
-    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
-    WHERE model = 'qwen3-embedding-8b@1024';
-
-CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_octen_embedding_8b_1024
-    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
-    WHERE model = 'octen-embedding-8b@1024';
-
-CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_jina_embeddings_v5_text_nano_768
-    ON session_embeddings USING hnsw ((embedding::halfvec(768)) halfvec_cosine_ops)
-    WHERE model = 'jina-embeddings-v5-text-nano@768';
-
-CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_jina_embeddings_v5_text_small_1024
-    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
-    WHERE model = 'jina-embeddings-v5-text-small@1024';
-
-
--- Freshness markers for the embedding sweep.
--- One row per (record, mapper, model) the sweep touched,
--- carrying the ``md5(text)`` it was reconciled at.
---
--- Why a separate table rather than keying freshness on a ``session_embeddings``
--- row: an fts-only record (a machine-output head, a SystemMessage, a Thinking
--- block) has NO vector, so there is no embedding row to hang a marker on. Before
--- this table the sweep RAISED on such a record, because an fts-only record would
--- write no row, read as never-up-to-date, and re-embed forever. The marker
--- decouples "swept at this md5" from "has a vector", so every swept record --
--- embedded or not -- reads up-to-date on the next pass.
---
--- Keyed by ``model`` as well as ``mapper``: the follow service maintains several
--- models side by side (an A/B challenger), each swept independently, so a marker
--- must be per-(mapper, model) or model B would read model A's marker as fresh and
--- never embed. An fts-only record gets one redundant-but-harmless marker per
--- model rather than a second, model-less marker shape.
---
--- No FK to ``session_records`` (same reasoning as ``session_embeddings``): the
--- retype runner and compaction restarts DELETE+reinsert record rows, and a
--- CASCADE would drop markers a ``text_md5`` sweep would otherwise reconcile. The
--- session-level FK bounds the lifetime.
-CREATE TABLE IF NOT EXISTS session_index_state (
-    session_id  UUID NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
-    part        INTEGER NOT NULL,
-    idx         INTEGER NOT NULL,
-    mapper      TEXT NOT NULL,
-    model       TEXT NOT NULL,
-    text_md5    TEXT NOT NULL,
-    created     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (session_id, part, idx, mapper, model)
-);
 
 
 -- Replay-only bodies for heavy record kinds: the cold half of the hot/cold
@@ -342,12 +259,12 @@ CREATE TABLE IF NOT EXISTS edges (
      OR (edge_kind = 'produced_by'
             AND from_kind IN ({inquiry_kinds})
             AND to_kind IN ({inquiry_kinds}))
-     -- proves/favors: from = citing Artifact (the younger evidence child),
-     -- to = the cited claim (Belief or Experiment, the older parent).
-     -- for-vs-against is the sign of the valence column, not a separate edge
-     -- kind. proves is load-bearing; favors is context.
+     -- proves/favors: from = citing Artifact (the younger evidence child; an
+     -- AccessGroup cites nothing), to = the cited claim (Belief or Experiment,
+     -- the older parent). for-vs-against is the sign of the valence column,
+     -- not a separate edge kind. proves is load-bearing; favors is context.
      OR (edge_kind IN ('proves', 'favors')
-            AND from_kind IN ({artifact_kinds})
+            AND from_kind IN ({evidence_kinds})
             AND to_kind IN ({claimable_kinds}))
      -- supersedes: from = successor (child), to = predecessor (parent). Both
      -- endpoints must be valid Inquiry kinds. Cross-kind supersession is allowed
@@ -367,6 +284,43 @@ CREATE TABLE IF NOT EXISTS edges (
 
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges (from_id, edge_kind);
 CREATE INDEX IF NOT EXISTS idx_edges_to   ON edges (to_id, edge_kind);
+
+-- An edge's note belongs to the inquiry it starts from. Only a write that adds,
+-- changes, moves or removes a note stamps that inquiry; a cascade from either end
+-- fires these as a DELETE.
+CREATE OR REPLACE FUNCTION edges_stamp_owner() RETURNS trigger
+LANGUAGE plpgsql AS $stamp$
+BEGIN
+    UPDATE inquiries SET changed_xid = pg_current_xact_id()
+     WHERE id IN (
+         CASE WHEN TG_OP <> 'INSERT' THEN OLD.from_id END,
+         CASE WHEN TG_OP <> 'DELETE' THEN NEW.from_id END
+     );
+    RETURN NULL;
+END
+$stamp$;
+
+CREATE OR REPLACE TRIGGER edges_stamp_owner_insert
+    AFTER INSERT ON edges
+    FOR EACH ROW WHEN (NEW.note IS NOT NULL)
+    EXECUTE FUNCTION edges_stamp_owner();
+
+CREATE OR REPLACE TRIGGER edges_stamp_owner_delete
+    AFTER DELETE ON edges
+    FOR EACH ROW WHEN (OLD.note IS NOT NULL)
+    EXECUTE FUNCTION edges_stamp_owner();
+
+CREATE OR REPLACE TRIGGER edges_stamp_owner_update
+    AFTER UPDATE ON edges
+    FOR EACH ROW WHEN (
+        OLD.note IS DISTINCT FROM NEW.note
+        OR (OLD.note IS NOT NULL AND (OLD.from_id, OLD.to_id, OLD.edge_kind)
+            IS DISTINCT FROM (NEW.from_id, NEW.to_id, NEW.edge_kind))
+    )
+    EXECUTE FUNCTION edges_stamp_owner();
+
+CREATE INDEX IF NOT EXISTS idx_edges_note_search
+    ON edges USING GIN (to_tsvector('simple', note)) WHERE note IS NOT NULL;
 
 
 -- Append-only audit log. Closed-set ``kind`` discriminates which per-column
@@ -592,7 +546,7 @@ CREATE TABLE IF NOT EXISTS users (
     name        TEXT NOT NULL,
     role        TEXT NOT NULL CHECK (role IN ('viewer', 'writer', 'admin')),
     status      TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
-    visual_workspace_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    visual_canvas_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     last_login  TIMESTAMPTZ,
     -- The welcome flow's agreement: when, and to which rules version (see
@@ -610,18 +564,10 @@ CREATE TABLE IF NOT EXISTS users (
         CHECK (char_length(google_sub) BETWEEN 1 AND 255),
     -- The user's preferences: an object of the keys they set, defaults left out
     -- (``server/preferences.py``). NULL until they set one.
-    preferences JSONB CHECK (jsonb_typeof(preferences) = 'object')
-);
-
--- Who set or cleared an inquiry's ``locked`` flag, and when (``api/locks.py``).
--- ``inquiry_id`` is FK-free like ``change_log.subject_id``, so a purged row keeps its
--- history.
-CREATE TABLE IF NOT EXISTS inquiry_lock_log (
-    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    inquiry_id UUID NOT NULL,
-    locked     BOOLEAN NOT NULL,
-    actor      TEXT NOT NULL,
-    created    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+    preferences JSONB CHECK (jsonb_typeof(preferences) = 'object'),
+    -- Each browser session cookie carries this as it was when signed; a logout raises
+    -- it, so a cookie signed before is refused (``server/session.py``).
+    session_generation INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -798,7 +744,7 @@ CREATE TABLE IF NOT EXISTS experiment_metrics (
 
 -- ============================================================================
 -- Session IR storage: four tables holding captured sessions as
--- ``trackinizer.lib.agent.sessions`` records rather than the lossy per-turn
+-- ``trackinizer.sagent.scripts.convert_session`` records rather than the lossy per-turn
 -- ``Message`` union it replaced. Added in schema.019.sql; mirrored here so a
 -- fresh install (which runs only this baseline and marks the numbered
 -- migrations applied without executing them) gets them too.
@@ -849,9 +795,34 @@ CREATE TABLE IF NOT EXISTS session_records (
     -- expression so the config must be a literal either way, and stemming
     -- mangles the identifiers and paths that fill a transcript.
     search      tsvector GENERATED ALWAYS AS (to_tsvector('simple', text)) STORED,
+    -- The transaction that inserted the row or last changed its ``text``, set by
+    -- ``session_records_stamp_change`` below; the embedding sweep reads only rows
+    -- changed since its last round's snapshot. NULL on rows older than schema.063.
+    changed_xid xid8,
     PRIMARY KEY (session_id, part, idx),
     CHECK (context_id IS NULL OR context_id <= idx)
 );
+
+-- A trigger, not the writers: an append's upsert, a fork's copy, the body offload
+-- and the legacy retype all write ``text``, and one that skipped the stamp would
+-- leave its rows unembedded with nothing failing. Re-feeding the same text (a
+-- compaction replay) keeps the old stamp.
+CREATE OR REPLACE FUNCTION session_records_stamp_change() RETURNS trigger
+LANGUAGE plpgsql AS $stamp$
+BEGIN
+    IF TG_OP = 'INSERT' OR NEW.text IS DISTINCT FROM OLD.text THEN
+        NEW.changed_xid := pg_current_xact_id();
+    END IF;
+    RETURN NEW;
+END
+$stamp$;
+
+CREATE OR REPLACE TRIGGER session_records_stamp_change
+    BEFORE INSERT OR UPDATE OF text ON session_records
+    FOR EACH ROW EXECUTE FUNCTION session_records_stamp_change();
+
+CREATE INDEX IF NOT EXISTS idx_session_records_changed_xid
+    ON session_records (changed_xid) WHERE changed_xid IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_session_records_search
     ON session_records USING GIN (search);
@@ -945,17 +916,24 @@ CREATE TABLE IF NOT EXISTS session_slash_commands (
 -- dies while the server restarts must still be closed, and one closed for
 -- silence (``reaped``) must still be reopened if it comes back. A session that
 -- never polls has no row: with no poller, its silence means nothing. Added in 032.
+-- Where its run last said it ran (its host, detached host, CLI and folder, each
+-- the run's own word), so a host's past runs outlive the server's memory; added
+-- in 060.
 CREATE TABLE IF NOT EXISTS session_liveness (
     session_id  UUID PRIMARY KEY REFERENCES inquiries(id) ON DELETE CASCADE,
     last_seen   TIMESTAMPTZ NOT NULL,
-    reaped      BOOLEAN NOT NULL DEFAULT FALSE
+    reaped      BOOLEAN NOT NULL DEFAULT FALSE,
+    host     TEXT,
+    run         TEXT,
+    cli         TEXT,
+    cwd         TEXT
 );
 
--- The environment variables an agent launch exports, by layer (org, machine,
+-- The environment variables an agent launch exports, by layer (org, host,
 -- user). A secret's value is never stored here: ``value`` is NULL and the
 -- server's secret backend holds it. Added in 034.
 CREATE TABLE IF NOT EXISTS variables (
-    layer       TEXT NOT NULL CHECK (layer IN ('org', 'machine', 'user')),
+    layer       TEXT NOT NULL CHECK (layer IN ('org', 'host', 'user')),
     owner       TEXT NOT NULL DEFAULT '',
     name        TEXT NOT NULL CHECK (name ~ '^[A-Za-z_][A-Za-z0-9_]{0,127}$'),
     secret      BOOLEAN NOT NULL,
@@ -966,9 +944,9 @@ CREATE TABLE IF NOT EXISTS variables (
     CHECK (secret = (value IS NULL))
 );
 
--- The machines a campaign may run on: a name, a role, one line telling an agent
--- how to use the machine, and labels. Added in 035; the owner in 049.
-CREATE TABLE IF NOT EXISTS machines (
+-- The hosts a campaign may run on: a name, a role, one line telling an agent
+-- how to use the host, and labels. Added in 035; the owner in 049.
+CREATE TABLE IF NOT EXISTS hosts (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        TEXT NOT NULL UNIQUE CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
     role        TEXT NOT NULL DEFAULT ''
@@ -979,8 +957,8 @@ CREATE TABLE IF NOT EXISTS machines (
     updated_by  TEXT NOT NULL,
     updated     TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_heartbeat TIMESTAMPTZ,
-    host_instance  UUID,
-    host_version   TEXT NOT NULL DEFAULT '' CHECK (char_length(host_version) <= 64),
+    daemon_instance  UUID,
+    daemon_version   TEXT NOT NULL DEFAULT '' CHECK (char_length(daemon_version) <= 64),
     facts          JSONB NOT NULL DEFAULT '{}'
                    CHECK (jsonb_typeof(facts) = 'object' AND octet_length(facts::text) <= 8192),
     owner          TEXT,
@@ -988,61 +966,66 @@ CREATE TABLE IF NOT EXISTS machines (
     last_run_cwd   TEXT
 );
 
--- One-use tokens that let a host join as a machine, and the credentials it joins
+-- The host a device login enrolled with the key it made, so logging the host out
+-- revokes the keys it logged in with. Here, not in ``api_keys``, which is made before
+-- ``hosts``. Added in 060.
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS host_id UUID REFERENCES hosts(id) ON DELETE SET NULL;
+
+-- One-use tokens that let a host join as a host, and the credentials it joins
 -- with. A revoked credential row is kept so the server answers it 410, not 401.
 -- Added in 036.
-CREATE TABLE IF NOT EXISTS machine_enrollments (
+CREATE TABLE IF NOT EXISTS host_enrollments (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    machine_id    UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    host_id    UUID NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
     secret_sha256 BYTEA NOT NULL CHECK (octet_length(secret_sha256) = 32),
     created_by    TEXT NOT NULL,
     created       TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at    TIMESTAMPTZ NOT NULL,
     used_at       TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS idx_machine_enrollments_open
-    ON machine_enrollments (machine_id) WHERE used_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_host_enrollments_open
+    ON host_enrollments (host_id) WHERE used_at IS NULL;
 
-CREATE TABLE IF NOT EXISTS machine_credentials (
+CREATE TABLE IF NOT EXISTS host_credentials (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    machine_id    UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    host_id    UUID NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
     secret_sha256 BYTEA NOT NULL CHECK (octet_length(secret_sha256) = 32),
     created       TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_used     TIMESTAMPTZ,
     revoked_at    TIMESTAMPTZ
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uq_machine_credentials_live
-    ON machine_credentials (machine_id) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_host_credentials_live
+    ON host_credentials (host_id) WHERE revoked_at IS NULL;
 
--- Per-user canvas state. A canvas is a named station, and a user has many. Its
--- station fields are one optional JSON object, ``station``, that only the workbench
+-- Per-user canvas state. A canvas is a named canvas, and a user has many. Its
+-- metadata is one optional JSON object, ``metadata``, that only the workbench
 -- reads: ``name``, the science chat it holds (``conversation_id``) and the ``page``
--- it was last on, each key present only when set. The app opens the station changed
+-- it was last on, each key present only when set. The app opens the canvas changed
 -- last. The companion receipt table makes retried operations return the original
--- result without applying them twice. Added in 026; made stations in 042.
-CREATE TABLE IF NOT EXISTS visual_workspaces (
+-- result without applying them twice. Added in 026; made canvases in 042.
+CREATE TABLE IF NOT EXISTS visual_canvases (
     id          UUID PRIMARY KEY,
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     revision    BIGINT NOT NULL DEFAULT 0 CHECK (revision >= 0),
     state       JSONB NOT NULL CHECK (jsonb_typeof(state) = 'object'),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     modified_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    station     JSONB CHECK (jsonb_typeof(station) = 'object')
+    metadata     JSONB CHECK (jsonb_typeof(metadata) = 'object')
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_workspaces_user_station_name
-    ON visual_workspaces (user_id, (station->>'name'));
-CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_workspaces_user_station_chat
-    ON visual_workspaces (user_id, (station->>'conversation_id'));
-CREATE INDEX IF NOT EXISTS idx_visual_workspaces_user_modified
-    ON visual_workspaces (user_id, modified_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_canvases_user_metadata_name
+    ON visual_canvases (user_id, (metadata->>'name'));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_canvases_user_metadata_chat
+    ON visual_canvases (user_id, (metadata->>'conversation_id'));
+CREATE INDEX IF NOT EXISTS idx_visual_canvases_user_modified
+    ON visual_canvases (user_id, modified_at DESC, id DESC);
 
-CREATE TABLE IF NOT EXISTS visual_workspace_operations (
-    workspace_id UUID NOT NULL REFERENCES visual_workspaces(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS visual_canvas_operations (
+    canvas_id UUID NOT NULL REFERENCES visual_canvases(id) ON DELETE CASCADE,
     key          UUID NOT NULL,
     request_hash TEXT NOT NULL,
     response     JSONB NOT NULL CHECK (jsonb_typeof(response) = 'object'),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    PRIMARY KEY (workspace_id, key)
+    PRIMARY KEY (canvas_id, key)
 );
 
 -- Shared reports are identified separately from their immutable revisions.
@@ -1087,40 +1070,6 @@ CREATE TABLE IF NOT EXISTS science_chat_tombstones (
     conversation_id UUID PRIMARY KEY,
     deleted_by      TEXT NOT NULL,
     deleted_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
-);
-
--- What each person has been given, has bought and has spent: one row per entry, each
--- applied once by ``idem`` (Stripe's event id, or a charge's own key), and one
--- purchase per payment. A refund or dispute that names no purchase has no email.
--- Entries are kept under the lowercase email, with no FK to ``users``: a deleted
--- account that signs in again keeps its debt and gets no second grant. Added in 045.
-CREATE TABLE IF NOT EXISTS credit_entries (
-    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    email      TEXT CHECK (email = lower(email)),
-    kind       TEXT NOT NULL
-               CHECK (kind IN ('grant', 'purchase', 'chat', 'campaign', 'release', 'refund', 'dispute')),
-    usd        NUMERIC(14, 6) NOT NULL CHECK (usd >= 0),
-    ref        TEXT NOT NULL,
-    idem       TEXT NOT NULL UNIQUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    CHECK (email IS NOT NULL OR kind IN ('refund', 'dispute'))
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS credit_entries_one_purchase_per_payment
-    ON credit_entries (ref) WHERE kind = 'purchase';
-
-CREATE INDEX IF NOT EXISTS credit_entries_user_created
-    ON credit_entries (email, created_at);
-
--- A period in which a person is not held to their credit: the last day, a note, who set
--- it and when. It ends by itself after its last day. No FK to ``users``, as in
--- ``credit_entries``. Added in 053.
-CREATE TABLE IF NOT EXISTS credit_grace (
-    email  TEXT PRIMARY KEY CHECK (email = lower(email)),
-    until  DATE NOT NULL,
-    note   TEXT NOT NULL DEFAULT '',
-    set_by TEXT NOT NULL,
-    set_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
 -- One text file of code, stored once per owner by the sha256 of its UTF-8 bytes and
@@ -1170,7 +1119,8 @@ CREATE TABLE IF NOT EXISTS gpu_box_credentials (
     minted_by     UUID,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     expires_at    TIMESTAMPTZ NOT NULL,
-    revoked_at    TIMESTAMPTZ
+    revoked_at    TIMESTAMPTZ,
+    campaign_ref  TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS gpu_box_credentials_live
@@ -1214,6 +1164,7 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     ended_at           TIMESTAMPTZ,
     sealed_at          TIMESTAMPTZ,
     elapsed_s          BIGINT,
+    -- Whole minutes charged, read only by builds before 070; see gpu_seconds.
     gpu_minutes        BIGINT,
     usd                NUMERIC(12, 4),
     files              BIGINT,
@@ -1222,7 +1173,11 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     manifest           JSONB,
     reason             TEXT NOT NULL DEFAULT '',
     claimed_until      TIMESTAMPTZ,
-    box_credential_id  UUID REFERENCES gpu_box_credentials(id)
+    box_credential_id  UUID REFERENCES gpu_box_credentials(id),
+    requested_node     TEXT,
+    usd_per_gpu_minute DOUBLE PRECISION,
+    campaign_ref       TEXT NOT NULL DEFAULT '',
+    gpu_seconds        BIGINT
 );
 
 CREATE INDEX IF NOT EXISTS gpu_jobs_email_created
@@ -1267,8 +1222,8 @@ CREATE TABLE IF NOT EXISTS device_logins (
     device_sha256  BYTEA NOT NULL UNIQUE CHECK (octet_length(device_sha256) = 32),
     user_code      TEXT NOT NULL UNIQUE CHECK (user_code ~ '^[A-Z]{8}$'),
     client         TEXT NOT NULL CHECK (client ~ '^[a-z][a-z0-9-]{0,31}$'),
-    host           TEXT NOT NULL DEFAULT '' CHECK (char_length(host) <= 63),
-    machine        TEXT CHECK (machine ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
+    hostname       TEXT NOT NULL DEFAULT '' CHECK (char_length(hostname) <= 63),
+    host           TEXT CHECK (host ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
     status         TEXT NOT NULL DEFAULT 'pending'
                    CHECK (status IN ('pending', 'approved', 'denied')),
     approver       UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -1280,3 +1235,39 @@ CREATE TABLE IF NOT EXISTS device_logins (
 
 CREATE INDEX IF NOT EXISTS idx_device_logins_expires
     ON device_logins (expires_at);
+
+-- Jobs on a person's own host: see ``schema.057.sql`` for what the table keeps. Its
+-- ids come from ``gpu_jobs_id_seq``. Added in 057.
+CREATE TABLE IF NOT EXISTS host_jobs (
+    id               BIGINT PRIMARY KEY DEFAULT nextval('gpu_jobs_id_seq'),
+    email            TEXT NOT NULL,
+    host_id       UUID REFERENCES hosts(id) ON DELETE SET NULL,
+    host          TEXT NOT NULL,
+    state            TEXT NOT NULL
+                     CHECK (state IN ('requested', 'queued', 'running', 'completed',
+                                      'failed', 'cancelled', 'timeout')),
+    cancel_requested BOOLEAN NOT NULL DEFAULT false,
+    gpus             INT NOT NULL,
+    memory_mb        INT NOT NULL,
+    minutes          INT NOT NULL,
+    label            TEXT NOT NULL DEFAULT '',
+    argv             JSONB NOT NULL,
+    remote           TEXT NOT NULL,
+    ref              TEXT NOT NULL,
+    commit           TEXT NOT NULL,
+    exit_code        INT,
+    reason           TEXT NOT NULL DEFAULT '',
+    requested_by     UUID,
+    claimed_until    TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    queued_at        TIMESTAMPTZ,
+    started_at       TIMESTAMPTZ,
+    ended_at         TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS host_jobs_email_created
+    ON host_jobs (email, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS host_jobs_live
+    ON host_jobs (host_id)
+    WHERE state NOT IN ('completed', 'failed', 'cancelled', 'timeout');

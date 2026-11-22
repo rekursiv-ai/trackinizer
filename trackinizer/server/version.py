@@ -27,7 +27,7 @@ import os
 import subprocess
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 @cache

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import asyncio
 import uuid
@@ -20,6 +21,7 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
+from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.api.app import app
 from trackinizer.server.api.edge import _edge_response, _set_edge_annotation
 from trackinizer.types.errors import ConflictError
@@ -57,6 +59,47 @@ def test_set_edge_annotation_rejects_unknown_field() -> None:
         )
     assert exc.value.status_code == 500
     assert "edge-annotation setter" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("priority", 2), ("note", "why"), ("valence", -0.5), ("labels", ["context"])],
+)
+def test_set_edge_annotation_writes_only_the_named_column(
+    field: str,
+    value: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _engine = make_store()
+    change = uuid.uuid4()
+    setter = AsyncMock(return_value=change)
+    monkeypatch.setattr(store, "set_edge_annotation", setter)
+    from_id, to_id = new_uuid(), new_uuid()
+
+    result = asyncio.run(
+        _set_edge_annotation(
+            store,
+            field,
+            value,
+            from_id=from_id,
+            to_id=to_id,
+            edge_kind="narrows",
+            reason="r",
+            api_key_id=None,
+            actor="u",
+        ),
+    )
+
+    assert result == change
+    setter.assert_awaited_once_with(
+        from_id=from_id,
+        to_id=to_id,
+        edge_kind="narrows",
+        reason="r",
+        api_key_id=None,
+        actor="u",
+        **{field: value},
+    )
 
 
 if TYPE_CHECKING:
@@ -102,10 +145,11 @@ async def _non_session_authz(target_id: uuid.UUID) -> tuple[str, uuid.UUID | Non
 
 
 class _StubEdgeStore:
-    """Base of the partial stores: it holds the engine the lock probe reads."""
+    """Base of the partial stores: the engine and policy the write gate reads."""
 
     def __init__(self) -> None:
         self.engine = FakeEngine()
+        self.access_policy = DefaultPolicy()
 
 
 class _PartialEdgeStore(_StubEdgeStore):
@@ -217,10 +261,11 @@ class TestCreate:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        # ``add_edge``: lookup_kind(from) + insert_edge[lookup_kind(to),
-        # cycle-check, INSERT RETURNING]. A ``proves`` citation (Paper -> Belief)
-        # is the only edge family that carries a ``valence``.
-        engine.conn.fetchval.side_effect = ["Paper", "Belief", False, new_uuid()]
+        # The write gate finds no unreadable endpoint; then ``add_edge``:
+        # lookup_kind(from) + insert_edge[lookup_kind(to), cycle-check, INSERT
+        # RETURNING]. A ``proves`` citation (Paper -> Belief) is the only edge
+        # family that carries a ``valence``.
+        engine.conn.fetchval.side_effect = [None, "Paper", "Belief", False, new_uuid()]
         r = client.post(
             f"/api/edges/{new_uuid()}/proves/{new_uuid()}",
             json={"actor": "u", "note": "load-bearing", "valence": 0.5},
@@ -235,7 +280,7 @@ class TestCreate:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        engine.conn.fetchval.side_effect = ["Issue", "Issue", False, new_uuid()]
+        engine.conn.fetchval.side_effect = [None, "Issue", "Issue", False, new_uuid()]
         r = client.post(
             f"/api/edges/{new_uuid()}/narrows/{new_uuid()}",
             json={},
@@ -252,9 +297,10 @@ class TestBatch:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        # Two edges, each: lookup_kind(from) + lookup_kind(to) + cycle +
-        # INSERT RETURNING.
+        # The write gate over every endpoint, then two edges, each:
+        # lookup_kind(from) + lookup_kind(to) + cycle + INSERT RETURNING.
         engine.conn.fetchval.side_effect = [
+            None,
             "Issue",
             "Issue",
             False,
@@ -592,7 +638,17 @@ class TestCoverageRoutesAndCli:
             # PUT .../note: set_edge_annotation FOR UPDATE fetchrow.
             _edge_row(from_id=source_id, to_id=target_id),
         )
-        engine.conn.fetchval.side_effect = ["Issue", "Issue", False, new_uuid()]
+        # Each write's gate finds no unreadable endpoint; the POST's add_edge
+        # reads the two kinds, the cycle check and the INSERT.
+        engine.conn.fetchval.side_effect = [
+            None,
+            "Issue",
+            "Issue",
+            False,
+            new_uuid(),
+            None,
+            None,
+        ]
         # A missing short-ref is 404 (API-08/24), consistent with get_edge.
         assert client.get("/api/inquiries/Issue/999").status_code == 404
         assert (
@@ -619,6 +675,44 @@ class TestCoverageRoutesAndCli:
             ).status_code
             == 200
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("priority", 10), ("priority", None), ("valence", 0.5), ("valence", None)],
+)
+async def test_scalar_edge_annotation_dispatch_preserves_value_and_audit(
+    field: str,
+    value: float | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _engine = make_store()
+    change = new_uuid()
+    setter = AsyncMock(return_value=change)
+    monkeypatch.setattr(store, "set_edge_annotation", setter)
+    source, target, key = new_uuid(), new_uuid(), new_uuid()
+    result = await _set_edge_annotation(
+        store,
+        field,
+        value,
+        from_id=source,
+        to_id=target,
+        edge_kind="proves",
+        reason="correct weight",
+        api_key_id=key,
+        actor="auditor",
+    )
+    assert result == change
+    setter.assert_awaited_once_with(
+        from_id=source,
+        to_id=target,
+        edge_kind="proves",
+        reason="correct weight",
+        api_key_id=key,
+        actor="auditor",
+        **{field: value},
+    )
 
 
 if __name__ == "__main__":

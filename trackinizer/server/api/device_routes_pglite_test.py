@@ -20,6 +20,7 @@ from treekle import from_plain
 import pytest
 import pytest_asyncio
 
+from trackinizer.server.api._deps import host_changes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -28,9 +29,15 @@ from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.api.device_limits import CodeRequests, WrongEntries
 from trackinizer.server.config import Config
+from trackinizer.wire.wire_daemon import (
+    ENROLLMENT_PREFIX,
+    JOIN_PATH,
+    JoinResponse,
+)
 from trackinizer.wire.wire_device import (
     DEVICE_APPROVE_PATH,
     DEVICE_CODE_PATH,
@@ -44,12 +51,7 @@ from trackinizer.wire.wire_device import (
     DeviceLoginView,
     DeviceToken,
 )
-from trackinizer.wire.wire_machine_host import (
-    ENROLLMENT_PREFIX,
-    JOIN_PATH,
-    JoinResponse,
-)
-from trackinizer.wire.wire_machines import MACHINES_PATH
+from trackinizer.wire.wire_hosts import HOSTS_PATH
 
 
 if TYPE_CHECKING:
@@ -126,12 +128,12 @@ async def _approver(store: Store, role: Role = "writer") -> None:
 async def _code(
     client: httpx2.AsyncClient,
     *,
-    machine: str | None = None,
-    host: str = "devbox",
+    host: str | None = None,
+    hostname: str = "devbox",
 ) -> DeviceCode:
-    body = {"client": "rai-shell", "host": host}
-    if machine is not None:
-        body["machine"] = machine
+    body = {"client": "daemon", "hostname": hostname}
+    if host is not None:
+        body["host"] = host
     response = await client.post(DEVICE_CODE_PATH, json=body)
     assert response.status_code == 201, response.text
     return DeviceCode.model_validate_json(response.text)
@@ -187,6 +189,20 @@ def _problem(response: httpx2.Response) -> str:
     return from_plain(response.json(), dict[str, dict[str, str]])["detail"]["code"]
 
 
+def _enrollment_secret(token: str) -> str:
+    """Return the secret of ``enr_<id>_<secret>``; the secret may itself hold ``_``."""
+    return token.split("_", 2)[2]
+
+
+async def test_the_enrollment_secret_is_read_whole_when_it_holds_an_underscore() -> (
+    None
+):
+    token = f"{ENROLLMENT_PREFIX}{uuid.uuid4().hex}_ab_c"
+
+    assert _enrollment_secret(token) == "ab_c"
+    assert token.rsplit("_", 1)[-1] == "c"
+
+
 async def _stored(store: Store, table: str) -> str:
     async with store.engine.acquire() as conn:
         rows = await conn.fetch(f"SELECT * FROM {table}")  # noqa: S608 -- Test table name.
@@ -200,7 +216,7 @@ async def test_a_code_request_returns_the_codes_and_keeps_only_a_hash(
 
     response = await client.post(
         DEVICE_CODE_PATH,
-        json={"client": "rai-shell", "host": "devbox"},
+        json={"client": "daemon", "hostname": "devbox"},
     )
 
     assert response.status_code == 201
@@ -224,8 +240,8 @@ async def test_a_code_request_returns_the_codes_and_keeps_only_a_hash(
         == hashlib.sha256(code.device_code.encode()).digest()
     )
     assert code.device_code not in await _stored(store, "device_logins")
-    assert (row["client"], row["host"], row["machine"], row["status"]) == (
-        "rai-shell",
+    assert (row["client"], row["hostname"], row["host"], row["status"]) == (
+        "daemon",
         "devbox",
         None,
         "pending",
@@ -236,12 +252,12 @@ async def test_a_code_request_returns_the_codes_and_keeps_only_a_hash(
     "body",
     [
         {"client": "Rai Shell"},
-        {"client": "rai-shell", "machine": "Upper"},
-        {"client": "rai-shell", "machine": "enroll"},
-        {"client": "rai-shell", "host": "a b"},
-        {"client": "rai-shell", "surprise": 1},
+        {"client": "daemon", "host": "Upper"},
+        {"client": "daemon", "host": "enroll"},
+        {"client": "daemon", "hostname": "a b"},
+        {"client": "daemon", "surprise": 1},
     ],
-    ids=["client", "machine", "reserved", "host", "extra"],
+    ids=["client", "host", "reserved", "hostname", "extra"],
 )
 async def test_a_code_request_that_names_nothing_usable_is_422(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
@@ -291,11 +307,11 @@ async def test_an_approved_code_returns_a_key_that_signs_in_as_the_approver(
     assert token.status == "approved"
     assert token.issued is not None
     assert (token.issued.role, token.issued.email) == ("writer", TEST_USER_EMAIL)
-    assert token.issued.machine_token == ""
+    assert token.issued.host_token == ""
     assert token.issued.api_key.startswith("trax_")
     clear_identity_override()
     me = await client.get(
-        MACHINES_PATH,
+        HOSTS_PATH,
         headers={"Authorization": f"Bearer {token.issued.api_key}"},
     )
     assert me.status_code == 200
@@ -303,7 +319,7 @@ async def test_an_approved_code_returns_a_key_that_signs_in_as_the_approver(
         key = await conn.fetchrow("SELECT name, role, user_id FROM api_keys")
     assert key is not None
     assert (key["name"], key["role"], key["user_id"]) == (
-        "rai-shell@devbox",
+        "daemon@devbox",
         "writer",
         TEST_USER_ID,
     )
@@ -461,10 +477,10 @@ async def test_too_many_open_codes_are_refused(
             "INSERT INTO device_logins (device_sha256, user_code, client, expires_at) "
             "SELECT decode(md5(n::text) || md5(n::text), 'hex'), "
             "translate(lpad(n::text, 8, '0'), '0123456789', 'BCDFGHJKLM'), "
-            "'rai-shell', now() + interval '5 min' FROM generate_series(1, 1000) n",
+            "'daemon', now() + interval '5 min' FROM generate_series(1, 1000) n",
         )
 
-    response = await client.post(DEVICE_CODE_PATH, json={"client": "rai-shell"})
+    response = await client.post(DEVICE_CODE_PATH, json={"client": "daemon"})
 
     assert response.status_code == 429
     assert _problem(response) == "device_codes_busy"
@@ -479,7 +495,7 @@ async def test_one_address_cannot_use_up_the_open_codes_for_the_others(
     for _ in range(3):
         await _code(client)
 
-    refused = await client.post(DEVICE_CODE_PATH, json={"client": "rai-shell"})
+    refused = await client.post(DEVICE_CODE_PATH, json={"client": "daemon"})
 
     assert refused.status_code == 429
     assert _problem(refused) == "device_rate_limited"
@@ -495,7 +511,7 @@ async def test_a_server_with_authentication_off_hands_out_no_codes(
     client, store = pglite_route_client
     app.state.config = Config(auth_disabled=True)
     try:
-        refused = await client.post(DEVICE_CODE_PATH, json={"client": "rai-shell"})
+        refused = await client.post(DEVICE_CODE_PATH, json={"client": "daemon"})
     finally:
         del app.state.config
 
@@ -505,32 +521,43 @@ async def test_a_server_with_authentication_off_hands_out_no_codes(
 
 
 @pytest.mark.parametrize(
-    ("public_url", "page"),
+    ("public_url", "sign_in", "page"),
     [
         (
             "https://trackinizer.example/hub",
+            "",
             "https://trackinizer.example/hub/auth/device",
         ),
         (
             "https://trackinizer.example",
+            "",
             "https://trackinizer.example/auth/device",
         ),
         (
             "https://trackinizer.example/hub/",
+            "",
             "https://trackinizer.example/hub/auth/device",
         ),
-        ("", "http://testserver/auth/device"),
+        (
+            "",
+            "https://trackinizer.example/hub",
+            "https://trackinizer.example/hub/auth/device",
+        ),
+        ("", "", "http://testserver/auth/device"),
     ],
-    ids=["hub-prefix", "root", "trailing-slash", "unset"],
+    ids=["hub-prefix", "root", "trailing-slash", "sign-in", "unset"],
 )
 async def test_the_page_address_is_the_public_one_the_deployment_names(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     monkeypatch: pytest.MonkeyPatch,
     public_url: str,
+    sign_in: str,
     page: str,
 ) -> None:
     client, _ = pglite_route_client
     monkeypatch.setenv("TRACKINIZER_PUBLIC_URL", public_url)
+    if sign_in:
+        patch_state(monkeypatch, "sign_in_base", sign_in)
 
     code = await _code(client)
 
@@ -554,25 +581,27 @@ async def test_the_code_is_read_without_case_or_dash(
     assert typed.status_code == 204
 
 
-async def test_a_lookup_names_the_client_the_machine_and_the_role_of_the_key(
+async def test_a_lookup_names_the_account_the_client_the_host_and_the_role_of_the_key(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
     await _approver(store, "admin")
-    code = await _code(client, machine="dev-box")
+    code = await _code(client, host="dev-box")
 
     response = await _decide(client, code, path=DEVICE_LOOKUP_PATH)
 
     assert response.status_code == 200
+    # The account signed in is the one the key and the host become: the page names it.
     assert DeviceLoginView.model_validate_json(response.text) == DeviceLoginView(
         user_code=code.user_code,
-        client="rai-shell",
-        host="devbox",
-        machine="dev-box",
+        account=TEST_USER_EMAIL,
+        client="daemon",
+        hostname="devbox",
+        host="dev-box",
         role="writer",
     )
     async with store.engine.acquire() as conn:
-        assert await conn.fetchval("SELECT count(*) FROM machines") == 0
+        assert await conn.fetchval("SELECT count(*) FROM hosts") == 0
 
 
 async def test_five_wrong_codes_lock_the_person_out_until_the_window_passes(
@@ -754,54 +783,75 @@ async def test_nobody_signed_out_decides_anything(
     assert (await _decide(client, code)).status_code == 401
 
 
-async def test_a_named_machine_becomes_the_approvers_confirmed_personal_machine(
+async def test_a_named_host_becomes_the_approvers_confirmed_personal_host(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
     await _approver(store)
-    code = await _code(client, machine="dev-box")
+    code = await _code(client, host="dev-box")
+    before = host_changes(app).version(TEST_USER_EMAIL)
 
     token = await _approved_key(client, store, code)
 
+    assert host_changes(app).version(TEST_USER_EMAIL) == before + 1
     assert token.issued is not None
-    assert token.issued.machine_token.startswith(ENROLLMENT_PREFIX)
+    assert token.issued.host_token.startswith(ENROLLMENT_PREFIX)
     async with store.engine.acquire() as conn:
-        machine = await conn.fetchrow(
+        host = await conn.fetchrow(
             "SELECT owner, role, confirmed_at IS NOT NULL AS confirmed "
-            "FROM machines WHERE name = 'dev-box'",
+            "FROM hosts WHERE name = 'dev-box'",
         )
         enrollments = await conn.fetchval(
-            "SELECT count(*) FROM machine_enrollments WHERE used_at IS NULL "
+            "SELECT count(*) FROM host_enrollments WHERE used_at IS NULL "
             "AND created_by = $1",
             TEST_USER_EMAIL,
         )
-    assert machine is not None
-    assert (machine["owner"], machine["role"], machine["confirmed"]) == (
+    assert host is not None
+    assert (host["owner"], host["role"], host["confirmed"]) == (
         TEST_USER_EMAIL,
         "personal",
         True,
     )
     assert enrollments == 1
-    assert token.issued.machine_token.rsplit("_", 1)[-1] not in (
-        await _stored(store, "machine_enrollments")
+    assert _enrollment_secret(token.issued.host_token) not in (
+        await _stored(store, "host_enrollments")
     )
 
 
-async def test_the_machine_token_joins_the_machine(
+async def test_the_key_a_login_makes_names_the_host_it_logged_in_and_no_other(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Logging the host out revokes the keys it logged in with, so a key names it."""
+    client, store = pglite_route_client
+    await _approver(store)
+    await _approved_key(client, store, await _code(client, host="dev-box"))
+    await _approved_key(client, store, await _code(client))
+
+    async with store.engine.acquire() as conn:
+        named = await conn.fetch(
+            "SELECT hosts.name FROM api_keys LEFT JOIN hosts "
+            "ON hosts.id = api_keys.host_id WHERE api_keys.user_id = $1 "
+            "AND api_keys.name LIKE 'daemon%' ORDER BY api_keys.created_at",
+            TEST_USER_ID,
+        )
+    assert [row["name"] for row in named] == ["dev-box", None]
+
+
+async def test_the_host_token_joins_the_host(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
     await _approver(store)
-    token = await _approved_key(client, store, await _code(client, machine="laptop"))
+    token = await _approved_key(client, store, await _code(client, host="laptop"))
     assert token.issued is not None
 
     joined = await client.post(
         JOIN_PATH,
         json={
             "name": "laptop",
-            "token": token.issued.machine_token,
+            "token": token.issued.host_token,
             "instance": str(_INSTANCE),
-            "host_version": "0.1",
+            "daemon_version": "0.1",
             "facts": {},
         },
     )
@@ -812,81 +862,90 @@ async def test_the_machine_token_joins_the_machine(
     )
 
 
-async def test_an_approval_of_an_existing_machine_of_theirs_confirms_it(
+async def test_an_approval_of_an_existing_host_of_theirs_confirms_it(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
     await _approver(store)
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO machines (name, updated_by, owner, role) "
+            "INSERT INTO hosts (name, updated_by, owner, role) "
             "VALUES ('laptop', $1, $1, 'personal')",
             TEST_USER_EMAIL,
         )
 
-    token = await _approved_key(client, store, await _code(client, machine="laptop"))
+    token = await _approved_key(client, store, await _code(client, host="laptop"))
 
     assert token.issued is not None
-    assert token.issued.machine_token.startswith(ENROLLMENT_PREFIX)
+    assert token.issued.host_token.startswith(ENROLLMENT_PREFIX)
     async with store.engine.acquire() as conn:
         assert await conn.fetchval(
-            "SELECT confirmed_at IS NOT NULL FROM machines WHERE name = 'laptop'",
+            "SELECT confirmed_at IS NOT NULL FROM hosts WHERE name = 'laptop'",
         )
 
 
-async def test_a_machine_another_person_owns_is_refused_and_the_code_stays_open(
+async def test_a_host_another_person_owns_is_refused_and_the_code_stays_open(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
     await _approver(store)
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO machines (name, updated_by, owner, role) "
+            "INSERT INTO hosts (name, updated_by, owner, role) "
             "VALUES ('other-box', 'mal@x.y', 'mal@x.y', 'personal')",
         )
-    code = await _code(client, machine="other-box")
+    code = await _code(client, host="other-box")
 
     refused = await _decide(client, code)
 
     assert refused.status_code == 403
+    assert from_plain(refused.json(), dict[str, dict[str, str]])["detail"] == {
+        "code": "device_host_owned",
+        "message": (
+            "Host other-box belongs to another person on this server, so it cannot "
+            "become yours. If it is yours under another account, sign in as that "
+            "account and approve again. Otherwise deny this login, then connect devbox "
+            "again under a name of your own, such as other-box-test-user."
+        ),
+    }
     async with store.engine.acquire() as conn:
-        machine = await conn.fetchrow(
-            "SELECT owner, confirmed_at FROM machines WHERE name = 'other-box'",
+        host = await conn.fetchrow(
+            "SELECT owner, confirmed_at FROM hosts WHERE name = 'other-box'",
         )
         status = await conn.fetchval("SELECT status FROM device_logins")
-    assert machine is not None
-    assert (machine["owner"], machine["confirmed_at"], status) == (
+    assert host is not None
+    assert (host["owner"], host["confirmed_at"], status) == (
         "mal@x.y",
         None,
         "pending",
     )
 
 
-async def test_a_viewer_cannot_approve_a_login_that_names_a_machine(
+async def test_a_viewer_cannot_approve_a_login_that_names_a_host(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
     await _approver(store, "viewer")
-    code = await _code(client, machine="laptop")
+    code = await _code(client, host="laptop")
 
     refused = await _decide(client, code)
 
     assert refused.status_code == 403
-    assert _problem(refused) == "device_machine_needs_writer"
+    assert _problem(refused) == "device_host_needs_writer"
     async with store.engine.acquire() as conn:
-        assert await conn.fetchval("SELECT count(*) FROM machines") == 0
+        assert await conn.fetchval("SELECT count(*) FROM hosts") == 0
     assert (await _decide(client, await _code(client))).status_code == 204
 
 
-async def test_a_machine_that_vanished_after_approval_keeps_the_key_unissued(
+async def test_a_host_that_vanished_after_approval_keeps_the_key_unissued(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
     await _approver(store)
-    code = await _code(client, machine="laptop")
+    code = await _code(client, host="laptop")
     assert (await _decide(client, code)).status_code == 204
     async with store.engine.acquire() as conn:
-        await conn.execute("DELETE FROM machines WHERE name = 'laptop'")
+        await conn.execute("DELETE FROM hosts WHERE name = 'laptop'")
 
     response = await client.post(
         DEVICE_POLL_PATH,
@@ -894,7 +953,7 @@ async def test_a_machine_that_vanished_after_approval_keeps_the_key_unissued(
     )
 
     assert response.status_code == 409
-    assert _problem(response) == "device_machine_gone"
+    assert _problem(response) == "device_host_gone"
     async with store.engine.acquire() as conn:
         assert await conn.fetchval("SELECT count(*) FROM api_keys") == 0
         assert await conn.fetchval("SELECT count(*) FROM device_logins") == 1
@@ -947,12 +1006,6 @@ async def test_a_poll_is_never_cached(
     )
 
     assert response.headers["cache-control"] == "no-store"
-
-
-async def test_the_routes_stay_out_of_the_api_schema() -> None:
-    paths = from_plain(app.openapi()["paths"], dict[str, object])
-
-    assert [path for path in paths if path.startswith("/auth/device")] == []
 
 
 if __name__ == "__main__":

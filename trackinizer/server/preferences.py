@@ -1,7 +1,7 @@
 """A user's preferences: every key, its type, its default, and what it means.
 
 They are kept on the user's row (``users.preferences``), so they follow the user to
-any browser or machine, and an agent the user works with can change them. The
+any browser or host, and an agent the user works with can change them. The
 stored object holds only the keys the user set; a read fills in the defaults.
 Each field's description is the comment Settings shows beside the key.
 
@@ -28,7 +28,8 @@ from pydantic import (
 from pydantic_core import to_json
 from treekle import from_plain
 
-from trackinizer.wire.wire_science_chat import ChatProvider
+from trackinizer.wire.wire_hosts import NAME_PATTERN
+from trackinizer.wire.wire_science_chat import AssistantPrompt, ChatProvider
 
 
 if TYPE_CHECKING:
@@ -45,18 +46,39 @@ ASSISTANT_KEYS: Final = frozenset(
     {
         "theme",
         "skin",
+        "scanlines",
+        "terminal_colors",
         "chat_side",
+        "app_bar",
+        "app_bar_pinned",
+        "font",
+        "interface_text_size",
+        "chat_text_size",
+        "canvas_text_size",
         "highlight_mentions",
         "terminal_font_size",
         "terminal_tab_chords",
         "home",
+        "assistant_prompt",
+        "cli_folder",
+        "default_host",
+        "chat_view",
         "chat_provider",
         "chat_tool_calls",
+        "autofix",
+        "automerge",
     },
 )
-"""The preferences a station's assistant may read and change for its owner: the
+"""The preferences a canvas's assistant may read and change for its owner: the
 UI's, each marked ``SETTING`` below. Every other key (the user's own data) stays
 the user's alone."""
+
+AGENT_KEYS: Final = ASSISTANT_KEYS - {"cli_folder", "autofix", "automerge"}
+"""The settings an agent's own tool may change for the person, with the key a start
+minted for its process: how the app looks and reads. Not the folder an agent starts
+in, whose skills and AGENTS.md the next agent loads, nor what agents do to pull
+requests: an agent a line in a shared chat steered would change what every later
+agent of the person does."""
 
 SETTING: Final[JsonDict] = {"x-setting": True}
 """Marks a field as one of the UI's settings: Settings shows it in the
@@ -66,6 +88,54 @@ preferences document, with its description as the comment above it."""
 _Id = Annotated[str, StringConstraints(max_length=100)]
 _Name = Annotated[str, StringConstraints(max_length=200)]
 _Text = Annotated[str, StringConstraints(max_length=100_000)]
+_Colour = Annotated[str, StringConstraints(pattern=r"^#[0-9a-f]{6}$")]
+_HostName = Annotated[str, StringConstraints(pattern=rf"^$|{NAME_PATTERN}")]
+
+GNOME_PALETTE: Final = (
+    "#171421",
+    "#c01c28",
+    "#26a269",
+    "#a2734c",
+    "#12488b",
+    "#a347ba",
+    "#2aa1b3",
+    "#d0cfcc",
+    "#5e5c64",
+    "#f66151",
+    "#33d17a",
+    "#e9ad0c",
+    "#2a7bde",
+    "#c061cb",
+    "#33c7de",
+    "#ffffff",
+)
+"""GNOME Terminal 3.58's "GNOME" palette, ANSI colours 0 to 15 (``docs/retro_ui.md``)."""
+
+type TabColor = Literal[
+    "grey",
+    "blue",
+    "red",
+    "yellow",
+    "green",
+    "pink",
+    "purple",
+    "cyan",
+    "orange",
+]
+"""A tab group's or a tab icon's colour: Chrome's nine tab group colours."""
+
+TAB_COLORS: Final[tuple[TabColor, ...]] = (
+    "grey",
+    "blue",
+    "red",
+    "yellow",
+    "green",
+    "pink",
+    "purple",
+    "cyan",
+    "orange",
+)
+"""The colours in the order Chrome's group menu shows them, which a new group takes."""
 
 
 def _instant(text: str) -> datetime:
@@ -178,12 +248,32 @@ class ReadState(_Strict):
     marks: Annotated[list[_Id], Field(max_length=5_000)]
 
 
-class WorkstreamsPreference(_Strict):
-    """The user's workstream bar state."""
+class WorkspacesPreference(_Strict):
+    """The user's tab bar: each workspace a group of tabs, each canvas a tab."""
 
     order: Annotated[list[_Id], Field(max_length=500)] = []
-    pinned: Annotated[list[_Id], Field(max_length=500)] = []
     hidden: Annotated[list[_Id], Field(max_length=500)] = []
+    # A group with no colour stored takes one by its number (``workspaces.py``).
+    colors: Annotated[dict[_Id, TabColor], Field(max_length=500)] = Field(
+        default=dict[_Id, TabColor](),
+        description="Each group's colour, by workspace id.",
+    )
+    expanded: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description="The groups you expanded, by workspace id.",
+    )
+    # A tab not listed follows those that are, oldest first (``tabBar.ts``).
+    tabs: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description="Your tab order, by canvas id.",
+    )
+    last_canvas: Annotated[dict[_Id, _Id], Field(max_length=500)] = Field(
+        default=dict[_Id, _Id](),
+        description=(
+            "The canvas you opened last in each workspace, by workspace id: "
+            "switching to the workspace opens it again, in any browser."
+        ),
+    )
 
 
 class FieldDraft(_Strict):
@@ -211,6 +301,72 @@ class DraftRelation(_Strict):
     target: RelationTarget
 
 
+class TerminalColors(_Strict):
+    """A terminal's colours, as GNOME Terminal's profile names them, each one given.
+
+    A write replaces the whole object, as it does any top-level key.
+    """
+
+    text: _Colour
+    background: _Colour
+    bold: _Colour | None
+    """Bold text's colour; None draws bold in the text colour."""
+
+    palette: Annotated[list[_Colour], Field(min_length=16, max_length=16)]
+    """ANSI colours 0 to 15: eight normal, then their eight bright forms."""
+
+    bold_is_bright: bool
+    """Bold text in colours 0 to 7 shows in 8 to 15."""
+
+
+_GREEN_ON_BLACK: Final = TerminalColors(
+    text="#00ff00",
+    background="#000000",
+    bold=None,
+    palette=list(GNOME_PALETTE),
+    bold_is_bright=True,
+)
+"""GNOME Terminal's "Green on black" over its GNOME palette, bold drawn bright."""
+
+
+class ChatView(_Strict):
+    """How Chat draws a chat: which view, and what each view shows of it.
+
+    A write replaces the whole object, as it does any top-level key.
+    """
+
+    view: Literal["chat", "terminal"] = "chat"
+    """Chat's own lines, or the rows sagent's terminal UI prints."""
+
+    density: Literal["auto", "verbose", "compact", "minimal"] = "auto"
+    """How much of the tool calls shows: each one whole, folded, or none; ``auto``
+    is the view's own, folded in Chat and whole in the terminal."""
+
+    thinking: bool = False
+    """Whether the reasoning an agent stored shows."""
+
+    output_lines: (
+        Literal["tool", "all"]
+        | Annotated[
+            list[Annotated[int, Field(ge=0)]],
+            Field(min_length=2, max_length=2),
+        ]
+    ) = "tool"
+    """How much of a tool's output shows: as its tool says, all of it, or the lines
+    kept from its head and its tail."""
+
+    times: bool = False
+    """Whether each line shows when it was written."""
+
+    tool_groups: Literal["open", "folded"] = "open"
+    """Whether each run of tool calls Chat groups under one line starts open, its
+    calls listed under it, or folded to that line."""
+
+
+_CHAT_VIEW: Final = ChatView()
+"""Chat's own lines, with each option at its default."""
+
+
 class CreateDraft(_Strict):
     """The create form's unsent inquiry."""
 
@@ -222,6 +378,51 @@ class CreateDraft(_Strict):
     relations: Annotated[list[DraftRelation], Field(max_length=100)]
 
     _bounded = field_validator("chips")(_json_within)
+
+
+type Font = Literal[
+    "system",
+    "inter",
+    "ibm_plex_sans",
+    "manrope",
+    "source_sans_3",
+    "geist",
+    "dm_sans",
+    "work_sans",
+    "public_sans",
+    "lato",
+    "nunito_sans",
+]
+"""The app's text face: the system's own, or one the app serves itself."""
+
+_InterfaceSize = Annotated[int, Field(ge=11, le=20)]
+_ChatSize = Annotated[int, Field(ge=10, le=24)]
+
+
+class DisplayTextSizes(_Strict):
+    """One display's own text sizes; a size left None follows the user's default."""
+
+    label: _Name
+    """What Settings calls the display: its size, or the name the browser gave it."""
+
+    interface_text_size: _InterfaceSize | None = None
+    chat_text_size: _ChatSize | None = None
+    canvas_text_size: _InterfaceSize | None = None
+
+
+# A display as the browser tells it without asking: its width and height in CSS px.
+_DisplayKey = Annotated[
+    str,
+    StringConstraints(pattern=r"^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$"),
+]
+class WorkstreamsPreference(_Strict):
+    """The user's workstream bar state."""
+
+    order: Annotated[list[_Id], Field(max_length=500)] = []
+    pinned: Annotated[list[_Id], Field(max_length=500)] = []
+    hidden: Annotated[list[_Id], Field(max_length=500)] = []
+
+
 
 
 class Preferences(_Strict):
@@ -249,10 +450,96 @@ class Preferences(_Strict):
         ),
         json_schema_extra=SETTING,
     )
+    scanlines: bool = Field(
+        default=True,
+        description=(
+            "The Hacker skin's scanlines and glow, as a CRT draws them; off, its "
+            "text is crisp."
+        ),
+        json_schema_extra=SETTING,
+    )
+    terminal_colors: TerminalColors = Field(
+        default=_GREEN_ON_BLACK,
+        description=(
+            "The browser terminal's colours, which the Hacker skin draws in too: "
+            "text, background and bold, the 16-colour palette (ANSI 0 to 15), and "
+            "whether bold text in colours 0 to 7 shows in 8 to 15. GNOME Terminal's "
+            "Green on black over its GNOME palette until changed."
+        ),
+        json_schema_extra=SETTING,
+    )
     chat_side: Literal["left", "right"] = Field(
         default="left",
         description="The side of the workbench Chat stands on; the sidebar takes the other.",
         json_schema_extra=SETTING,
+    )
+    app_bar: Literal["top", "left"] = Field(
+        default="top",
+        description=(
+            "Where the app bar stands: along the top, or down the left side, where it "
+            "resizes and folds to its icons. A phone keeps it along the top."
+        ),
+        json_schema_extra=SETTING,
+    )
+    app_bar_width: int = Field(
+        default=220,
+        ge=160,
+        le=400,
+        description="The app bar's width in px when it stands on the left, unfolded.",
+    )
+    app_bar_folded: bool = Field(
+        default=False,
+        description="The app bar on the left folded to its icons.",
+    )
+    app_bar_pinned: bool = Field(
+        default=True,
+        description=(
+            "Keep the app bar along the top shown; off, it hides until the pointer "
+            "nears the top edge."
+        ),
+        json_schema_extra=SETTING,
+    )
+    font: Font = Field(
+        default="system",
+        description=(
+            "The app's text face: system, inter, ibm_plex_sans, manrope, source_sans_3, "
+            "geist, dm_sans, work_sans, public_sans, lato or nunito_sans. Code and "
+            "terminals keep their monospace; a fixed skin keeps its own face."
+        ),
+        json_schema_extra=SETTING,
+    )
+    interface_text_size: _InterfaceSize = Field(
+        default=14,
+        description=(
+            "The app's text size in px, 11 to 20, on every display without its own."
+        ),
+        json_schema_extra=SETTING,
+    )
+    chat_text_size: _ChatSize = Field(
+        default=13,
+        description=(
+            "Chat's text size in px, its messages and its box, 10 to 24, on every "
+            "display without its own."
+        ),
+        json_schema_extra=SETTING,
+    )
+    canvas_text_size: _InterfaceSize = Field(
+        default=14,
+        description=(
+            "The canvas area's text size in px, every pane beside Chat, 11 to 20, on "
+            "every display without its own; terminals keep terminal_font_size."
+        ),
+        json_schema_extra=SETTING,
+    )
+    display_text_sizes: Annotated[
+        dict[_DisplayKey, DisplayTextSizes],
+        Field(max_length=50),
+    ] = Field(
+        default=dict[_DisplayKey, DisplayTextSizes](),
+        description=(
+            "Text sizes for one display, by its width and height in CSS px "
+            "(1512x982): each size given replaces the default there."
+        ),
     )
     highlight_mentions: bool = Field(
         default=True,
@@ -277,11 +564,137 @@ class Preferences(_Strict):
     home: Literal["graph", "empty"] = Field(
         default="graph",
         description=(
-            "What the canvas's Home button and a new canvas tab show: "
-            "the graph, or an empty canvas."
+            "What a new workspace's canvas opens on: the graph of what is "
+            "relevant, or an empty tab."
         ),
         json_schema_extra=SETTING,
     )
+    assistant_prompt: AssistantPrompt = Field(
+        default="sagent",
+        description=(
+            "The native sagent prompt and canvas environment for science chats. "
+            "Hosted assistant code ignores this legacy-compatible field."
+        ),
+        json_schema_extra=SETTING,
+    )
+    # A run's folder as a run takes it (``RunFolder``), or none.
+    cli_folder: Annotated[
+        str,
+        StringConstraints(max_length=1_024, pattern=r"^([/~][^\x00-\x1f\x7f]*)?$"),
+    ] = Field(
+        default="",
+        description=(
+            "The folder Chat's agent starts in on a host of yours, whose skills and "
+            "AGENTS.md it loads: ~/... under your home, or a full path. Empty for your "
+            "home directory. Our cloud starts in its own home directory."
+        ),
+        json_schema_extra=SETTING,
+    )
+    default_host: _HostName = Field(
+        default="",
+        description=(
+            "The host of yours the file explorer opens on, and where a path clicked "
+            "in Chat opens. Empty for the first of your hosts it can browse."
+        ),
+        json_schema_extra=SETTING,
+    )
+    chat_view: ChatView = Field(
+        default=_CHAT_VIEW,
+        description=(
+            "How Chat draws a chat: its own lines or the terminal's rows (view), how "
+            "much of the tool calls shows (density), whether reasoning shows "
+            "(thinking), how much of a tool's output shows (output_lines), when "
+            "each line was written (times), and whether each group of tool calls "
+            "starts open or folded (tool_groups)."
+        ),
+        json_schema_extra=SETTING,
+    )
+    autofix: bool = Field(
+        default=True,
+        description=(
+            "Auto-fix the pull requests your agents open or push: when one's checks "
+            "fail, its run tells the agent to fix them and push. Chat switches it for "
+            "each pull request."
+        ),
+        json_schema_extra=SETTING,
+    )
+    automerge: bool = Field(
+        default=False,
+        description=(
+            "Turn on GitHub's auto-merge for each pull request your agents open or "
+            "push: GitHub merges it once its required checks pass and its reviews "
+            "allow, a draft once it is marked ready. Chat switches it for each pull "
+            "request."
+        ),
+        json_schema_extra=SETTING,
+    )
+    hide_closed_pulls: bool = Field(
+        default=True,
+        description=(
+            "The Pull requests page and the command bar's PRs tab leave out the pull "
+            "requests that are merged or closed."
+        ),
+    )
+    stars: Annotated[list[_Id], Field(max_length=2_000)] = Field(
+        default=list[_Id](),
+        description="The inquiries you starred, by id: your bookmarks, never a label.",
+    )
+    views: Annotated[list[SavedView], Field(max_length=200)] = Field(
+        default=list[SavedView](),
+        description="Your saved views: a name and the list query each one shows.",
+    )
+    console_views: Annotated[list[ConsoleView], Field(max_length=200)] = Field(
+        default=list[ConsoleView](),
+        description="Your Console views: a name, what each picks, its level and its range.",
+    )
+    aliases: Annotated[list[_Name], Field(max_length=50)] = Field(
+        default=list[_Name](),
+        description="The names besides your email that mean you in owner and subscriber filters.",
+    )
+    people: Annotated[dict[_Name, Person], Field(max_length=1_000)] = Field(
+        default=dict[_Name, Person](),
+        description="Names for people and agents you added by hand, by owner or subscriber value.",
+    )
+    read: ReadState = Field(
+        default_factory=lambda: ReadState(boundary=None, marks=[]),
+        description="The notifications you have read: a boundary time, and changes marked one by one after it.",
+    )
+    collapsed: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description="The sections you folded, by key.",
+    )
+    dismissed: Annotated[list[_Id], Field(max_length=200)] = Field(
+        default=list[_Id](),
+        description="The notes you dismissed, by key: each stays hidden wherever it would show.",
+    )
+    unread_tabs: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description=(
+            "The tabs whose session finished since you looked, or that you marked "
+            "unread, by canvas id: each shows a dot until you open it."
+        ),
+    )
+    lens: _Id | None = Field(
+        default=None,
+        description="The detail lens you used last; none until you pick one.",
+    )
+    drafts: Annotated[dict[_Id, FieldDraft], Field(max_length=200)] = Field(
+        default=dict[_Id, FieldDraft](),
+        description="Unsent edits of a field, by inquiry id and field name, until you send or discard them.",
+    )
+    create_draft: CreateDraft | None = Field(
+        default=None,
+        description="The inquiry you started on the create form and have not created.",
+    )
+    workspaces: WorkspacesPreference = Field(
+        default_factory=WorkspacesPreference,
+        description="Your tab bar: its groups, their tabs' order, and the last opened.",
+    )
+    settings_artifact_id: _Id | None = Field(
+        default=None,
+        description="Your personal settings Artifact id, pinned when first opened.",
+    )
+
     chat_provider: ChatProvider = Field(
         default="assistant",
         description=(
@@ -348,6 +761,67 @@ class Preferences(_Strict):
     )
 
 
+_SCHEMA_NOISE: Final = frozenset({"title", "x-setting"})
+"""Schema keys a model reading a tool's arguments does not need."""
+
+
+def assistant_settings_schema() -> dict[str, JsonValue]:
+    """Return the JSON schema of a change an agent's tool may make to its owner's settings.
+
+    One property per ``AGENT_KEYS`` key, each with the type, bounds, default and
+    description the server validates against, references inlined (a tool schema
+    stands alone), and each nullable: ``null`` puts the key back to its default.
+
+    Returns:
+      schema: An ``object`` schema that rejects any other key.
+
+    """
+    schema = from_plain(Preferences.model_json_schema(), dict[str, JsonValue])
+    defs = from_plain(schema["$defs"], dict[str, JsonValue])
+    properties = from_plain(schema["properties"], dict[str, dict[str, JsonValue]])
+    return {
+        "type": "object",
+        "properties": {
+            key: {
+                "anyOf": [
+                    inline_refs(
+                        {
+                            k: v
+                            for k, v in properties[key].items()
+                            if k != "description"
+                        },
+                        defs,
+                    ),
+                    {"type": "null"},
+                ],
+                "description": properties[key]["description"],
+            }
+            for key in Preferences.model_fields
+            if key in AGENT_KEYS
+        },
+        "additionalProperties": False,
+    }
+
+
+def assistant_view(stored: object) -> dict[str, JsonValue]:
+    """Return the settings a canvas's agent sees of a user's stored preferences.
+
+    Args:
+      stored: The ``users.preferences`` value, as ``stored_preferences`` reads it.
+
+    Returns:
+      view: Every ``ASSISTANT_KEYS`` key, its default filling one not set.
+
+    """
+    view = stored_preferences(stored).model_dump(
+        # Every field dumps alike in either mode today; "json" keeps a later
+        # non-JSON type (a datetime, a set) sendable.
+        mode="json",  # pragma: no mutate
+        include=set(ASSISTANT_KEYS),
+    )
+    return from_plain(view, dict[str, JsonValue])
+
+
 def stored_preferences(stored: object) -> Preferences:
     """Read a user's stored preferences, the defaults filling every key not set.
 
@@ -361,10 +835,61 @@ def stored_preferences(stored: object) -> Preferences:
     """
     known = {
         key: value
-        for key, value in from_plain(stored, dict[str, object], default={}).items()
+        for key, value in from_plain(
+            stored,
+            dict[str, object],
+            default=dict[str, object](),
+        ).items()
         if key in Preferences.model_fields
     }
     return Preferences.model_validate(known)
+
+
+def checked_change(change: Mapping[str, object]) -> Preferences:
+    """Return the preferences ``change`` sets, checked; its ``None`` keys are left out.
+
+    Args:
+      change: The keys to change: a value sets the key, ``None`` puts it back to
+        its default.
+
+    Returns:
+      checked: The defaults with every key ``change`` sets.
+
+    Raises:
+      ValueError: Naming a key no preference has or a value its key does not take,
+        every one named, each value's place in its key given.
+
+    """
+    unknown = sorted(set(change) - set(Preferences.model_fields))
+    if unknown:
+        raise ValueError(f"No such preference: {', '.join(unknown)}")
+    try:
+        return Preferences.model_validate(
+            {key: value for key, value in change.items() if value is not None},
+        )
+    except ValidationError as error:
+        problems = (
+            f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
+            for problem in error.errors()
+        )
+        raise ValueError("; ".join(problems)) from error
+
+
+async def read_preferences(conn: Conn, *, user_id: uuid.UUID) -> object:
+    """Read a user's ``users.preferences`` as stored, for ``stored_preferences``.
+
+    A user who is gone reads as None, as one with nothing set does; a caller that must
+    tell them apart reads the row itself.
+
+    Args:
+      conn: The connection to read on.
+      user_id: Whose preferences.
+
+    Returns:
+      stored: The column's value: an object of the keys set, or None.
+
+    """
+    return await conn.fetchval("SELECT preferences FROM users WHERE id = $1", user_id)
 
 
 async def write_preferences(
@@ -392,28 +917,54 @@ async def write_preferences(
         nothing is written.
 
     """
-    unknown = sorted(set(change) - set(Preferences.model_fields))
-    if unknown:
-        raise ValueError(f"No such preference: {', '.join(unknown)}")
     chosen = {key: value for key, value in change.items() if value is not None}
-    try:
-        checked = Preferences.model_validate(chosen)
-    except ValidationError as error:
-        problems = (
-            f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
-            for problem in error.errors()
-        )
-        raise ValueError("; ".join(problems)) from error
+    checked = checked_change(change)
     stored = await conn.fetchrow(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
-        checked.model_dump(mode="json", include=set(chosen)),
+        # Every field dumps alike in either mode today; "json" keeps a later
+        # non-JSON type (a datetime, a set) storable as jsonb.
+        checked.model_dump(mode="json", include=set(chosen)),  # pragma: no mutate
         # A retired key goes with the next write, so a stored value never lingers.
         [
             *sorted(key for key, value in change.items() if value is None),
             "chat_style",
+            "chat_tool_calls",
+            "chat_provider",
+            "terminal_placement",
         ],
         user_id,
     )
     return None if stored is None else stored_preferences(stored["preferences"])
+
+
+def inline_refs(node: JsonValue, defs: Mapping[str, JsonValue]) -> JsonValue:
+    """Return ``node`` with every ``#/$defs/X`` reference replaced by ``X`` itself.
+
+    A tool's schema stands alone, so a reference into ``$defs`` cannot stay. A
+    definition referring to another is inlined too, and titles and the
+    ``x-setting`` mark go: a model reading the schema does not need them.
+
+    Args:
+      node: A JSON schema, or part of one.
+      defs: The schema's ``$defs``, by name.
+
+    Returns:
+      inlined: ``node`` with no ``$ref`` left.
+
+    """
+    if isinstance(node, list):
+        return [inline_refs(each, defs) for each in node]
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        return inline_refs(defs[ref.removeprefix("#/$defs/")], defs)
+    return {
+        key: inline_refs(value, defs)
+        for key, value in node.items()
+        if key not in _SCHEMA_NOISE
+    }
+
+

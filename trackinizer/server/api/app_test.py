@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
@@ -11,15 +11,18 @@ import logging
 import re
 import time
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from treekle import from_plain, json_loads
 
 import asyncpg
 import pytest
 
+from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import FakeEngine, make_store
-from trackinizer.server.api import app
+from trackinizer.server.access_policy import AccessDeniedError
+from trackinizer.server.api import app, daemon_routes, meta_routes, query
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,
     _RequestLogSpan,
@@ -32,25 +35,31 @@ from trackinizer.server.api.app import (
     unique_violation_handler,
     validation_handler,
 )
-from trackinizer.server.config import Config, ConfigError
-from trackinizer.server.embedders import qwen3_4b, registry
-from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.api.session_relay_routes import ProcessKeySweep
+from trackinizer.server.config import Config, ConfigError, ServiceKeys
+from trackinizer.server.route_iter import iter_routes
 from trackinizer.server.secrets import FileSecrets, SecretRef
+from trackinizer.server.session_relay import SessionRelay
+from trackinizer.server.terminals import TerminalRelay
+from trackinizer.server.tool_relay import ToolRelay
+from trackinizer.server.visuals.catalog import Canvas, default_canvas
 from trackinizer.types.errors import (
+    ChatDeletedError,
     ConflictError,
     NotFoundError,
     ValidationError,
 )
-from trackinizer.wire.wire_machine_host import JOIN_PATH
+from trackinizer.wire.wire_daemon import JOIN_PATH
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     from starlette.types import Receive, Scope, Send
 
     from trackinizer.server.store.core import Store
-    from trackinizer.types.embedder import QueryEmbedder
+    from trackinizer.server.store.search import VectorSearch
 
 
 class TestCLIHelpers:
@@ -71,16 +80,16 @@ class TestCLIHelpers:
         unique_response = asyncio.run(
             unique_violation_handler(req, asyncpg.UniqueViolationError("boom")),
         )
-        for response, prefix in [
-            (fk_response, "foreign key"),
-            (check_response, "check constraint"),
-            (unique_response, "unique constraint"),
+        for response, detail in [
+            (fk_response, "foreign key violation"),
+            (check_response, "check constraint violated"),
+            (unique_response, "unique constraint violated"),
         ]:
             assert response.status_code == 409
             # ``response.body`` is ``bytes | memoryview``; coerce to
             # ``bytes`` for json.loads's narrower type signature.
-            body = json_loads(bytes(response.body), dict[str, object])
-            assert prefix in from_plain(body["detail"], str)
+            body = json_loads(bytes(response.body), dict[str, str])
+            assert body == {"detail": detail}
 
     def test_handlers_do_not_leak_constraint_detail(self) -> None:
         # ``asyncpg`` ``detail`` carries internal column / constraint names
@@ -156,13 +165,149 @@ class TestCLIHelpers:
         assert body == {"detail": "bad input", "code": "validation"}
 
 
+_FAILURES: Final[tuple[tuple[Exception, int, str], ...]] = (
+    (ConflictError("clash"), 409, "clash"),
+    (AccessDeniedError("denied"), 403, "denied"),
+    (NotFoundError("gone"), 404, "gone"),
+    (ValidationError("invalid"), 422, "invalid"),
+    (ChatDeletedError("deleted"), 410, "deleted"),
+    (
+        asyncpg.CheckViolationError("private-constraint"),
+        409,
+        "check constraint violated",
+    ),
+    (
+        asyncpg.ForeignKeyViolationError("private-constraint"),
+        409,
+        "foreign key violation",
+    ),
+    (
+        asyncpg.UniqueViolationError("private-constraint"),
+        409,
+        "unique constraint violated",
+    ),
+    (
+        asyncpg.CharacterNotInRepertoireError("private-value"),
+        422,
+        "unstorable_value",
+    ),
+    (
+        RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("body",),
+                    "msg": "invalid",
+                    "input": float("inf"),
+                },
+            ],
+        ),
+        422,
+        "invalid",
+    ),
+)
+"""What each failure route raises, and the status and detail its handler answers."""
+
+
+@pytest.fixture(scope="module")
+def failing() -> tuple[FastAPI, TestClient]:
+    """Build one app whose ``/test-failure/<n>`` raises the n-th failure.
+
+    The server's handling without its routes: a fresh app makes each route's
+    handler on the first request that passes it.
+    """
+    built = app.bare_app()
+    for index, (error, _status, _detail) in enumerate(_FAILURES):
+        built.add_api_route(f"/test-failure/{index}", _raising(error))
+    return built, TestClient(built, raise_server_exceptions=False)
+
+
+class _Included(Protocol):
+    """A router ``include_router`` mounted, as FastAPI keeps it whole."""
+
+    original_router: APIRouter
+
+
+def test_the_app_is_the_bare_app_with_every_router_in_order() -> None:
+    built = app._build_app()
+
+    assert built.title == "Trackinizer"
+    expected = [*app.ROUTERS]
+    assert [
+        cast("_Included", route).original_router for route in built.routes
+    ] == expected
+
+
+def test_a_bare_app_has_the_servers_handling_and_state_but_no_route() -> None:
+    built = app.bare_app()
+
+    assert (built.title, built.docs_url, built.redoc_url, built.openapi_url) == (
+        "Trackinizer",
+        None,
+        None,
+        None,
+    )
+    assert built.router.lifespan_context is lifespan
+    assert built.routes == []
+    # Starlette's ``State`` answers any attribute as ``Any``.
+    deployment = cast(object, built.state.deployment)
+    canvas = cast(object, built.state.visual_catalog)
+    assert isinstance(deployment, Deployment)
+    assert deployment.manifests == {}
+    assert isinstance(canvas, Canvas)
+    assert canvas.catalog() == default_canvas().catalog()
+
+
+def _raising(error: Exception) -> Callable[[], Awaitable[None]]:
+    """Return an endpoint raising ``error``."""
+
+    async def failure() -> None:
+        raise error
+
+    return failure
+
+
+@pytest.mark.parametrize(
+    ("index", "status", "detail"),
+    [(index, status, detail) for index, (_, status, detail) in enumerate(_FAILURES)],
+    ids=[
+        f"error{index}-{status}-{detail}"
+        for index, (_, status, detail) in enumerate(_FAILURES)
+    ],
+)
+def test_fresh_apps_serve_all_exception_handlers(
+    failing: tuple[FastAPI, TestClient],
+    index: int,
+    status: int,
+    detail: str,
+) -> None:
+    built, client = failing
+
+    response = client.get(f"/test-failure/{index}")
+
+    assert response.status_code == status
+    assert built.exception_handlers == app.app.exception_handlers
+    assert detail in response.text
+    assert "private-constraint" not in response.text
+    assert "private-value" not in response.text
+    assert "Infinity" not in response.text
+
+
+@pytest.fixture
+def logging_client() -> TestClient:
+    """Keep production middleware and the store-free routes logging exercises."""
+    built = FastAPI(middleware=app.app.user_middleware)
+    built.include_router(meta_routes.router)
+    return TestClient(built)
+
+
 class TestRequestLogging:
     def test_request_completion_is_correlated_and_timed(
         self,
-        route_client: tuple[TestClient, Store, FakeEngine],
+        logging_client: TestClient,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        client, _store, _engine = route_client
+        client = logging_client
         request_id = uuid4()
 
         with caplog.at_level(logging.INFO):
@@ -194,10 +339,10 @@ class TestRequestLogging:
 
     def test_invalid_request_id_is_replaced_and_rejection_is_classified(
         self,
-        route_client: tuple[TestClient, Store, FakeEngine],
+        logging_client: TestClient,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        client, _store, _engine = route_client
+        client = logging_client
 
         with caplog.at_level(logging.INFO):
             response = client.get(
@@ -324,8 +469,8 @@ class TestRequestLogging:
 class TestAuthDisabledWarning:
     """The lifespan loudly warns when auth is disabled (synthetic-admin mode)."""
 
-    # The warning fires inside ``lifespan``; the engine, store, and embedder are
-    # replaced so the body runs hermetically (no real DB).
+    # The warning fires inside ``lifespan``; the engine and store are replaced so
+    # the body runs hermetically (no real DB).
     @classmethod
     def _run_lifespan(
         cls,
@@ -333,17 +478,12 @@ class TestAuthDisabledWarning:
         *,
         auth_disabled: bool,
     ) -> None:
-        """Drive the real ``lifespan`` once with engine/store/embedder stubbed."""
+        """Drive the real ``lifespan`` once with engine and store stubbed."""
         store, engine = make_store()
         monkeypatch.setattr(
             app,
             "build_engine",
             Mock(return_value=engine),
-        )
-        monkeypatch.setattr(
-            app,
-            "build_embedder",
-            Mock(return_value=object()),
         )
         monkeypatch.setattr(
             app,
@@ -399,11 +539,6 @@ class TestAuthDisabledWarning:
         )
         monkeypatch.setattr(
             app,
-            "build_embedder",
-            Mock(return_value=object()),
-        )
-        monkeypatch.setattr(
-            app,
             "Store",
             Mock(return_value=store),
         )
@@ -420,7 +555,7 @@ class TestAuthDisabledWarning:
             isinstance(c.args[0], str)
             and "INSERT INTO users" in c.args[0]
             and "no-auth@localhost" in c.args
-            for c in engine.conn.execute.call_args_list
+            for c in engine.conn.fetchval.call_args_list
         )
 
     def test_seeds_no_auth_user_when_disabled(
@@ -436,100 +571,6 @@ class TestAuthDisabledWarning:
         assert not self._seeded_no_auth_user(monkeypatch, auth_disabled=False)
 
 
-class TestSessionEmbedderResolution:
-    """``_resolve_session_embedder`` decides degrade-vs-warm without downloading."""
-
-    def test_startup_passes_dimension_to_gate_and_builder(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        check = Mock(return_value=True)
-        build = Mock(return_value=StubEmbedder(dim=256))
-
-        def is_weightless(name: str) -> bool:
-            del name
-            return True
-
-        monkeypatch.setattr(registry, "weights_present", check)
-        monkeypatch.setattr(registry, "build_session_embedder", build)
-        monkeypatch.setattr(registry, "is_weightless", is_weightless)
-        app._resolve_session_embedder(
-            FastAPI(),
-            Config(session_embedder="qwen3-embedding-4b", session_embedder_dim=256),
-        )
-        check.assert_called_once_with("qwen3-embedding-4b", dim=256)
-        build.assert_called_once_with("qwen3-embedding-4b", dim=256)
-
-    def test_unset_knob_leaves_embedder_none(self) -> None:
-        fastapi_app = FastAPI()
-        task = app._resolve_session_embedder(
-            fastapi_app,
-            Config(session_embedder=""),
-        )
-        assert task is None
-        assert cast(object, fastapi_app.state.session_embedder) is None
-
-    def test_stub_is_ready_without_a_warm_task(self) -> None:
-        """A weightless stub is set immediately; no warm task, no download."""
-        fastapi_app = FastAPI()
-        task = app._resolve_session_embedder(
-            fastapi_app,
-            Config(session_embedder="stub-1024"),
-        )
-        assert task is None  # Nothing to warm.
-        embedder = cast("QueryEmbedder | None", fastapi_app.state.session_embedder)
-        assert embedder is not None
-        assert embedder.name == "stub-1024"
-
-    def test_qwen_without_weights_degrades_and_logs_prep(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Weights absent -> embedder None (degrade), prep command logged, NO download."""
-        monkeypatch.setattr(qwen3_4b, "weights_present", lambda: False)
-        fastapi_app = FastAPI()
-        with caplog.at_level(logging.ERROR):
-            task = app._resolve_session_embedder(
-                fastapi_app,
-                Config(session_embedder="qwen3-embedding-4b@1024"),
-            )
-        assert task is None
-        assert cast(object, fastapi_app.state.session_embedder) is None
-        assert "prep_models" in caplog.text
-
-    def test_qwen_with_weights_sets_embedder_and_schedules_warm(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Weights present -> embedder set + a warm task scheduled (no query embed here)."""
-        monkeypatch.setattr(qwen3_4b, "weights_present", lambda: True)
-        warmed: list[str] = []
-
-        async def _fake_warm(embedder: QueryEmbedder) -> None:
-            await _record_warm(embedder, warmed)
-
-        async def _drive() -> tuple[object, object]:
-            fastapi_app = FastAPI()
-            # Replace the real warm coroutine so the test never loads a model.
-            monkeypatch.setattr(
-                app,
-                "_warm_session_embedder",
-                _fake_warm,
-            )
-            task = app._resolve_session_embedder(
-                fastapi_app,
-                Config(session_embedder="qwen3-embedding-4b@1024"),
-            )
-            assert task is not None
-            await task
-            return cast(object, fastapi_app.state.session_embedder), task
-
-        embedder, _task = asyncio.run(_drive())
-        assert embedder is not None
-        assert warmed == ["warmed"]  # The warm task ran, without downloading.
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("startup_failure", [False, True])
 async def test_lifespan_joins_tasks_after_startup_or_background_failure(
@@ -538,12 +579,11 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
 ) -> None:
     store, engine = make_store()
     monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
     monkeypatch.setattr(app, "Store", Mock(return_value=store))
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     monkeypatch.setattr(
         app,
-        "push_changes_to_live_subscribers",
+        "authority_sweep_loop",
         AsyncMock(side_effect=RuntimeError("background failed")),
     )
     services = (
@@ -566,11 +606,61 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
     assert engine.exited
 
 
-def test_a_validation_error_outside_variables_keeps_its_input(
+@pytest.mark.asyncio
+async def test_lifespan_sweeps_the_terminals_tool_connections_and_live_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+    sweeping = AsyncMock()
+    monkeypatch.setattr(app, "sweep_loop", sweeping)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config(tool_sweep_sec=7.0)
+
+    async with lifespan(fastapi_app):
+        await asyncio.sleep(0)
+
+    relays: list[object] = [call.args[0] for call in sweeping.call_args_list]
+    assert [type(relay) for relay in relays] == [
+        TerminalRelay,
+        ToolRelay,
+        ProcessKeySweep,
+    ]
+    # The live sessions' relay is swept, then the process keys it holds none of.
+    swept = relays[2]
+    assert isinstance(swept, ProcessKeySweep)
+    assert (type(swept.relay), swept.store) == (SessionRelay, store)
+    # Tool connections are swept as the configuration says; the rest as terminals are.
+    assert [call.kwargs for call in sweeping.call_args_list] == [
+        {},
+        {"interval_sec": 7.0},
+        {},
+    ]
+
+
+@pytest.fixture
+def validation_client(
     route_client: tuple[TestClient, Store, FakeEngine],
+) -> TestClient:
+    """Keep the real handlers and the two routers whose bodies are validated."""
+    _, store, engine = route_client
+    built = FastAPI(middleware=app.app.user_middleware)
+    built.exception_handlers.update(app.app.exception_handlers)
+    built.state.store = store
+    built.state.engine = engine
+    built.dependency_overrides.update(app.app.dependency_overrides)
+    built.include_router(query.router)
+    built.include_router(daemon_routes.router)
+    return TestClient(built)
+
+
+def test_a_validation_error_outside_variables_keeps_its_input(
+    validation_client: TestClient,
 ) -> None:
     """Only the variables family drops the rejected input from its 422."""
-    client, _, _ = route_client
+    client = validation_client
 
     response = client.post("/api/inquiries/lookup", json=["not-a-uuid"])
 
@@ -580,10 +670,10 @@ def test_a_validation_error_outside_variables_keeps_its_input(
 
 
 def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
-    route_client: tuple[TestClient, Store, FakeEngine],
+    validation_client: TestClient,
 ) -> None:
     """``Infinity`` parses, but cannot be echoed back, so its 422 drops the input."""
-    client, _, _ = route_client
+    client = validation_client
 
     response = client.post(
         "/api/inquiries/lookup",
@@ -602,7 +692,7 @@ def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
     [
         {"instance": None},
         {"instance": "not-a-uuid"},
-        {"host_version": 3},
+        {"daemon_version": 3},
         {"facts": {"Bad Key": "x"}},
         {"token": "SECRETMARKER" * 12},
         {"unexpected": "x"},
@@ -610,17 +700,17 @@ def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
     ids=["missing", "uuid", "type", "facts", "long", "extra"],
 )
 def test_join_422_does_not_echo_the_token(
-    route_client: tuple[TestClient, Store, FakeEngine],
+    validation_client: TestClient,
     overrides: dict[str, object],
 ) -> None:
     """A rejected join body names each error's type, location and message only."""
-    client, _, _ = route_client
+    client = validation_client
     token = "enr_" + "0" * 32 + "_" + "SECRETMARKER" * 3 + "x" * 7
     body: dict[str, object] = {
         "name": "dev-1",
         "token": token,
         "instance": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        "host_version": "0.1",
+        "daemon_version": "0.1",
         "facts": {},
         **overrides,
     }
@@ -702,10 +792,143 @@ def test_lifespan_refuses_secret_schemes_that_are_not_a_mapping(
         )
 
 
-async def _record_warm(embedder: object, sink: list[str]) -> None:
-    """Stand-in warm coroutine: records that it ran, embeds nothing."""
-    del embedder
-    sink.append("warmed")
+@pytest.mark.asyncio
+async def test_a_non_http_scope_passes_through_unlogged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seen: list[str] = []
+
+    async def endpoint(scope: Scope, receive: Receive, send: Send) -> None:
+        del receive, send
+        seen.append(from_plain(scope.get("type"), str))
+
+    with caplog.at_level(logging.INFO):
+        await RequestLoggingMiddleware(endpoint)(
+            {"type": "websocket"},
+            AsyncMock(),
+            AsyncMock(),
+        )
+
+    assert seen == ["websocket"]
+    assert not [r for r in caplog.records if getattr(r, "event", "")]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_request_is_logged_as_cancelled_and_reraised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def endpoint(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive, send
+        raise asyncio.CancelledError
+
+    with caplog.at_level(logging.INFO), pytest.raises(asyncio.CancelledError):
+        await RequestLoggingMiddleware(endpoint)(
+            {"type": "http", "method": "GET", "path": "/api/x", "headers": []},
+            AsyncMock(),
+            AsyncMock(),
+        )
+
+    (record,) = (
+        r
+        for r in caplog.records
+        if getattr(r, "event", "") == "trackinizer_request_completed"
+    )
+    fields = from_plain(record.__dict__, dict[str, object])
+    assert from_plain(fields.get("outcome"), str) == "cancelled"
+    assert from_plain(fields.get("error_type"), str) == "CancelledError"
+
+
+def test_lifespan_reads_the_environment_when_the_app_holds_no_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fastapi_app = FastAPI()
+    config = Config(secrets="none")
+    from_env = Mock(return_value=config)
+    monkeypatch.setattr(Config, "from_env", from_env)
+
+    assert _lifespan_state(monkeypatch, fastapi_app, "config") is config
+    from_env.assert_called_once_with()
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_lifespan_keeps_the_service_keys_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    named: bool,
+) -> None:
+    told: list[tuple[object, object]] = []
+
+    async def ensure(conn: object, *, keys: object, policy: object) -> None:
+        del conn
+        told.append((keys, policy))
+
+    monkeypatch.setattr(app, "ensure_service_keys", ensure)
+    keys = ServiceKeys(accounts=(("chat", "writer"),), directory=tmp_path)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config(
+        secrets="none",
+        service_keys=keys if named else None,
+    )
+
+    policy = _lifespan_state(monkeypatch, fastapi_app, "access_policy")
+
+    assert told == ([(keys, policy)] if named else [])
+
+
+@pytest.mark.parametrize("searched", [True, False])
+def test_lifespan_holds_the_deployments_vector_search(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    searched: bool,
+) -> None:
+    deployment = Deployment.Config().make()
+    if searched:
+        deployment.vector_search = cast("VectorSearch", object())
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config(secrets="none")
+    fastapi_app.state.deployment = deployment
+
+    held = _lifespan_state(monkeypatch, fastapi_app, "vector_search")
+
+    assert held is deployment.vector_search
+    assert (held is None) is not searched
+
+
+def test_the_old_runners_chat_and_run_routes_are_registered_nowhere() -> None:
+    """A session's agent process and its relay replaced these; none answers."""
+    removed = {
+        ("POST", "/api/sessions/{session_id}/runs/{run_id}/output"),
+        ("GET", "/api/sessions/{session_id}/runs/{run_id}/output"),
+        ("GET", "/api/chat-models"),
+        ("POST", "/api/chats/uploads"),
+        ("GET", "/api/chats/uploads/wait"),
+        ("POST", "/api/chats/uploads/{request_id}"),
+        ("POST", "/api/chats/files/link"),
+        ("POST", "/api/chats/files/remove"),
+    }
+    registered = {
+        (method, path) for path, methods in iter_routes(app.app) for method in methods
+    }
+
+    assert registered & removed == set()
+
+
+def _lifespan_state(
+    monkeypatch: pytest.MonkeyPatch,
+    fastapi_app: FastAPI,
+    name: str,
+) -> object:
+    """Drive the real ``lifespan`` with a stubbed engine; return ``state.<name>``."""
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+
+    async def _drive() -> object:
+        async with lifespan(fastapi_app):
+            return cast(object, getattr(fastapi_app.state, name))
+
+    return asyncio.run(_drive())
 
 
 def _lifespan_secrets(
@@ -715,19 +938,9 @@ def _lifespan_secrets(
     fastapi_app: FastAPI | None = None,
 ) -> object:
     """Drive the real ``lifespan`` with a stubbed engine; return ``state.secrets``."""
-    store, engine = make_store()
-    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
-    monkeypatch.setattr(app, "Store", Mock(return_value=store))
-    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     fastapi_app = fastapi_app or FastAPI()
     fastapi_app.state.config = Config(secrets=spec)
-
-    async def _drive() -> object:
-        async with lifespan(fastapi_app):
-            return cast(object, fastapi_app.state.secrets)
-
-    return asyncio.run(_drive())
+    return _lifespan_state(monkeypatch, fastapi_app, "secrets")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 # ruff: noqa: EXE003, D300, D205 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Measure the reads the web app makes, with GET requests only, against one server.
 
 Takes the web app's baseline measurements: the boot calls one after another and
@@ -307,7 +307,11 @@ def moved(
     """
     before = {
         from_plain(old.get("name"), str): old
-        for old in from_plain(baseline.get("rows"), list[dict[str, object]], default=[])
+        for old in from_plain(
+            baseline.get("rows"),
+            list[dict[str, object]],
+            default=list[dict[str, object]](),
+        )
     }
     changes: list[tuple[str, str, float, float]] = []
     for row in rows:
@@ -525,7 +529,7 @@ def _hub_id(
         for parent in from_plain(
             row.get("narrows"),
             list[dict[str, object]],
-            default=[],
+            default=list[dict[str, object]](),
         )
     )
     return parents.most_common(1)[0][0] if parents else ""

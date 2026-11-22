@@ -4,6 +4,7 @@ import type { FeedEvent } from "../api/sessions";
 import { ToastProvider } from "../ui/toast";
 import { ConsoleLine, ToChips } from ".";
 import { appendEvents } from "./feed";
+import { must } from "../must";
 
 afterEach(() => {
   cleanup();
@@ -13,7 +14,12 @@ const LONG = "lead_nightly-regression-sweep-across-all-shards";
 const ROOM = "nightly-regression-sweep-across-all-shards";
 
 /** One record of agent `actor` in `rooms`, as the feed sends it. */
-function event(actor: string, rooms: string[], kind: string, message: { [field: string]: unknown }): FeedEvent {
+function event(
+  actor: string,
+  rooms: string[],
+  kind: string,
+  message: { [field: string]: unknown },
+): FeedEvent {
   return {
     session_id: "00000000-0000-4000-8000-0000000000c1",
     actor,
@@ -24,20 +30,20 @@ function event(actor: string, rooms: string[], kind: string, message: { [field: 
     kind,
     created: "2026-10-01T10:00:01Z",
     model: "m",
-    message: { "py/object": `trackinizer.lib.agent.types.sessions.${kind}`, ...message },
+    message: { "py/object": kind, ...message },
     text: "",
   };
 }
 
 /** `event` drawn as one console line, its agent's click told to `onMention`; a code block's or a path's Copy says how it went in a toast. */
-function line(
-  one: FeedEvent,
-  onMention: ((event: FeedEvent) => void) | null = null,
-  onContinue: ((sessionId: string) => void) | null = null,
-) {
+function line(one: FeedEvent, onMention: ((event: FeedEvent) => void) | null = null) {
   return render(
     <ToastProvider>
-      <ConsoleLine held={appendEvents([], [one])[0]!} kinds={["Issue"]} onMention={onMention} onContinue={onContinue} />
+      <ConsoleLine
+        held={must(appendEvents([], [one])[0])}
+        kinds={["Issue"]}
+        onMention={onMention}
+      />
     </ToastProvider>,
   );
 }
@@ -50,8 +56,13 @@ test("a line's agent and rooms are cut to an ellipsis, each whole on hover and t
     expect(shown.textContent).toBe(name);
   }
   // The agent under its time; its rooms and what the line is on the line below.
-  const [first, second] = [...document.querySelectorAll(".turn-h")].map((row) => row.textContent!);
-  expect([first!.endsWith(`:01${LONG}`), second]).toEqual([true, `[${ROOM}, ops]Assistant`]);
+  const [first, second] = [...document.querySelectorAll(".turn-h")].map((row) =>
+    must(row.textContent),
+  );
+  expect([must(first).endsWith(`:01${LONG}`), second]).toEqual([
+    true,
+    `[${ROOM}, ops]Assistant`,
+  ]);
 });
 
 test("a line's agent is a button that asks for a message to it, named for it", () => {
@@ -59,37 +70,25 @@ test("a line's agent is a button that asks for a message to it, named for it", (
   const one = event(LONG, [ROOM], "AssistantMessage", { content: "On it." });
   line(one, (event) => asked.push(event));
   const agent = screen.getByLabelText(`Message ${LONG}`);
-  expect([agent.tagName, agent.getAttribute("type"), agent.title, agent.textContent]).toEqual(["BUTTON", "button", LONG, LONG]);
+  expect([
+    agent.tagName,
+    agent.getAttribute("type"),
+    agent.title,
+    agent.textContent,
+  ]).toEqual(["BUTTON", "button", LONG, LONG]);
   agent.click();
   expect(asked.map(({ actor }) => actor)).toEqual([LONG]);
 });
 
-test("another station's chat has no button that addresses a message to it, and a chat's name is plain text", () => {
+test("a science chat has no button that addresses a message to it, and its name is plain text", () => {
   const asked: FeedEvent[] = [];
-  line(event("chat-3d0e9f1a1b2c", [], "AssistantMessage", { content: "An answer." }), (one) => asked.push(one));
+  line(
+    event("chat-3d0e9f1a1b2c", [], "AssistantMessage", { content: "An answer." }),
+    (one) => asked.push(one),
+  );
   expect(screen.queryByRole("button", { name: /^Message / })).toBeNull();
   expect(screen.getByTitle("chat-3d0e9f1a1b2c").tagName).toBe("B");
   expect(asked).toEqual([]);
-});
-
-test("a science chat's session offers Open station, which opens that session in Chat", () => {
-  const continued: string[] = [];
-  const one = event("chat-3d0e9f1a1b2c", [], "AssistantMessage", { content: "An answer." });
-  line(one, null, (sessionId) => continued.push(sessionId));
-  const button = screen.getByRole("button", { name: "Open station" });
-  button.click();
-  expect(continued).toEqual([one.session_id]);
-});
-
-test("no other session offers Open station, nor does a console outside a canvas", () => {
-  line(event("tiles-a", [], "AssistantMessage", { content: "On it." }), null, () => {});
-  line(event("chat-3d0e9f1a1b2", [], "AssistantMessage", { content: "A near miss." }), null, () => {});
-  line(event("scout", [], "AssistantMessage", { content: "The assistant itself." }), null, () => {});
-  expect(screen.queryByRole("button", { name: "Open station" })).toBeNull();
-  cleanup();
-  line(event("chat-3d0e9f1a1b2c", [], "AssistantMessage", { content: "An answer." }));
-  expect(screen.queryByRole("button", { name: "Open station" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Continue in Chat" })).toBeNull();
 });
 
 test("a To chip's name is cut to an ellipsis, whole on hover and in its button's name", () => {
@@ -97,18 +96,26 @@ test("a To chip's name is cut to an ellipsis, whole on hover and in its button's
   const chip = screen.getByTitle(`@${LONG}:${ROOM}`);
   expect(chip.className).toContain("console-name");
   expect(chip.textContent).toBe(`@${LONG}:${ROOM}`);
-  expect(screen.getByRole("button", { name: `Leave out @${LONG}:${ROOM}` }).tagName).toBe("BUTTON");
+  expect(
+    screen.getByRole("button", { name: `Leave out @${LONG}:${ROOM}` }).tagName,
+  ).toBe("BUTTON");
 });
 
 test("a long message shows its first lines until Show all, the agent's own too, as a person's does in a transcript", () => {
   line(event("tiles-a", [], "AssistantMessage", { content: "A line.\n".repeat(30) }));
-  expect(screen.getByRole("button", { name: "Show all" }).getAttribute("aria-expanded")).toBe("false");
+  expect(
+    screen.getByRole("button", { name: "Show all" }).getAttribute("aria-expanded"),
+  ).toBe("false");
   cleanup();
   line(event("tiles-a", [], "AssistantMessage", { content: "Short." }));
   expect(screen.queryByRole("button", { name: "Show all" })).toBeNull();
 });
 
 test("a message keeps its lines, as the agent's chat wrote them", () => {
-  line(event("Ada", [], "UserMessage", { content: "Ada: New in the thread:\n@helperbot: Launched.\n@helperbot: Done." }));
+  line(
+    event("Ada", [], "UserMessage", {
+      content: "Ada: New in the thread:\n@helperbot: Launched.\n@helperbot: Done.",
+    }),
+  );
   expect(document.querySelectorAll(".turn-body br")).toHaveLength(2);
 });

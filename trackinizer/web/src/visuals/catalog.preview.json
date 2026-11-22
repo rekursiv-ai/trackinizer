@@ -166,12 +166,12 @@
       "type": "trax.terminal",
       "version": 1,
       "title": "Terminal",
-      "description": "A shell on one of your own machines. It starts only when you click Start terminal.",
+      "description": "A shell on one of your own hosts. It starts only when you click Start terminal.",
       "requires": [],
       "default_size": "wide",
       "default_placement": null,
       "parameter_schema": {
-        "machine": {
+        "host": {
           "type": "string",
           "default": "",
           "minimum": null,
@@ -186,6 +186,17 @@
           "max_length": null
         }
       },
+      "record_kinds": null
+    },
+    {
+      "type": "trax.blocks",
+      "version": 1,
+      "title": "Blocks",
+      "description": "A distilled answer: blocks of knowledge and the flow between them, from the prompt's records.",
+      "requires": [],
+      "default_size": "wide",
+      "default_placement": null,
+      "parameter_schema": {},
       "record_kinds": null
     }
   ]

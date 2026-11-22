@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import uuid
 
+from fastapi import FastAPI
+from starlette.requests import Request
+
 import pytest
 
+from trackinizer.server.api import device_limits
 from trackinizer.server.api.device_limits import (
     CODES_PER_ADDRESS,
     CodeRequests,
     WrongEntries,
+    device_code_requests,
+    device_wrong_entries,
 )
 from trackinizer.wire.wire_device import DEVICE_CODE_TTL_SEC, WRONG_ENTRIES_LOCK
 
@@ -87,6 +93,42 @@ def test_addresses_that_went_quiet_are_dropped_only_once_over_a_thousand_are_tra
     asks.allow("203.0.113.9")
 
     assert len(asks.asks) == kept
+
+
+def test_an_app_keeps_one_set_of_counts_made_on_first_use() -> None:
+    app = FastAPI()
+    app.state.device_wrong_entries = "not counts"
+    request = Request({"type": "http", "app": app, "headers": []})
+
+    entries = device_wrong_entries(request)
+    asks = device_code_requests(request)
+
+    assert entries.reserve(_PERSON)
+    assert device_wrong_entries(request).failures == {
+        _PERSON: entries.failures[_PERSON],
+    }
+    assert device_code_requests(request) is asks
+
+
+@pytest.mark.parametrize("initial", [None, "invalid"])
+def test_limit_accessors_replace_invalid_state_and_reuse_valid_counts(
+    initial: object,
+) -> None:
+    app = FastAPI()
+    app.state.device_wrong_entries = initial
+    app.state.device_code_requests = initial
+    request = Request({"type": "http", "app": app})
+
+    entries = device_limits.device_wrong_entries(request)
+    asks = device_limits.device_code_requests(request)
+
+    assert entries.reserve(_PERSON)
+    assert asks.allow("address")
+    assert device_limits.device_wrong_entries(request) is entries
+    assert device_limits.device_code_requests(request) is asks
+    other = Request({"type": "http", "app": FastAPI()})
+    assert device_limits.device_wrong_entries(other).failures == {}
+    assert device_limits.device_code_requests(other).asks == {}
 
 
 if __name__ == "__main__":

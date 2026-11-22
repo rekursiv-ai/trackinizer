@@ -1,14 +1,30 @@
 import { useMutation } from "@tanstack/react-query";
-import { type ChangeEvent, type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { newUuid } from "../api/idempotency";
 import { type InputHistory, useInputHistory } from "./history";
 import "./composer.css";
 
 /** A draft as sent: its text, the idempotency key it went under, and where it went. */
-type Sent = { readonly text: string; readonly key: string; readonly target: string; readonly clear: () => void };
+type Sent = {
+  readonly text: string;
+  readonly key: string;
+  readonly target: string;
+  readonly clear: () => void;
+};
 
 /** An externally kept draft; clear belongs to this text's edit revision, not the latest render. */
-export type ComposerDraft = { readonly text: string; readonly edit: (text: string) => void; readonly clear: () => void };
+export type ComposerDraft = {
+  readonly text: string;
+  readonly edit: (text: string) => void;
+  readonly clear: () => void;
+};
 
 /** The textarea as the composer sets it up, for a `field` that draws it. */
 export type FieldProps = {
@@ -23,13 +39,13 @@ export type FieldProps = {
 
 /**
  * A box for messages to live agent sessions, shared by an AgentSession's
- * detail, the canvas's Chat and the console.
+ * detail and the console.
  *
  * A draft goes under one idempotency key, which Retry sends again, so a send
  * whose answer was lost reaches the agent once; an edited draft, or the draft
  * sent to another `target`, takes a fresh key. Enter sends, and Shift+Enter (or
- * Enter while an input method composes) types a line break. Alt+Enter never sends:
- * it is Chat's full screen key. The Send button shows only on a touch screen
+ * Enter while an input method composes) types a line break. Alt+Enter never sends.
+ * The Send button shows only on a touch screen
  * (composer.css): with a keyboard, Enter is the way to send. A failure keeps the
  * draft and says `failure(error)`; a success empties the box and shows what
  * `send` resolved with. A draft `check` finds wrong (it names the problem, or
@@ -81,21 +97,32 @@ export function Composer({
   const inFlight = useRef(false);
   const draft = kept?.text ?? localDraft;
   const [sent, setSent] = useState<Sent | null>(null);
-  const [receipt, setReceipt] = useState<{ readonly text: string; readonly target: string } | null>(null);
-  const [refused, setRefused] = useState<{ readonly problem: string; readonly draft: string; readonly target: string } | null>(null);
-  if (refused && (refused.draft !== draft || refused.target !== target)) setRefused(null);
+  const [receipt, setReceipt] = useState<{
+    readonly text: string;
+    readonly target: string;
+  } | null>(null);
+  const [refused, setRefused] = useState<{
+    readonly problem: string;
+    readonly draft: string;
+    readonly target: string;
+  } | null>(null);
+  if (refused && (refused.draft !== draft || refused.target !== target))
+    setRefused(null);
   const currentTarget = useRef(target);
   currentTarget.current = target;
   const sending = useMutation({
     mutationFn: (message: Sent) => send(message.text, message.key),
     onSuccess: (text, message) => {
-      // Sent, the draft leaves the box even if the box moved meanwhile, as Chat's does to a fork it
-      // started; a draft typed while this one was on its way stays.
+      // Sent, the draft leaves the box even if the box moved meanwhile; a draft typed while this
+      // one was on its way stays.
       message.clear();
       setSent((current) => (current?.key === message.key ? null : current));
-      if (message.target === currentTarget.current) setReceipt({ text, target: message.target });
+      if (message.target === currentTarget.current)
+        setReceipt({ text, target: message.target });
     },
-    onSettled: () => { inFlight.current = false; },
+    onSettled: () => {
+      inFlight.current = false;
+    },
   });
   /** Change the draft as typing does: a changed draft goes under a new key, and the receipt goes. */
   const edit = (text: string) => {
@@ -123,10 +150,15 @@ export function Composer({
         setRefused(problem ? { problem, draft, target } : null);
         if (problem) return;
         const revision = localRevision.current;
-        const clear = kept?.clear ?? (() => {
-          if (localRevision.current === revision) setDraft("");
-        });
-        const message = sent?.text === draft && sent.target === target ? sent : { text: draft, key: newUuid(), target, clear };
+        const clear =
+          kept?.clear ??
+          (() => {
+            if (localRevision.current === revision) setDraft("");
+          });
+        const message =
+          sent?.text === draft && sent.target === target
+            ? sent
+            : { text: draft, key: newUuid(), target, clear };
         recall.reset();
         setSent(message);
         setReceipt(null);
@@ -147,7 +179,13 @@ export function Composer({
           onChange: (event) => edit(event.currentTarget.value),
           onKeyDown: (event) => {
             if (event.defaultPrevented || recall.take(event)) return;
-            if (event.key !== "Enter" || event.shiftKey || event.altKey || event.nativeEvent.isComposing) return;
+            if (
+              event.key !== "Enter" ||
+              event.shiftKey ||
+              event.altKey ||
+              event.nativeEvent.isComposing
+            )
+              return;
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
           },
@@ -155,7 +193,11 @@ export function Composer({
         edit,
       )}
       <div className="composer-actions">
-        <button className="btn composer-send" type="submit" disabled={!enabled || !draft.trim() || sending.isPending || pending}>
+        <button
+          className="btn composer-send"
+          type="submit"
+          disabled={!enabled || !draft.trim() || sending.isPending || pending}
+        >
           Send message
         </button>
         {failed && retryable(sending.error) ? (

@@ -22,7 +22,7 @@ sign-in, and with no terminals: a terminal opens only for a signed-in person.
 
 ### Sign in
 
-1. Open the server's address. It takes you to the app, at `/app/`.
+1. Open the server's address. It takes you to the app, at `/trax/`.
 2. On the sign-in page, choose **Sign in with Google**. A server with no
    sign-in set up says "Sign-in is not configured on this server."
 3. After signing in you land on the page you first asked for.
@@ -30,7 +30,7 @@ sign-in, and with no terminals: a terminal opens only for a signed-in person.
 The top bar folds into a thin strip along the top of the window. Rest the
 pointer on the strip, or tap it, to open the bar; the pin (📌) keeps it open.
 From left to right it holds the logo (the graph), **Go** (every page), Search
-(⌘K, or Ctrl+K), New, your workstreams, **Machines** (where commands run),
+(⌘K, or Ctrl+K), New, your workspaces, **Hosts** (where commands run),
 **Workbench** (the canvas's visuals) and your avatar. The avatar's menu has
 **Your settings**, Appearance, the other accounts this browser has used,
 **Add another account** and **Sign out**.
@@ -39,9 +39,9 @@ From left to right it holds the logo (the graph), **Go** (every page), Search
 
 The app ships a web app manifest, so a browser that installs web apps can
 install it: use the browser's Install or Add to Home Screen command. The
-installed app opens in a window of its own at `/app/`. It also gets a few keys
+installed app opens in a window of its own at `/trax/`. It also gets a few keys
 that a browser keeps for itself in a plain tab (see
-[Terminals and machines](#terminals-and-machines)).
+[Terminals and hosts](#terminals-and-hosts)).
 
 ### On a phone
 
@@ -60,19 +60,23 @@ which shows the page you are on and visuals beside it. The assistant in Chat
 sees what is on your canvas and can change it: open a page, show a visual,
 light up the rows it is talking about.
 
-### Chats and workstreams
+### Chats and workspaces
 
 A **chat** is one conversation with the assistant together with its own
-canvas. (The code and the Console call it a station.) A **workstream** groups
-the chats of one effort, and is an Issue in the graph. Chats in no workstream
-are in **Scratch**.
+canvas. (The code and the Console call it a canvas.) A **workspace** groups
+the chats of one effort, and is an Issue in the graph. A chat or session with
+no other home lands in your default workspace, **Untitled workspace**.
 
-- The top bar lists your workstreams. Click one to open its pinned chat, else
-  its newest; a workstream with no chat gets a new one.
-- **+ Workstream** makes a workstream; type its name and press Enter.
-- Double-click a workstream to rename it. Right-click it for Info, Pin, Move
+- The top bar lists your workspaces. Click one to open its pinned chat, else
+  its newest; a workspace with no chat gets a new one.
+- Rename your default workspace and it is an ordinary one. The next chat or
+  session with no other home makes a new default: "Untitled workspace", or
+  "Untitled workspace 2" and so on when that title is taken.
+- A hidden workspace shows again when a chat or session lands in it.
+- **+ Workspace** makes a workspace; type its name and press Enter.
+- Double-click a workspace to rename it. Right-click it for Info, Pin, Move
   left, Move right, Rename and Hide. Drag one to reorder.
-- A workstream's Info lists its chats and the agent sessions in each.
+- A workspace's Info lists its chats and the agent sessions in each.
 
 ### The chat header
 
@@ -80,17 +84,18 @@ The header's buttons show while the pointer is over the header, and always on
 a touch screen.
 
 - **The chat's name.** Click it to rename the chat: type, then Enter (Esc
-  cancels). The menu under it lists this workstream's chats, pinned ones first,
+  cancels). The menu under it lists this workspace's chats, pinned ones first,
   then the five most recent, each with Pin and Hide. It also has **+ New chat**
   and **Search all chats…**, which finds hidden chats too. A chat you never
-  named shows as "Scratch chat".
-- **The workstream chip** (for example "Scratch ▾") moves the chat to another
-  workstream. Type a name and press Enter: the chat moves to the workstream of
-  that name, which is created if you have none. When the server suggests a
-  workstream, a chip with its name and a question mark moves the chat there in
-  one click.
+  named shows as its goal, else its first line, as the session switcher names
+  it; "Untitled chat" before either.
+- **The workspace chip** (for example "Untitled workspace ▾") moves the chat to
+  another workspace. Type a name and press Enter: the chat moves to the
+  workspace of that name, which is created if you have none. When the server
+  suggests a workspace, a chip with its name and a question mark moves the chat
+  there in one click.
 - **The terminal icon** flips Chat over to a terminal on your own computer
-  ([section 3](#3-a-terminal-on-your-own-machine)).
+  ([section 3](#3-a-terminal-on-your-own-host)).
 - **▷ or ◁** docks Chat on the other side.
 - **⋯** opens the chat's menu:
   - **Clear chat** starts a new chat on the same canvas.
@@ -112,8 +117,11 @@ server: everyone signed in, or the starter's organization, or only the starter
 and the people they share it with. A private chat is read only by its starter
 and the people they share it with. Do not type secrets into Chat.
 
-Anyone who reads a chat joins it by typing in it. **Fork from here**, on an
-answer in a public chat, starts a new chat holding the lines up to that answer.
+A chat's starter and the people they share it with post in it, and so does the
+starter's organization on a server that groups people by organization; their lines
+go to the starter's own agent. Anyone else who reads a public chat cannot post in
+it: what they type starts their own copy, a fork. **Fork from here**, on an answer
+in a public chat, starts a new chat holding the lines up to that answer.
 
 ### Talking to the assistant
 
@@ -121,12 +129,13 @@ Type into the box and press Enter; Shift+Enter starts a new line. Each message
 carries the page you are on and the few pages before it, so "this" means what
 you see. When the page is a record, a line above the messages says which:
 "On screen: Issue#7 …". The reply shows as it is written. Rows the reply names
-light up on the canvas; **Your settings** → Agent workspace → "Highlight rows
+light up on the canvas; **Your settings** → Agent canvas → "Highlight rows
 the assistant mentions" turns that off.
 
 Keys: Ctrl+\\ (⌘\\ on a Mac) hides and shows Chat. Alt+Enter makes Chat fill
 the window, and Esc returns. ⌘K (Ctrl+K) opens the palette, which has New chat
-and New terminal among its commands.
+and New terminal among its commands. Ctrl+` opens a new terminal as a tab,
+last in the focused panel's strip, or in place of its open New Tab.
 
 ### The canvas
 
@@ -158,7 +167,7 @@ Draw a red box to point at something on the canvas:
 
 Each box notes the page, and the records and visuals under it. The assistant
 hears of the boxes drawn since your last message along with your next one, so
-each box reaches it once. A `trax run claude` session filed in this chat hears
+each box reaches it once. An agent run's session filed in this chat hears
 of them too ([section 4](#red-boxes-reach-claude)). Boxes belong to the page
 they were drawn on. Click a box's outline to remove it; the eraser removes
 every box on the page.
@@ -168,74 +177,52 @@ every box on the page.
 Chat needs a partner, the server's shared assistant. When the server has none, or
 it is not running, Chat says so and the message box stays off.
 
-## 3. A terminal on your own machine
+## 3. A terminal on your own host
 
 Flip Chat over and it becomes a terminal: a shell on a computer of yours, in
-the browser. `trax machine connect`, running on that computer, makes it
-possible. The computer dials out to the server and listens on nothing.
+the browser. A daemon, running on that computer, makes it possible: the
+program that connects a computer to the server. The computer dials out to the
+server and listens on nothing.
 
 ### Connect a computer
 
-The top bar's **Machines** menu (the server icon) lists your machines, with
-Allow, and these same steps with your server's address filled in.
+The top bar's **Hosts** menu (the server icon) lists your hosts, with
+Allow.
 
-1. Make an API token: your avatar → **Your settings** → **API tokens** →
-   **New token**. Give it a label, such as "laptop trax", keep the writer role,
-   and click **Create token**. Copy the secret; it is shown only once.
+1. On the computer, install your deployment's daemon.
 
-2. On the computer, install `trax` from the public repository:
+2. Connect it to the server, and leave it running, in tmux or as a user service.
+   It prints a link and a code. Open the link, check who is asking and
+   click **Approve**; a phone will do. The daemon saves the key it receives,
+   names the host after the computer's short
+   hostname (`laptop` here), enrolls it as your personal host, which only you
+   and admins see, and serves terminals and commands until you stop it. Approving
+   also allows the host, so there is nothing to click in step 3.
 
-   ```bash
-   uv tool install git+https://github.com/rekursiv-ai/trackinizer
-   ```
+3. In the browser, click the terminal icon in Chat's header, then **Start
+   terminal on laptop**.
 
-3. Point `trax` at the server, with your server's address and the token:
+A computer that already has a profile for the server enrolls its host with that
+profile's key and asks for no code. The host then waits for your click in the
+browser: a bar says "New host laptop wants terminals." Click **Allow**, since
+anything holding your key could have enrolled it. An admin's hosts need no Allow.
 
-   ```bash
-   trax profile url to https://trackinizer.example
-   trax profile token to <TOKEN>
-   ```
+A box with no browser takes an enrollment token on standard input instead, and
+joins without a login, under the name the host is given.
 
-   To skip step 1, log in instead: `trax profile work login
-   https://trackinizer.example` prints a link and a code. Open the link, check
-   who is asking and click **Approve**; `trax` saves the key it receives as the
-   profile `work`. The profile becomes the current one only when you have none.
+The first run saves the host's own credential, readable only by you, and later
+runs use it and the saved key, with no code. While it runs it prints whether
+the direct link is on (see [below](#typing-feels-slow-the-direct-link)),
+`joined: host laptop` the first time, and `terminal opened by` with your address
+for each terminal.
 
-4. Connect, and leave it running, in tmux or as a user service:
-
-   ```bash
-   trax machine connect
-   ```
-
-   It names the machine after the computer's short hostname (`laptop` here),
-   enrolls it as your personal machine, which only you and admins see, and
-   serves terminals until you stop it.
-
-5. In the browser, click the terminal icon in Chat's header. A bar says "New
-   machine laptop wants terminals." Click **Allow**. A machine enrolled with a
-   token waits for your click in the browser, since anything holding your
-   token could have enrolled it. An admin's machines need no Allow.
-
-6. Click **Start terminal on laptop**.
-
-The terminal side's **More help** gives steps 2 and 3 as one command, with your
-server's address filled in. If `trax machine help` fails or lists no `connect`,
-your `trax` is older than it: install again as in step 2.
-
-The first `connect` saves the machine's own credential, readable only by you,
-and later runs use it. While it runs it prints whether the direct link is on
-(see [below](#typing-feels-slow-the-direct-link)), `joined: machine laptop` the
-first time, and `terminal opened by` with your address for each terminal.
+The daemon also serves sagent's tools (the shell and your files) to the server's
+assistant, which runs them on this computer, as you; the server logs each call. With
+its `--no-exec` flag it serves terminals only.
 
 If the computer is one you can afford to lose, such as a disposable cloud box or
-a virtual machine, say so when you connect it:
-
-```bash
-trax machine connect --sandbox
-```
-
-`trax machine NAME connect --sandbox` works the same way. Connect prints
-`sandbox: on`, and from then on every `trax run` on that computer starts its
+a virtual machine, say so when you connect it, with the host's `--sandbox` flag.
+It prints `sandbox: on`, and from then on every agent run on that computer starts its
 agent without the usual questions:
 
 - codex skips its approvals and its own sandbox;
@@ -246,8 +233,8 @@ Flags you give the agent yourself, such as `--permission-mode plan` for claude
 or `-s read-only` for codex, are never replaced. A claude `--settings` you
 pass as inline JSON is kept, with the skip added; one you pass as a file
 leaves claude in its auto permission mode for that run. The declaration describes
-the computer, not one machine name, and each connect sets it: a `trax machine
-connect` without `--sandbox` turns it off again.
+the computer, not one host name, and each connect sets it: a daemon
+without `--sandbox` turns it off again.
 
 Use it on a computer built to be thrown away. Do not use it on your own
 laptop, or on anything that holds work or keys you would mind losing: an agent
@@ -257,32 +244,33 @@ computer for yourself, and give agents a sandbox of their own. The idea is in
 
 The shell is your login shell, started in your home directory with a fresh
 environment, as an ssh login is. It knows the chat that opened it
-(`TRAX_WORKSPACE`, `TRAX_WORKSTREAM`) and the server (`TRACKINIZER_PROFILE`),
+(`TRAX_CANVAS`, `TRAX_WORKSPACE`) and the server (`TRACKINIZER_PROFILE`),
 so `trax` in it reports to that server, and agents started in it are filed in
 that chat.
 
-### Terminals and machines
+### Terminals and hosts
 
-- Chat's terminals are named after their machine and a number: "laptop 1",
+- Chat's terminals are named after their host and a number: "laptop 1",
   "laptop 2".
 - Flipped, the name button in Chat's header opens the terminal menu: the
   terminals in this chat, then **+ New terminal**, or one **+ New terminal on
-  NAME** for each ready machine.
+  NAME** for each ready host.
 - Connect more computers the same way; each is offered once it is connected
   and allowed.
-- The canvas has a Terminal tile too: Workbench → Terminal, or New terminal in
-  the palette. It holds several terminals as tabs: + opens one, asking which
-  machine when more than one is ready, and × closes one.
-- In the tile, Ctrl+Shift+T opens a tab, Ctrl+Shift+W closes one, and
+- The canvas opens terminals too: New terminal in the palette, or Ctrl+`.
+  Each terminal is a canvas tab of its own, which asks which host when more
+  than one is ready; × on its tab closes it and ends its shell.
+- In a terminal, Ctrl+Shift+T opens a tab, Ctrl+Shift+W closes one, and
   Ctrl+Shift+PageDown and Ctrl+Shift+PageUp switch tabs. **Your settings** →
   Appearance → "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal
   tabs" adds the short forms. Chrome keeps those in a plain tab and gives them
   to the page only in the installed app.
 - Every key typed in a terminal goes to the shell, the app's shortcuts
-  included: click outside the terminal to use ⌘K or Ctrl+\\.
+  included, but Ctrl+`, which opens another terminal: click outside the
+  terminal to use ⌘K or Ctrl+\\.
 - ⤢ makes a terminal fill the canvas, and ⤡ restores it. **Your settings** →
   Appearance → Terminal font size sets its text size.
-- The assistant can open a Terminal tile on a machine it names; the terminal
+- The assistant can open a Terminal tile on a host it names; the terminal
   then says "Opened at NAME's request."
 
 ### The flipped header
@@ -301,26 +289,22 @@ This browser remembers which chats you left flipped.
 
 A terminal's traffic goes through the server. When the server is far from you,
 let your browser talk to the computer directly, over WebRTC; the server only
-introduces the two. Add the library to `trax`:
-
-```bash
-uv tool install --with aiortc git+https://github.com/rekursiv-ai/trackinizer
-```
-
-Then restart `trax machine connect`. It prints `direct terminal link: on`, and
+introduces the two. Install the `aiortc` library into the daemon's Python
+environment, then restart the host. It prints `direct terminal link: on`, and
 the terminal shows a **Direct link** badge while the link works. If the direct
 path drops, the terminal carries on through the server.
-`TRAX_MACHINE_TERMINAL_DIRECT=0` turns the link off. Keep `--with aiortc` when
-you reinstall `trax`: an install without it removes the library.
+`TRAX_HOST_TERMINAL_DIRECT=0` turns the link off. Keep the library when you
+reinstall the host: an install without it removes it.
 
-### Restarting and stopping connect
+### Restarting and stopping the daemon
 
-- Restarting `trax machine connect` serves at once: the new one takes the
-  machine over, and the old one stops.
-- Ctrl-C stops it, and the machine shows offline at once.
+- Restarting the daemon serves at once: the new one takes the
+  host over, and the old one stops.
+- Ctrl-C stops it, as does the termination signal a service manager sends, and the
+  host shows offline at once.
 - Either way, the shells it was serving end.
-- Restart it with the same flags: a connect without `--sandbox` turns the
-  sandbox off.
+- Restart it with the same flags: a run without `--sandbox` turns the sandbox
+  off.
 
 If one terminal is open in two windows, the newer window takes it, and the
 older one says "Another window took this terminal over." with a **Take over**
@@ -334,7 +318,7 @@ button to take it back.
 | No page shows it for over a minute (tab closed, laptop asleep) | ends |
 | No typing for 60 minutes | is closed |
 | 24 hours after it opened | is closed |
-| `trax machine connect` restarts or stops | ends |
+| The daemon restarts or stops | ends |
 
 Ending a shell ends its process group, as closing ssh does; `tmux`, `nohup` and
 `setsid` jobs keep running. For long work, use tmux or a detached run
@@ -344,38 +328,25 @@ Ending a shell ends its process group, as closing ssh does; `tmux`, `nohup` and
 
 `ssh` from a web terminal keeps the chat: the shell's `LC_TRAX_*` variables go
 along when ssh forwards `LC_*` variables (`SendEnv LC_*`). With `trax`
-installed and set up on the far host, `trax run claude` there is filed in the
+installed and set up on the far host, an agent run there is filed in the
 same chat. A far host with no profile for the server says how to add one.
 
 ### One computer, two servers
 
-`trax` keeps a named profile per server, and `trax machine connect` keeps the
-machine's credential per server, so one computer can be a machine of two
-servers. Make a profile for the second server, with a token from its own
-Settings, and run a second connect beside the first:
-
-```bash
-trax profile work url to https://work.example
-trax profile work token to <TOKEN>
-trax --profile work machine connect
-```
-
-Each server's web app asks you to Allow the machine once. A shell carries the
+`trax` keeps a named profile per server, and the daemon keeps the host's
+credential per server, so one computer can be a host of two servers. Run a
+second daemon beside the first, connected to the second server. Each
+server's web app asks you to Allow the host once. A shell carries the
 profile of the server that opened it, so `trax` and agents in it report back
 to that server. `trax profile` lists the profiles, and `trax profile current
 work` makes `work` the one used when no `--profile` is given.
 
 ## 4. Agent sessions
 
-`trax run` wraps an agent CLI, `claude`, `codex` or `gemini`, or a plain shell,
-`sh`, and records the session on the server as it runs. Nothing else about the
-CLI changes: the same screen, the same keys, the same exit code. Arguments
+An agent runner wraps an agent CLI, `claude`, `codex` or `gemini`, or a plain
+shell, `sh`, and records the session on the server as it runs. Nothing else about
+the CLI changes: the same screen, the same keys, the same exit code. Arguments
 after `--` go to the CLI.
-
-```bash
-trax run claude
-trax run codex -- "fix the failing test"
-```
 
 ### The session and the computer it works on
 
@@ -385,8 +356,8 @@ the hand: the place where it reads files and runs commands. The two need not be
 the same.
 
 - A session can work on your laptop today and on a disposable box or a GPU
-  machine tomorrow, and keep its history. Resume it on the other computer with
-  `trax agentsession 7 run claude`.
+  host tomorrow, and keep its history. Resume it on the other computer by
+  its id.
 - So the place you develop need not be the place an agent acts. Keep the
   computer that holds your work and your keys for yourself, and give agents
   their own.
@@ -394,47 +365,21 @@ the same.
   computer with `--sandbox`, and agents there stop asking before they act
   ([Connect a computer](#connect-a-computer)).
 
-In Chat the brain shows with no screen of its own. A claude or codex run that a
-chat starts on your computer (`--detach --attach CHAT`) draws no terminal: your
-lines go to the CLI through its programmatic protocol, and its answers come back
-to the chat. Your own `trax run claude` in a terminal is unchanged.
-
-- **Ask cards.** What the agent asks you comes to Chat as a card: a command to
-  allow (with its folder), a file change (with its diff), a question, or a plan
-  to approve. The buttons are the agent's own choices: allow once, allow for
-  the session, refuse, or refuse and stop the turn. The first answer wins, and
-  the card closes with who answered. A card the run can no longer answer, because it ended or
-  went offline, closes as Released within about a minute. While a card waits,
-  the chat header and its workstream tab show a blue dot. A card for a run on
-  your machine is yours alone to answer; one the assistant asks is answered by
-  the person it asked. A computer connected with `--sandbox` shows no cards:
-  its agents do not ask.
-- **Take a run over.** To use the CLI's own screen, run
-  `trax run attach NAME` on the run's computer (`trax run ls` lists the
-  names). The run stops its headless CLI and opens the CLI's terminal on the
-  same session, here; Ctrl-\ detaches and leaves it running. The session keeps
-  logging, so Chat shows each turn you type. Chat shows "Taken over in a
-  terminal" and refuses lines until you reattach.
-- **Reattach to Chat.** The button on the taken-over chat, or on the run's row
-  in the Console, gives the chat its CLI back. The terminal ends, and the run
-  starts again where it ran, on the same CLI session, with every turn you typed
-  in the terminal.
-
 ### Where a session lands
 
-The server files each session in one of your workstreams and a chat, by the
+The server files each session in one of your workspaces and a chat, by the
 first rule that fits:
 
 1. the chat whose terminal you started it from, directly or over ssh;
 2. where the session was filed before, when you resume one;
-3. the workstream of your newest session on the same git branch, in a new chat;
-4. Scratch, in a new chat.
+3. the workspace of your newest session on the same git branch, in a new chat;
+4. your default workspace, in a new chat.
 
 On Chat's terminal side the bar says where: "Sessions land in" and the
-workstream.
+workspace.
 A chat made for a session names it under ⋯ → Info → Made for. The Console
 (Go → Console, or `g c`) shows sessions' messages live; opened inside a chat,
-it starts on that chat's sessions ("This station").
+it starts on that chat's sessions ("This canvas").
 
 Flags worth knowing:
 
@@ -446,16 +391,9 @@ Flags worth knowing:
 ### Detached runs
 
 `--detach` runs the agent in a background host that outlives the terminal, so
-a long-running agent needs no tmux:
-
-```bash
-trax run --detach --name lead claude
-trax run ls                    # live hosts; --all adds exited and lost ones
-trax run attach lead           # drive it here; Ctrl-\ detaches
-trax run log lead --follow     # scrollback, then live output
-trax run send lead "status?"   # type a line in and press Enter
-trax run stop lead             # stop it; waits until it has exited
-```
+a long-running agent needs no tmux. The runner lists the live hosts, attaches to
+one (Ctrl-\ detaches), prints its scrollback, types a line into it and stops it,
+each by name.
 
 The name defaults to the `--as` name, else the CLI's, and a name already
 running is refused. Hosts belong to the computer that started them, so run
@@ -464,9 +402,9 @@ still filed in that chat, and outlives the tab and the terminal's limits.
 
 ### The agent knows its canvas
 
-A `trax run claude` or `trax run codex` session filed in a chat is told, when
+An agent run's session filed in a chat is told, when
 it starts, that "the canvas" means that chat's, and how to read and change it
-with `trax workspace`. It is also told that the conversation is already logged to
+with `trax canvas`. It is also told that the conversation is already logged to
 trax as the chat's AgentSession, and to file each result as a row with the `trax`
 CLI, `--as` set to `$TRAX_ACTOR`. Claude hears it through `--append-system-prompt`, codex
 through `-c developer_instructions`; one you pass yourself wins, and then the
@@ -486,7 +424,7 @@ left out and names the command that prints it, such as
 
 ### Red boxes reach claude
 
-A `trax run claude` session filed in a chat hears of the red boxes drawn on
+An agent run's session filed in a chat hears of the red boxes drawn on
 that chat's canvas. Before each prompt you type into claude, `trax` adds the
 boxes drawn since the last one, up to the newest 20, each with the records and
 visuals under it. Each box reaches the session once, the first time after it is
@@ -521,7 +459,7 @@ of row.
 ## Where to read more
 
 - [`trax/README.md`](../trax/README.md): profiles, environment variables,
-  machines and `trax run`.
+  hosts and agent runs.
 - [`trax/docs/GRAMMAR.md`](../trax/docs/GRAMMAR.md): the full command grammar.
 - [`trax/docs/skills/`](../trax/docs/skills/README.md): what a well-formed
   Issue, Belief, Experiment or other row holds.

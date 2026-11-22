@@ -12,7 +12,7 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.server.api.app import app
-from trackinizer.server.api.canvas_test_support import (
+from trackinizer.server.api.session_test_support import (
     ASSISTANT_CONFIG,
     OTHER_AGENT,
     OTHER_EMAIL,

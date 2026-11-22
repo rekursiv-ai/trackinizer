@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { watchRows } from "./visibility";
+import { must } from "../must";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -42,7 +43,9 @@ test("with IntersectionObserver, rows on screen are those intersecting, and rows
   const observers: FakeIntersection[] = [];
   class FakeIntersection {
     readonly observed = new Set<Element>();
-    readonly callback: (entries: { target: Element; isIntersecting: boolean }[]) => void;
+    readonly callback: (
+      entries: { target: Element; isIntersecting: boolean }[],
+    ) => void;
     constructor(callback: FakeIntersection["callback"]) {
       this.callback = callback;
       observers.push(this);
@@ -60,7 +63,7 @@ test("with IntersectionObserver, rows on screen are those intersecting, and rows
     report(ids: string[], isIntersecting: boolean) {
       this.callback(
         [...this.observed]
-          .filter((element) => ids.includes((element as HTMLElement).dataset.row!))
+          .filter((element) => ids.includes(must((element as HTMLElement).dataset.row)))
           .map((target) => ({ target, isIntersecting })),
       );
     }
@@ -70,18 +73,22 @@ test("with IntersectionObserver, rows on screen are those intersecting, and rows
   const entered: string[][] = [];
   const watch = watchRows(root, (ids) => entered.push(ids));
   const [intersection] = observers;
-  expect(intersection!.observed.size).toBe(3);
-  intersection!.report(["a", "b"], true);
+  expect(must(intersection).observed.size).toBe(3);
+  must(intersection).report(["a", "b"], true);
   expect(entered).toEqual([["a", "b"]]);
   expect([...watch.onScreen(["a", "b", "c"])]).toEqual(["a", "b"]);
-  intersection!.report(["a"], false);
-  intersection!.report(["c"], true);
+  must(intersection).report(["a"], false);
+  must(intersection).report(["c"], true);
   expect(entered).toEqual([["a", "b"], ["c"]]);
   expect([...watch.onScreen(["a", "b", "c"])]).toEqual(["b", "c"]);
   // A row removed stops being watched, and a new one starts.
-  root.querySelector('[data-row="b"]')!.remove();
+  must(root.querySelector('[data-row="b"]')).remove();
   root.append(row("d"));
   await mutations();
-  expect([...intersection!.observed].map((element) => (element as HTMLElement).dataset.row)).toEqual(["a", "c", "d"]);
+  expect(
+    [...must(intersection).observed].map(
+      (element) => (element as HTMLElement).dataset.row,
+    ),
+  ).toEqual(["a", "c", "d"]);
   expect([...watch.onScreen(["b"])]).toEqual([]);
 });

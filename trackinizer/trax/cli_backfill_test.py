@@ -2,22 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from treekle import from_plain
 
 import pytest
 
 from trackinizer.client.errors import ClientError
-from trackinizer.trax import cli
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import FIELDS_BY_NAME
-
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
-
-    from trackinizer.client.client import Client
 
 
 @pytest.mark.parametrize(
@@ -264,26 +255,6 @@ def test_creation_context_does_not_leak_to_next_command(client: FakeClient) -> N
     assert len(edits) == 1
     assert edits[0][1][1:] == ("title", "updated")
     assert edits[0][2]["reason"] == ""
-
-
-def test_native_run_backfill_spelling_is_forwarded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    heard: list[list[str]] = []
-
-    def runner(
-        argv: Sequence[str],
-        *,
-        client_factory: Callable[[], Client] | None = None,
-        profile: str | None = None,
-    ) -> int:
-        del client_factory, profile
-        heard.append(list(argv))
-        return 0
-
-    monkeypatch.setattr("trackinizer.trax.run.session.main", runner)
-    cli.parse_and_run(["run", "codex", "--", "--backfill", "literal"])
-    assert heard == [["codex", "--", "--backfill", "literal"]]
 
 
 if __name__ == "__main__":

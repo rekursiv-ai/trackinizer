@@ -553,7 +553,7 @@ function promptOf(value: unknown): Omit<Prompt, "resolution"> | null {
   if (type !== "trust") return { ...plain, type };
   const cli = CLIS.find((each) => each === raw.cli);
   const folder = text(raw.folder);
-  if (cli && folder) return { ...base, type, cli, folder, machine: text(raw.machine) || null, remembered: raw.remembered === true, ...(ask && { ask }) };
+  if (cli && folder) return { ...base, type, cli, folder, machine: text(raw.host ?? raw.machine) || null, remembered: raw.remembered === true, ...(ask && { ask }) };
   // A trust ask an agent made names no CLI or folder of ours: its own options are its card.
   return ask ? { ...plain, type: "permission" } : null;
 }

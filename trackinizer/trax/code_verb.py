@@ -26,7 +26,7 @@ import sys
 import uuid
 
 from trackinizer.client.errors import ClientError
-from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
 from trackinizer.trax.context import cwd
 from trackinizer.trax.render import echo
 from trackinizer.wire import wire_code
@@ -182,7 +182,7 @@ class Code(Command):
           parser: The argparse parser.
 
         """
-        parser = argparse.ArgumentParser(prog="trax code", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax code", description=cls.__doc__)
         parser.add_argument("record_id", nargs="?")
         parser.add_argument("action", nargs="?", metavar="|".join(_ACTIONS))
         parser.add_argument("subject", nargs="*")

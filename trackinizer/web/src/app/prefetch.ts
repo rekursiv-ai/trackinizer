@@ -11,7 +11,12 @@
 // would wait for them. src/app/prefetch.test.tsx fails when a key drifts.
 import { findRef, getDetail } from "../api/detail";
 import { getGraph } from "../api/graph";
-import { INQUIRY_ROW_FIELDS, inquiryKinds, isInquiryKind, listInquiries } from "../api/inquiries";
+import {
+  INQUIRY_ROW_FIELDS,
+  inquiryKinds,
+  isInquiryKind,
+  listInquiries,
+} from "../api/inquiries";
 import { getProfile } from "../api/me";
 import { getEdgeTopology, getEnums, getFieldOwners } from "../api/meta";
 import { parseHash, type Route } from "../router/route";
@@ -40,7 +45,12 @@ export function prefetch(hash: string): void {
   // Caught after the handler, not beside it: kinds the router cannot read (server
   // drift) throw in it. The app's boot takes the same answer and shows that on
   // its crash screen; uncaught here, it would also be an unhandled rejection.
-  else enums.then(({ inquiry_kind_all }) => startView(parseHash(hash, inquiry_kind_all ?? []))).catch(() => {});
+  else
+    enums
+      .then(({ inquiry_kind_all }) =>
+        startView(parseHash(hash, inquiry_kind_all ?? [])),
+      )
+      .catch(() => {});
   setTimeout(() => STARTED.clear(), 10_000);
 }
 
@@ -51,7 +61,10 @@ export function prefetch(hash: string): void {
  * way, and every later fetch (a refetch, a retry) reads afresh. A started read
  * that failed fails the fetch as its own read would: a 401 still ends the session.
  */
-export function prefetched<T>(key: readonly unknown[], read: () => Promise<T>): Promise<T> {
+export function prefetched<T>(
+  key: readonly unknown[],
+  read: () => Promise<T>,
+): Promise<T> {
   const name = JSON.stringify(key);
   const started = STARTED.get(name);
   STARTED.delete(name);
@@ -66,7 +79,9 @@ export function prefetched<T>(key: readonly unknown[], read: () => Promise<T>): 
  * (`Date.now()` time), once. A live view asks as it mounts: a read that started
  * before the stream opened may have missed a change, and catches up on the gap.
  */
-export function takeReadAt(matches: (key: readonly unknown[]) => boolean): number | undefined {
+export function takeReadAt(
+  matches: (key: readonly unknown[]) => boolean,
+): number | undefined {
   let earliest: number | undefined;
   for (const [name, { key, at }] of TAKEN) {
     if (!matches(key)) continue;
@@ -122,11 +137,18 @@ function startList(kind: string): void {
   } catch {
     return;
   }
-  const filters = kind === "Paper" ? [] : [{ field: "status", op: "is", value: "active" }];
+  const filters =
+    kind === "Paper" ? [] : [{ field: "status", op: "is", value: "active" }];
   // Async, so a kind this build does not know rejects the read rather than
   // throwing out of `prefetch`.
   start(["inquiries", "list", filters, kind, 50, 0, null], async () =>
-    listInquiries({ kinds: inquiryKinds([kind]), filters, limit: 50, offset: 0, fields: INQUIRY_ROW_FIELDS }),
+    listInquiries({
+      kinds: inquiryKinds([kind]),
+      filters,
+      limit: 50,
+      offset: 0,
+      fields: INQUIRY_ROW_FIELDS,
+    }),
   );
 }
 
@@ -140,7 +162,13 @@ function start<T>(key: readonly unknown[], read: () => Promise<T>): Promise<T> {
 }
 
 /** The started reads no query has taken yet, by their key as JSON, with when each started. */
-const STARTED = new Map<string, { readonly promise: Promise<unknown>; readonly at: number }>();
+const STARTED = new Map<
+  string,
+  { readonly promise: Promise<unknown>; readonly at: number }
+>();
 
 /** The started reads queries took, until a live view asks when they started (`takeReadAt`). */
-const TAKEN = new Map<string, { readonly key: readonly unknown[]; readonly at: number }>();
+const TAKEN = new Map<
+  string,
+  { readonly key: readonly unknown[]; readonly at: number }
+>();

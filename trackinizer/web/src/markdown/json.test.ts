@@ -5,7 +5,10 @@ import { type JsonNode, parseJson } from "./json";
 
 // A synthetic job result, as an Artifact's description holds one: one line of
 // JSON with eight metrics.
-const RESULT = readFileSync(join(import.meta.dirname, "testdata/job_result.json"), "utf8");
+const RESULT = readFileSync(
+  join(import.meta.dirname, "testdata/job_result.json"),
+  "utf8",
+);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -13,7 +16,9 @@ afterEach(() => {
 
 /** The entry `key` of an object node. */
 function entry(node: JsonNode | undefined, key: string): JsonNode | undefined {
-  return node?.type === "object" ? node.entries.find(([name]) => name === key)?.[1] : undefined;
+  return node?.type === "object"
+    ? node.entries.find(([name]) => name === key)?.[1]
+    : undefined;
 }
 
 test("a whole text that is a JSON object parses, keys in order and numbers as written", () => {
@@ -34,17 +39,28 @@ test("a whole text that is a JSON object parses, keys in order and numbers as wr
   expect(entry(root, "schema_version")).toEqual({ type: "number", text: "1" });
   const payload = entry(root, "payload");
   expect(entry(payload, "eval/train_sec")).toEqual({ type: "number", text: "600.0" });
-  expect(entry(payload, "eval/eval_sec")).toEqual({ type: "number", text: "25.768875706878884" });
+  expect(entry(payload, "eval/eval_sec")).toEqual({
+    type: "number",
+    text: "25.768875706878884",
+  });
 });
 
 test("what JSON.parse would change shows as written: a long integer, integer-like keys, a repeated key", () => {
-  const root = parseJson('{"b": 9007199254740993, "2": -1.50e+3, "1": [true, false, null], "b": "again"}');
+  const root = parseJson(
+    '{"b": 9007199254740993, "2": -1.50e+3, "1": [true, false, null], "b": "again"}',
+  );
   expect(root).toEqual({
     type: "object",
     entries: [
       ["b", { type: "number", text: "9007199254740993" }],
       ["2", { type: "number", text: "-1.50e+3" }],
-      ["1", { type: "array", items: ["true", "false", "null"].map((text) => ({ type: "literal", text })) }],
+      [
+        "1",
+        {
+          type: "array",
+          items: ["true", "false", "null"].map((text) => ({ type: "literal", text })),
+        },
+      ],
       ["b", { type: "string", value: "again" }],
     ],
   });
@@ -62,14 +78,26 @@ test("strings and keys are decoded, escapes included", () => {
 });
 
 test("anything else is not JSON: a scalar, Markdown that starts with a bracket, invalid or trailing text", () => {
-  for (const text of ["", "42", '"x"', "true", "[the plan](https://example.com/plan)", "{bad", '{"a": 1} and more', "[1, 2,]", "{'a': 1}", "[NaN]"]) {
+  for (const text of [
+    "",
+    "42",
+    '"x"',
+    "true",
+    "[the plan](https://example.com/plan)",
+    "{bad",
+    '{"a": 1} and more',
+    "[1, 2,]",
+    "{'a': 1}",
+    "[NaN]",
+  ]) {
     expect(parseJson(text), text).toBeUndefined();
   }
 });
 
 test("only a text that starts with { or [ is ever parsed", () => {
   const parse = vi.spyOn(JSON, "parse");
-  for (const text of ['Result: {"a": 1}', "# Heading\n\n[1]", "plain words"]) expect(parseJson(text)).toBeUndefined();
+  for (const text of ['Result: {"a": 1}', "# Heading\n\n[1]", "plain words"])
+    expect(parseJson(text)).toBeUndefined();
   expect(parse).not.toHaveBeenCalled();
 });
 

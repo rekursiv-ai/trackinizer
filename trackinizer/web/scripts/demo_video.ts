@@ -4,7 +4,7 @@
 // an HTML Artifact; and a message to an agent in the console, answered.
 //
 // It starts a seeded server of its own on port 8829 (scripts/capture.ts) and a
-// stand-in for the messaged agent's `trax run`, which drains what reaches the
+// stand-in for the messaged agent's run, which drains what reaches the
 // session and appends a canned reply as the session's next records. A
 // headless Chromium plays the script at 1280 by 800 in the dark theme while
 // Playwright's screencast keeps every frame it paints, with the time it came.
@@ -23,13 +23,23 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type Browser, chromium, type Page } from "@playwright/test";
-import { graphSettled, keepGraphState, requireTool, type Seeded, serveSeeded } from "./capture.ts";
+import {
+  graphSettled,
+  keepGraphState,
+  requireTool,
+  type Seeded,
+  serveSeeded,
+} from "./capture.ts";
+import { must } from "../src/must.ts";
 
 /** One frame the screencast kept: its file and when it came, in seconds. */
 type Frame = { readonly file: string; readonly at: number };
 
 /** Where a part of the video starts, and how it plays: `speed` times as fast, or fitted to `seconds`. */
-type Part = { readonly name: string; readonly at: number } & ({ readonly speed: number } | { readonly seconds: number });
+type Part = { readonly name: string; readonly at: number } & (
+  | { readonly speed: number }
+  | { readonly seconds: number }
+);
 
 /** What the stand-in agent says to any message. */
 const REPLY =
@@ -47,12 +57,19 @@ const GLIDE_STEPS = 30;
 const outArg = process.argv[2];
 if (!outArg) throw new Error("Usage: node scripts/demo_video.ts DIR");
 const OUT = resolve(outArg);
-requireTool("ffmpeg", ["-version"], "ffmpeg (`brew install ffmpeg`, `apt install ffmpeg`)");
-requireTool("img2webp", ["-version"], "libwebp (`brew install webp`, `apt install webp`)");
+requireTool(
+  "ffmpeg",
+  ["-version"],
+  "ffmpeg (`brew install ffmpeg`, `apt install ffmpeg`)",
+);
+requireTool(
+  "img2webp",
+  ["-version"],
+  "libwebp (`brew install webp`, `apt install webp`)",
+);
 mkdirSync(OUT, { recursive: true });
 const served = await serveSeeded(8829);
 try {
-  const agent = standIn(served.origin, served.seeded.session);
   const frames: Frame[] = [];
   const parts: Part[] = [];
   // No launch deadline of our own: Playwright still fails at once if the browser
@@ -62,7 +79,6 @@ try {
     await record(browser, served, { frames, parts });
   } finally {
     await browser.close();
-    await agent.stop();
   }
   for (const line of encode(frames, parts, served.data)) console.log(line);
 } finally {
@@ -97,16 +113,21 @@ async function record(
     size: { width: 1280, height: 800 },
     quality: 92,
     onFrame: ({ data: jpeg }) => {
-      const file = join(data, "frames", `${String(frames.length).padStart(6, "0")}.jpg`);
+      const file = join(
+        data,
+        "frames",
+        `${String(frames.length).padStart(6, "0")}.jpg`,
+      );
       writeFileSync(file, jpeg);
       frames.push({ file, at: clock() });
     },
   });
-  const part = (name: string, play: { speed: number } | { seconds: number }) => parts.push({ name, at: clock(), ...play });
+  const part = (name: string, play: { speed: number } | { seconds: number }) =>
+    parts.push({ name, at: clock(), ...play });
   await showGraph(page, seeded, part);
   await showIssue(page, part);
   await showArtifact(page, part);
-  await showConsole(page, seeded, part);
+  await showConsole(page, origin, seeded, part);
   await page.screencast.stop();
   await context.close();
 }
@@ -119,7 +140,10 @@ async function showGraph(page: Page, seeded: Seeded, part: Mark): Promise<void> 
   await graphSettled(page);
   const total = await drawnCount(page);
   await page.getByRole("button", { name: "Replay" }).click();
-  await page.getByRole("listbox", { name: "Replay at…" }).getByRole("option", { name: "10x" }).click();
+  await page
+    .getByRole("listbox", { name: "Replay at…" })
+    .getByRole("option", { name: "10x" })
+    .click();
   // Before the replay shows: the pointer off the key, over the empty header, and no
   // focus ring on Replay, which the fits' keys would otherwise draw.
   await page.mouse.move(640, 30);
@@ -133,20 +157,36 @@ async function showGraph(page: Page, seeded: Seeded, part: Mark): Promise<void> 
   await page.getByRole("button", { name: "Replaying at 10x" }).waitFor();
   const replayed = page.getByRole("button", { name: "Replay", exact: true });
   let tenths = 1;
-  for (let check = 0; !(await replayed.isVisible()); check += 1, await page.waitForTimeout(250)) {
+  for (
+    let check = 0;
+    !(await replayed.isVisible());
+    check += 1, await page.waitForTimeout(250)
+  ) {
     if (check > 2_400) throw new Error("The replay did not end within 10 minutes.");
     const drawn = await drawnCount(page);
-    for (; tenths < 10 && drawn >= (tenths * total) / 10; tenths += 1) part("replay", { seconds: REPLAY_S / 10 });
+    for (; tenths < 10 && drawn >= (tenths * total) / 10; tenths += 1)
+      part("replay", { seconds: REPLAY_S / 10 });
     if (check % 4 === 0) await page.keyboard.press("f");
   }
   part("settle", { seconds: 1.2 });
   await graphSettled(page);
   part("roots", { speed: 2 });
   await page.waitForTimeout(1_200);
-  await glideTo(page, page.getByRole("group", { name: "Sort roots" }).getByRole("button", { name: "Size" }));
-  await page.getByRole("group", { name: "Sort roots" }).getByRole("button", { name: "Size" }).click();
+  await glideTo(
+    page,
+    page
+      .getByRole("group", { name: "Sort roots" })
+      .getByRole("button", { name: "Size" }),
+  );
+  await page
+    .getByRole("group", { name: "Sort roots" })
+    .getByRole("button", { name: "Size" })
+    .click();
   await page.waitForTimeout(800);
-  const root = page.getByRole("listbox", { name: "Roots" }).getByRole("option").filter({ hasText: await titleOf(page, seeded.root) });
+  const root = page
+    .getByRole("listbox", { name: "Roots" })
+    .getByRole("option")
+    .filter({ hasText: await titleOf(page, seeded.root) });
   await glideTo(page, root);
   await root.click();
   await page.locator(".peek h1").waitFor();
@@ -155,7 +195,10 @@ async function showGraph(page: Page, seeded: Seeded, part: Mark): Promise<void> 
   await glide(page, belief.x, belief.y);
   await page.waitForTimeout(900);
   await page.mouse.click(belief.x, belief.y);
-  await page.locator(".peek h1").filter({ hasText: await titleOf(page, seeded.cited) }).waitFor();
+  await page
+    .locator(".peek h1")
+    .filter({ hasText: await titleOf(page, seeded.cited) })
+    .waitFor();
   await page.waitForTimeout(2_000);
   await page.keyboard.press(".");
   await page.waitForTimeout(1_800);
@@ -171,10 +214,14 @@ async function showIssue(page: Page, part: Mark): Promise<void> {
   await clickNav(page, "Issues");
   await page.locator(".row").first().waitFor();
   await page.waitForTimeout(1_500);
-  const row = page.locator(".row").filter({ hasText: "Make the tokenizer twice as fast" });
+  const row = page
+    .locator(".row")
+    .filter({ hasText: "Make the tokenizer twice as fast" });
   await glideTo(page, row);
   await row.click();
-  await page.getByRole("heading", { level: 1, name: "Make the tokenizer twice as fast" }).waitFor();
+  await page
+    .getByRole("heading", { level: 1, name: "Make the tokenizer twice as fast" })
+    .waitFor();
   await page.waitForTimeout(1_800);
   await scroll(page, 500);
   await page.waitForTimeout(1_600);
@@ -191,24 +238,36 @@ async function showArtifact(page: Page, part: Mark): Promise<void> {
   await glideTo(page, closed);
   await closed.click();
   await page.waitForTimeout(1_000);
-  const row = page.locator(".row").filter({ hasText: "Merge-rank cache: benchmark report" });
+  const row = page
+    .locator(".row")
+    .filter({ hasText: "Merge-rank cache: benchmark report" });
   await glideTo(page, row);
   await row.click();
   const frame = page.locator(".artifact-html-frame");
   await frame.waitFor();
-  await page.frameLocator(".artifact-html-frame").getByRole("heading", { name: "Merge-rank cache benchmark" }).waitFor();
+  await page
+    .frameLocator(".artifact-html-frame")
+    .getByRole("heading", { name: "Merge-rank cache benchmark" })
+    .waitFor();
   await page.waitForTimeout(1_000);
   await frame.scrollIntoViewIfNeeded();
   await page.waitForTimeout(2_200);
 }
 
 /** Pick the agent in the console, ask it through @, and wait for its answer. */
-async function showConsole(page: Page, seeded: Seeded, part: Mark): Promise<void> {
+async function showConsole(
+  page: Page,
+  origin: string,
+  seeded: Seeded,
+  part: Mark,
+): Promise<void> {
   part("console", { speed: 2 });
   await clickNav(page, "Console");
   await page.locator(".console-line").last().waitFor();
   await page.waitForTimeout(1_200);
-  const agent = page.getByRole("region", { name: "Agents" }).getByRole("checkbox", { name: seeded.agent, exact: true });
+  const agent = page
+    .getByRole("region", { name: "Agents" })
+    .getByRole("checkbox", { name: seeded.agent, exact: true });
   await glideTo(page, agent);
   await agent.check();
   await page.waitForTimeout(1_000);
@@ -222,60 +281,75 @@ async function showConsole(page: Page, seeded: Seeded, part: Mark): Promise<void
   await page.keyboard.type(QUESTION, { delay: 45 });
   await page.waitForTimeout(400);
   await page.keyboard.press("Enter");
-  await page.locator(".console-line").filter({ hasText: REPLY.slice(0, 40) }).waitFor({ timeout: 30_000 });
+  // The messaged session's run is played by this script: no agent process serves
+  // it, so the script appends the turn the run would, the message as typed into the
+  // CLI and then the reply.
+  const { email } = (await (await fetch(`${origin}/api/me/profile`)).json()) as {
+    email: string;
+  };
+  await answer(origin, seeded.session, { text: QUESTION, source: email });
+  await page
+    .locator(".console-line")
+    .filter({ hasText: REPLY.slice(0, 40) })
+    .waitFor({ timeout: 30_000 });
   await page.waitForTimeout(2_400);
 }
 
-/**
- * The messaged session's `trax run`, played by this script: it waits on the
- * session's inbound queue, as `trax run` does, which marks the session polled
- * so the console may message it, and answers each message as the session's
- * next two records: the message as typed into the CLI, then the reply.
- */
-function standIn(origin: string, session: string): { stop(): Promise<void> } {
-  const stopped = new AbortController();
-  const loop = (async () => {
-    while (!stopped.signal.aborted) {
-      const drained = await fetch(`${origin}/api/sessions/${session}/inbound?wait_sec=5`, { signal: stopped.signal }).catch(
-        () => null,
-      );
-      if (!drained?.ok) continue;
-      const { messages } = (await drained.json()) as { messages: { text: string; source: string }[] };
-      for (const message of messages) await answer(origin, session, message);
-    }
-  })();
-  return {
-    stop: async () => {
-      stopped.abort();
-      await loop;
-    },
-  };
-}
-
 /** Append `message` and the reply to `session`'s first file, after a moment's thought. */
-async function answer(origin: string, session: string, message: { text: string; source: string }): Promise<void> {
+async function answer(
+  origin: string,
+  session: string,
+  message: { text: string; source: string },
+): Promise<void> {
   await append(origin, session, "UserMessage", `${message.source}: ${message.text}`);
   await new Promise((resolve) => setTimeout(resolve, 1_500));
   await append(origin, session, "AssistantMessage", REPLY);
 }
 
 /** Append one turn of `kind` saying `content` to `session`'s first file, stamped now. */
-async function append(origin: string, session: string, kind: string, content: string): Promise<void> {
-  const { parts } = (await (await fetch(`${origin}/api/sessions/${session}/parts`)).json()) as {
-    parts: { name: string; metadata: object; ir_id: string; format: string; records: number }[];
+async function append(
+  origin: string,
+  session: string,
+  kind: string,
+  content: string,
+): Promise<void> {
+  const { parts } = (await (
+    await fetch(`${origin}/api/sessions/${session}/parts`)
+  ).json()) as {
+    parts: {
+      name: string;
+      metadata: object;
+      ir_id: string;
+      format: string;
+      records: number;
+    }[];
   };
-  const { name, metadata, ir_id, format, records } = parts[0]!;
+  const { name, metadata, ir_id, format, records } = must(parts[0]);
   const timestamp = new Date().toISOString();
   const appended = await fetch(`${origin}/api/sessions/${session}/records`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+    },
     body: JSON.stringify({
       name,
       manifest: { name, metadata, ir_id, format, records: records + 1 },
-      records: [{ idx: records, kind, timestamp, payload: { content, timestamp }, text: content }],
+      records: [
+        {
+          idx: records,
+          kind,
+          timestamp,
+          payload: { content, timestamp },
+          text: content,
+        },
+      ],
     }),
   });
-  if (!appended.ok) throw new Error(`The stand-in agent could not reply: ${appended.status} ${await appended.text()}`);
+  if (!appended.ok)
+    throw new Error(
+      `The stand-in agent could not reply: ${appended.status} ${await appended.text()}`,
+    );
 }
 
 /**
@@ -284,55 +358,124 @@ async function append(origin: string, session: string, kind: string, content: st
  * as long as it did, divided by its part's speed, and at most `HOLD_MAX_S`; a
  * part of speed Infinity is left out. Returns what it wrote.
  */
-function encode(frames: readonly Frame[], parts: readonly Part[], work: string): string[] {
+function encode(
+  frames: readonly Frame[],
+  parts: readonly Part[],
+  work: string,
+): string[] {
   const timeline = schedule(frames, parts);
   const list = join(work, "frames.ffconcat");
-  const lines = timeline.flatMap(({ file, seconds }) => [`file '${file}'`, `duration ${seconds.toFixed(4)}`]);
-  writeFileSync(list, ["ffconcat version 1.0", ...lines, `file '${timeline.at(-1)!.file}'`, ""].join("\n"));
-  const input = ["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", list];
+  const lines = timeline.flatMap(({ file, seconds }) => [
+    `file '${file}'`,
+    `duration ${seconds.toFixed(4)}`,
+  ]);
+  writeFileSync(
+    list,
+    ["ffconcat version 1.0", ...lines, `file '${must(timeline.at(-1)).file}'`, ""].join(
+      "\n",
+    ),
+  );
+  const input = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    list,
+  ];
   const mp4 = join(OUT, "demo.mp4");
-  const video = [...input, "-vf", `fps=${FPS},scale=out_range=tv,format=yuv420p`, "-color_range", "tv"];
-  execFileSync("ffmpeg", [...video, "-c:v", "libx264", "-preset", "slow", "-crf", "20", "-movflags", "+faststart", mp4]);
+  const video = [
+    ...input,
+    "-vf",
+    `fps=${FPS},scale=out_range=tv,format=yuv420p`,
+    "-color_range",
+    "tv",
+  ];
+  execFileSync("ffmpeg", [
+    ...video,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "slow",
+    "-crf",
+    "20",
+    "-movflags",
+    "+faststart",
+    mp4,
+  ]);
   const webm = join(OUT, "demo.webm");
-  execFileSync("ffmpeg", [...video, "-c:v", "libvpx-vp9", "-crf", "34", "-b:v", "0", "-row-mt", "1", webm]);
+  execFileSync("ffmpeg", [
+    ...video,
+    "-c:v",
+    "libvpx-vp9",
+    "-crf",
+    "34",
+    "-b:v",
+    "0",
+    "-row-mt",
+    "1",
+    webm,
+  ]);
   const starts = partStarts(timeline, parts);
-  const poster = timeline.find(({ part }) => part === "roots")!.file;
+  const poster = must(timeline.find(({ part }) => part === "roots")).file;
   writeFileSync(join(OUT, "poster.jpg"), readFileSync(poster));
   execFileSync("cwebp", ["-quiet", "-q", "85", poster, "-o", join(OUT, "poster.webp")]);
-  const teaser = makeTeaser(mp4, starts.roots! + 3, work);
+  const teaser = makeTeaser(mp4, must(starts.roots) + 3, work);
   writeFileSync(join(OUT, "parts.json"), `${JSON.stringify(starts, null, 2)}\n`);
   const total = timeline.reduce((sum, { seconds }) => sum + seconds, 0);
   return [
     `video: ${total.toFixed(1)} s from ${frames.length} frames; parts start at ${JSON.stringify(starts)}`,
-    ...[mp4, webm, join(OUT, "poster.jpg"), join(OUT, "poster.webp"), teaser].map((file) => `${file}: ${statSync(file).size} bytes`),
+    ...[mp4, webm, join(OUT, "poster.jpg"), join(OUT, "poster.webp"), teaser].map(
+      (file) => `${file}: ${statSync(file).size} bytes`,
+    ),
   ];
 }
 
 /** Each kept frame with its part and how long it shows. */
-function schedule(frames: readonly Frame[], parts: readonly Part[]): { file: string; part: string; seconds: number }[] {
-  const speedOf = (part: Part, end: number) => ("speed" in part ? part.speed : (end - part.at) / part.seconds);
+function schedule(
+  frames: readonly Frame[],
+  parts: readonly Part[],
+): { file: string; part: string; seconds: number }[] {
+  const speedOf = (part: Part, end: number) =>
+    "speed" in part ? part.speed : (end - part.at) / part.seconds;
   const timeline = [];
   for (const [k, frame] of frames.entries()) {
     const index = parts.findLastIndex((part) => part.at <= frame.at);
     const part = parts[index];
     if (!part) continue;
-    const end = parts[index + 1]?.at ?? frames.at(-1)!.at;
+    const end = parts[index + 1]?.at ?? must(frames.at(-1)).at;
     const shown = (frames[k + 1]?.at ?? frame.at + HOLD_MAX_S) - frame.at;
     const speed = speedOf(part, end);
-    if (Number.isFinite(speed)) timeline.push({ file: frame.file, part: part.name, seconds: Math.min(shown / speed, HOLD_MAX_S) });
+    if (Number.isFinite(speed))
+      timeline.push({
+        file: frame.file,
+        part: part.name,
+        seconds: Math.min(shown / speed, HOLD_MAX_S),
+      });
   }
   return timeline;
 }
 
 /** Where each part starts in the video, in seconds. */
-function partStarts(timeline: readonly { part: string; seconds: number }[], parts: readonly Part[]): { [part: string]: number } {
+function partStarts(
+  timeline: readonly { part: string; seconds: number }[],
+  parts: readonly Part[],
+): { [part: string]: number } {
   const starts: { [part: string]: number } = {};
   let at = 0;
   for (const { part, seconds } of timeline) {
     starts[part] ??= Number(at.toFixed(2));
     at += seconds;
   }
-  return Object.fromEntries(parts.filter(({ name }) => name in starts).map(({ name }) => [name, starts[name]!]));
+  return Object.fromEntries(
+    parts
+      .filter(({ name }) => name in starts)
+      .map(({ name }) => [name, must(starts[name])]),
+  );
 }
 
 /**
@@ -343,58 +486,113 @@ function partStarts(timeline: readonly { part: string; seconds: number }[], part
 function makeTeaser(mp4: string, seconds: number, work: string): string {
   const stills = join(work, "teaser");
   mkdirSync(stills, { recursive: true });
-  execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-t", seconds.toFixed(2), "-i", mp4, "-vf", "fps=10,scale=640:-1:flags=lanczos", join(stills, "%04d.png")]);
+  execFileSync("ffmpeg", [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-t",
+    seconds.toFixed(2),
+    "-i",
+    mp4,
+    "-vf",
+    "fps=10,scale=640:-1:flags=lanczos",
+    join(stills, "%04d.png"),
+  ]);
   const pngs = readdirSync(stills)
     .toSorted()
     .map((name) => join(stills, name));
   const teaser = join(OUT, "teaser.webp");
   for (const quality of [70, 60, 50, 40, 30, 20]) {
-    execFileSync("img2webp", ["-loop", "0", "-lossy", "-q", String(quality), "-m", "6", "-d", "100", ...pngs, "-o", teaser], { stdio: "ignore" });
+    execFileSync(
+      "img2webp",
+      [
+        "-loop",
+        "0",
+        "-lossy",
+        "-q",
+        String(quality),
+        "-m",
+        "6",
+        "-d",
+        "100",
+        ...pngs,
+        "-o",
+        teaser,
+      ],
+      { stdio: "ignore" },
+    );
     if (statSync(teaser).size <= 750 * 1024) return teaser;
   }
-  throw new Error(`The teaser is over 750 KiB at the lowest quality tried: ${statSync(teaser).size} bytes.`);
+  throw new Error(
+    `The teaser is over 750 KiB at the lowest quality tried: ${statSync(teaser).size} bytes.`,
+  );
 }
 
 /** How many nodes the graph draws now. */
 async function drawnCount(page: Page): Promise<number> {
-  return page.evaluate(() => (window as unknown as { trackinizer: { graph(): { nodes: unknown[] } } }).trackinizer.graph().nodes.length);
+  return page.evaluate(
+    () =>
+      (
+        window as unknown as { trackinizer: { graph(): { nodes: unknown[] } } }
+      ).trackinizer.graph().nodes.length,
+  );
 }
 
 /** The title the graph draws node `id` with. */
 async function titleOf(page: Page, id: string): Promise<string> {
-  return page.evaluate((wanted) => {
-    const debug = (window as unknown as { trackinizer: { graph(): { nodes: { id: string; title: string }[] } } }).trackinizer;
-    return debug.graph().nodes.find((node) => node.id === wanted)!.title;
-  }, id);
+  return page
+    .evaluate((wanted) => {
+      const debug = (
+        window as unknown as {
+          trackinizer: { graph(): { nodes: { id: string; title: string }[] } };
+        }
+      ).trackinizer;
+      return debug.graph().nodes.find((node) => node.id === wanted)?.title;
+    }, id)
+    .then(must);
 }
 
 /** Where node `id` is in the window. */
 async function screenOf(page: Page, id: string): Promise<{ x: number; y: number }> {
-  return page.evaluate((wanted) => {
-    const debug = (window as unknown as { trackinizer: { graph(): { nodes: { id: string; screen: { x: number; y: number } }[] } } }).trackinizer;
-    return debug.graph().nodes.find((node) => node.id === wanted)!.screen;
-  }, id);
+  return page
+    .evaluate((wanted) => {
+      const debug = (
+        window as unknown as {
+          trackinizer: {
+            graph(): { nodes: { id: string; screen: { x: number; y: number } }[] };
+          };
+        }
+      ).trackinizer;
+      return debug.graph().nodes.find((node) => node.id === wanted)?.screen;
+    }, id)
+    .then(must);
 }
 
-/** Open the top bar's Go menu and click its entry `label`, gliding to each first. */
+/** Click the sidebar's entry `label`, gliding to it first. */
 async function clickNav(page: Page, label: string): Promise<void> {
-  const go = page.getByRole("banner", { name: "App" }).getByRole("button", { name: "Go to" });
-  await glideTo(page, go);
-  await go.click();
-  const entry = page.getByRole("navigation", { name: "Go to" }).getByRole("link").filter({ has: page.locator(".label", { hasText: new RegExp(`^${label}$`) }) });
+  const entry = page
+    .getByRole("navigation", { name: "Sidebar" })
+    .getByRole("link", { name: label, exact: true });
   await glideTo(page, entry);
   await entry.click();
 }
 
 /** Move the pointer to the middle of `target` the way a hand would. */
 async function glideTo(page: Page, target: ReturnType<Page["locator"]>): Promise<void> {
-  const box = (await target.boundingBox())!;
+  const box = must(await target.boundingBox());
   await glide(page, box.x + Math.min(box.width / 2, 120), box.y + box.height / 2);
 }
 
 /** Move the pointer to `x`, `y` over half a second, easing in and out, a frame a step. */
 async function glide(page: Page, x: number, y: number): Promise<void> {
-  const from = await page.evaluate(() => (window as unknown as { pointerAt?: { x: number; y: number } }).pointerAt ?? { x: 640, y: 400 });
+  const from = await page.evaluate(
+    () =>
+      (window as unknown as { pointerAt?: { x: number; y: number } }).pointerAt ?? {
+        x: 640,
+        y: 400,
+      },
+  );
   for (let step = 1; step <= GLIDE_STEPS; step += 1) {
     const t = step / GLIDE_STEPS;
     const eased = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;

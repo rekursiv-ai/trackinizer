@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, override
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -19,20 +19,31 @@ from trackinizer.conftest import (
     queue_field_rows,
 )
 from trackinizer.lib.postgres import Conn
-from trackinizer.server.audience import SessionReader, hidden_exists_sql
+from trackinizer.sagent.session.types import AgentMessage, stored_names
+from trackinizer.server.access_policy import DefaultPolicy, Principal
+from trackinizer.server.audience import (
+    SessionReader,
+    hidden_exists_sql,
+)
 from trackinizer.server.store import read
 from trackinizer.server.values import manifest_bound, vetted_sql
+from trackinizer.types.belief_confidence import fold_confidence
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.wire.filters import Filter
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
+from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 
 
 if TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockConnection, MockControl
+    from trackinizer.server.access_policy import ResourceKind
+    from trackinizer.server.store.core import Store
     from trackinizer.types.inquiries import Inquiry
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 K1: uuid.UUID = uuid.UUID("33333333-3333-3333-3333-333333333333")
@@ -57,7 +68,7 @@ class TestStoreReads:
         cursor_created = datetime(2026, 1, 1, tzinfo=UTC)
         # The cursor lookup resolves after_id's ``created``.
         conn.fetchval = AsyncMock(return_value=cursor_created)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.list_changes(after_id=cursor_id)
         main = next(
             c
@@ -108,8 +119,9 @@ class TestStoreReads:
         store, _engine = make_store(conn)
         since = datetime(2026, 1, 1, tzinfo=UTC)
         after = new_uuid()
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.what_changed_for_anyone(since, after_id=after)
+        assert conn.fetch.call_args is not None
         sql = conn.fetch.call_args.args[0]
         assert isinstance(sql, str)
         assert "(c.created, c.id) > ($1, $2)" in sql
@@ -208,19 +220,19 @@ class TestCoverageStoreReads:
             conn,
             # next_issue SELECT * FROM next_issue.sql.
             self._row(kind="Issue", id=issue_id, priority=20),
-            # cost_for(deep=True): cost_subtree row after existence check.
+            # inquiry_cost(deep=True): cost_subtree row after existence check.
             {"agent_usd": 1.0, "resource_usd": 2.0},
         )
-        # cost_for existence check (fetchval); deep call exists, shallow doesn't.
+        # inquiry_cost existence check (fetchval); deep call exists, shallow doesn't.
         conn.fetchval.side_effect = [1, None]
         store, _engine = make_store(conn)
         assert len(await store.list_kind("Issue", status="active")) == 1
         assert await store.next_issue() is not None
-        assert await store.cost_for(issue_id, deep=True) == Cost(
+        assert await store.inquiry_cost(issue_id, deep=True) == Cost(
             agent_usd=1.0,
             resource_usd=2.0,
         )
-        assert await store.cost_for(issue_id) is None
+        assert await store.inquiry_cost(issue_id) is None
         assert len(await store.proves_belief(issue_id)) == 1
         assert len(await store.what_changed_for_me("alice", datetime.now(UTC))) == 1
 
@@ -286,7 +298,7 @@ class TestListKindFilterLowering:
     """
 
     @classmethod
-    async def sql_for(cls, *filters: Filter, limit: int = 5) -> str:
+    async def list_sql(cls, *filters: Filter, limit: int = 5) -> str:
         """Return the SELECT ``list_kind`` issues for ``filters``."""
         conn = make_conn()
         conn.fetch.side_effect = [list[dict[str, object]](), list[dict[str, object]]()]
@@ -338,7 +350,7 @@ class TestListKindFilterLowering:
     @pytest.mark.asyncio
     async def test_lowers_a_regex_to_the_sql_operator(self) -> None:
         """``re`` becomes Postgres' ``~``, so the scan never leaves the DB."""
-        sql = await self.sql_for(Filter(field="title", op="re", value="bug"))
+        sql = await self.list_sql(Filter(field="title", op="re", value="bug"))
 
         assert "title ~ $2" in sql
         assert "LIMIT" in sql
@@ -346,7 +358,7 @@ class TestListKindFilterLowering:
     @pytest.mark.asyncio
     async def test_lowers_text_array_membership_to_gin_containment(self) -> None:
         """``label is x`` uses containment so the GIN index can serve it."""
-        sql = await self.sql_for(Filter(field="labels", op="is", value="bug"))
+        sql = await self.list_sql(Filter(field="labels", op="is", value="bug"))
 
         assert "labels @> ARRAY[$2]::text[]" in sql
         assert "LIMIT" in sql
@@ -373,7 +385,7 @@ class TestListKindFilterLowering:
     @pytest.mark.asyncio
     async def test_lowers_an_order_op_on_a_numeric_column(self) -> None:
         """Both evaluators compare a numeric column numerically."""
-        sql = await self.sql_for(Filter(field="issue_priority", op="lt", value="20"))
+        sql = await self.list_sql(Filter(field="issue_priority", op="lt", value="20"))
 
         assert "issue_priority < $2::numeric" in sql
         assert "LIMIT" in sql
@@ -388,7 +400,7 @@ class TestListKindFilterLowering:
         keeping it in Python returns rows no lowered query could.
         """
         with pytest.raises(ValidationError, match="title"):
-            await self.sql_for(Filter(field="title", op="lt", value="9"))
+            await self.list_sql(Filter(field="title", op="lt", value="9"))
 
     @pytest.mark.asyncio
     async def test_an_unknown_field_is_refused(self) -> None:
@@ -399,12 +411,12 @@ class TestListKindFilterLowering:
         would have errored on the column name.
         """
         with pytest.raises(ValidationError, match="unknown filter field"):
-            await self.sql_for(Filter(field="nonesuch", op="is", value="x"))
+            await self.list_sql(Filter(field="nonesuch", op="is", value="x"))
 
     @pytest.mark.asyncio
     async def test_lowers_a_parent_filter_to_an_edge_subquery(self) -> None:
         """``narrows`` reads ``edges``, so a list of roots keeps its SQL ``LIMIT``."""
-        sql = await self.sql_for(Filter(field="narrows", op="isnull", value=""))
+        sql = await self.list_sql(Filter(field="narrows", op="isnull", value=""))
 
         assert (
             "NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id"
@@ -420,7 +432,7 @@ class TestListKindFilterLowering:
         clause costs the query its SQL ``LIMIT`` (Issue#256). ``config`` is
         JSONB, which has no SQL rendering of ``str(dict)`` to lower to.
         """
-        sql = await self.sql_for(
+        sql = await self.list_sql(
             Filter(field="account", op="is", value="josh"),
             Filter(field="experiment_config", op="is", value="x"),
         )
@@ -522,6 +534,7 @@ class TestRecordTexts:
             "",
             None,
             False,
+            # every_chat and the configured assistant, which `visible_sql` binds too.
             False,
             False,
             True,
@@ -537,6 +550,34 @@ class TestRecordTexts:
             hidden_exists_sql("r.session_id", params=[[], []], reader=SessionReader()),
             " GROUP BY r.session_id, r.kind",
         )
+
+    @pytest.mark.asyncio
+    async def test_a_renamed_class_s_field_reads_its_rows_under_both_their_kinds(
+        self,
+    ) -> None:
+        name, other = stored_names(AgentMessage.__name__)
+        field = next(f for f, kind in SESSION_RECORD_FIELDS.items() if kind == name)
+        both, one = new_uuid(), new_uuid()
+        conn = make_conn()
+        conn.fetch.return_value = [
+            {"session_id": both, "kind": name, "texts": ["under its name"]},
+            {"session_id": both, "kind": other, "texts": ["under the other"]},
+            {"session_id": one, "kind": other, "texts": ["only"]},
+        ]
+
+        texts = await read._record_texts(
+            cast(Conn, conn),
+            [both, one],
+            [Filter(field=field, op="notnull", value="")],
+            reader=SessionReader(),
+        )
+
+        assert texts == {
+            both: {field: ["under its name", "under the other"]},
+            one: {field: ["only"]},
+        }
+        assert conn.fetch.await_args is not None
+        assert conn.fetch.await_args.args[2] == [name, other]
 
     @pytest.mark.asyncio
     async def test_a_session_with_no_such_record_is_absent_not_empty(self) -> None:
@@ -607,6 +648,400 @@ class TestUnboundableRegexRefusal:
             [],
             lowering=lowering,
         )
+
+
+class _Granted(DefaultPolicy):
+    """Reads only the rows a grant names."""
+
+    @override
+    def read_filter(
+        self,
+        kind: ResourceKind,
+        alias: str,
+        *,
+        params: list[object],
+        principal: Principal,
+    ) -> str:
+        del kind, params, principal
+        return f"{alias}.granted"
+
+
+_READER: Final = Principal(email="bea@example.com", role="viewer")
+
+
+def _restricted() -> tuple[Store, MockConnection]:
+    """Return a store whose policy restricts reads, and its connection."""
+    conn = make_conn()
+    store, _engine = make_store(conn)
+    store.access_policy = _Granted()
+    return store, conn
+
+
+def _last_sql(mock: MockControl) -> str:
+    """Return the SQL of ``mock``'s last call."""
+    call = mock.call_args
+    assert call is not None
+    sql = call.args[0]
+    assert isinstance(sql, str)
+    return sql
+
+
+def _last_binds(mock: MockControl) -> tuple[object, ...]:
+    """Return the values ``mock``'s last call bound to its SQL."""
+    call = mock.call_args
+    assert call is not None
+    return tuple(call.args[1:])
+
+
+class TestPolicyGatedReads:
+    """A policy that restricts reads gates every read by the rows it may see."""
+
+    @pytest.mark.asyncio
+    async def test_a_list_keeps_only_granted_rows(self) -> None:
+        store, conn = _restricted()
+
+        assert await store.list_kind("Issue", principal=_READER) == []
+
+        assert "readable_inquiry.id = inquiries.id AND (readable_inquiry.granted))" in (
+            _last_sql(conn.fetch)
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_short_reference_names_a_row_the_reader_may_read_alone(
+        self,
+    ) -> None:
+        store, conn = _restricted()
+        store.access_policy = _Binding()
+        found = new_uuid()
+        conn.fetchrow.side_effect = [None, {"id": found}, {"id": found}]
+
+        unseen = await store.inquiry_id("AgentSession", 412, principal=_READER)
+        seen = await store.inquiry_id("AgentSession", 412, principal=_READER)
+        sql, binds = _last_sql(conn.fetchrow), _last_binds(conn.fetchrow)
+        store.access_policy = DefaultPolicy()
+        trusted = await store.inquiry_id("Issue", 7)
+
+        bound = ["AgentSession", 412, _READER.email]
+        gate = "readable_inquiry.owner = $3"
+        assert (unseen, seen, trusted) == (None, found, found)
+        head = (
+            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2 AND (EXISTS "
+            "(SELECT 1 FROM inquiries readable_inquiry WHERE readable_inquiry.id = "
+            "inquiries.id AND ("
+        )
+        assert (sql[: len(head)], sql[len(head) :]) == (head, gate + ")))")
+        assert binds == tuple(bound)
+        assert _last_sql(conn.fetchrow) == (
+            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2"
+        )
+        assert _last_binds(conn.fetchrow) == ("Issue", 7)
+
+    @pytest.mark.asyncio
+    async def test_history_is_gated_by_its_subject_and_each_present_peer(self) -> None:
+        store, conn = _restricted()
+        params: list[object] = []
+
+        predicate = store.change_read_filter("c", params=params, principal=_READER)
+        assert await store.get_change(new_uuid(), principal=_READER) is None
+        assert await store.list_changes(actor="alice", principal=_READER) == []
+
+        assert predicate.count("readable_inquiry.granted") == 3
+        assert "(c.old_peer_id IS NULL OR (EXISTS" in predicate
+        assert "(c.new_peer_id IS NULL OR (EXISTS" in predicate
+        # ``get_change`` wraps the filter, whose first clause is itself parenthesized.
+        assert (
+            "WHERE id = $1 AND (change_log.kind NOT IN ('locked', 'unlocked') AND (EXISTS"
+            in _last_sql(conn.fetchrow)
+        )
+        listed = _last_sql(conn.fetch)
+        assert "(created" not in listed
+        gated: list[object] = []
+        assert f"actor = ${3 * len(gated) + 1}" in listed
+
+
+class _Binding(DefaultPolicy):
+    """Reads only the rows the reader owns, bound as a parameter."""
+
+    @override
+    def read_filter(
+        self,
+        kind: ResourceKind,
+        alias: str,
+        *,
+        params: list[object],
+        principal: Principal,
+    ) -> str:
+        del kind
+        params.append(principal.email)
+        return f"{alias}.owner = ${len(params)}"
+
+
+class TestProtectedHistory:
+    """Lock events are for an admin; the policy's own gate is separate."""
+
+    def test_the_policys_own_gate_follows_the_protected_clause_with_its_bindings(
+        self,
+    ) -> None:
+        store, _engine = make_store()
+        store.access_policy = _Binding()
+        params: list[object] = []
+        step = 1
+
+        predicate = store.change_read_filter("c", params=params, principal=_READER)
+
+        assert params[::step] == [_READER.email] * 3
+        assert predicate.startswith("c.kind NOT IN ('locked', 'unlocked') AND (EXISTS")
+        assert [
+            f"readable_inquiry.owner = ${n}" in predicate
+            for n in (1, 1 + step, 1 + 2 * step)
+        ] == [True, True, True]
+
+    def test_only_an_admin_reads_a_protected_kind(self) -> None:
+        store, _engine = make_store()
+        admin = Principal(email="root@example.com", role="admin")
+
+        assert store.change_read_filter("c", params=[], principal=None) == "TRUE"
+        assert store.change_read_filter("c", params=[], principal=admin) == "TRUE"
+        assert (
+            store.change_read_filter("c", params=[], principal=_READER)
+            == "c.kind NOT IN ('locked', 'unlocked')"
+        )
+
+
+_SINCE: Final = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _change_row(change_id: uuid.UUID, **extra: object) -> dict[str, object]:
+    """Return the columns of one ``created`` change, as the sweeps select them."""
+    return {
+        "id": change_id,
+        "created": _SINCE,
+        "actor": "alice",
+        "subject_id": K1,
+        "subject_kind": "Issue",
+        "kind": "created",
+        "reason": "",
+        **extra,
+    }
+
+
+class TestChangeSweeps:
+    """The two cursor reads that feed subscriptions."""
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_starts_at_the_least_id_and_takes_a_page_of_200(self) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+
+        await store.what_changed_for_me("watcher", _SINCE)
+        mine = _last_binds(conn.fetch)
+        await store.what_changed_for_anyone(_SINCE)
+        anyone = _last_binds(conn.fetch)
+
+        assert mine == (_SINCE, uuid.UUID(int=0), "watcher", 200)
+        assert anyone == (_SINCE, uuid.UUID(int=0), 200)
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_resumes_after_the_id_it_is_given(self) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        last = new_uuid()
+
+        await store.what_changed_for_me("watcher", _SINCE, after_id=last, limit=7)
+        mine = _last_binds(conn.fetch)
+        await store.what_changed_for_anyone(_SINCE, after_id=last, limit=7)
+        anyone = _last_binds(conn.fetch)
+
+        assert mine == (_SINCE, last, "watcher", 7)
+        assert anyone == (_SINCE, last, 7)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [1, MAX_LIST_LIMIT])
+    async def test_a_page_at_either_bound_is_read(self, limit: int) -> None:
+        store, _engine = make_store()
+
+        assert await store.what_changed_for_me("w", _SINCE, limit=limit) == []
+        assert await store.what_changed_for_anyone(_SINCE, limit=limit) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, MAX_LIST_LIMIT + 1])
+    async def test_a_page_outside_the_bounds_is_refused(self, limit: int) -> None:
+        store, engine = make_store()
+
+        with pytest.raises(ValueError, match="limit must be in"):
+            await store.what_changed_for_me("w", _SINCE, limit=limit)
+        with pytest.raises(ValueError, match="limit must be in"):
+            await store.what_changed_for_anyone(_SINCE, limit=limit)
+
+        assert engine.conn.fetch.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_each_row_comes_back_as_its_change_with_the_subjects_seq(
+        self,
+    ) -> None:
+        change_id = new_uuid()
+        conn = make_conn()
+        conn.fetch.return_value = [_change_row(change_id, subject_seq=42)]
+        store, _engine = make_store(conn)
+
+        mine = await store.what_changed_for_me("watcher", _SINCE)
+        anyone = await store.what_changed_for_anyone(_SINCE)
+
+        assert [(c.id, c.kind, c.subject_id) for c in mine] == [
+            (change_id, "created", K1),
+        ]
+        assert [(c.id, seq) for c, seq in anyone] == [(change_id, 42)]
+
+
+class TestUngatedReads:
+    @pytest.mark.asyncio
+    async def test_a_change_absent_from_the_log_is_none(self) -> None:
+        store, _engine = make_store()
+
+        assert await store.get_change(new_uuid()) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, MAX_LIST_LIMIT + 1])
+    async def test_a_change_page_outside_the_cap_is_refused(self, limit: int) -> None:
+        store, engine = make_store()
+
+        with pytest.raises(ValueError, match="limit must be in"):
+            await store.list_changes(limit=limit)
+
+        assert engine.conn.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_no_unowned_active_issue_means_none_to_claim(self) -> None:
+        store, _engine = make_store()
+
+        assert await store.next_issue() is None
+
+    @pytest.mark.asyncio
+    async def test_a_row_whose_totals_vanished_costs_nothing(self) -> None:
+        """Present at the probe, gone at the read: a zero cost, not a missing row."""
+        conn = make_conn()
+        conn.fetchval.return_value = 1
+        store, _engine = make_store(conn)
+
+        assert await store.inquiry_cost(new_uuid()) == Cost()
+
+    @pytest.mark.asyncio
+    async def test_authority_keeps_only_the_relations_that_reach_the_row(self) -> None:
+        conn = make_conn()
+        queue_field_rows(
+            conn,
+            {
+                "proves_authority": 0.25,
+                "favors_authority": None,
+                "cited_by_authority": 0.5,
+                "issue_authority": None,
+            },
+            None,
+        )
+        store, _engine = make_store(conn)
+
+        assert await store.derived_authority(new_uuid()) == {
+            "proves_authority": 0.25,
+            "cited_by_authority": 0.5,
+        }
+        assert await store.derived_authority(new_uuid()) is None
+
+
+class TestNarrowsAncestors:
+    @pytest.mark.asyncio
+    async def test_no_rows_ask_nothing(self) -> None:
+        store, engine = make_store()
+
+        assert await store.narrows_ancestors([]) == {}
+        assert engine.conn.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_ancestors_come_nearest_first_each_once_and_never_the_row(
+        self,
+    ) -> None:
+        """A diamond's top is listed once; a cycle back to the row is dropped."""
+        row, left, right, top = (uuid.UUID(int=n) for n in range(1, 5))
+        conn = make_conn()
+        conn.fetch.return_value = [
+            _ancestor_row(left, child=row),
+            _ancestor_row(right, child=row),
+            _ancestor_row(top, child=left),
+            _ancestor_row(top, child=right),
+            _ancestor_row(row, child=top),
+        ]
+        store, _engine = make_store(conn)
+
+        (ancestry,) = (await store.narrows_ancestors([row])).values()
+
+        assert [(a.id, a.child_ids) for a in ancestry] == [
+            (left, (row,)),
+            (right, (row,)),
+            (top, (left, right)),
+        ]
+
+
+def _ancestor_row(parent: uuid.UUID, *, child: uuid.UUID) -> dict[str, object]:
+    return {
+        "id": parent,
+        "kind": "Issue",
+        "seq": parent.int,
+        "title": f"issue {parent.int}",
+        "status": "active",
+        "child": child,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_inquiry_materializes_the_found_row_with_its_id() -> None:
+    row = TestCoverageStoreReads()._row()
+    conn = make_conn()
+    queue_field_rows(conn, row)
+    store, _engine = make_store(conn)
+
+    found = await store.get_inquiry(cast(uuid.UUID, row["id"]))
+
+    assert found is not None
+    assert (found.id, found.title, found.owner) == (row["id"], "title", "alice")
+    assert found.produced_by == ()
+    assert conn.fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("joined", [False, True])
+@pytest.mark.parametrize("kind", [None, "Issue", "Belief", "Experiment"])
+async def test_confidence_applies_only_to_claimable_rows(
+    joined: bool,
+    kind: str | None,
+) -> None:
+    store, engine = make_store()
+    engine.conn.fetchval.return_value = kind
+    confidence = await store.derived_confidence(
+        new_uuid(),
+        conn=cast(Conn, engine.conn) if joined else None,
+    )
+    assert confidence == (0.5 if kind in {"Belief", "Experiment"} else None)
+    assert engine.conn.fetch.await_count == (
+        1 if kind in {"Belief", "Experiment"} else 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_confidence_memoizes_shared_claims_and_breaks_cycles_at_neutral() -> None:
+    root, child = new_uuid(), new_uuid()
+    store, engine = make_store()
+    engine.conn.fetchval.return_value = "Belief"
+    engine.conn.fetch.side_effect = [
+        [
+            {"from_id": child, "from_kind": "Belief", "valence": 0.8},
+            {"from_id": child, "from_kind": "Experiment", "valence": 0.2},
+            {"from_id": root, "from_kind": "Belief", "valence": -0.4},
+            {"from_id": new_uuid(), "from_kind": "Paper", "valence": 0.3},
+        ],
+        [],
+    ]
+
+    assert await store.derived_confidence(root) == pytest.approx(fold_confidence(0.6))
+    assert [call.args[1] for call in engine.conn.fetch.await_args_list] == [root, child]
 
 
 if __name__ == "__main__":
