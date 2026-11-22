@@ -137,6 +137,9 @@ PROCESS_KEY_ROUTES: Final[Mapping[tuple[str, str], Scope]] = _route_union(
         # whether that spend is final; the routes read the caller's own alone.
         ("GET", "/api/addons/knowspend/campaigns"): "account",
         ("GET", "/api/addons/jobs/jobs"): "account",
+        # Its account's spend today and what of its allowance and credit is left, which
+        # it tells the person before it starts work that spends them.
+        ("GET", "/api/addons/knowspend/today"): "account",
         # Its account's hosts, which its agents' tools run on.
         ("GET", "/api/terminals/hosts"): "account",
         ("GET", "/api/terminals/hosts/changes"): "account",
