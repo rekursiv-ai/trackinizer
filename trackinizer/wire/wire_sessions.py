@@ -871,3 +871,35 @@ class ConsoleTarget(BaseModel):
 type InboundKind = Literal["line", "command", "answer", "settings", "interrupt"]
 """What an inbound item is: a person's line, a slash command, an answer to an ask,
 a settings change, or an interrupt."""
+
+
+class WorkspaceMessageContext(BaseModel):
+    """Server-derived canvas context attached to an inbound message."""
+
+    workspace_id: uuid.UUID
+    visible_visuals: list[WorkspaceVisibleVisual]
+    agent_instructions: str | None = Field(default=None, max_length=8_192)
+    continuation_record_id: uuid.UUID | None = None
+    conversation_id: uuid.UUID | None = None
+    """The Chat conversation the message belongs to; an assistant answers there."""
+
+    fork: ChatForkAt | None = None
+    """Set on the first line of a fork: the line of another conversation's session it
+    starts from. The assistant opens the conversation with the lines up to it."""
+
+    page: WorkspacePage | None = None
+    """The page the sender is on as they send: what "this" means to them."""
+
+    trail: list[WorkspacePage] = Field(default_factory=list)
+    """The pages they came through before it, oldest first."""
+
+    marks: list[WorkspaceMark] = Field(default_factory=list)
+    """The boxes drawn on the station since its last line, oldest first."""
+
+    relay: ConsoleRelay | None = None
+    """Set when the message is not a question for the partner but a note of what the
+    person told agents from the Console; the message text is the relay's text."""
+
+
+type RunState = Literal["idle", "running", "requires_action", "taken_over"]
+"""What a chat's run is doing, as it last reported."""
