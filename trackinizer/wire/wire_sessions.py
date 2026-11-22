@@ -962,3 +962,5 @@ class WorkspaceMark(BaseModel):
 
     records: list[WorkspaceRecordContext] = Field(default_factory=list)
     """The records under it that exist."""
+
+STATION_LABEL_PREFIX: Final = "station:"
