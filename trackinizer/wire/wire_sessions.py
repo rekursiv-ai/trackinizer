@@ -903,3 +903,61 @@ class WorkspaceMessageContext(BaseModel):
 
 type RunState = Literal["idle", "running", "requires_action", "taken_over"]
 """What a chat's run is doing, as it last reported."""
+
+
+class WorkspaceRecordContext(BaseModel):
+    """A graph record the sender sees on screen, with a bounded title preview."""
+
+    id: uuid.UUID
+    kind: str
+    seq: int
+    title: str = Field(max_length=512)
+
+
+class WorkspaceVisibleVisual(BaseModel):
+    """A visual present on the canvas when a message was sent."""
+
+    id: uuid.UUID
+    type: str
+    record: WorkspaceRecordContext | None = None
+    """The record the visual shows, when it shows one that exists."""
+
+    params: dict[str, str | int | bool] = Field(default_factory=dict)
+    """The visual's parameters as the canvas holds them, such as the narrowing a
+    reader set in the pane, so an agent that shows it again can keep them."""
+
+
+class WorkspacePage(BaseModel):
+    """A page the sender was on, with the record it shows when it names one."""
+
+    route: str
+    """The `#/...` address."""
+
+    record: WorkspaceRecordContext | None = None
+
+
+class WorkspaceMark(BaseModel):
+    """A red box drawn on the canvas since the sender's last line, with what it covers."""
+
+    id: uuid.UUID
+    """What ``trax workspace ID mark remove`` takes."""
+
+    author: str
+    page: str | None = None
+    """The `#/...` page it was drawn on."""
+
+    left: float = Field(default=0.0, ge=0, le=1)
+    top: float = Field(default=0.0, ge=0, le=1)
+    right: float = Field(default=0.0, ge=0, le=1)
+    bottom: float = Field(default=0.0, ge=0, le=1)
+    """Where it stands, as fractions of the width and height of the ``tile``'s body,
+    or of the stage when there is no tile."""
+
+    tile: WorkspaceVisibleVisual | None = None
+    """The visual it was drawn on, when it was drawn on one."""
+
+    instances: list[WorkspaceVisibleVisual] = Field(default_factory=list)
+    """The visuals under it that are still on the canvas."""
+
+    records: list[WorkspaceRecordContext] = Field(default_factory=list)
+    """The records under it that exist."""
