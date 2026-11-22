@@ -1018,6 +1018,43 @@ async def test_another_key_re_opens_the_child_its_spawner_already_has(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_restarted_process_s_key_re_opens_the_child_the_last_one_opened(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    await _active_user(store)
+    _, root, _ = await _spawned(client, "abc")
+    assert root is not None
+    keys = (uuid.UUID(int=11), uuid.UUID(int=12))
+    async with store.engine.acquire() as conn:
+        for key in keys:
+            await conn.execute(
+                "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
+                "VALUES ($1, $2, 'agent process', 'hash', $3, 'writer')",
+                key,
+                TEST_USER_ID,
+                f"trax_{key.int}",
+            )
+    opened: list[tuple[int, uuid.UUID | None, str]] = []
+    for key in keys:
+        install_identity(
+            replace(
+                make_test_identity(api_key_id=key),
+                process=ProcessKey(
+                    process_id=key,
+                    session_id=root,
+                    host_id=uuid.UUID(int=3),
+                ),
+            ),
+        )
+        opened.append(await _spawned(client, "abc/k", spawner=root, note="kid"))
+
+    [(status, kid, _), again] = opened
+    assert (status, again[:2]) == (201, (201, kid))
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_an_agent_process_starts_only_a_child_in_its_own_sessions_tree(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
