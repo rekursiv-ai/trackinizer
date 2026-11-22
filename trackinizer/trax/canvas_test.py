@@ -481,6 +481,16 @@ def test_canvas_hide_or_show_chat_moves_the_window_without_an_operation() -> Non
     assert client.reads == []
 
 
+def test_canvas_show_chat_on_an_agents_session_opens_its_tab_in_chat() -> None:
+    client = _CanvasClient()
+    session = uuid.uuid4()
+
+    _canvas(client, "show", "chat", "--record", str(session))
+
+    assert client.operations == [{"kind": "agent", "session": str(session)}]
+    assert client.chat_windows == []
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

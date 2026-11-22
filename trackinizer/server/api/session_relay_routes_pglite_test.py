@@ -613,6 +613,32 @@ async def test_flags_go_to_the_callers_own_host(world: _World) -> None:
 
 
 @pytest.mark.parametrize(
+    ("stored", "watcher"),
+    [({"watcher": False}, False), ({}, True)],
+    ids=["setting off", "setting on by default"],
+)
+async def test_a_start_says_whether_the_persons_watcher_setting_is_on(
+    world: _World,
+    *,
+    stored: dict[str, bool],
+    watcher: bool,
+) -> None:
+    headers = await _places(world)
+    laptop = await world.host("lab", owner="ada@x.y", facts=_RUNS)
+    async with world.store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET preferences = $1::jsonb WHERE email = $2",
+            stored,
+            "ada@x.y",
+        )
+
+    started = await world.start(headers, await world.session("ada@x.y"), host="lab")
+
+    assert started.status_code == 200, started.text
+    assert (await world.served(laptop)).watcher is watcher
+
+
+@pytest.mark.parametrize(
     ("host", "remote"),
     [("", True), ("laptop", False)],
     ids=["the remote agent service", "ada's own"],
@@ -673,6 +699,31 @@ async def test_a_start_hands_its_host_a_key_that_serves_the_session_and_only_the
         laptop.id,
         "ada@x.y",
     )
+
+
+async def test_a_process_on_the_remote_agent_service_holds_a_key_of_who_started_it(
+    world: _World,
+) -> None:
+    """Not the service's account, whose host runs it: what it starts is its person's."""
+    ada = await world.key(await world.person("ada@x.y"))
+    _ = await world.person(_AGENTS)
+    service = await world.host("remote-agents", owner=_AGENTS, facts=_SERVICE)
+    session_id = await world.session("ada@x.y")
+
+    started = await world.start(ada, session_id)
+    process = AgentProcess.model_validate(started.json())
+    served = await world.served(service)
+
+    assert started.status_code == 200, started.text
+    assert served.remote
+    async with world.store.engine.acquire() as conn:
+        key = await conn.fetchrow(
+            "SELECT k.host_id, u.email FROM api_keys k "
+            "JOIN users u ON u.id = k.user_id WHERE k.name = $1",
+            process_key_name(process.process_id, session_id=session_id),
+        )
+    assert key is not None
+    assert (key["host_id"], key["email"]) == (service.id, "ada@x.y")
 
 
 @pytest.mark.parametrize("host", [None, "remote-agents", "laptop"])
@@ -2241,6 +2292,7 @@ async def test_a_viewer_reads_each_frame_as_a_server_sent_event(world: _World) -
         host="lab",
         token=f"key-{session_id.hex}",
         remote=False,
+        watcher=False,
     )
     second = await anext(body)
 

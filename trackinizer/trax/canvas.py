@@ -92,6 +92,19 @@ def show_operation(
     return operation
 
 
+def agent_operation(session_id: uuid.UUID) -> dict[str, object]:
+    """Return the operation that shows an agent in Chat: this command's, and a tool's.
+
+    Args:
+      session_id: The agent's session, one the canvas's chat spawned.
+
+    Returns:
+      operation: The ``agent`` operation, which opens or adds its tab in Chat.
+
+    """
+    return {"kind": "agent", "session": str(session_id)}
+
+
 def mark_operation(
     points: Sequence[tuple[float, float]],
     *,
@@ -156,6 +169,7 @@ class Canvas(Command):
             "trax canvas UUID navigate '#/list/Issue'",
             "trax canvas UUID highlight RECORD_UUID,RECORD_UUID",
             "trax canvas UUID hide chat",
+            "trax canvas UUID show chat --record SESSION_UUID",
             "trax canvas UUID hide INSTANCE_UUID",
             "trax canvas UUID mark 0.1,0.2 0.4,0.5 --record RECORD_UUID",
             "trax canvas UUID mark remove MARK_UUID",
@@ -277,7 +291,14 @@ class Canvas(Command):
             _capture(client, canvas_id=canvas_id, args=flags)
             return
         if _is_chat(flags):
-            updated = client.chat_window(canvas_id, hidden=flags.action == "hide")
+            updated = (
+                client.chat_window(canvas_id, hidden=flags.action == "hide")
+                if flags.record is None
+                else client.apply_canvas_operation(
+                    canvas_id,
+                    operation=agent_operation(_canvas_uuid(flags.record, "record")),
+                )
+            )
             _print_canvas(updated)
             return
         parameters = (
@@ -703,12 +724,15 @@ def _preference_value(text: str) -> MutablePlainTree:
         return text
 
 
+# `show chat --record SESSION` shows that agent of the canvas's chat in a tab of Chat.
 def _is_chat(args: _CanvasArgs) -> bool:
     """Whether the action is `hide chat` or `show chat`: the tab's Chat window."""
     if args.action not in {"hide", "show"} or args.subject != ["chat"]:
         return False
-    if args.record is not None or args.placement is not None or args.param:
+    if args.placement is not None or args.param:
         raise ClientError(f"{args.action} chat takes no other argument")
+    if args.action == "hide" and args.record is not None:
+        raise ClientError("hide chat takes no other argument")
     return True
 
 

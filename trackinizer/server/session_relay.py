@@ -48,7 +48,14 @@ Typical usage example:
 
   relay = SessionRelay()
   process = relay.start(
-      session_id, spec, process_id=p, host_id=h, host="lab", token=t, remote=False
+      session_id,
+      spec,
+      process_id=p,
+      host_id=h,
+      host="lab",
+      token=t,
+      remote=False,
+      watcher=False,
   )
   serve = await relay.wait(h, wait_sec=25, dropped=request.is_disconnected)
   relay.give_up(session_id, process_id=p, taken=True)  # later: never answered
@@ -487,6 +494,7 @@ class SessionRelay:
         host: str,
         token: str,
         remote: bool,
+        watcher: bool,
     ) -> AgentProcess:
         """Make a session's process ``starting``, and offer it to its host's daemon.
 
@@ -499,6 +507,8 @@ class SessionRelay:
           token: The key minted for the process, handed to it whole.
           remote: Whether the route placed it with a remote agent service, which the
             offer says, so a daemon that confines nothing refuses it.
+          watcher: Whether the person's ``watcher`` setting is on, which the offer
+            says.
 
         Returns:
           process: The new process, ``starting``; the one already ``starting`` or
@@ -514,6 +524,7 @@ class SessionRelay:
             token=token,
             spec=spec.model_copy(update={"host": host}),
             remote=remote,
+            watcher=watcher,
         )
         live.offer = offer
         live.host_id = host_id

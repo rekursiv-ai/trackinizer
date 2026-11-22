@@ -50,8 +50,10 @@ from trackinizer.server.access_policy import (
     inquiry_read_filter,
 )
 from trackinizer.server.audience import SessionReader, visible_sql
+from trackinizer.server.store.session import SPAWN_EDGE_SQL
 from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
 from trackinizer.server.values import manifest_bound, vetted_sql
+from trackinizer.wire import wire_science_chat
 from trackinizer.wire.audience import AUDIENCES
 
 
@@ -564,17 +566,21 @@ async def _spawned_below(
     """Return the oldest session ``root``'s spawned, at any depth, under ``cli_session_id``."""
     async with engine.acquire() as conn:
         found = await conn.fetchval(
-            "WITH RECURSIVE down(id) AS ("
-            "SELECT from_id FROM edges WHERE to_id = $1 "
-            "AND edge_kind = 'produced_by' AND from_kind = 'AgentSession' "
-            "UNION SELECT edges.from_id FROM edges JOIN down ON edges.to_id = down.id "
-            "WHERE edges.edge_kind = 'produced_by' "
-            "AND edges.from_kind = 'AgentSession') "
-            "SELECT child.id FROM down JOIN inquiries AS child ON child.id = down.id "
-            "WHERE child.agentsession_cli_session_id = $2 "
-            "ORDER BY child.seq LIMIT 1",
+            vetted_sql(
+                "WITH RECURSIVE down(id) AS ("
+                "SELECT edges.from_id FROM edges WHERE edges.to_id = $1 AND ",
+                SPAWN_EDGE_SQL,
+                " UNION SELECT edges.from_id FROM edges "
+                "JOIN down ON edges.to_id = down.id WHERE ",
+                SPAWN_EDGE_SQL,
+                ") SELECT child.id FROM down "
+                "JOIN inquiries AS child ON child.id = down.id "
+                "WHERE child.agentsession_cli_session_id = $2 "
+                "ORDER BY child.seq LIMIT 1",
+            ),
             root,
             cli_session_id,
+            wire_science_chat.FORK_EDGE_LABEL,
         )
     return None if found is None else from_plain(found, UUID)
 

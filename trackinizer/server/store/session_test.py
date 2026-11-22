@@ -30,6 +30,7 @@ from trackinizer.server.access_policy import (
     Principal,
     Resource,
 )
+from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.store import session
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -51,6 +52,7 @@ from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
+from trackinizer.wire.wire_science_chat import FORK_EDGE_LABEL, fork_point_label
 
 
 if TYPE_CHECKING:
@@ -271,16 +273,10 @@ async def test_a_spawned_session_is_found_under_its_spawner_by_its_cli_id(
     store, _ = make_store(conn)
 
     assert await store.spawned_session(UUID(int=1), cli_session_id="a/b") == found
-    conn.fetchval.assert_awaited_once_with(
-        "SELECT child.id FROM edges "
-        "JOIN inquiries AS child ON child.id = edges.from_id "
-        "WHERE edges.to_id = $1 AND edges.edge_kind = 'produced_by' "
-        "AND child.kind = 'AgentSession' "
-        "AND child.agentsession_cli_session_id = $2 "
-        "ORDER BY child.seq LIMIT 1",
-        UUID(int=1),
-        "a/b",
-    )
+    asked = conn.fetchval.await_args
+    assert asked is not None
+    assert session.SPAWN_EDGE_SQL in cast(str, asked.args[0])
+    assert asked.args[1:] == (UUID(int=1), "a/b", FORK_EDGE_LABEL)
 
 
 @pytest.mark.parametrize("below", [False, True])
@@ -291,17 +287,54 @@ async def test_a_session_is_below_another_as_the_database_answers(below: bool) -
     store, _ = make_store(conn)
 
     assert await store.is_spawned_below(UUID(int=2), root=UUID(int=1)) is below
-    conn.fetchval.assert_awaited_once_with(
-        "WITH RECURSIVE up(id) AS ("
-        "SELECT to_id FROM edges WHERE from_id = $1 "
-        "AND edge_kind = 'produced_by' AND to_kind = 'AgentSession' "
-        "UNION SELECT edges.to_id FROM edges JOIN up ON edges.from_id = up.id "
-        "WHERE edges.edge_kind = 'produced_by' "
-        "AND edges.to_kind = 'AgentSession') "
-        "SELECT EXISTS (SELECT 1 FROM up WHERE id = $2)",
-        UUID(int=2),
-        UUID(int=1),
-    )
+    asked = conn.fetchval.await_args
+    assert asked is not None
+    assert cast(str, asked.args[0]).count(session.SPAWN_EDGE_SQL) == 2
+    assert asked.args[1:] == (UUID(int=2), UUID(int=1), FORK_EDGE_LABEL)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_a_session_spawned_link_by_link_is_below_its_spawner(
+    store: Store,
+) -> None:
+    """A chat's fork is ``produced_by`` its original too, and so is any row of any kind.
+
+    Neither is a spawn, and neither is the fork's own agent: every link up is one.
+    """
+    root, child, fork, forks_child = [
+        await _open(store, cli_session_id=name) for name in ("r", "r/c", "f", "f/c")
+    ]
+    issue = uuid4()
+    async with store.engine.acquire() as conn:
+        await insert_inquiry(
+            conn,
+            issue,
+            "Issue",
+            values={"title": "I", "account": "t@e"},
+        )
+        for produced, producer, labels in (
+            (child, root, None),
+            (fork, root, [FORK_EDGE_LABEL, fork_point_label(part=0, idx=1)]),
+            (forks_child, fork, None),
+            (issue, root, None),
+        ):
+            await conn.execute(
+                "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind, labels) "
+                "SELECT f.id, f.kind, t.id, t.kind, 'produced_by', $3 "
+                "FROM inquiries f, inquiries t WHERE f.id = $1 AND t.id = $2",
+                produced,
+                producer,
+                labels,
+            )
+        below = [
+            await session.spawned_below(conn, each, root=root)
+            for each in (child, fork, forks_child, issue)
+        ]
+
+    assert below == [True, False, False, False]
+    assert await store.spawned_session(root, cli_session_id="r/c") == child
+    assert await store.spawned_session(root, cli_session_id="f") is None
 
 
 class TestSetSessionAudience:

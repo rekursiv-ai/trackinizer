@@ -70,6 +70,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   },
   autofix: true,
   automerge: false,
+  watcher: true,
   hide_closed_pulls: true,
   stars: [],
   views: [],

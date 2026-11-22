@@ -1,61 +1,8 @@
 {
  "components": {
   "schemas": {
-   "AcknowledgeBody": {
-    "description": "The rules version the caller read before they agreed.",
-    "properties": {
-     "rules_version": {
-      "title": "Rules Version",
-      "type": "string"
-     }
-    },
-    "required": [
-     "rules_version"
-    ],
-    "title": "AcknowledgeBody",
-    "type": "object"
-   },
-   "AcknowledgeResult": {
-    "description": "When the caller agreed to the alpha rules, and to which version of them.",
-    "properties": {
-     "acknowledged_at": {
-      "title": "Acknowledged At",
-      "type": "string"
-     },
-     "acknowledged_rules_version": {
-      "title": "Acknowledged Rules Version",
-      "type": "string"
-     }
-    },
-    "required": [
-     "acknowledged_at",
-     "acknowledged_rules_version"
-    ],
-    "title": "AcknowledgeResult",
-    "type": "object"
-   },
    "Actor": {
     "type": "string"
-   },
-   "AddMark": {
-    "additionalProperties": false,
-    "description": "Draw one box. It commutes with every other, so no revision is expected.",
-    "properties": {
-     "kind": {
-      "const": "mark",
-      "title": "Kind",
-      "type": "string"
-     },
-     "mark": {
-      "$ref": "#/components/schemas/NewMark"
-     }
-    },
-    "required": [
-     "kind",
-     "mark"
-    ],
-    "title": "AddMark",
-    "type": "object"
    },
    "AddonCatalogBody": {
     "description": "The addons this deployment runs.",
@@ -314,19 +261,6 @@
       "maxItems": 1000,
       "title": "Records",
       "type": "array"
-     },
-     "restart": {
-      "default": false,
-      "title": "Restart",
-      "type": "boolean"
-     },
-     "slash_commands": {
-      "items": {
-       "$ref": "#/components/schemas/SlashCommandBody"
-      },
-      "maxItems": 1000,
-      "title": "Slash Commands",
-      "type": "array"
      }
     },
     "title": "AppendRecordsRequest",
@@ -351,12 +285,6 @@
       "title": "Skipped",
       "type": "integer"
      },
-     "slash_commands": {
-      "default": 0,
-      "minimum": 0.0,
-      "title": "Slash Commands",
-      "type": "integer"
-     },
      "written": {
       "minimum": 0.0,
       "title": "Written",
@@ -368,26 +296,6 @@
      "skipped"
     ],
     "title": "AppendRecordsResponse",
-    "type": "object"
-   },
-   "ApplyWorkspaceOperation": {
-    "additionalProperties": false,
-    "description": "A compare-and-swap operation with its expected revision.",
-    "properties": {
-     "operation": {
-      "$ref": "#/components/schemas/Operation"
-     },
-     "revision": {
-      "minimum": 0.0,
-      "title": "Revision",
-      "type": "integer"
-     }
-    },
-    "required": [
-     "revision",
-     "operation"
-    ],
-    "title": "ApplyWorkspaceOperation",
     "type": "object"
    },
    "ArtifactCitation": {
@@ -903,11 +811,6 @@
     "title": "BackgroundJob",
     "type": "object"
    },
-   "Base64": {
-    "maxLength": 1398104,
-    "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
-    "type": "string"
-   },
    "BatchEdge": {
     "description": "One edge in a :class:`SubmitBatch`.\n\nEach endpoint is named EITHER by batch item index (``from_index`` /\n``to_index``, 0-based into ``items``) for a row created in this batch,\nOR by an existing row's ``from_id`` / ``to_id`` UUID. Exactly one of\nindex/id must be set per endpoint. Index references are the only way to\nlink two brand-new rows -- inline-created targets have no id until the\nbatch commits. Annotations mirror :class:`CreateEdge`.",
     "properties": {
@@ -1002,548 +905,6 @@
      "edge_kind"
     ],
     "title": "BatchEdge",
-    "type": "object"
-   },
-   "CampaignLead": {
-    "additionalProperties": false,
-    "description": "The lead's model and effort in a workspace's campaign setup; either may be unset.",
-    "properties": {
-     "effort": {
-      "anyOf": [
-       {
-        "maxLength": 20,
-        "minLength": 1,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Effort"
-     },
-     "model": {
-      "anyOf": [
-       {
-        "maxLength": 120,
-        "minLength": 1,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Model"
-     }
-    },
-    "title": "CampaignLead",
-    "type": "object"
-   },
-   "CampaignSetup": {
-    "additionalProperties": false,
-    "description": "A workspace's default campaign settings, any subset of them.\n\nA launch from a chat in the workspace takes each field the asker's line leaves\nunset, and the site's terms under both. Only the shape is validated here: the\nterms bound and default every field at launch, where the model catalog and the\nstaffing grammar are known, so a value over a ceiling, or a model the site cannot\nrun, is refused there with a plain line, never at the write.",
-    "properties": {
-     "budget_usd": {
-      "anyOf": [
-       {
-        "exclusiveMinimum": 0.0,
-        "type": "number"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Budget Usd"
-     },
-     "hours": {
-      "anyOf": [
-       {
-        "exclusiveMinimum": 0.0,
-        "type": "number"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Hours"
-     },
-     "lead": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/CampaignLead"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "repo": {
-      "anyOf": [
-       {
-        "maxLength": 140,
-        "minLength": 1,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Repo"
-     },
-     "scientists": {
-      "anyOf": [
-       {
-        "maximum": 8.0,
-        "minimum": 1.0,
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Scientists"
-     },
-     "staffing": {
-      "anyOf": [
-       {
-        "maxLength": 200,
-        "minLength": 1,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Staffing"
-     }
-    },
-    "title": "CampaignSetup",
-    "type": "object"
-   },
-   "CanvasMark": {
-    "description": "A red box drawn on the canvas since the sender's last line, with what it covers.",
-    "properties": {
-     "author": {
-      "title": "Author",
-      "type": "string"
-     },
-     "bottom": {
-      "default": 0.0,
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Bottom",
-      "type": "number"
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "instances": {
-      "items": {
-       "$ref": "#/components/schemas/CanvasVisibleVisual"
-      },
-      "title": "Instances",
-      "type": "array"
-     },
-     "left": {
-      "default": 0.0,
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Left",
-      "type": "number"
-     },
-     "page": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Page"
-     },
-     "records": {
-      "items": {
-       "$ref": "#/components/schemas/CanvasRecordContext"
-      },
-      "title": "Records",
-      "type": "array"
-     },
-     "right": {
-      "default": 0.0,
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Right",
-      "type": "number"
-     },
-     "tile": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/CanvasVisibleVisual"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "top": {
-      "default": 0.0,
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Top",
-      "type": "number"
-     },
-     "window": {
-      "default": false,
-      "title": "Window",
-      "type": "boolean"
-     }
-    },
-    "required": [
-     "id",
-     "author"
-    ],
-    "title": "CanvasMark",
-    "type": "object"
-   },
-   "CanvasPage": {
-    "description": "A page the sender was on, with the record it shows when it names one.",
-    "properties": {
-     "record": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/CanvasRecordContext"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "route": {
-      "title": "Route",
-      "type": "string"
-     }
-    },
-    "required": [
-     "route"
-    ],
-    "title": "CanvasPage",
-    "type": "object"
-   },
-   "CanvasRecordContext": {
-    "description": "A graph record the sender sees on screen, with a bounded title preview.",
-    "properties": {
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "kind": {
-      "title": "Kind",
-      "type": "string"
-     },
-     "seq": {
-      "title": "Seq",
-      "type": "integer"
-     },
-     "title": {
-      "maxLength": 512,
-      "title": "Title",
-      "type": "string"
-     }
-    },
-    "required": [
-     "id",
-     "kind",
-     "seq",
-     "title"
-    ],
-    "title": "CanvasRecordContext",
-    "type": "object"
-   },
-   "CanvasTab": {
-    "additionalProperties": false,
-    "description": "One of a station's canvas tabs.\n\nThe open tab is the station's canvas itself; the others keep here what they\nshow (the page, the visuals and their sizes) until they are opened again,\nwhen the browser shows it through the canvas's own operations.",
-    "properties": {
-     "columns": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/_Columns"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "floating": {
-      "anyOf": [
-       {
-        "additionalProperties": {
-         "$ref": "#/components/schemas/_TileSize"
-        },
-        "propertyNames": {
-         "$ref": "#/components/schemas/_TypeKey"
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Floating"
-     },
-     "id": {
-      "$ref": "#/components/schemas/_TabId"
-     },
-     "name": {
-      "maxLength": 60,
-      "minLength": 1,
-      "title": "Name",
-      "type": "string"
-     },
-     "page": {
-      "anyOf": [
-       {
-        "maxLength": 512,
-        "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Page"
-     },
-     "share": {
-      "anyOf": [
-       {
-        "additionalProperties": {
-         "exclusiveMinimum": 0.0,
-         "maximum": 100.0,
-         "type": "number"
-        },
-        "propertyNames": {
-         "$ref": "#/components/schemas/_TypeKey"
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Share"
-     },
-     "tiles": {
-      "anyOf": [
-       {
-        "additionalProperties": {
-         "$ref": "#/components/schemas/_TileMemory"
-        },
-        "propertyNames": {
-         "$ref": "#/components/schemas/_TypeKey"
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Tiles"
-     },
-     "visuals": {
-      "items": {
-       "$ref": "#/components/schemas/TabVisual"
-      },
-      "maxItems": 12,
-      "title": "Visuals",
-      "type": "array"
-     }
-    },
-    "required": [
-     "id",
-     "name"
-    ],
-    "title": "CanvasTab",
-    "type": "object"
-   },
-   "CanvasVisibleVisual": {
-    "description": "A visual present on the canvas when a message was sent.",
-    "properties": {
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "params": {
-      "additionalProperties": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "integer"
-        },
-        {
-         "type": "boolean"
-        }
-       ]
-      },
-      "title": "Params",
-      "type": "object"
-     },
-     "record": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/CanvasRecordContext"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "type": {
-      "title": "Type",
-      "type": "string"
-     }
-    },
-    "required": [
-     "id",
-     "type"
-    ],
-    "title": "CanvasVisibleVisual",
-    "type": "object"
-   },
-   "CaptureBox": {
-    "additionalProperties": false,
-    "description": "A red box that stood on the canvas when the picture was taken.",
-    "properties": {
-     "author": {
-      "enum": [
-       "person",
-       "agent"
-      ],
-      "title": "Author",
-      "type": "string"
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     }
-    },
-    "required": [
-     "id",
-     "author"
-    ],
-    "title": "CaptureBox",
-    "type": "object"
-   },
-   "CaptureImage": {
-    "additionalProperties": false,
-    "description": "The canvas as the person sees it.",
-    "properties": {
-     "boxes": {
-      "items": {
-       "$ref": "#/components/schemas/CaptureBox"
-      },
-      "maxItems": 50,
-      "title": "Boxes",
-      "type": "array"
-     },
-     "data": {
-      "title": "Data",
-      "type": "string"
-     },
-     "height": {
-      "maximum": 4096.0,
-      "minimum": 1.0,
-      "title": "Height",
-      "type": "integer"
-     },
-     "mime": {
-      "enum": [
-       "image/png",
-       "image/jpeg"
-      ],
-      "title": "Mime",
-      "type": "string"
-     },
-     "not_captured": {
-      "items": {
-       "maxLength": 80,
-       "type": "string"
-      },
-      "maxItems": 20,
-      "title": "Not Captured",
-      "type": "array"
-     },
-     "tiles": {
-      "items": {
-       "$ref": "#/components/schemas/CaptureTile"
-      },
-      "maxItems": 50,
-      "title": "Tiles",
-      "type": "array"
-     },
-     "width": {
-      "maximum": 4096.0,
-      "minimum": 1.0,
-      "title": "Width",
-      "type": "integer"
-     }
-    },
-    "required": [
-     "width",
-     "height",
-     "mime",
-     "data"
-    ],
-    "title": "CaptureImage",
-    "type": "object"
-   },
-   "CaptureTile": {
-    "additionalProperties": false,
-    "description": "A visual on the stage, with where its body stood in the picture.",
-    "properties": {
-     "bottom": {
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Bottom",
-      "type": "number"
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "left": {
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Left",
-      "type": "number"
-     },
-     "right": {
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Right",
-      "type": "number"
-     },
-     "top": {
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Top",
-      "type": "number"
-     }
-    },
-    "required": [
-     "id",
-     "left",
-     "top",
-     "right",
-     "bottom"
-    ],
-    "title": "CaptureTile",
     "type": "object"
    },
    "Change": {
@@ -1670,207 +1031,6 @@
     "title": "ChatForkAt",
     "type": "object"
    },
-   "ChatHead": {
-    "description": "A science chat's session and starter, for opening it by link or after a post.",
-    "properties": {
-     "account": {
-      "title": "Account",
-      "type": "string"
-     },
-     "audience": {
-      "title": "Audience",
-      "type": "string"
-     },
-     "cli": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Cli"
-     },
-     "conversation_id": {
-      "format": "uuid",
-      "title": "Conversation Id",
-      "type": "string"
-     },
-     "first_line": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "First Line"
-     },
-     "forked_from": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Forked From"
-     },
-     "forks": {
-      "title": "Forks",
-      "type": "integer"
-     },
-     "forks_on_typing": {
-      "title": "Forks On Typing",
-      "type": "boolean"
-     },
-     "goal": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Goal"
-     },
-     "live": {
-      "title": "Live",
-      "type": "boolean"
-     },
-     "may_delete": {
-      "title": "May Delete",
-      "type": "boolean"
-     },
-     "may_hide": {
-      "title": "May Hide",
-      "type": "boolean"
-     },
-     "may_post": {
-      "default": true,
-      "title": "May Post",
-      "type": "boolean"
-     },
-     "may_share": {
-      "title": "May Share",
-      "type": "boolean"
-     },
-     "seq": {
-      "anyOf": [
-       {
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Seq"
-     },
-     "session_id": {
-      "format": "uuid",
-      "title": "Session Id",
-      "type": "string"
-     },
-     "shared_with": {
-      "items": {
-       "type": "string"
-      },
-      "title": "Shared With",
-      "type": "array"
-     },
-     "title": {
-      "title": "Title",
-      "type": "string"
-     }
-    },
-    "required": [
-     "conversation_id",
-     "session_id",
-     "title",
-     "account",
-     "live",
-     "forks",
-     "forked_from",
-     "forks_on_typing",
-     "audience",
-     "may_hide",
-     "shared_with",
-     "may_share",
-     "may_delete"
-    ],
-    "title": "ChatHead",
-    "type": "object"
-   },
-   "ChatLineKind": {
-    "enum": [
-     "line",
-     "command",
-     "answer",
-     "settings",
-     "interrupt"
-    ],
-    "type": "string"
-   },
-   "ChatPartial": {
-    "additionalProperties": false,
-    "description": "The answer a chat's assistant is writing, as far as it has written it.",
-    "properties": {
-     "done": {
-      "default": false,
-      "title": "Done",
-      "type": "boolean"
-     },
-     "text": {
-      "maxLength": 16384,
-      "title": "Text",
-      "type": "string"
-     },
-     "turn": {
-      "maxLength": 64,
-      "minLength": 1,
-      "pattern": "^[A-Za-z0-9_-]+$",
-      "title": "Turn",
-      "type": "string"
-     }
-    },
-    "required": [
-     "turn",
-     "text"
-    ],
-    "title": "ChatPartial",
-    "type": "object"
-   },
-   "ChatPartialState": {
-    "additionalProperties": false,
-    "description": "What the server holds of a chat's answer in writing, and how new it is.",
-    "properties": {
-     "partial": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/ChatPartial"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "seq": {
-      "title": "Seq",
-      "type": "integer"
-     }
-    },
-    "required": [
-     "seq",
-     "partial"
-    ],
-    "title": "ChatPartialState",
-    "type": "object"
-   },
    "ChatProvider": {
     "enum": [
      "assistant",
@@ -1878,117 +1038,6 @@
      "codex"
     ],
     "type": "string"
-   },
-   "ChatSend": {
-    "additionalProperties": false,
-    "description": "One line a signed-in writer posts to a science chat from their canvas.",
-    "properties": {
-     "conversation_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Conversation Id"
-     },
-     "fork": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/ChatForkAt"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "kind": {
-      "$ref": "#/components/schemas/ChatLineKind",
-      "default": "line"
-     },
-     "page": {
-      "anyOf": [
-       {
-        "maxLength": 512,
-        "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Page"
-     },
-     "payload": {
-      "anyOf": [
-       {
-        "additionalProperties": true,
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Payload"
-     },
-     "text": {
-      "maxLength": 16384,
-      "pattern": "\\S",
-      "title": "Text",
-      "type": "string"
-     },
-     "trail": {
-      "items": {
-       "maxLength": 512,
-       "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-       "type": "string"
-      },
-      "maxItems": 8,
-      "title": "Trail",
-      "type": "array"
-     },
-     "workspace_id": {
-      "format": "uuid",
-      "title": "Workspace Id",
-      "type": "string"
-     }
-    },
-    "required": [
-     "workspace_id",
-     "text"
-    ],
-    "title": "ChatSend",
-    "type": "object"
-   },
-   "ChatSent": {
-    "description": "A chat started, or the one its canvas already held: where it is and its session.",
-    "properties": {
-     "canvas_id": {
-      "format": "uuid",
-      "title": "Canvas Id",
-      "type": "string"
-     },
-     "conversation_id": {
-      "format": "uuid",
-      "title": "Conversation Id",
-      "type": "string"
-     },
-     "session_id": {
-      "format": "uuid",
-      "title": "Session Id",
-      "type": "string"
-     }
-    },
-    "required": [
-     "conversation_id",
-     "canvas_id",
-     "session_id"
-    ],
-    "title": "ChatSent",
-    "type": "object"
    },
    "ChatView": {
     "additionalProperties": false,
@@ -2059,47 +1108,6 @@
     "title": "ChatView",
     "type": "object"
    },
-   "ChatWindow": {
-    "additionalProperties": false,
-    "description": "Hide or show the browser tab's Chat window. An event, as navigate is.",
-    "properties": {
-     "hidden": {
-      "title": "Hidden",
-      "type": "boolean"
-     },
-     "kind": {
-      "const": "chat",
-      "title": "Kind",
-      "type": "string"
-     }
-    },
-    "required": [
-     "kind",
-     "hidden"
-    ],
-    "title": "ChatWindow",
-    "type": "object"
-   },
-   "ChooseProvider": {
-    "additionalProperties": false,
-    "description": "Choose who answers the station's Chat; only its owner's browser does.\n\nThe switch is the next revision, and takes hold at once: from then on the chat's\nqueue is drained only by the new provider, and its lines go there. An assistant\nturn already running is not interrupted: its answer still lands, and since every\nrecord is read in the order of its time, it sorts where it was written. Choosing\n``claude`` or ``codex`` gives the chat a session a run can attach to when it has\nnone, before any line, so the picker always has one to name.",
-    "properties": {
-     "kind": {
-      "const": "provider",
-      "title": "Kind",
-      "type": "string"
-     },
-     "provider": {
-      "$ref": "#/components/schemas/ChatProvider"
-     }
-    },
-    "required": [
-     "kind",
-     "provider"
-    ],
-    "title": "ChooseProvider",
-    "type": "object"
-   },
    "Citation": {
     "description": "One inline citation on a :class:`SubmitBelief`: which artifact, how strong.\n\nThe signed ``valence`` is bounded to the same ``[-1, 1]`` the edges column\nenforces, so a malformed-weight citation is rejected at the wire boundary\nrather than surfacing as a mid-transaction CHECK violation. The polarity is\nalready resolved here (the trax ``dis*`` aliases negate before the wire), so\nthis is the final stored sign.",
     "properties": {
@@ -2163,35 +1171,6 @@
      "owner"
     ],
     "title": "ClaimNextIssue",
-    "type": "object"
-   },
-   "ClearMarks": {
-    "additionalProperties": false,
-    "description": "Take the boxes of one page away, or every box. No revision is expected.",
-    "properties": {
-     "kind": {
-      "const": "clear_marks",
-      "title": "Kind",
-      "type": "string"
-     },
-     "page": {
-      "anyOf": [
-       {
-        "maxLength": 512,
-        "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Page"
-     }
-    },
-    "required": [
-     "kind"
-    ],
-    "title": "ClearMarks",
     "type": "object"
    },
    "CodeBlob": {
@@ -2595,42 +1574,6 @@
     "title": "CodeSnapshotPut",
     "type": "object"
    },
-   "ComputeBody": {
-    "description": "The deployment's notes, in the order it gave them; none when it gave none.",
-    "properties": {
-     "notes": {
-      "items": {
-       "$ref": "#/components/schemas/ComputeNote"
-      },
-      "title": "Notes",
-      "type": "array"
-     }
-    },
-    "required": [
-     "notes"
-    ],
-    "title": "ComputeBody",
-    "type": "object"
-   },
-   "ComputeNote": {
-    "description": "One thing this server provides to run commands on, as its deployment says.\n\nAttributes:\n  name: What it is called, a few words.\n  about: A sentence or two on what it is and how a person gets to use it.",
-    "properties": {
-     "about": {
-      "title": "About",
-      "type": "string"
-     },
-     "name": {
-      "title": "Name",
-      "type": "string"
-     }
-    },
-    "required": [
-     "name",
-     "about"
-    ],
-    "title": "ComputeNote",
-    "type": "object"
-   },
    "ConsoleLive": {
     "additionalProperties": false,
     "description": "A Console view that follows the feed as it grows.",
@@ -2671,20 +1614,6 @@
      "text"
     ],
     "title": "ConsoleRelay",
-    "type": "object"
-   },
-   "ConsoleRelayReceipt": {
-    "description": "Whether the station's chat partner took a Console relay.",
-    "properties": {
-     "delivered": {
-      "title": "Delivered",
-      "type": "boolean"
-     }
-    },
-    "required": [
-     "delivered"
-    ],
-    "title": "ConsoleRelayReceipt",
     "type": "object"
    },
    "ConsoleTarget": {
@@ -3129,23 +2058,6 @@
     "title": "CreateTokenBody",
     "type": "object"
    },
-   "CreateWorkstream": {
-    "additionalProperties": false,
-    "description": "A new workstream's title.",
-    "properties": {
-     "title": {
-      "maxLength": 120,
-      "minLength": 1,
-      "title": "Title",
-      "type": "string"
-     }
-    },
-    "required": [
-     "title"
-    ],
-    "title": "CreateWorkstream",
-    "type": "object"
-   },
    "DaemonVersion": {
     "maxLength": 64,
     "pattern": "^[^\\x00]*$",
@@ -3334,182 +2246,6 @@
      "AgentSession"
     ],
     "type": "string"
-   },
-   "EvidenceTimelineResponse": {
-    "additionalProperties": false,
-    "description": "The bounded response contract consumed by the generated web client.",
-    "properties": {
-     "directions": {
-      "items": {
-       "$ref": "#/components/schemas/TimelineDirection"
-      },
-      "title": "Directions",
-      "type": "array"
-     },
-     "directions_truncated": {
-      "title": "Directions Truncated",
-      "type": "boolean"
-     },
-     "issue": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/TimelineRecord"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "leads": {
-      "items": {
-       "$ref": "#/components/schemas/TimelineRecord"
-      },
-      "title": "Leads",
-      "type": "array"
-     },
-     "root_results": {
-      "items": {
-       "$ref": "#/components/schemas/TimelineExperiment"
-      },
-      "title": "Root Results",
-      "type": "array"
-     },
-     "root_results_truncated": {
-      "title": "Root Results Truncated",
-      "type": "boolean"
-     },
-     "selected_result": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/TimelineExperiment"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "target": {
-      "$ref": "#/components/schemas/TimelineRecord"
-     },
-     "unresolved_questions": {
-      "items": {
-       "$ref": "#/components/schemas/TimelineRecord"
-      },
-      "title": "Unresolved Questions",
-      "type": "array"
-     }
-    },
-    "required": [
-     "target",
-     "issue",
-     "leads",
-     "selected_result",
-     "root_results",
-     "root_results_truncated",
-     "directions",
-     "directions_truncated",
-     "unresolved_questions"
-    ],
-    "title": "EvidenceTimelineResponse",
-    "type": "object"
-   },
-   "ExecRequest": {
-    "additionalProperties": false,
-    "description": "One command to run on a host.",
-    "properties": {
-     "command": {
-      "maxLength": 65536,
-      "minLength": 1,
-      "pattern": "^[^\\x00]+$",
-      "title": "Command",
-      "type": "string"
-     },
-     "cwd": {
-      "$ref": "#/components/schemas/RunFolder"
-     },
-     "env": {
-      "anyOf": [
-       {
-        "maxProperties": 64,
-        "patternProperties": {
-         "^[A-Za-z_][A-Za-z0-9_]{0,127}$": {
-          "maxLength": 8192,
-          "pattern": "^[^\\x00]*$",
-          "type": "string"
-         }
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Env"
-     },
-     "stdin_b64": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/Base64"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "timeout_sec": {
-      "maximum": 600.0,
-      "minimum": 1.0,
-      "title": "Timeout Sec",
-      "type": "integer"
-     }
-    },
-    "required": [
-     "command",
-     "cwd",
-     "timeout_sec"
-    ],
-    "title": "ExecRequest",
-    "type": "object"
-   },
-   "ExecResult": {
-    "additionalProperties": false,
-    "description": "What running a command produced.",
-    "properties": {
-     "cwd": {
-      "$ref": "#/components/schemas/RunFolder"
-     },
-     "duration_ms": {
-      "minimum": 0.0,
-      "title": "Duration Ms",
-      "type": "integer"
-     },
-     "exit_code": {
-      "maximum": 255.0,
-      "minimum": -255.0,
-      "title": "Exit Code",
-      "type": "integer"
-     },
-     "stderr_b64": {
-      "$ref": "#/components/schemas/Base64"
-     },
-     "stdout_b64": {
-      "$ref": "#/components/schemas/Base64"
-     },
-     "truncated": {
-      "title": "Truncated",
-      "type": "boolean"
-     }
-    },
-    "required": [
-     "exit_code",
-     "stdout_b64",
-     "stderr_b64",
-     "cwd",
-     "truncated",
-     "duration_ms"
-    ],
-    "title": "ExecResult",
-    "type": "object"
    },
    "FactValue": {
     "anyOf": [
@@ -5067,66 +3803,6 @@
     "title": "FieldSet[str]",
     "type": "object"
    },
-   "FloatingRect": {
-    "additionalProperties": false,
-    "description": "Bounded desktop coordinates for a floating canvas pane.",
-    "properties": {
-     "height": {
-      "maximum": 2000.0,
-      "minimum": 180.0,
-      "title": "Height",
-      "type": "integer"
-     },
-     "left": {
-      "maximum": 10000.0,
-      "minimum": 0.0,
-      "title": "Left",
-      "type": "integer"
-     },
-     "top": {
-      "maximum": 10000.0,
-      "minimum": 0.0,
-      "title": "Top",
-      "type": "integer"
-     },
-     "width": {
-      "maximum": 2000.0,
-      "minimum": 240.0,
-      "title": "Width",
-      "type": "integer"
-     }
-    },
-    "required": [
-     "left",
-     "top",
-     "width",
-     "height"
-    ],
-    "title": "FloatingRect",
-    "type": "object"
-   },
-   "FocusVisual": {
-    "additionalProperties": false,
-    "description": "Bring one instance into focus.",
-    "properties": {
-     "instance_id": {
-      "format": "uuid",
-      "title": "Instance Id",
-      "type": "string"
-     },
-     "kind": {
-      "const": "focus",
-      "title": "Kind",
-      "type": "string"
-     }
-    },
-    "required": [
-     "kind",
-     "instance_id"
-    ],
-    "title": "FocusVisual",
-    "type": "object"
-   },
    "Font": {
     "enum": [
      "system",
@@ -5142,30 +3818,6 @@
      "nunito_sans"
     ],
     "type": "string"
-   },
-   "GitRef": {
-    "additionalProperties": false,
-    "description": "Where a run's checkout stands: its origin URL and branch.",
-    "properties": {
-     "branch": {
-      "maxLength": 255,
-      "minLength": 1,
-      "title": "Branch",
-      "type": "string"
-     },
-     "origin": {
-      "maxLength": 500,
-      "minLength": 1,
-      "title": "Origin",
-      "type": "string"
-     }
-    },
-    "required": [
-     "origin",
-     "branch"
-    ],
-    "title": "GitRef",
-    "type": "object"
    },
    "HTTPValidationError": {
     "properties": {
@@ -5233,54 +3885,6 @@
      "server_time"
     ],
     "title": "HeartbeatResponse",
-    "type": "object"
-   },
-   "HideVisual": {
-    "additionalProperties": false,
-    "description": "Dismiss one visual instance.",
-    "properties": {
-     "instance_id": {
-      "format": "uuid",
-      "title": "Instance Id",
-      "type": "string"
-     },
-     "kind": {
-      "const": "hide",
-      "title": "Kind",
-      "type": "string"
-     }
-    },
-    "required": [
-     "kind",
-     "instance_id"
-    ],
-    "title": "HideVisual",
-    "type": "object"
-   },
-   "Highlight": {
-    "additionalProperties": false,
-    "description": "Mark inquiries on the browser's page. An event, as navigate is.",
-    "properties": {
-     "ids": {
-      "items": {
-       "format": "uuid",
-       "type": "string"
-      },
-      "maxItems": 50,
-      "title": "Ids",
-      "type": "array"
-     },
-     "kind": {
-      "const": "highlight",
-      "title": "Kind",
-      "type": "string"
-     }
-    },
-    "required": [
-     "kind",
-     "ids"
-    ],
-    "title": "Highlight",
     "type": "object"
    },
    "Host": {
@@ -6013,103 +4617,6 @@
     "title": "LastLine",
     "type": "object"
    },
-   "LineageEdge": {
-    "additionalProperties": false,
-    "description": "One stored relationship, with its direction and signed annotation.",
-    "properties": {
-     "edge_kind": {
-      "$ref": "#/components/schemas/trackinizer__types__edges__Kind"
-     },
-     "from_id": {
-      "format": "uuid",
-      "title": "From Id",
-      "type": "string"
-     },
-     "note": {
-      "anyOf": [
-       {
-        "maxLength": 2000,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Note"
-     },
-     "to_id": {
-      "format": "uuid",
-      "title": "To Id",
-      "type": "string"
-     },
-     "valence": {
-      "anyOf": [
-       {
-        "maximum": 1.0,
-        "minimum": -1.0,
-        "type": "number"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Valence"
-     }
-    },
-    "required": [
-     "from_id",
-     "to_id",
-     "edge_kind",
-     "valence",
-     "note"
-    ],
-    "title": "LineageEdge",
-    "type": "object"
-   },
-   "LineagePage": {
-    "additionalProperties": false,
-    "description": "A paged neighborhood whose selected record is outside the peer quota.",
-    "properties": {
-     "edges": {
-      "items": {
-       "$ref": "#/components/schemas/LineageEdge"
-      },
-      "maxItems": 350,
-      "title": "Edges",
-      "type": "array"
-     },
-     "next_cursor": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Next Cursor"
-     },
-     "records": {
-      "items": {
-       "$ref": "#/components/schemas/TimelineRecord"
-      },
-      "maxItems": 50,
-      "title": "Records",
-      "type": "array"
-     },
-     "target": {
-      "$ref": "#/components/schemas/TimelineRecord"
-     }
-    },
-    "required": [
-     "target",
-     "records",
-     "edges",
-     "next_cursor"
-    ],
-    "title": "LineagePage",
-    "type": "object"
-   },
    "ListedIssue": {
     "description": "An Issue a listed session was produced by, or one such an Issue narrows.",
     "properties": {
@@ -6440,127 +4947,6 @@
     "title": "ManifestBody",
     "type": "object"
    },
-   "Mark": {
-    "additionalProperties": false,
-    "description": "One red box on a canvas. Its ``page`` is where it was drawn, and where it shows.",
-    "properties": {
-     "at": {
-      "format": "date-time",
-      "title": "At",
-      "type": "string"
-     },
-     "author": {
-      "title": "Author",
-      "type": "string"
-     },
-     "covers": {
-      "$ref": "#/components/schemas/MarkCovers"
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "page": {
-      "anyOf": [
-       {
-        "maxLength": 512,
-        "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Page"
-     },
-     "points": {
-      "items": {
-       "$ref": "#/components/schemas/MarkPoint"
-      },
-      "maxItems": 2,
-      "minItems": 2,
-      "title": "Points",
-      "type": "array"
-     },
-     "seq": {
-      "minimum": 1.0,
-      "title": "Seq",
-      "type": "integer"
-     },
-     "tile": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Tile"
-     }
-    },
-    "required": [
-     "points",
-     "id",
-     "seq",
-     "author",
-     "at"
-    ],
-    "title": "Mark",
-    "type": "object"
-   },
-   "MarkCovers": {
-    "additionalProperties": false,
-    "description": "What lies under a mark, read from the page when it was drawn.",
-    "properties": {
-     "instances": {
-      "items": {
-       "format": "uuid",
-       "type": "string"
-      },
-      "maxItems": 12,
-      "title": "Instances",
-      "type": "array"
-     },
-     "records": {
-      "items": {
-       "format": "uuid",
-       "type": "string"
-      },
-      "maxItems": 20,
-      "title": "Records",
-      "type": "array"
-     }
-    },
-    "title": "MarkCovers",
-    "type": "object"
-   },
-   "MarkPoint": {
-    "additionalProperties": false,
-    "description": "A place on the stage, as fractions of its width and height.",
-    "properties": {
-     "x": {
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "X",
-      "type": "number"
-     },
-     "y": {
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Y",
-      "type": "number"
-     }
-    },
-    "required": [
-     "x",
-     "y"
-    ],
-    "title": "MarkPoint",
-    "type": "object"
-   },
    "MessageKind": {
     "enum": [
      "ask",
@@ -6853,22 +5239,6 @@
     "title": "MetricWriteResponse",
     "type": "object"
    },
-   "MoveSession": {
-    "additionalProperties": false,
-    "description": "The workspace a session is moved to.",
-    "properties": {
-     "workspace_id": {
-      "format": "uuid",
-      "title": "Workspace Id",
-      "type": "string"
-     }
-    },
-    "required": [
-     "workspace_id"
-    ],
-    "title": "MoveSession",
-    "type": "object"
-   },
    "MutableJSON": {
     "additionalProperties": {
      "$ref": "#/components/schemas/MutableJSONValue-Output"
@@ -6937,46 +5307,6 @@
      }
     ]
    },
-   "NameChat": {
-    "additionalProperties": false,
-    "description": "A name the assistant suggests for an unnamed chat station.",
-    "properties": {
-     "name": {
-      "maxLength": 120,
-      "minLength": 1,
-      "title": "Name",
-      "type": "string"
-     }
-    },
-    "required": [
-     "name"
-    ],
-    "title": "NameChat",
-    "type": "object"
-   },
-   "Navigate": {
-    "additionalProperties": false,
-    "description": "Move the browser's page. An event: no visual and no revision changes.",
-    "properties": {
-     "kind": {
-      "const": "navigate",
-      "title": "Kind",
-      "type": "string"
-     },
-     "route": {
-      "maxLength": 512,
-      "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-      "title": "Route",
-      "type": "string"
-     }
-    },
-    "required": [
-     "kind",
-     "route"
-    ],
-    "title": "Navigate",
-    "type": "object"
-   },
    "NewInput": {
     "additionalProperties": false,
     "description": "What a person posts for the session's root agent.",
@@ -6998,84 +5328,6 @@
      "payload"
     ],
     "title": "NewInput",
-    "type": "object"
-   },
-   "NewMark": {
-    "additionalProperties": false,
-    "description": "A box as its drawer sends it: the server adds who, when, which and where.",
-    "properties": {
-     "covers": {
-      "$ref": "#/components/schemas/MarkCovers"
-     },
-     "page": {
-      "anyOf": [
-       {
-        "maxLength": 512,
-        "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Page"
-     },
-     "points": {
-      "items": {
-       "$ref": "#/components/schemas/MarkPoint"
-      },
-      "maxItems": 2,
-      "minItems": 2,
-      "title": "Points",
-      "type": "array"
-     },
-     "tile": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Tile"
-     }
-    },
-    "required": [
-     "points"
-    ],
-    "title": "NewMark",
-    "type": "object"
-   },
-   "NewStation": {
-    "additionalProperties": false,
-    "description": "What a new station starts with: its workstream and its provider, either unset.\n\nAn unset workstream is the owner's Scratch, and an unset provider their\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked.",
-    "properties": {
-     "provider": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/ChatProvider"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "workstream_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workstream Id"
-     }
-    },
-    "title": "NewStation",
     "type": "object"
    },
    "OpenTerminal": {
@@ -7195,63 +5447,6 @@
     },
     "title": "Opened",
     "type": "object"
-   },
-   "Operation": {
-    "discriminator": {
-     "mapping": {
-      "chat": "#/components/schemas/ChatWindow",
-      "clear_marks": "#/components/schemas/ClearMarks",
-      "focus": "#/components/schemas/FocusVisual",
-      "hide": "#/components/schemas/HideVisual",
-      "highlight": "#/components/schemas/Highlight",
-      "mark": "#/components/schemas/AddMark",
-      "navigate": "#/components/schemas/Navigate",
-      "place": "#/components/schemas/PlaceVisual",
-      "preferences": "#/components/schemas/SetPreferences",
-      "provider": "#/components/schemas/ChooseProvider",
-      "remove_mark": "#/components/schemas/RemoveMark",
-      "show": "#/components/schemas/ShowVisual"
-     },
-     "propertyName": "kind"
-    },
-    "oneOf": [
-     {
-      "$ref": "#/components/schemas/ShowVisual"
-     },
-     {
-      "$ref": "#/components/schemas/HideVisual"
-     },
-     {
-      "$ref": "#/components/schemas/FocusVisual"
-     },
-     {
-      "$ref": "#/components/schemas/PlaceVisual"
-     },
-     {
-      "$ref": "#/components/schemas/Navigate"
-     },
-     {
-      "$ref": "#/components/schemas/Highlight"
-     },
-     {
-      "$ref": "#/components/schemas/ChatWindow"
-     },
-     {
-      "$ref": "#/components/schemas/SetPreferences"
-     },
-     {
-      "$ref": "#/components/schemas/ChooseProvider"
-     },
-     {
-      "$ref": "#/components/schemas/AddMark"
-     },
-     {
-      "$ref": "#/components/schemas/RemoveMark"
-     },
-     {
-      "$ref": "#/components/schemas/ClearMarks"
-     }
-    ]
    },
    "ParameterDescription": {
     "additionalProperties": false,
@@ -7392,83 +5587,6 @@
     ],
     "title": "Person",
     "type": "object"
-   },
-   "PlaceSession": {
-    "additionalProperties": false,
-    "description": "Ask the server to place a session in a workspace and a canvas.",
-    "properties": {
-     "git": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/GitRef"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "name": {
-      "anyOf": [
-       {
-        "maxLength": 1000,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Name"
-     },
-     "workspace": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workspace"
-     }
-    },
-    "title": "PlaceSession",
-    "type": "object"
-   },
-   "PlaceVisual": {
-    "additionalProperties": false,
-    "description": "Move one instance between the primary and secondary pane.",
-    "properties": {
-     "instance_id": {
-      "format": "uuid",
-      "title": "Instance Id",
-      "type": "string"
-     },
-     "kind": {
-      "const": "place",
-      "title": "Kind",
-      "type": "string"
-     },
-     "placement": {
-      "$ref": "#/components/schemas/Placement"
-     }
-    },
-    "required": [
-     "kind",
-     "instance_id",
-     "placement"
-    ],
-    "title": "PlaceVisual",
-    "type": "object"
-   },
-   "Placement": {
-    "enum": [
-     "main",
-     "left",
-     "side",
-     "floating"
-    ],
-    "type": "string"
    },
    "Preferences": {
     "additionalProperties": false,
@@ -7768,7 +5886,7 @@
      },
      "skin": {
       "default": "default",
-      "description": "The app's look: default, or one of the fixed skins, which ignore theme.",
+      "description": "The app's look: default, or one of the fixed skins, each drawn in the theme's light or dark where an app draws both; Trackinizer's own web UI draws a fixed skin in its one palette and ignores the theme.",
       "enum": [
        "default",
        "retro",
@@ -7820,7 +5938,7 @@
        ],
        "text": "#00ff00"
       },
-      "description": "The browser terminal's colours, which the Hacker skin draws in too: text, background and bold, the 16-colour palette (ANSI 0 to 15), and whether bold text in colours 0 to 7 shows in 8 to 15. GNOME Terminal's Green on black over its GNOME palette until changed.",
+      "description": "The browser terminal's colours, which the Hacker skin draws in too: text, background and bold, the 16-colour palette (ANSI 0 to 15), and whether bold text in colours 0 to 7 shows in 8 to 15. GNOME Terminal's Green on black over its GNOME palette until changed. In light mode a set on a dark background gives way to GNOME's light one.",
       "x-setting": true
      },
      "terminal_font_size": {
@@ -7871,9 +5989,20 @@
       "title": "Views",
       "type": "array"
      },
+     "watcher": {
+      "default": true,
+      "description": "Give each new chat's cloud agent a watcher, on the agent's own model, that keeps it to your instructions. A chat's next start follows a change.",
+      "title": "Watcher",
+      "type": "boolean",
+      "x-setting": true
+     },
      "workspaces": {
       "$ref": "#/components/schemas/WorkspacesPreference",
       "description": "Your tab bar: its groups, their tabs' order, and the last opened."
+     },
+     "workstreams": {
+      "$ref": "#/components/schemas/WorkstreamsPreference",
+      "description": "Your workstream bar order, pins, and hidden items."
      }
     },
     "title": "Preferences",
@@ -7929,50 +6058,6 @@
      }
     },
     "title": "ProcessSpec",
-    "type": "object"
-   },
-   "ProviderFlags": {
-    "description": "Which providers the station's owner may choose now.",
-    "properties": {
-     "assistant": {
-      "default": true,
-      "title": "Assistant",
-      "type": "boolean"
-     },
-     "claude": {
-      "default": false,
-      "title": "Claude",
-      "type": "boolean"
-     },
-     "codex": {
-      "default": false,
-      "title": "Codex",
-      "type": "boolean"
-     }
-    },
-    "title": "ProviderFlags",
-    "type": "object"
-   },
-   "ProviderReasons": {
-    "description": "Why each unavailable provider is: empty for an available one.",
-    "properties": {
-     "assistant": {
-      "default": "",
-      "title": "Assistant",
-      "type": "string"
-     },
-     "claude": {
-      "default": "Connect a machine with `trax machine connect` and install claude on it",
-      "title": "Claude",
-      "type": "string"
-     },
-     "codex": {
-      "default": "Connect a machine with `trax machine connect` and install codex on it",
-      "title": "Codex",
-      "type": "string"
-     }
-    },
-    "title": "ProviderReasons",
     "type": "object"
    },
    "PublicationType": {
@@ -8450,28 +6535,6 @@
      "seq"
     ],
     "title": "RelationTarget",
-    "type": "object"
-   },
-   "RemoveMark": {
-    "additionalProperties": false,
-    "description": "Take one box away, whoever drew it; one already gone is no change.",
-    "properties": {
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "kind": {
-      "const": "remove_mark",
-      "title": "Kind",
-      "type": "string"
-     }
-    },
-    "required": [
-     "kind",
-     "id"
-    ],
-    "title": "RemoveMark",
     "type": "object"
    },
    "RoleChangeBody": {
@@ -9016,24 +7079,6 @@
     "title": "SessionAudienceResponse",
     "type": "object"
    },
-   "SessionCampaign": {
-    "additionalProperties": false,
-    "description": "Campaign settings stored on a chat's head AgentSession.\n\nThe whole setup, or ``None`` to clear it.",
-    "properties": {
-     "campaign": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/CampaignSetup"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     }
-    },
-    "title": "SessionCampaign",
-    "type": "object"
-   },
    "SessionEnd": {
     "description": "Mark a session closed, optionally backfilling late-known fields.",
     "properties": {
@@ -9083,18 +7128,6 @@
        }
       ],
       "title": "Ended"
-     },
-     "instance": {
-      "anyOf": [
-       {
-        "pattern": "^[0-9a-f]{32}$",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Instance"
      }
     },
     "title": "SessionEnd",
@@ -9155,49 +7188,6 @@
      "more"
     ],
     "title": "SessionList",
-    "type": "object"
-   },
-   "SessionPlacement": {
-    "description": "Where a session was placed; both ids are ``None`` for a session not placed.",
-    "properties": {
-     "canvas_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Canvas Id"
-     },
-     "workspace_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workspace Id"
-     },
-     "workstream_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workstream Id"
-     }
-    },
-    "title": "SessionPlacement",
     "type": "object"
    },
    "SessionRunState": {
@@ -9476,65 +7466,6 @@
     "title": "SessionUsage",
     "type": "object"
    },
-   "SetPage": {
-    "additionalProperties": false,
-    "description": "The page a station is on, as the browser reports it.",
-    "properties": {
-     "route": {
-      "maxLength": 512,
-      "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-      "title": "Route",
-      "type": "string"
-     }
-    },
-    "required": [
-     "route"
-    ],
-    "title": "SetPage",
-    "type": "object"
-   },
-   "SetPreferences": {
-    "additionalProperties": false,
-    "description": "Change the station owner's preferences, as the station's agent. An event.\n\nIt moves no visual and no revision. The keys and values are the owner's\npreferences' (``server/preferences.py``); ``None`` puts a key back to its default.",
-    "properties": {
-     "change": {
-      "additionalProperties": {
-       "$ref": "#/components/schemas/JsonValue"
-      },
-      "maxProperties": 64,
-      "minProperties": 1,
-      "title": "Change",
-      "type": "object"
-     },
-     "kind": {
-      "const": "preferences",
-      "title": "Kind",
-      "type": "string"
-     }
-    },
-    "required": [
-     "kind",
-     "change"
-    ],
-    "title": "SetPreferences",
-    "type": "object"
-   },
-   "SetStationWorkstream": {
-    "additionalProperties": false,
-    "description": "The workstream a station is moved to.",
-    "properties": {
-     "workstream_id": {
-      "format": "uuid",
-      "title": "Workstream Id",
-      "type": "string"
-     }
-    },
-    "required": [
-     "workstream_id"
-    ],
-    "title": "SetStationWorkstream",
-    "type": "object"
-   },
    "Setting": {
     "description": "One thing a slash line can name: sagent's own ``Setting``, as data.",
     "properties": {
@@ -9595,22 +7526,6 @@
     "title": "Setting",
     "type": "object"
    },
-   "SettingsArtifact": {
-    "additionalProperties": false,
-    "description": "The id of the principal's pinned personal settings Artifact.",
-    "properties": {
-     "artifact_id": {
-      "format": "uuid",
-      "title": "Artifact Id",
-      "type": "string"
-     }
-    },
-    "required": [
-     "artifact_id"
-    ],
-    "title": "SettingsArtifact",
-    "type": "object"
-   },
    "SettingsLine": {
     "description": "Every setting a slash line can name now, replacing the last a viewer held.",
     "properties": {
@@ -9632,92 +7547,6 @@
      "settings"
     ],
     "title": "SettingsLine",
-    "type": "object"
-   },
-   "ShowVisual": {
-    "additionalProperties": false,
-    "description": "Show one catalog visual, or focus its existing instance.",
-    "properties": {
-     "kind": {
-      "const": "show",
-      "title": "Kind",
-      "type": "string"
-     },
-     "params": {
-      "additionalProperties": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "integer"
-        },
-        {
-         "type": "boolean"
-        }
-       ]
-      },
-      "title": "Params",
-      "type": "object"
-     },
-     "placement": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/Placement"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "record_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Record Id"
-     },
-     "visual_type": {
-      "title": "Visual Type",
-      "type": "string"
-     }
-    },
-    "required": [
-     "kind",
-     "visual_type"
-    ],
-    "title": "ShowVisual",
-    "type": "object"
-   },
-   "SlashCommandBody": {
-    "description": "One slash command the human typed, as the wire carries it.\n\nIt is NOT a record: a slash command is handled inside the CLI's TUI and\nnever written to the session log, so it cannot be re-derived and cannot\nhold an ``idx``. It carries no ``seq`` either -- the server assigns one,\nbecause a sink counter restarts at 0 on a resumed run and would collide.",
-    "properties": {
-     "args": {
-      "default": "",
-      "title": "Args",
-      "type": "string"
-     },
-     "command": {
-      "minLength": 1,
-      "title": "Command",
-      "type": "string"
-     },
-     "timestamp": {
-      "format": "date-time",
-      "title": "Timestamp",
-      "type": "string"
-     }
-    },
-    "required": [
-     "timestamp",
-     "command"
-    ],
-    "title": "SlashCommandBody",
     "type": "object"
    },
    "Snapshot": {
@@ -10259,128 +8088,6 @@
      "state"
     ],
     "title": "StateLine",
-    "type": "object"
-   },
-   "StationLayout": {
-    "additionalProperties": false,
-    "description": "A station's layout: resolution-free, fitted to each screen by the browser.\n\nEvery key is optional, and a write replaces only the keys it names. Widths,\nsizes and places are fractions of the stage, never pixels; Chat's width is in\n``ch`` (a Terminal Chat is 80 columns). The sizes are the open canvas tab's.",
-    "properties": {
-     "chat_ch": {
-      "anyOf": [
-       {
-        "maximum": 400.0,
-        "minimum": 10.0,
-        "type": "number"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Chat Ch"
-     },
-     "columns": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/_Columns"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "console": {
-      "anyOf": [
-       {
-        "maxLength": 64,
-        "minLength": 1,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Console"
-     },
-     "floating": {
-      "anyOf": [
-       {
-        "additionalProperties": {
-         "$ref": "#/components/schemas/_TileSize"
-        },
-        "propertyNames": {
-         "$ref": "#/components/schemas/_TypeKey"
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Floating"
-     },
-     "share": {
-      "anyOf": [
-       {
-        "additionalProperties": {
-         "exclusiveMinimum": 0.0,
-         "maximum": 100.0,
-         "type": "number"
-        },
-        "propertyNames": {
-         "$ref": "#/components/schemas/_TypeKey"
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Share"
-     },
-     "tab": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/_TabId"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "tabs": {
-      "anyOf": [
-       {
-        "items": {
-         "$ref": "#/components/schemas/CanvasTab"
-        },
-        "maxItems": 12,
-        "type": "array"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Tabs"
-     },
-     "tiles": {
-      "anyOf": [
-       {
-        "additionalProperties": {
-         "$ref": "#/components/schemas/_TileMemory"
-        },
-        "propertyNames": {
-         "$ref": "#/components/schemas/_TypeKey"
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Tiles"
-     }
-    },
-    "title": "StationLayout",
     "type": "object"
    },
    "Status": {
@@ -12402,77 +10109,6 @@
     ],
     "type": "string"
    },
-   "TabName": {
-    "description": "A canvas tab as the station list names it: enough to show and open it.",
-    "properties": {
-     "id": {
-      "title": "Id",
-      "type": "string"
-     },
-     "name": {
-      "title": "Name",
-      "type": "string"
-     }
-    },
-    "required": [
-     "id",
-     "name"
-    ],
-    "title": "TabName",
-    "type": "object"
-   },
-   "TabVisual": {
-    "additionalProperties": false,
-    "description": "A visual a canvas tab shows, kept while another tab is open.",
-    "properties": {
-     "params": {
-      "additionalProperties": {
-       "anyOf": [
-        {
-         "maxLength": 2000,
-         "type": "string"
-        },
-        {
-         "type": "integer"
-        },
-        {
-         "type": "boolean"
-        }
-       ]
-      },
-      "maxProperties": 32,
-      "propertyNames": {
-       "maxLength": 64
-      },
-      "title": "Params",
-      "type": "object"
-     },
-     "placement": {
-      "$ref": "#/components/schemas/Placement",
-      "default": "main"
-     },
-     "record_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Record Id"
-     },
-     "type": {
-      "$ref": "#/components/schemas/_TypeKey"
-     }
-    },
-    "required": [
-     "type"
-    ],
-    "title": "TabVisual",
-    "type": "object"
-   },
    "TeamMember": {
     "description": "An agent of the session, as sagent's tree screen shows it.",
     "properties": {
@@ -12564,13 +10200,6 @@
     ],
     "title": "TerminalColors",
     "type": "object"
-   },
-   "TerminalCommand": {
-    "enum": [
-     "claude",
-     "codex"
-    ],
-    "type": "string"
    },
    "TerminalHost": {
     "description": "One host the caller owns, and whether it can take a terminal now.",
@@ -12704,18 +10333,6 @@
     "additionalProperties": false,
     "description": "An open request, as the host receives it.",
     "properties": {
-     "attach": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Attach"
-     },
      "canvas": {
       "anyOf": [
        {
@@ -12731,16 +10348,6 @@
      "cols": {
       "title": "Cols",
       "type": "integer"
-     },
-     "command": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/TerminalCommand"
-       },
-       {
-        "type": "null"
-       }
-      ]
      },
      "cwd": {
       "anyOf": [
@@ -12774,18 +10381,6 @@
       "title": "Rows",
       "type": "integer"
      },
-     "run_name": {
-      "anyOf": [
-       {
-        "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Run Name"
-     },
      "terminal_id": {
       "format": "uuid",
       "title": "Terminal Id",
@@ -12802,18 +10397,6 @@
        }
       ],
       "title": "Workspace"
-     },
-     "workstream": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workstream"
      }
     },
     "required": [
@@ -12823,198 +10406,6 @@
      "cols"
     ],
     "title": "TerminalWait",
-    "type": "object"
-   },
-   "TimelineDirection": {
-    "additionalProperties": false,
-    "description": "One direct Issue direction and its capped results.",
-    "properties": {
-     "issue": {
-      "$ref": "#/components/schemas/TimelineRecord"
-     },
-     "results": {
-      "items": {
-       "$ref": "#/components/schemas/TimelineExperiment"
-      },
-      "title": "Results",
-      "type": "array"
-     },
-     "results_truncated": {
-      "title": "Results Truncated",
-      "type": "boolean"
-     }
-    },
-    "required": [
-     "issue",
-     "results",
-     "results_truncated"
-    ],
-    "title": "TimelineDirection",
-    "type": "object"
-   },
-   "TimelineEvidence": {
-    "additionalProperties": false,
-    "description": "One signed citation and its linked claim row.",
-    "properties": {
-     "claim": {
-      "$ref": "#/components/schemas/TimelineRecord"
-     },
-     "edge_kind": {
-      "enum": [
-       "proves",
-       "favors"
-      ],
-      "title": "Edge Kind",
-      "type": "string"
-     },
-     "note": {
-      "anyOf": [
-       {
-        "maxLength": 2000,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Note"
-     },
-     "valence": {
-      "anyOf": [
-       {
-        "maximum": 1.0,
-        "minimum": -1.0,
-        "type": "number"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Valence"
-     }
-    },
-    "required": [
-     "claim",
-     "edge_kind",
-     "valence",
-     "note"
-    ],
-    "title": "TimelineEvidence",
-    "type": "object"
-   },
-   "TimelineExperiment": {
-    "additionalProperties": false,
-    "description": "One Experiment and its capped signed citations.",
-    "properties": {
-     "evidence": {
-      "items": {
-       "$ref": "#/components/schemas/TimelineEvidence"
-      },
-      "title": "Evidence",
-      "type": "array"
-     },
-     "evidence_truncated": {
-      "title": "Evidence Truncated",
-      "type": "boolean"
-     },
-     "record": {
-      "$ref": "#/components/schemas/TimelineRecord"
-     }
-    },
-    "required": [
-     "record",
-     "evidence",
-     "evidence_truncated"
-    ],
-    "title": "TimelineExperiment",
-    "type": "object"
-   },
-   "TimelineRecord": {
-    "additionalProperties": false,
-    "description": "Bounded record projection shared by timeline rows and citations.",
-    "properties": {
-     "created": {
-      "format": "date-time",
-      "title": "Created",
-      "type": "string"
-     },
-     "description": {
-      "anyOf": [
-       {
-        "maxLength": 2000,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Description"
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "kind": {
-      "$ref": "#/components/schemas/InquiryKind"
-     },
-     "labels": {
-      "anyOf": [
-       {
-        "items": {
-         "type": "string"
-        },
-        "type": "array"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Labels"
-     },
-     "modified": {
-      "format": "date-time",
-      "title": "Modified",
-      "type": "string"
-     },
-     "outcome": {
-      "anyOf": [
-       {
-        "maxLength": 2000,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Outcome"
-     },
-     "seq": {
-      "title": "Seq",
-      "type": "integer"
-     },
-     "status": {
-      "title": "Status",
-      "type": "string"
-     },
-     "title": {
-      "maxLength": 2000,
-      "title": "Title",
-      "type": "string"
-     }
-    },
-    "required": [
-     "id",
-     "kind",
-     "seq",
-     "title",
-     "status",
-     "created",
-     "modified",
-     "description",
-     "outcome"
-    ],
-    "title": "TimelineRecord",
     "type": "object"
    },
    "TokenRole": {
@@ -13042,91 +10433,6 @@
      "role"
     ],
     "title": "TokenRoleChangeBody",
-    "type": "object"
-   },
-   "UpdateWorkspace": {
-    "additionalProperties": false,
-    "description": "A station's name or visibility and pin flags.",
-    "properties": {
-     "hidden": {
-      "anyOf": [
-       {
-        "type": "boolean"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Hidden"
-     },
-     "name": {
-      "anyOf": [
-       {
-        "maxLength": 1000,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Name"
-     },
-     "pinned": {
-      "anyOf": [
-       {
-        "type": "boolean"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Pinned"
-     }
-    },
-    "title": "UpdateWorkspace",
-    "type": "object"
-   },
-   "UpdateWorkstream": {
-    "additionalProperties": false,
-    "description": "Fields a user may change on a workstream.",
-    "properties": {
-     "hidden": {
-      "anyOf": [
-       {
-        "type": "boolean"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Hidden"
-     },
-     "pinned": {
-      "anyOf": [
-       {
-        "type": "boolean"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Pinned"
-     },
-     "title": {
-      "anyOf": [
-       {
-        "maxLength": 120,
-        "minLength": 1,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Title"
-     }
-    },
-    "title": "UpdateWorkstream",
     "type": "object"
    },
    "ValidationError": {
@@ -13478,101 +10784,6 @@
     "title": "VisualDescription",
     "type": "object"
    },
-   "VisualInstance": {
-    "description": "One configured module on a canvas.",
-    "properties": {
-     "floating_rect": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/FloatingRect"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "params": {
-      "additionalProperties": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "integer"
-        },
-        {
-         "type": "boolean"
-        }
-       ]
-      },
-      "title": "Params",
-      "type": "object"
-     },
-     "placed_by": {
-      "anyOf": [
-       {
-        "maxLength": 320,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Placed By"
-     },
-     "placement": {
-      "$ref": "#/components/schemas/Placement",
-      "default": "main"
-     },
-     "record_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Record Id"
-     },
-     "type": {
-      "title": "Type",
-      "type": "string"
-     },
-     "version": {
-      "minimum": 1.0,
-      "title": "Version",
-      "type": "integer"
-     }
-    },
-    "required": [
-     "id",
-     "type",
-     "version"
-    ],
-    "title": "VisualInstance",
-    "type": "object"
-   },
-   "VisualWorkspacePreference": {
-    "description": "The user's opt-in for the agent-guided canvas.",
-    "properties": {
-     "enabled": {
-      "title": "Enabled",
-      "type": "boolean"
-     }
-    },
-    "required": [
-     "enabled"
-    ],
-    "title": "VisualWorkspacePreference",
-    "type": "object"
-   },
    "WebView": {
     "additionalProperties": true,
     "type": "object"
@@ -13602,22 +10813,87 @@
     "title": "WorkedOn",
     "type": "object"
    },
-   "WorkspaceConflict": {
-    "description": "A stale operation's conflict response, including live state.",
+   "WorkspaceMark": {
+    "description": "A red box drawn on the canvas since the sender's last line, with what it covers.",
     "properties": {
-     "current": {
-      "$ref": "#/components/schemas/WorkspaceState"
-     },
-     "detail": {
-      "title": "Detail",
+     "author": {
+      "title": "Author",
       "type": "string"
+     },
+     "bottom": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Bottom",
+      "type": "number"
+     },
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "instances": {
+      "items": {
+       "$ref": "#/components/schemas/WorkspaceVisibleVisual"
+      },
+      "title": "Instances",
+      "type": "array"
+     },
+     "left": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Left",
+      "type": "number"
+     },
+     "page": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Page"
+     },
+     "records": {
+      "items": {
+       "$ref": "#/components/schemas/WorkspaceRecordContext"
+      },
+      "title": "Records",
+      "type": "array"
+     },
+     "right": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Right",
+      "type": "number"
+     },
+     "tile": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/WorkspaceVisibleVisual"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "top": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Top",
+      "type": "number"
      }
     },
     "required": [
-     "detail",
-     "current"
+     "id",
+     "author"
     ],
-    "title": "WorkspaceConflict",
+    "title": "WorkspaceMark",
     "type": "object"
    },
    "WorkspaceMessageContext": {
@@ -13671,7 +10947,7 @@
      },
      "marks": {
       "items": {
-       "$ref": "#/components/schemas/CanvasMark"
+       "$ref": "#/components/schemas/WorkspaceMark"
       },
       "title": "Marks",
       "type": "array"
@@ -13679,7 +10955,7 @@
      "page": {
       "anyOf": [
        {
-        "$ref": "#/components/schemas/CanvasPage"
+        "$ref": "#/components/schemas/WorkspacePage"
        },
        {
         "type": "null"
@@ -13698,14 +10974,14 @@
      },
      "trail": {
       "items": {
-       "$ref": "#/components/schemas/CanvasPage"
+       "$ref": "#/components/schemas/WorkspacePage"
       },
       "title": "Trail",
       "type": "array"
      },
      "visible_visuals": {
       "items": {
-       "$ref": "#/components/schemas/CanvasVisibleVisual"
+       "$ref": "#/components/schemas/WorkspaceVisibleVisual"
       },
       "title": "Visible Visuals",
       "type": "array"
@@ -13723,517 +10999,106 @@
     "title": "WorkspaceMessageContext",
     "type": "object"
    },
-   "WorkspacePartner": {
-    "description": "Who a canvas's Chat talks to now, computed on every read and never stored.\n\nFor ``assistant`` the partner is the assistant's newest live session; an assistant\nwith no live session is still named, as unavailable. For ``claude`` or ``codex``\nit is the chat's session while a run of that CLI drains it, else ``offline``,\nstill naming the chat's session, so a run can be started attached to it.",
+   "WorkspacePage": {
+    "description": "A page the sender was on, with the record it shows when it names one.",
     "properties": {
-     "actor": {
+     "record": {
       "anyOf": [
        {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Actor"
-     },
-     "cli": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Cli"
-     },
-     "cwd": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Cwd"
-     },
-     "label": {
-      "default": "",
-      "title": "Label",
-      "type": "string"
-     },
-     "machine": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Machine"
-     },
-     "provider": {
-      "$ref": "#/components/schemas/ChatProvider",
-      "default": "assistant"
-     },
-     "run_name": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Run Name"
-     },
-     "session_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Session Id"
-     },
-     "state": {
-      "$ref": "#/components/schemas/RunState",
-      "default": "idle"
-     },
-     "status": {
-      "enum": [
-       "live",
-       "unavailable",
-       "offline"
-      ],
-      "title": "Status",
-      "type": "string"
-     }
-    },
-    "required": [
-     "session_id",
-     "actor",
-     "cli",
-     "status"
-    ],
-    "title": "WorkspacePartner",
-    "type": "object"
-   },
-   "WorkspaceSettingsRefs": {
-    "additionalProperties": false,
-    "description": "Settings rows and station metadata the assistant uses for a chat.",
-    "properties": {
-     "name": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Name"
-     },
-     "personal_artifact_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Personal Artifact Id"
-     },
-     "session_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Session Id"
-     },
-     "station_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Station Id"
-     },
-     "suggestion": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/WorkstreamSuggestion"
+        "$ref": "#/components/schemas/WorkspaceRecordContext"
        },
        {
         "type": "null"
        }
       ]
      },
-     "workstream_issue_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workstream Issue Id"
+     "route": {
+      "title": "Route",
+      "type": "string"
      }
     },
-    "title": "WorkspaceSettingsRefs",
+    "required": [
+     "route"
+    ],
+    "title": "WorkspacePage",
     "type": "object"
    },
-   "WorkspaceState": {
-    "description": "A revisioned station state returned to browser and agent clients.",
+   "WorkspaceRecordContext": {
+    "description": "A graph record the sender sees on screen, with a bounded title preview.",
     "properties": {
-     "agent_instructions": {
-      "anyOf": [
-       {
-        "maxLength": 8192,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Agent Instructions"
-     },
-     "assistant": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Assistant"
-     },
-     "available": {
-      "$ref": "#/components/schemas/ProviderFlags"
-     },
-     "continuation_record_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Continuation Record Id"
-     },
-     "conversation_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Conversation Id"
-     },
-     "focused_instance": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Focused Instance"
-     },
-     "hidden": {
-      "default": false,
-      "title": "Hidden",
-      "type": "boolean"
-     },
      "id": {
       "format": "uuid",
       "title": "Id",
       "type": "string"
      },
-     "layout": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/StationLayout"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "marks": {
-      "items": {
-       "$ref": "#/components/schemas/Mark"
-      },
-      "title": "Marks",
-      "type": "array"
-     },
-     "marks_sent": {
-      "default": 0,
-      "minimum": 0.0,
-      "title": "Marks Sent",
-      "type": "integer"
-     },
-     "marks_seq": {
-      "default": 0,
-      "minimum": 0.0,
-      "title": "Marks Seq",
-      "type": "integer"
-     },
-     "name": {
-      "title": "Name",
+     "kind": {
+      "title": "Kind",
       "type": "string"
      },
-     "page": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Page"
+     "seq": {
+      "title": "Seq",
+      "type": "integer"
      },
-     "partner": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/WorkspacePartner"
-       },
-       {
-        "type": "null"
-       }
-      ]
+     "title": {
+      "maxLength": 512,
+      "title": "Title",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "kind",
+     "seq",
+     "title"
+    ],
+    "title": "WorkspaceRecordContext",
+    "type": "object"
+   },
+   "WorkspaceVisibleVisual": {
+    "description": "A visual present on the canvas when a message was sent.",
+    "properties": {
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
      },
-     "pinned": {
-      "default": false,
-      "title": "Pinned",
-      "type": "boolean"
-     },
-     "preferences": {
-      "anyOf": [
-       {
-        "additionalProperties": {
-         "$ref": "#/components/schemas/JsonValue"
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Preferences"
-     },
-     "provider": {
-      "$ref": "#/components/schemas/ChatProvider",
-      "default": "assistant"
-     },
-     "reasons": {
-      "$ref": "#/components/schemas/ProviderReasons"
-     },
-     "record_labels": {
+     "params": {
       "additionalProperties": {
-       "type": "string"
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        },
+        {
+         "type": "boolean"
+        }
+       ]
       },
-      "propertyNames": {
-       "format": "uuid"
-      },
-      "title": "Record Labels",
+      "title": "Params",
       "type": "object"
      },
-     "revision": {
-      "minimum": 0.0,
-      "title": "Revision",
-      "type": "integer"
-     },
-     "session_id": {
+     "record": {
       "anyOf": [
        {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Session Id"
-     },
-     "suggestion": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/WorkstreamSuggestion"
+        "$ref": "#/components/schemas/WorkspaceRecordContext"
        },
        {
         "type": "null"
        }
       ]
      },
-     "visuals": {
-      "items": {
-       "$ref": "#/components/schemas/VisualInstance"
-      },
-      "title": "Visuals",
-      "type": "array"
-     },
-     "workstream_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workstream Id"
-     }
-    },
-    "required": [
-     "visuals",
-     "id",
-     "revision",
-     "name",
-     "conversation_id",
-     "page"
-    ],
-    "title": "WorkspaceState",
-    "type": "object"
-   },
-   "WorkspaceSummary": {
-    "description": "One of a user's stations, as the station list shows it.",
-    "properties": {
-     "conversation_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Conversation Id"
-     },
-     "created_at": {
-      "format": "date-time",
-      "title": "Created At",
+     "type": {
+      "title": "Type",
       "type": "string"
-     },
-     "hidden": {
-      "default": false,
-      "title": "Hidden",
-      "type": "boolean"
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "modified_at": {
-      "format": "date-time",
-      "title": "Modified At",
-      "type": "string"
-     },
-     "name": {
-      "title": "Name",
-      "type": "string"
-     },
-     "page": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Page"
-     },
-     "pinned": {
-      "default": false,
-      "title": "Pinned",
-      "type": "boolean"
-     },
-     "state": {
-      "$ref": "#/components/schemas/RunState",
-      "default": "idle"
-     },
-     "suggestion": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/WorkstreamSuggestion"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "tab": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Tab"
-     },
-     "tabs": {
-      "items": {
-       "$ref": "#/components/schemas/TabName"
-      },
-      "title": "Tabs",
-      "type": "array"
-     },
-     "workstream_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workstream Id"
      }
     },
     "required": [
      "id",
-     "name",
-     "conversation_id",
-     "page",
-     "created_at",
-     "modified_at"
+     "type"
     ],
-    "title": "WorkspaceSummary",
+    "title": "WorkspaceVisibleVisual",
     "type": "object"
    },
    "WorkspacesPreference": {
@@ -14298,16 +11163,6 @@
       "title": "Order",
       "type": "array"
      },
-     "pinned": {
-      "default": [],
-      "items": {
-       "maxLength": 100,
-       "type": "string"
-      },
-      "maxItems": 500,
-      "title": "Pinned",
-      "type": "array"
-     },
      "tabs": {
       "default": [],
       "description": "Your tab order, by canvas id.",
@@ -14323,308 +11178,43 @@
     "title": "WorkspacesPreference",
     "type": "object"
    },
-   "WorkstreamInfo": {
-    "description": "A workstream and its attached stations.",
+   "WorkstreamsPreference": {
+    "additionalProperties": false,
+    "description": "The user's workstream bar state.",
     "properties": {
      "hidden": {
-      "title": "Hidden",
-      "type": "boolean"
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "pinned": {
-      "title": "Pinned",
-      "type": "boolean"
-     },
-     "scratch": {
-      "title": "Scratch",
-      "type": "boolean"
-     },
-     "seq": {
-      "title": "Seq",
-      "type": "integer"
-     },
-     "stations": {
+      "default": [],
       "items": {
-       "$ref": "#/components/schemas/WorkstreamStation"
-      },
-      "title": "Stations",
-      "type": "array"
-     },
-     "title": {
-      "title": "Title",
-      "type": "string"
-     }
-    },
-    "required": [
-     "id",
-     "seq",
-     "title",
-     "scratch",
-     "hidden",
-     "pinned",
-     "stations"
-    ],
-    "title": "WorkstreamInfo",
-    "type": "object"
-   },
-   "WorkstreamOrder": {
-    "additionalProperties": false,
-    "description": "The ids in their chosen workstream bar order.",
-    "properties": {
-     "ids": {
-      "items": {
-       "format": "uuid",
+       "maxLength": 100,
        "type": "string"
       },
       "maxItems": 500,
-      "title": "Ids",
-      "type": "array"
-     }
-    },
-    "required": [
-     "ids"
-    ],
-    "title": "WorkstreamOrder",
-    "type": "object"
-   },
-   "WorkstreamStation": {
-    "description": "A station attached to one workstream.",
-    "properties": {
-     "conversation_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Conversation Id"
-     },
-     "hidden": {
       "title": "Hidden",
-      "type": "boolean"
+      "type": "array"
      },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "name": {
-      "title": "Name",
-      "type": "string"
-     },
-     "pinned": {
-      "title": "Pinned",
-      "type": "boolean"
-     },
-     "session_ids": {
+     "order": {
+      "default": [],
       "items": {
-       "format": "uuid",
+       "maxLength": 100,
        "type": "string"
       },
-      "title": "Session Ids",
+      "maxItems": 500,
+      "title": "Order",
+      "type": "array"
+     },
+     "pinned": {
+      "default": [],
+      "items": {
+       "maxLength": 100,
+       "type": "string"
+      },
+      "maxItems": 500,
+      "title": "Pinned",
       "type": "array"
      }
     },
-    "required": [
-     "id",
-     "name",
-     "hidden",
-     "pinned",
-     "conversation_id",
-     "session_ids"
-    ],
-    "title": "WorkstreamStation",
+    "title": "WorkstreamsPreference",
     "type": "object"
-   },
-   "WorkstreamSuggestion": {
-    "additionalProperties": false,
-    "description": "A workstream the assistant suggests for a station, without creating it.",
-    "properties": {
-     "title": {
-      "maxLength": 120,
-      "minLength": 1,
-      "title": "Title",
-      "type": "string"
-     },
-     "workstream_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Workstream Id"
-     }
-    },
-    "required": [
-     "title"
-    ],
-    "title": "WorkstreamSuggestion",
-    "type": "object"
-   },
-   "WorkstreamSummary": {
-    "description": "One workstream in the user's bar.",
-    "properties": {
-     "hidden": {
-      "title": "Hidden",
-      "type": "boolean"
-     },
-     "id": {
-      "format": "uuid",
-      "title": "Id",
-      "type": "string"
-     },
-     "pinned": {
-      "title": "Pinned",
-      "type": "boolean"
-     },
-     "scratch": {
-      "title": "Scratch",
-      "type": "boolean"
-     },
-     "seq": {
-      "title": "Seq",
-      "type": "integer"
-     },
-     "title": {
-      "title": "Title",
-      "type": "string"
-     }
-    },
-    "required": [
-     "id",
-     "seq",
-     "title",
-     "scratch",
-     "hidden",
-     "pinned"
-    ],
-    "title": "WorkstreamSummary",
-    "type": "object"
-   },
-   "_Columns": {
-    "additionalProperties": false,
-    "description": "How wide the columns left and right of the page are, as fractions of the stage.",
-    "properties": {
-     "left": {
-      "anyOf": [
-       {
-        "exclusiveMinimum": 0.0,
-        "maximum": 1.0,
-        "type": "number"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Left"
-     },
-     "side": {
-      "anyOf": [
-       {
-        "exclusiveMinimum": 0.0,
-        "maximum": 1.0,
-        "type": "number"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Side"
-     }
-    },
-    "title": "_Columns",
-    "type": "object"
-   },
-   "_Fraction": {
-    "maximum": 1.0,
-    "minimum": 0.0,
-    "type": "number"
-   },
-   "_TabId": {
-    "maxLength": 64,
-    "minLength": 1,
-    "type": "string"
-   },
-   "_TileMemory": {
-    "additionalProperties": false,
-    "description": "How a floating window of one visual type was left.",
-    "properties": {
-     "collapsed": {
-      "default": false,
-      "title": "Collapsed",
-      "type": "boolean"
-     },
-     "place": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/_TilePlace"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     }
-    },
-    "title": "_TileMemory",
-    "type": "object"
-   },
-   "_TilePlace": {
-    "additionalProperties": false,
-    "description": "Where a floating window stands.\n\nIts top left corner is ``left`` of the stage's width and ``top`` of its height\nfrom the stage's own.",
-    "properties": {
-     "left": {
-      "$ref": "#/components/schemas/_Fraction"
-     },
-     "top": {
-      "$ref": "#/components/schemas/_Fraction"
-     }
-    },
-    "required": [
-     "left",
-     "top"
-    ],
-    "title": "_TilePlace",
-    "type": "object"
-   },
-   "_TileSize": {
-    "additionalProperties": false,
-    "description": "How large a floating window is, as fractions of the stage's width and height.",
-    "properties": {
-     "height": {
-      "exclusiveMinimum": 0.0,
-      "maximum": 1.0,
-      "title": "Height",
-      "type": "number"
-     },
-     "width": {
-      "exclusiveMinimum": 0.0,
-      "maximum": 1.0,
-      "title": "Width",
-      "type": "number"
-     }
-    },
-    "required": [
-     "width",
-     "height"
-    ],
-    "title": "_TileSize",
-    "type": "object"
-   },
-   "_TypeKey": {
-    "maxLength": 64,
-    "minLength": 1,
-    "type": "string"
    },
    "trackinizer__types__change_log__Kind": {
     "enum": [
@@ -16319,240 +12909,6 @@
     "summary": "Get Change Route"
    }
   },
-  "/api/chats": {
-   "post": {
-    "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nWhoever reads a chat posts into it: its starter, each person it is shared with\nand anyone the server's ``TRACKINIZER_CHAT_ORGS`` lets in, holding its audience;\na viewer may not, and any other writer is refused with 403 ``chat_not_shared``,\nwhether the chat is named by ``conversation_id`` or by the ``Idempotency-Key`` of\na post that names none. A reader forks a chat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A station holds one\nchat: its first line binds the station to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother station of the poster holds. A fork goes to a new station, copied from\nthe one it was sent from and named in the answer's ``workspace_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nThe poster's station's provider answers, or in a chat someone else started, the\nprovider of its starter's station. ``assistant`` takes a ``line`` or an ``answer``\n(422 for any other ``kind``); an ``answer`` is a choice on a card the assistant\nasked, queued for the chat's own session, and is 409 ``provider_offline`` while the\nassistant does not have the chat open. For ``claude`` or ``codex`` the post, with\nits ``kind`` and ``payload``, joins the queue of the chat's session that the CLI's\nrun drains; with no such run live it is 409 ``provider_offline``, and while the run\nreports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``\nwith nothing queued: reattach first. A fork from a ``claude`` or\n``codex`` station is one too: its new session is opened at once and its line\nwaits there for the run the person starts.\n\nA ``line`` that starts with a known slash command of claude or codex is judged\nby the chat's provider, not the poster's station. One the provider runs from\nChat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed\nbare, with no page, trail or marks; ``/model <name>`` and ``/effort <level>``\nare queued as a ``settings`` post the same way (bare, they are refused); any\nother is 422 ``command_refused`` with the reason in ``message``, and nothing is queued. Every other ``/`` line stays a\nline. An ``answer`` for ``claude`` or ``codex`` is the chat's starter's alone, the\nrun's owner, since it runs a tool or grants trust on their machine. An ``answer``\nto the assistant's card is the person's the card asked (``input.asker``, else the\nstarter's), since it lists their own choices, and it carries a line's page, trail\nand marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names\nthe option taken (``{prompt_id, option}``), or in the older form a ``decision``.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the line\n    was queued on it.",
-    "operationId": "post_chat_line_route_api_chats_post",
-    "parameters": [
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Idempotency-Key",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/ChatSend"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ChatSent"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Post Chat Line Route"
-   }
-  },
-  "/api/chats/{conversation_id}": {
-   "delete": {
-    "description": "Delete a chat: every session of it with its records, its shares, its stations.\n\nAn admin deletes any chat, and so does the key that opened every session of it;\nany other API key is 403, as only a person's browser deletes a chat otherwise.\nIts starter deletes it while every person's line in it is theirs, a line a fork\ncopied counting as its original poster's and a line on its way in, queued or\ntaken by the assistant and not yet recorded, as posted; once someone else has\nposted they are 403 ``chat_has_other_posters``, and anyone else is 403\n``chat_not_starter``. A session that is locked, or linked to a locked row, needs\nan admin. Each station that held the chat holds none after, at its next\nrevision, and its open tabs get a ``workspace`` frame saying so. The chat's\nforks stay, and so do its sessions' change log rows, without the titles and\ndescriptions they held. Its queued lines go, and its id starts no chat again: a\nsession, a line or a station under it is 410 ``chat_deleted``.\n\nArgs:\n  conversation_id: The chat.\n  request: Request carrying the store, the inbound queue and the event hub.\n  identity: The signed-in writer, or an API key.\n\nReturns:\n  response: 204; 404 when the caller finds no such chat.",
-    "operationId": "delete_chat_route_api_chats__conversation_id__delete",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "conversation_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Conversation Id",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Delete Chat Route"
-   },
-   "get": {
-    "description": "Find a conversation's session; 404 until the assistant has opened it.\n\nA chat that was deleted is 410 ``chat_deleted``.\n\nArgs:\n  conversation_id: The conversation.\n  request: Request carrying the database engine.\n  identity: The signed-in user; the head of every chat of the assistant is found\n    for every user, and of a chat of a user's own helper for that user. Its\n    transcript is read by the chat's members alone.\n\nReturns:\n  head: The session, its starter, whether the assistant still has it open, how\n    often it was forked, what it was forked from, its audience, whether the\n    caller does not read it, who it is shared with, and whether the caller may\n    hide, share or delete it.",
-    "operationId": "read_chat_route_api_chats__conversation_id__get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "conversation_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Conversation Id",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ChatHead"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Read Chat Route"
-   }
-  },
-  "/api/chats/{conversation_id}/shares/{email}": {
-   "delete": {
-    "description": "Stop sharing a chat with one person: they read none of it, their past lines stay.\n\nOnly the chat's starter or an admin unshares it, from a browser: an API key is\n403, and anyone else is 403 ``chat_not_starter``. Unsharing a person it is not\nshared with changes nothing.\n\nArgs:\n  conversation_id: The chat.\n  email: The person's email.\n  request: Request carrying the database engine.\n  identity: The signed-in writer.\n\nReturns:\n  shared_with: The chat's shares, oldest first.",
-    "operationId": "unshare_chat_route_api_chats__conversation_id__shares__email__delete",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "conversation_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Conversation Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "path",
-      "name": "email",
-      "required": true,
-      "schema": {
-       "maxLength": 320,
-       "pattern": "^[^@\\s]+@[^@\\s]+$",
-       "title": "Email",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "items": {
-          "type": "string"
-         },
-         "title": "Response Unshare Chat Route Api Chats  Conversation Id  Shares  Email  Delete",
-         "type": "array"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Unshare Chat Route"
-   },
-   "put": {
-    "description": "Share a chat with one person, who then reads it and posts as its starter does.\n\nOnly the chat's starter shares it, from a browser: an API key is 403, and anyone\nelse, an admin included, is 403 ``chat_not_starter``, since a share lets its\nperson read the chat. A ``staff`` chat is shared only with a person who holds\n``staff`` now, else 409 ``chat_staff_only``. Sharing again changes nothing.\n\nArgs:\n  conversation_id: The chat.\n  email: The person's email; stored lowercase.\n  request: Request carrying the database engine.\n  identity: The signed-in writer.\n\nReturns:\n  shared_with: The chat's shares, oldest first.",
-    "operationId": "share_chat_route_api_chats__conversation_id__shares__email__put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "conversation_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Conversation Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "path",
-      "name": "email",
-      "required": true,
-      "schema": {
-       "maxLength": 320,
-       "pattern": "^[^@\\s]+@[^@\\s]+$",
-       "title": "Email",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "items": {
-          "type": "string"
-         },
-         "title": "Response Share Chat Route Api Chats  Conversation Id  Shares  Email  Put",
-         "type": "array"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Share Chat Route"
-   }
-  },
   "/api/code/blobs": {
    "post": {
     "description": "Store blobs for the owner after checking each hash against its text.\n\nArgs:\n  body: The owner and the blobs.\n  request: Request carrying the store.\n  identity: Writer filing code under ``body.owner``.\n\nReturns:\n  stored: How many blobs were new.",
@@ -16930,25 +13286,6 @@
      }
     },
     "summary": "Set Sha Route"
-   }
-  },
-  "/api/compute": {
-   "get": {
-    "description": "List the compute this server provides, for the web app's Machines menu.",
-    "operationId": "compute_route_api_compute_get",
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ComputeBody"
-        }
-       }
-      },
-      "description": "Successful Response"
-     }
-    },
-    "summary": "Compute Route"
    }
   },
   "/api/edges/batch": {
@@ -21201,112 +17538,6 @@
     "summary": "Set Validation Route"
    }
   },
-  "/api/machines/{name}/exec": {
-   "post": {
-    "description": "Run a command on the asker's machine and return what it produced.\n\nOnly the configured assistant calls this, naming an attested writer or admin\n``asker`` who owns the machine. The request is held until the machine's host\nreports, up to the command's ``timeout_sec`` and a short grace. A retry under the\nsame ``Idempotency-Key`` is told what the first try was, its result or its 504 or\n410 once the host was handed the command, and runs nothing twice. A command that\nwas refused, or that no host took, is run by the retry. The machine must be online,\nconfirmed by its owner, and report ``exec: true``.\n\nArgs:\n  name: The machine's name.\n  body: The command, its folder and timeout, and optionally stdin and variables.\n  request: Request carrying the database engine and the exec hub.\n  identity: The assistant's key.\n  asker: The person the assistant runs the command for.\n\nReturns:\n  result: The exit code, both streams, the folder the command ended in, whether\n    output was cut, and how long it ran.\n\nRaises:\n  HTTPException: 403 ``exec_forbidden`` for any caller but the assistant naming a\n    writer or admin, and on a server with authentication off; 404 for no such\n    machine of the asker; 409 ``exec_not_enabled`` for a machine that is offline,\n    unconfirmed or not opted in, ``exec_busy`` past 4 commands on one machine; 410\n    ``exec_machine_revoked`` when the machine was revoked meanwhile; 429\n    ``exec_limit`` past 60 commands a minute for the asker; 504 ``exec_lost`` when\n    the host did not take the command or did not report in time.",
-    "operationId": "exec_route_api_machines__name__exec_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "asker",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Asker"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/ExecRequest"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ExecResult"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Exec Route"
-   }
-  },
-  "/api/me/acknowledge": {
-   "put": {
-    "description": "Record that the caller agreed to the alpha rules as they stand now.\n\nThe rules are Issue#1; their version is its last change, so editing them makes\nthis agreement stale and the welcome flow asks again.\n\nArgs:\n  body: The rules version the caller was shown; it must still be the current\n    one, so an agreement never covers rules the caller did not read.\n  request: FastAPI request with a database engine.\n  identity: Authenticated account owner.\n\nReturns:\n  result: When the caller agreed, and the rules version they agreed to.\n\nRaises:\n  HTTPException: 403 for an API key, 409 when no rules are in force or they\n    changed since the caller read them.",
-    "operationId": "acknowledge_route_api_me_acknowledge_put",
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/AcknowledgeBody"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/AcknowledgeResult"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Acknowledge Route"
-   }
-  },
   "/api/me/preferences": {
    "patch": {
     "description": "Set some of the caller's preferences, and put others back to their defaults.\n\nThe keys the body leaves out keep their values. The change is one statement, so\ntwo tabs changing different keys at once both keep theirs.\n\nArgs:\n  body: The keys to change: a value sets the key, ``null`` puts it back to its\n    default.\n  request: FastAPI request with a database engine.\n  identity: The account whose preferences change.\n\nReturns:\n  preferences: Every key after the change, defaults filled.\n\nRaises:\n  HTTPException: 422 for a key no preference has or a value its key does not\n    take, and nothing is written; 404 when the caller's user is gone.",
@@ -21390,25 +17621,6 @@
      }
     },
     "summary": "Profile Route"
-   }
-  },
-  "/api/me/settings-artifact": {
-   "post": {
-    "description": "Get or create the principal's pinned personal settings Artifact.",
-    "operationId": "open_personal_settings_route_api_me_settings_artifact_post",
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/SettingsArtifact"
-        }
-       }
-      },
-      "description": "Successful Response"
-     }
-    },
-    "summary": "Open Personal Settings Route"
    }
   },
   "/api/me/tokens": {
@@ -21557,45 +17769,6 @@
      }
     },
     "summary": "Set Token Role Route"
-   }
-  },
-  "/api/me/visual-workspace": {
-   "put": {
-    "description": "Set the caller's opt-in for the visual canvas.\n\nArgs:\n  body: Desired canvas availability.\n  request: FastAPI request with a database engine.\n  identity: Authenticated account owner.\n\nReturns:\n  preference: The stored account choice.",
-    "operationId": "set_visual_workspace_preference_api_me_visual_workspace_put",
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/VisualWorkspacePreference"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/VisualWorkspacePreference"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Set Visual Workspace Preference"
    }
   },
   "/api/messages": {
@@ -22748,7 +18921,7 @@
   },
   "/api/sessions/start": {
    "post": {
-    "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A\nsession under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session. A ``cli_session_id`` of a deleted science chat\n(``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled\n``Science chat`` whatever ``title`` says, since every key reads the row and only\nthe chat's members read its lines.\n\n``attach`` re-opens that session by its id instead: it is live again if it had\nended, its ``cli_session_id`` stays, and the run's file becomes its next part. The\nresponse names it as a fresh start's would. A caller who may not write the\nsession is 403, and so is one a science chat takes no run from: only its opening\nkey, the assistant's or its starter's attach to a chat. An unknown id is 404.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, attach, started, rooms,\n    account, idempotency_key, private).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
+    "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A\nsession under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session. A ``cli_session_id`` of a deleted science chat\n(``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled\n``Science chat`` whatever ``title`` says, since every key reads the row and only\nthe chat's members read its lines.\n\n``attach`` re-opens that session by its id instead: it is live again if it had\nended, its ``cli_session_id`` stays, and the run's file becomes its next part. The\nresponse names it as a fresh start's would. A caller who may not write the\nsession is 403, and so is one a science chat takes no run from: only its opening\nkey, the assistant's or its starter's attach to a chat. An unknown id is 404.\n\n``spawned_by`` names the session whose agent spawned this one, which the caller\nmust write, and, a science chat, may run or serve as its process (403 else; 404\nfor no session). The start re-opens the session already\n``produced_by`` it under ``cli_session_id``, whichever key opened that, else opens\none in its audience; either way it links this one ``produced_by`` it, ``note``\nthe edge's note. A session it mints so takes a tab, opening nothing, in Chat on\neach canvas of the chat it works for, unless it is a chat of its own (a\n``chat:`` id); one it re-opens takes none. An agent process's key starts only\nsuch a session, spawned by a session it acts for (``auth.process_reaches``).\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, attach, started, rooms,\n    account, idempotency_key, private).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
     "operationId": "session_start_route_api_sessions_start_post",
     "requestBody": {
      "content": {
@@ -23237,152 +19410,6 @@
     "summary": "Session Lines Route"
    }
   },
-  "/api/sessions/{session_id}/partial": {
-   "get": {
-    "description": "Read the answer the chat's assistant is writing, once it is not the one seen.\n\nAnswers at once when the held partial's ``seq`` is not ``after``; else when it\nchanges, or when it expires; else after ``wait_sec`` with it unchanged. 404\n``chat_partials_off`` when the server streams no answers, 404 for no session,\nand 403 ``session_audience`` to a caller who does not read the session's records,\nasked again before a changed partial is answered.\n\nArgs:\n  session_id: The chat's session.\n  request: Request carrying the store and the partials.\n  identity: A reader of the chat.\n  after: The ``seq`` the caller last saw; 0 for none.\n  wait_sec: Seconds to hold the request for a change, clamped to [0, 25].\n\nReturns:\n  state: The partial held, and its ``seq``; ``seq`` 0 and none when none is.",
-    "operationId": "read_chat_partial_route_api_sessions__session_id__partial_get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "session_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Session Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "after",
-      "required": false,
-      "schema": {
-       "default": 0,
-       "title": "After",
-       "type": "integer"
-      }
-     },
-     {
-      "in": "query",
-      "name": "wait_sec",
-      "required": false,
-      "schema": {
-       "default": 0.0,
-       "title": "Wait Sec",
-       "type": "number"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ChatPartialState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Read Chat Partial Route"
-   },
-   "put": {
-    "description": "Hold the answer a chat's assistant is writing, in place of the one held.\n\nRefused in this order: 404 ``chat_partials_off`` when the server streams no\nanswers; 403 ``not_the_assistant`` from anyone but the configured assistant; 404\nfor no session; 404 ``not_a_chat`` for a session that is no science chat; 403\nfrom a key that did not open the session; 409 ``session_ended`` once it ended.\n\nArgs:\n  session_id: The chat's session.\n  body: The answer so far, its turn, and whether it is whole.\n  request: Request carrying the store and the partials.\n  identity: The assistant, by the key that opened the session.\n\nReturns:\n  response: Empty.",
-    "operationId": "put_chat_partial_route_api_sessions__session_id__partial_put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "session_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Session Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/ChatPartial"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Put Chat Partial Route"
-   }
-  },
-  "/api/sessions/{session_id}/partial/{turn}": {
-   "delete": {
-    "description": "Drop the chat's partial if it is of ``turn``; a later turn's stays.\n\nRefused as a put is, but for an ended session, whose partial may still go.\n\nArgs:\n  session_id: The chat's session.\n  turn: The turn whose partial ends.\n  request: Request carrying the store and the partials.\n  identity: The assistant, by the key that opened the session.\n\nReturns:\n  response: Empty, whether or not a partial was dropped.",
-    "operationId": "delete_chat_partial_route_api_sessions__session_id__partial__turn__delete",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "session_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Session Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "path",
-      "name": "turn",
-      "required": true,
-      "schema": {
-       "title": "Turn",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Delete Chat Partial Route"
-   }
-  },
   "/api/sessions/{session_id}/parts": {
    "get": {
     "description": "List the files this session was captured from, in ``part`` order.\n\nArgs:\n  session_id: AgentSession ID to list parts from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  result: ReadPartsResponse with manifest info for each part.",
@@ -23455,57 +19482,6 @@
      }
     },
     "summary": "Read Session Parts Route"
-   }
-  },
-  "/api/sessions/{session_id}/place": {
-   "post": {
-    "description": "Place a session in the caller's workstream and a station; the server decides.\n\nThe first rule that matches wins: the station the run started from, when it is the\ncaller's; the placement the session already has; the workstream of the caller's\nnewest earlier session on the same git branch, in a new station; else the caller's\nScratch, in a new station. Placing a placed session returns its placement. A\nservice account's session is not placed: both ids are null. A science chat is\nplaced on the caller's station that holds the chat, and on nothing at all where no\nstation holds it, so the run answering a chat can point the canvas the chat sits in.\n\nArgs:\n  session_id: The session, which the caller's own key opened.\n  body: The station the run started from, and its git checkout.\n  request: Request carrying the database engine and store.\n  identity: The session's own account and key.\n\nReturns:\n  placement: The workstream and station of the session.",
-    "operationId": "place_session_route_api_sessions__session_id__place_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "session_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Session Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/PlaceSession"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/SessionPlacement"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Place Session Route"
    }
   },
   "/api/sessions/{session_id}/process": {
@@ -23651,50 +19627,6 @@
      }
     },
     "summary": "Start Process Route"
-   }
-  },
-  "/api/sessions/{session_id}/reattach": {
-   "post": {
-    "description": "Reopen a chat's run headless, where it ran, after a terminal took it over.\n\nThe chat's run keeps its CLI session: the new run attaches to the chat's session,\nwhich resumes the CLI's own stored session, on the machine and in the folder the\nlast run named. When a person opened the CLI in a terminal, that run is replaced:\nits lease is revoked and it is turned away when it drains again, which ends its\nterminal, and the terminals this server opened for it are stopped. The run starts\nas a detached host of the old run's name (``chat-<session>`` for a run that named\nnone): a launch of that name ends the old host and resumes the CLI session its\nterminal continued.\n\nOnly the chat's starter reattaches it, from their own browser. A chat whose run is\nlive and not taken over is 409 ``chat_run_live``, and one whose machine or folder\nthe server does not know (it restarted since the run last polled) is 409\n``reattach_place_unknown``. The machine and CLI are held to the rules of an open:\n404 for a machine that is not online, 409 ``cli_not_installed``,\n``terminal_unconfirmed`` and ``terminal_not_enabled``. A retry under the same\n``Idempotency-Key`` opens one run.\n\nArgs:\n  session_id: The chat's session, as the Chat or the Console row names it.\n  request: Request carrying the store, the terminal hub and the inbound queue.\n  identity: The signed-in starter.\n  key: Required retry-safe idempotency key.\n\nRaises:\n  HTTPException: 403 ``terminal_forbidden`` for a key, a service account or a\n    foreign origin, 403 ``reattach_not_owner`` for anyone but the chat's starter;\n    404 for no such session; 409 ``not_a_chat``, ``provider_is_assistant``,\n    ``chat_run_live``, ``reattach_place_unknown``; 429 ``terminal_limit`` past 10\n    opens a minute.",
-    "operationId": "reattach_session_route_api_sessions__session_id__reattach_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "session_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Session Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Idempotency-Key",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Reattach Session Route"
    }
   },
   "/api/sessions/{session_id}/records": {
@@ -24062,50 +19994,6 @@
     "summary": "Read Session Usage Route"
    }
   },
-  "/api/sessions/{session_id}/workstream": {
-   "put": {
-    "description": "Move a session to one of the caller's workstreams.\n\nThe station made for the session moves with it when no other session sits on it.\n\nArgs:\n  session_id: The session, which the caller owns.\n  body: The destination workstream Issue.\n  request: Request carrying the database engine and store.\n  identity: The session's account, as a browser or as its own key.",
-    "operationId": "move_session_route_api_sessions__session_id__workstream_put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "session_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Session Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/MoveSession"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Move Session Route"
-   }
-  },
   "/api/terminals": {
    "post": {
     "description": "Open a terminal on one of the caller's hosts.\n\nA browser session opens the owner's terminal; every key, service account or\nforeign origin is refused. The host must be online and its daemon must have asked\nfor terminals within 45 seconds (the daemon does by default). Attach with the\nticket within 30 seconds.\n\nArgs:\n  body: The host, the terminal's size, and the canvas it opens from.\n  request: Request carrying the store and the terminal relay.\n  identity: The signed-in owner.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for a key, a service account or a foreign origin; 404 for no\n    such host of the caller, or another user's canvas; 409 ``terminal_unconfirmed``\n    until the owner confirms a host a key enrolled, ``terminal_not_enabled`` when\n    the daemon is not asking; 429 ``terminal_limit`` past 10 opens a minute. Every\n    terminal route answers 403 on a server with authentication off.",
@@ -24453,192 +20341,6 @@
      }
     },
     "summary": "Visuals Route"
-   }
-  },
-  "/api/visuals/lineage/{record_id}": {
-   "get": {
-    "description": "Read typed research links without requiring a launch or a single parent.\n\nArgs:\n  record_id: The selected inquiry UUID.\n  request: Request carrying the Store.\n  direction: Read incoming or outgoing stored edges.\n  edge_kind: Relationship kinds, defaulting to taxonomy and provenance.\n  peer_kind: Restrict peers to one inquiry kind.\n  page_size: Distinct peer quota, at most fifty.\n  cursor: Continuation bound to this record and these filters.\n\nReturns:\n  page: Selected record, peer records, directed edges and continuation.",
-    "operationId": "lineage_page_route_api_visuals_lineage__record_id__get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "record_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Record Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "direction",
-      "required": false,
-      "schema": {
-       "default": "in",
-       "enum": [
-        "in",
-        "out"
-       ],
-       "title": "Direction",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "edge_kind",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "items": {
-          "$ref": "#/components/schemas/trackinizer__types__edges__Kind"
-         },
-         "type": "array"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Edge Kind"
-      }
-     },
-     {
-      "in": "query",
-      "name": "peer_kind",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "$ref": "#/components/schemas/InquiryKind"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Peer Kind"
-      }
-     },
-     {
-      "in": "query",
-      "name": "page_size",
-      "required": false,
-      "schema": {
-       "default": 20,
-       "maximum": 50,
-       "minimum": 1,
-       "title": "Page Size",
-       "type": "integer"
-      }
-     },
-     {
-      "in": "query",
-      "name": "cursor",
-      "required": false,
-      "schema": {
-       "default": "",
-       "maxLength": 1024,
-       "title": "Cursor",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/LineagePage"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Lineage Page Route"
-   }
-  },
-  "/api/visuals/timeline/{record_id}": {
-   "get": {
-    "description": "Return the lineage and timeline of a record of any kind, with hard bounded SQL.\n\nThe anchor Issue supplies `leads` (its `narrows` ancestors, at most three,\nfarthest first), results, and directions. An Issue is its own anchor; an\nExperiment is anchored on its sole Issue producer; any other kind stays\nthe record and takes its sole `produced_by` Issue as its nearest lead.\nMultiple producers or broader Issues stop the overview's ancestry spine;\nall origins remain available through the paged lineage endpoint.\n\nArgs:\n  record_id: Selected record UUID, of any kind.\n  request: Request with the shared Store.\n  direction_limit: Direct child Issues to return; the catalog sets the default\n    and maximum.\n  results_per_direction: Experiments per Issue; the catalog sets the default\n    and maximum.\n\nReturns:\n  timeline: Bounded record, result, and signed evidence projection.",
-    "operationId": "evidence_timeline_route_api_visuals_timeline__record_id__get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "record_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Record Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "direction_limit",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "integer"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Direction Limit"
-      }
-     },
-     {
-      "in": "query",
-      "name": "results_per_direction",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "integer"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Results Per Direction"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/EvidenceTimelineResponse"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Evidence Timeline Route"
    }
   },
   "/api/web/feed": {
@@ -25417,7 +21119,7 @@
   },
   "/api/web/graph": {
    "get": {
-    "description": "Return the inquiry graph as typed nodes + directed edges, for the SPA.\n\nAt most ``limit`` nodes, at least 1, and the edges between them. The newest\ninquiries come first, each followed by the older ones it links to in either\ndirection, so an old-but-still-cited node (e.g. a foundational paper a new\nbelief proves) stays in view; selection stops at ``limit``. Every edge joins\ntwo returned nodes.\n\nWith ``focus``, the nodes are instead the foci and the inquiries nearest them\n(:func:`read_neighbourhood`): all within one edge, in either direction, before\nany two away, and so on to ``hops``, newest first within a hop, until\n``limit``; with several foci, each has a share of hop 1. Each node then\ncarries ``hops``, its distance from the nearest focus, 0 for a focus.\n\nNodes are the light projection (id, kind, seq, title, status, created,\nbelief judgement/confidence), ordered by ``created`` ascending so the replay\nanimation adds them in authoring order; edges carry ``from_id`` -> ``to_id``,\n``edge_kind``, ``valence`` when present, and, for a wire the audit trail\ncovers, ``asserted`` \u2014 when it was made \u2014 and ``actor``. The detail view\n(:func:`web_get`) serves the full per-kind fields for one node on demand.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  limit: Most nodes to return, neighbours included, at least 1; 1000, or 60\n    with a ``focus``, when unset.\n  focus: The inquiries whose neighbourhood to return, at most 10, each a UUID\n    or ``Kind/seq``; one that names nothing the reader may read is left out.\n    Unset returns the newest.\n  hops: With ``focus``, the most edges to walk from the foci, 1 to 3.\n\nReturns:\n  graph: Nodes and edges for replay visualization, ordered by created time.\n\nRaises:\n  HTTPException: 400 for a ``limit`` below 1, ``hops`` outside 1 to 3, or a\n    ``focus`` value that is neither a UUID nor ``Kind/seq`` of a known kind;\n    404 when no ``focus`` names an inquiry the reader may read. More than\n    ``MOST_FOCI`` values are refused before this runs, with 422.",
+    "description": "Return the inquiry graph as typed nodes + directed edges, for the SPA.\n\nAt most ``limit`` nodes, at least 1, and the edges between them. The newest\ninquiries come first, each followed by the older ones it links to in either\ndirection, so an old-but-still-cited node (e.g. a foundational paper a new\nbelief proves) stays in view; selection stops at ``limit``. Every edge joins\ntwo returned nodes.\n\nWith ``focus``, the nodes are instead the foci and the inquiries nearest them\n(:func:`read_neighbourhood`): all within one edge, in either direction, before\nany two away, and so on to ``hops``, newest first within a hop, until\n``limit``; with several foci, each has a share of hop 1. Each node then\ncarries ``hops``, its distance from the nearest focus, 0 for a focus.\n\nNodes are the light projection (id, kind, seq, title, status, created,\nbelief judgement/confidence), ordered by ``created`` ascending so the replay\nanimation adds them in authoring order; edges carry ``from_id`` -> ``to_id``,\n``edge_kind``, and ``valence`` when present. The detail view\n(:func:`web_get`) serves the full per-kind fields for one node on demand.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  limit: Most nodes to return, neighbours included, at least 1; 1000, or 60\n    with a ``focus``, when unset.\n  focus: The inquiries whose neighbourhood to return, at most 10, each a UUID\n    or ``Kind/seq``; one that names nothing the reader may read is left out.\n    Unset returns the newest.\n  hops: With ``focus``, the most edges to walk from the foci, 1 to 3.\n\nReturns:\n  graph: Nodes and edges for replay visualization, ordered by created time.\n\nRaises:\n  HTTPException: 400 for a ``limit`` below 1, ``hops`` outside 1 to 3, or a\n    ``focus`` value that is neither a UUID nor ``Kind/seq`` of a known kind;\n    404 when no ``focus`` names an inquiry the reader may read. More than\n    ``MOST_FOCI`` values are refused before this runs, with 422.",
     "operationId": "web_graph_api_web_graph_get",
     "parameters": [
      {
@@ -26291,1185 +21993,6 @@
      }
     },
     "summary": "Set Query Route"
-   }
-  },
-  "/api/workspaces": {
-   "get": {
-    "description": "List the principal's stations, the one changed last first.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  stations: Their ids, names, chats, pages and times, and in ``state`` what each\n    chat needs of them: ``requires_action`` while an ask is open, ``taken_over``\n    after its CLI was opened in a terminal.",
-    "operationId": "list_workspaces_route_api_workspaces_get",
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "items": {
-          "$ref": "#/components/schemas/WorkspaceSummary"
-         },
-         "title": "Response List Workspaces Route Api Workspaces Get",
-         "type": "array"
-        }
-       }
-      },
-      "description": "Successful Response"
-     }
-    },
-    "summary": "List Workspaces Route"
-   },
-   "post": {
-    "description": "Open the station the principal changed last, making the first if none.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The principal's station changed last.",
-    "operationId": "create_workspace_route_api_workspaces_post",
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     }
-    },
-    "summary": "Create Workspace Route"
-   }
-  },
-  "/api/workspaces/for-chat/{conversation_id}": {
-   "post": {
-    "description": "Find the principal's station that holds a chat, or make one bound to it.\n\nA chat that was deleted is 410 ``chat_deleted``, and no station is bound to it.\n\nArgs:\n  conversation_id: The science chat to continue.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The station that holds the chat.",
-    "operationId": "workspace_for_chat_route_api_workspaces_for_chat__conversation_id__post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "conversation_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Conversation Id",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Workspace For Chat Route"
-   }
-  },
-  "/api/workspaces/for-chat/{conversation_id}/name": {
-   "post": {
-    "description": "Name an unnamed station, or return its existing name unchanged.\n\nOnly the configured assistant may name for an ``asker``. A user's name wins\nover a late suggestion; the server returns that station unchanged.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  body: Suggested name, trimmed and bounded to 120 characters.\n  request: Request carrying the database engine and event hub.\n  identity: The assistant's agent key.\n  asker: The account the assistant names for.\n\nReturns:\n  state: The named station, or its unchanged state when already named.",
-    "operationId": "name_for_chat_route_api_workspaces_for_chat__conversation_id__name_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "conversation_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Conversation Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "asker",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Asker"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/NameChat"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Name For Chat Route"
-   }
-  },
-  "/api/workspaces/for-chat/{conversation_id}/settings": {
-   "get": {
-    "description": "Resolve the asker's settings rows and head session for a chat.\n\nOnly the configured assistant may read for an ``asker``, and it reads the asker's\nown station, so one writer's setup never governs another's launch from a shared\nchat. A launch takes this setup where the asker's line leaves a field unset.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  request: Request carrying the database engine and the configuration.\n  identity: The assistant's agent key.\n  asker: The account the assistant reads for.\n\nReturns:\n  setup: The station's setup, or a null ``campaign`` when there is none.",
-    "operationId": "settings_refs_for_chat_route_api_workspaces_for_chat__conversation_id__settings_get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "conversation_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Conversation Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "asker",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Asker"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceSettingsRefs"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Settings Refs For Chat Route"
-   }
-  },
-  "/api/workspaces/for-chat/{conversation_id}/suggestion": {
-   "post": {
-    "description": "Store the assistant's workstream suggestion on the asker's chat station.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  body: Suggested title and optional owned workstream id.\n  request: Request carrying the database engine and event hub.\n  identity: The assistant's agent key.\n  asker: The account the assistant suggests for.\n\nReturns:\n  state: The updated station.",
-    "operationId": "suggest_workstream_for_chat_route_api_workspaces_for_chat__conversation_id__suggestion_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "conversation_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Conversation Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "asker",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Asker"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/WorkstreamSuggestion"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Suggest Workstream For Chat Route"
-   }
-  },
-  "/api/workspaces/new": {
-   "post": {
-    "description": "Make a station named with the lowest free ``unnamed-workstream#N``.\n\nIt starts on the ``provider`` the body names, else on the caller's\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked. A ``claude`` or ``codex``\nstation is given its chat and the chat's session at once, which its partner\nnames, so a run can be started attached to it before any line.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n  body: Optional workstream and provider; an unset workstream selects Scratch.\n\nReturns:\n  state: The new station.",
-    "operationId": "new_workspace_route_api_workspaces_new_post",
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "anyOf": [
-         {
-          "$ref": "#/components/schemas/NewStation"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "title": "Body"
-       }
-      }
-     }
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "New Workspace Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}": {
-   "get": {
-    "description": "Read the principal's own workspace, or an assistant's partner canvas.\n\nArgs:\n  workspace_id: Requested canvas.\n  request: FastAPI request with a database engine.\n  identity: Authenticated workspace owner, or the assistant's agent key.\n\nReturns:\n  state: The canvas and its current revision.",
-    "operationId": "read_workspace_route_api_workspaces__workspace_id__get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Read Workspace Route"
-   },
-   "patch": {
-    "description": "Rename or change flags on one of the principal's stations.\n\nArgs:\n  workspace_id: The station.\n  body: A new name and/or the hidden and pinned flags.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  state: The updated station.",
-    "operationId": "rename_workspace_route_api_workspaces__workspace_id__patch",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/UpdateWorkspace"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "409": {
-      "description": "The principal has a station of that name."
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Rename Workspace Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/captures": {
-   "post": {
-    "description": "Ask the owner's open page for a picture of the canvas, and wait for it.\n\nOnly the canvas's Chat partner, as for every other operation on it. The page\nthat answers first wins; the picture is passed on and never stored. When no\npage is open, none answers within the wait, or the page has no canvas to\ndraw, the answer is 424 with the reason.\n\nArgs:\n  workspace_id: Canvas to look at.\n  request: Request carrying the database engine, the hub and the relay.\n  identity: The assistant's agent key.\n\nReturns:\n  image: The canvas as the person sees it, with the boxes on it and where each\n    visual's body stands.",
-    "operationId": "request_capture_route_api_workspaces__workspace_id__captures_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/CaptureImage"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     },
-     "424": {
-      "description": "No open page of the canvas gave a picture."
-     }
-    },
-    "summary": "Request Capture Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/captures/{capture_id}": {
-   "put": {
-    "description": "Answer an agent's request for a picture, from the owner's open page.\n\nThe body is a ``CaptureAnswer`` of at most 2.2 MB. The first answer to a\nrequest is taken; a later one, or one for a request that is over, is 404.\n\nArgs:\n  workspace_id: The canvas the page shows.\n  capture_id: The request id the page was sent.\n  request: Request carrying the body.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  response: Empty.",
-    "operationId": "answer_capture_route_api_workspaces__workspace_id__captures__capture_id__put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "path",
-      "name": "capture_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Capture Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "properties": {
-         "error": {
-          "type": "string"
-         },
-         "image": {
-          "$ref": "#/components/schemas/CaptureImage"
-         }
-        },
-        "type": "object"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Answer Capture Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/clear-chat": {
-   "post": {
-    "description": "Copy a station's canvas into a fresh, chatless station.\n\nArgs:\n  workspace_id: Station to clear.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: The new station, or the same station for a retry.",
-    "operationId": "clear_chat_route_api_workspaces__workspace_id__clear_chat_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Idempotency-Key",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Clear Chat Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/events": {
-   "get": {
-    "description": "Stream a canvas's changes to its owner's browser as server-sent events.\n\nEach frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:\n``workspace`` carries the whole canvas on open, after every change by a\nbrowser or an agent, and when its partner changes; ``navigate`` an agent's\nmove of the page; ``highlight`` the inquiries it points at; ``chat`` whether it\nhid (``hidden``) the tab's Chat window; and ``changed`` an\ninquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.\nA Chat conversation is an AgentSession, so a line added to it reaches every\nviewer who reads the session as the session's ``changed`` id; no frame is Chat's\nown. The stream opens with a comment and sends another after 25 s without\na frame. A subscriber more than 256 frames behind is dropped; it reconnects from\nthe ``workspace`` frame.\n\nArgs:\n  workspace_id: Canvas to follow.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  stream: Server-sent frames.",
-    "operationId": "workspace_events_route_api_workspaces__workspace_id__events_get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {}
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Workspace Events Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/layout": {
-   "put": {
-    "description": "Remember how a station's columns and windows were left.\n\nEach key in the body replaces the stored key; the rest stay. No revision\nchanges and nothing is published.\n\nArgs:\n  workspace_id: The station.\n  body: The layout keys to store, as fractions of the stage.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  response: Empty.",
-    "operationId": "set_workspace_layout_route_api_workspaces__workspace_id__layout_put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/StationLayout"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Set Workspace Layout Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/operations": {
-   "post": {
-    "description": "Apply one revisioned operation and return the updated canvas.\n\nA ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation, which only an\nagent key may send, changes neither a visual nor the revision: it pushes a\n``navigate``, ``highlight`` or ``chat`` frame to this station, or, for\n``preferences``, which changes the owner's preferences, a ``preferences`` frame\nto every station of the owner. A ``mark``, ``remove_mark`` or\n``clear_marks`` operation (red boxes) commutes with every other write, so it\ntakes the next revision whatever revision it expects; ``remove_mark`` takes any\none box, ``clear_marks`` every box or one page's, and one already gone is no\nchange. A replay of an applied key returns the original state and publishes\nnothing.\n\nA ``provider`` operation, which only the owner's browser sends, chooses who\nanswers the station's Chat: ``assistant``, ``claude`` or ``codex``. A provider\nthe owner cannot run now (no confirmed online machine of theirs lists the CLI) is\n409 ``provider_unavailable`` with the reason. Choosing ``claude`` or ``codex``\ngives the station a chat, and the chat a session, when it has none, so the\npartner names a session for a run to attach to.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
-    "operationId": "workspace_operation_route_api_workspaces__workspace_id__operations_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Idempotency-Key",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/ApplyWorkspaceOperation"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "409": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceConflict"
-        }
-       }
-      },
-      "description": "Conflict"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Workspace Operation Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/page": {
-   "put": {
-    "description": "Remember the page a station is on, so switching back can restore it.\n\nNo revision changes and nothing is published.\n\nArgs:\n  workspace_id: The station.\n  body: The `#/...` page.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  response: Empty.",
-    "operationId": "set_workspace_page_route_api_workspaces__workspace_id__page_put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/SetPage"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Set Workspace Page Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/relay": {
-   "post": {
-    "description": "Tell the station's chat partner what the owner sent agents from the Console.\n\nThe agents already have the message, sent to each by ``POST /api/messages``; this\nis the one request per Console line that follows them, naming the targets that\naccepted it. The partner records it in the station's chat as a line of the\nowner's that starts with ``\u2192 `` and answers nothing, and reads it in its next\nprompt. A retry under the same key queues nothing again. A station without a\nchat, one whose chat the owner may not post into (one they do not read), or whose\npartner is not running or has too many unread lines, answers\n``delivered: false``: the agents are not told otherwise, so it is no error.\n\nArgs:\n  workspace_id: The station the Console is in, which the caller must own.\n  body: The agents the line went to, and its text.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in browser writer.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  receipt: Whether the partner took the relay.",
-    "operationId": "console_relay_route_api_workspaces__workspace_id__relay_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Idempotency-Key",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/ConsoleRelay"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ConsoleRelayReceipt"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Console Relay Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/session-settings": {
-   "put": {
-    "description": "Store campaign settings on the current head session of an owned station.\n\nOnly the station owner may write. Other session app keys survive this update.\n\nArgs:\n  workspace_id: The station.\n  body: The campaign setup to store, or ``None`` to clear it.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  settings: The stored session campaign.",
-    "operationId": "set_session_settings_route_api_workspaces__workspace_id__session_settings_put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/SessionCampaign"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/SessionCampaign"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Set Session Settings Route"
-   }
-  },
-  "/api/workspaces/{workspace_id}/workstream": {
-   "put": {
-    "description": "Move an owned station to one of the caller's workstreams.\n\nArgs:\n  workspace_id: Station to move.\n  body: Destination workstream Issue id.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The station after it moves.",
-    "operationId": "set_station_workstream_route_api_workspaces__workspace_id__workstream_put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workspace_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workspace Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/SetStationWorkstream"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkspaceState"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Set Station Workstream Route"
-   }
-  },
-  "/api/workstreams": {
-   "get": {
-    "description": "List the caller's workstreams, optionally searching and including hidden.\n\nArgs:\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n  q: Optional title substring.\n  hidden: Whether to include hidden workstreams.\n  asker: The account the assistant reads for, when supplied.\n\nReturns:\n  workstreams: Matching workstreams in bar order.",
-    "operationId": "list_workstreams_route_api_workstreams_get",
-    "parameters": [
-     {
-      "in": "query",
-      "name": "q",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Q"
-      }
-     },
-     {
-      "in": "query",
-      "name": "hidden",
-      "required": false,
-      "schema": {
-       "default": false,
-       "title": "Hidden",
-       "type": "boolean"
-      }
-     },
-     {
-      "in": "query",
-      "name": "asker",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Asker"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "items": {
-          "$ref": "#/components/schemas/WorkstreamSummary"
-         },
-         "title": "Response List Workstreams Route Api Workstreams Get",
-         "type": "array"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "List Workstreams Route"
-   },
-   "post": {
-    "description": "Create an owned workstream Issue.\n\nArgs:\n  body: Workstream title.\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n\nReturns:\n  workstream: The created Issue summary.",
-    "operationId": "create_workstream_route_api_workstreams_post",
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/CreateWorkstream"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkstreamSummary"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Create Workstream Route"
-   }
-  },
-  "/api/workstreams/order": {
-   "put": {
-    "description": "Save the caller's workstream bar order.\n\nArgs:\n  body: Workstream ids in the desired order.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  workstreams: The updated list.",
-    "operationId": "set_workstream_order_route_api_workstreams_order_put",
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/WorkstreamOrder"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "items": {
-          "$ref": "#/components/schemas/WorkstreamSummary"
-         },
-         "title": "Response Set Workstream Order Route Api Workstreams Order Put",
-         "type": "array"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Set Workstream Order Route"
-   }
-  },
-  "/api/workstreams/{workstream_id}": {
-   "get": {
-    "description": "Read an owned workstream and its stations.\n\nArgs:\n  workstream_id: Issue to read.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  info: The Issue summary and attached stations.",
-    "operationId": "workstream_info_route_api_workstreams__workstream_id__get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workstream_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workstream Id",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkstreamInfo"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Workstream Info Route"
-   },
-   "patch": {
-    "description": "Rename or change visibility and pin state on an owned workstream.\n\nArgs:\n  workstream_id: Issue to update.\n  body: Title and/or hidden and pinned changes.\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n\nReturns:\n  workstream: The updated Issue summary.",
-    "operationId": "update_workstream_route_api_workstreams__workstream_id__patch",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "workstream_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Workstream Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/UpdateWorkstream"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/WorkstreamSummary"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "409": {
-      "description": "Scratch cannot be hidden."
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Update Workstream Route"
    }
   },
   "/auth/logout": {
