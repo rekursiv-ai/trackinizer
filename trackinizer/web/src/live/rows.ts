@@ -3,6 +3,7 @@
 import { hashKey, type Query, type QueryKey } from "@tanstack/react-query";
 import type { InquiryRow } from "../api/inquiries";
 import type { Filter } from "../query/query";
+import { must } from "../must";
 
 /**
  * The most ids one membership check can carry. A filter value is capped at 512
@@ -39,7 +40,12 @@ export type Page = {
  */
 export function pageOf(query: Query): Page | null {
   const [, , , kind, pageSize, offset] = query.queryKey;
-  if (typeof kind !== "string" || typeof pageSize !== "number" || typeof offset !== "number") return null;
+  if (
+    typeof kind !== "string" ||
+    typeof pageSize !== "number" ||
+    typeof offset !== "number"
+  )
+    return null;
   return {
     key: query.queryKey,
     kind,
@@ -56,11 +62,18 @@ export function isPageOf(query: Query, filters: readonly Filter[]): boolean {
 }
 
 /** Whether `key` is a page's key, for the list with exactly these `filters`. */
-export function isPageKey(key: readonly unknown[], filters: readonly Filter[]): boolean {
+export function isPageKey(
+  key: readonly unknown[],
+  filters: readonly Filter[],
+): boolean {
   // Compared by hash, not by TanStack's key prefix: a prefix match treats the
   // filter array as partial, so a list with one more filter would match too.
   const [scope, name, pageFilters] = key;
-  return scope === "inquiries" && name === "list" && hashKey([pageFilters]) === hashKey([filters]);
+  return (
+    scope === "inquiries" &&
+    name === "list" &&
+    hashKey([pageFilters]) === hashKey([filters])
+  );
 }
 
 /** Every row the pages hold, by id. */
@@ -76,7 +89,7 @@ export function seqRanges(seqs: Iterable<number>): string[] {
   const ranges: string[] = [];
   let start = sorted[0];
   for (let index = 1; index <= sorted.length; index++) {
-    if (sorted[index] === sorted[index - 1]! + 1) continue;
+    if (sorted[index] === must(sorted[index - 1]) + 1) continue;
     ranges.push(`${start}..${sorted[index - 1]}`);
     start = sorted[index];
   }
@@ -95,10 +108,20 @@ export function seqRanges(seqs: Iterable<number>): string[] {
  * crowded out of an answer.
  */
 export function idFilter(ids: readonly string[]): Filter {
-  if (ids.length > CHECK_IDS) throw new Error(`A membership check holds at most ${CHECK_IDS} ids, not ${ids.length}.`);
+  if (ids.length > CHECK_IDS)
+    throw new Error(
+      `A membership check holds at most ${CHECK_IDS} ids, not ${ids.length}.`,
+    );
   // `(a|b|…)$` over n ends of w characters is n(w + 1) + 2 characters long.
-  const width = Math.min(UUID_CHARS, Math.floor((MAX_FILTER_CHARS - 2) / ids.length) - 1);
-  return { field: "id", op: "re", value: `(${ids.map((id) => id.slice(-width)).join("|")})$` };
+  const width = Math.min(
+    UUID_CHARS,
+    Math.floor((MAX_FILTER_CHARS - 2) / ids.length) - 1,
+  );
+  return {
+    field: "id",
+    op: "re",
+    value: `(${ids.map((id) => id.slice(-width)).join("|")})$`,
+  };
 }
 
 /**
@@ -106,7 +129,9 @@ export function idFilter(ids: readonly string[]): Filter {
  * (`ORDER BY created DESC, id DESC`), to the microsecond the server keeps.
  */
 export function serverOrder(a: InquiryRow, b: InquiryRow): number {
-  return micros(b.created) - micros(a.created) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+  return (
+    micros(b.created) - micros(a.created) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
+  );
 }
 
 /** `fresh`, unless `held` is a later version of the row (by `modified`) or there is no `fresh`. */
@@ -122,14 +147,19 @@ export function newerRow(fresh: InquiryRow | undefined, held: InquiryRow): Inqui
  * beyond what the list loaded, and Load more will find it there. Null too while
  * the page it would join has not loaded.
  */
-export function placeRow<P extends Page>(pages: readonly P[], row: InquiryRow): { page: P; index: number } | null {
+export function placeRow<P extends Page>(
+  pages: readonly P[],
+  row: InquiryRow,
+): { page: P; index: number } | null {
   for (const page of pages) {
     if (!page.rows) return null;
     const index = page.rows.findIndex((other) => serverOrder(row, other) < 0);
     if (index >= 0) return { page, index };
   }
   const last = pages.at(-1);
-  return last?.rows && last.rows.length < last.pageSize ? { page: last, index: last.rows.length } : null;
+  return last?.rows && last.rows.length < last.pageSize
+    ? { page: last, index: last.rows.length }
+    : null;
 }
 
 /**
@@ -138,7 +168,10 @@ export function placeRow<P extends Page>(pages: readonly P[], row: InquiryRow): 
  */
 export function micros(iso: string): number {
   const fraction = /\.(\d+)/.exec(iso)?.[1] ?? "";
-  return Date.parse(iso.replace(/\.\d+/, "")) * 1_000 + Number(fraction.slice(0, 6).padEnd(6, "0"));
+  return (
+    Date.parse(iso.replace(/\.\d+/, "")) * 1_000 +
+    Number(fraction.slice(0, 6).padEnd(6, "0"))
+  );
 }
 
 /** `MAX_FILTER_VALUE_CHARS` in `wire/filters.py`. */

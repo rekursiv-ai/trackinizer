@@ -52,7 +52,7 @@ import json
 
 from treekle import from_plain, json_loads, mutable
 
-from trackinizer.lib.agent.types.sessions import UncategorizedRecord
+from trackinizer.sagent.session.types import UncategorizedRecord
 from trackinizer.server.notify import tx
 from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,
@@ -163,7 +163,7 @@ async def retype_session(conn: Conn, session_id: UUID) -> RetypeStats:
         outputs: list[_Output] = []
         commands: list[SlashCommandOut] = []
         for source in sources:
-            outputs.extend(_outputs_for(source, commands))
+            outputs.extend(_source_outputs(source, commands))
         await _replace_part(conn, session_id, outputs)
         await _insert_slash_commands(conn, session_id, commands)
         return RetypeStats(
@@ -275,7 +275,7 @@ async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
     return sources
 
 
-def _outputs_for(
+def _source_outputs(
     source: _Source,
     commands: list[SlashCommandOut],
 ) -> list[_Output]:
@@ -305,9 +305,9 @@ def _outputs_for(
     out = retype(
         record,
         timestamp=(
-            source.timestamp.isoformat()
+            source.timestamp
             if source.timestamp is not None
-            else source.created.isoformat()
+            else source.created
             if source.legacy_kind == "legacy/SlashCommand"
             else None
         ),
@@ -423,8 +423,8 @@ async def _insert_slash_commands(
         "SELECT $1, "
         "  (SELECT coalesce(max(seq) + 1, 0) FROM session_slash_commands "
         "   WHERE session_id = $1) + ordinality - 1, "
-        "  t.timestamp::timestamptz, t.command, t.args "
-        "FROM unnest($2::text[], $3::text[], $4::text[]) "
+        "  t.timestamp, t.command, t.args "
+        "FROM unnest($2::timestamptz[], $3::text[], $4::text[]) "
         "  WITH ORDINALITY AS t(timestamp, command, args, ordinality) "
         "ON CONFLICT (session_id, seq) DO NOTHING",
         session_id,

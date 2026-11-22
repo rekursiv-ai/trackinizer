@@ -5,10 +5,10 @@ import { log } from "./debug/log";
 import { sameJson } from "./state/value";
 
 /**
- * The user's preferences: theme, Chat's side, and the like, and the
+ * The user's preferences: theme, skin and the like, and the
  * user's own data: stars, saved views, names, read marks and unsent drafts. They
  * live on the server (`server/preferences.py`), on the user's row, so any browser
- * or machine finds them and an agent the user works with can change them; this
+ * or host finds them and an agent the user works with can change them; this
  * page keeps none of them. The server always answers every key, its default filled
  * in. A change replaces a top-level key whole.
  */
@@ -18,13 +18,59 @@ export type Preferences = Required<components["schemas"]["Preferences"]>;
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "dark",
   skin: "default",
+  scanlines: true,
+  terminal_colors: {
+    text: "#00ff00",
+    background: "#000000",
+    bold: null,
+    bold_is_bright: true,
+    palette: [
+      "#171421",
+      "#c01c28",
+      "#26a269",
+      "#a2734c",
+      "#12488b",
+      "#a347ba",
+      "#2aa1b3",
+      "#d0cfcc",
+      "#5e5c64",
+      "#f66151",
+      "#33d17a",
+      "#e9ad0c",
+      "#2a7bde",
+      "#c061cb",
+      "#33c7de",
+      "#ffffff",
+    ],
+  },
   chat_side: "left",
+  app_bar: "top",
+  app_bar_width: 220,
+  app_bar_folded: false,
+  app_bar_pinned: true,
+  font: "system",
+  interface_text_size: 14,
+  chat_text_size: 13,
+  canvas_text_size: 14,
+  display_text_sizes: {},
   highlight_mentions: true,
   terminal_font_size: "13px",
   terminal_tab_chords: false,
   home: "graph",
-  chat_provider: "assistant",
-  chat_tool_calls: false,
+  assistant_prompt: "sagent",
+  cli_folder: "",
+  default_host: "",
+  chat_view: {
+    view: "chat",
+    density: "auto",
+    thinking: false,
+    output_lines: "tool",
+    times: false,
+    tool_groups: "open",
+  },
+  autofix: true,
+  automerge: false,
+  hide_closed_pulls: true,
   stars: [],
   views: [],
   console_views: [],
@@ -32,10 +78,19 @@ export const DEFAULT_PREFERENCES: Preferences = {
   people: {},
   read: { boundary: null, marks: [] },
   collapsed: [],
+  dismissed: [],
+  unread_tabs: [],
   lens: null,
   drafts: {},
   create_draft: null,
-  workstreams: { order: [], pinned: [], hidden: [] },
+  workspaces: {
+    order: [],
+    hidden: [],
+    colors: {},
+    expanded: [],
+    tabs: [],
+    last_canvas: {},
+  },
   settings_artifact_id: null,
 };
 
@@ -80,9 +135,17 @@ export function usePreferences(): Preferences {
  */
 function show(next: Preferences): void {
   const kept = Object.fromEntries(
-    (Object.keys(next) as (keyof Preferences)[]).map((key) => [key, sameJson(next[key], current[key]) ? current[key] : next[key]]),
+    (Object.keys(next) as (keyof Preferences)[]).map((key) => [
+      key,
+      sameJson(next[key], current[key]) ? current[key] : next[key],
+    ]),
   ) as Preferences;
-  if ((Object.keys(kept) as (keyof Preferences)[]).every((key) => kept[key] === current[key])) return;
+  if (
+    (Object.keys(kept) as (keyof Preferences)[]).every(
+      (key) => kept[key] === current[key],
+    )
+  )
+    return;
   current = kept;
   for (const listener of [...listeners]) listener();
 }
@@ -98,7 +161,9 @@ export function receivePreferences(next: Partial<Preferences> | undefined): void
 
 /** `values` without a key this page does not know: one an older server still sends (`chat_style`) is dropped, not shown. */
 function known(values: Preferences): Preferences {
-  return Object.fromEntries(Object.entries(values).filter(([key]) => key in DEFAULT_PREFERENCES)) as Preferences;
+  return Object.fromEntries(
+    Object.entries(values).filter(([key]) => key in DEFAULT_PREFERENCES),
+  ) as Preferences;
 }
 
 /**
@@ -107,7 +172,10 @@ function known(values: Preferences): Preferences {
  * the server's back. Resolves whether the server took it. `keepalive` lets the
  * request outlive the page, for a change made as it closes.
  */
-export async function choosePreferences(change: Partial<Preferences>, { keepalive = false } = {}): Promise<boolean> {
+export async function choosePreferences(
+  change: Partial<Preferences>,
+  { keepalive = false } = {},
+): Promise<boolean> {
   show({ ...current, ...change });
   sending += 1;
   const turn = last.then(() => setPreferences(change, { keepalive }));
@@ -116,28 +184,13 @@ export async function choosePreferences(change: Partial<Preferences>, { keepaliv
   try {
     const saved = await turn;
     sending -= 1;
-    markUnsaved(keys, false);
     if (sending === 0) show(known({ ...DEFAULT_PREFERENCES, ...saved }));
     return true;
   } catch (error) {
     sending -= 1;
     log("warn", "preferences.not_kept", { keys: keys.join(","), error: String(error) });
-    markUnsaved(keys, true);
     return false;
   }
-}
-
-let unsaved: ReadonlySet<keyof Preferences> = new Set();
-
-/** The keys whose last send the server did not take; one it takes later clears its key. Subscribers are told. */
-export function unsavedKeys(): ReadonlySet<keyof Preferences> {
-  return unsaved;
-}
-
-function markUnsaved(keys: readonly (keyof Preferences)[], failed: boolean): void {
-  if (keys.every((key) => unsaved.has(key) === failed)) return;
-  unsaved = new Set(failed ? [...unsaved, ...keys] : [...unsaved].filter((key) => !keys.includes(key)));
-  for (const listener of [...listeners]) listener();
 }
 
 /** How long typing pauses before a change made with `choosePreferencesSoon` is sent. */
@@ -158,7 +211,9 @@ let listening = false;
  * Meanwhile a profile read does not undo it, as for `choosePreferences`.
  */
 export function choosePreferencesSoon(change: Partial<Preferences>): void {
-  const keys = (Object.keys(change) as (keyof Preferences)[]).filter((key) => !sameJson(change[key], current[key]));
+  const keys = (Object.keys(change) as (keyof Preferences)[]).filter(
+    (key) => !sameJson(change[key], current[key]),
+  );
   if (keys.length === 0) return;
   show({ ...current, ...change });
   if (waiting.size === 0) sending += 1;
@@ -195,7 +250,12 @@ export async function sendWaiting({ keepalive = false } = {}): Promise<void> {
  * server takes it, then this browser forgets it. Nothing to send, nothing is sent.
  */
 export async function adoptLegacyPreferences(email: string): Promise<void> {
-  const keys = [LEGACY.theme, LEGACY.style, LEGACY.chat_side, LEGACY.highlight_mentions(email)];
+  const keys = [
+    LEGACY.theme,
+    LEGACY.style,
+    LEGACY.chat_side,
+    LEGACY.highlight_mentions(email),
+  ];
   let kept: (string | null)[];
   try {
     kept = keys.map((key) => localStorage.getItem(key));
@@ -208,8 +268,10 @@ export async function adoptLegacyPreferences(email: string): Promise<void> {
     ...(side === "left" || side === "right" ? { chat_side: side } : {}),
     ...(mentions === "off" ? { highlight_mentions: false } : {}),
   };
-  if (Object.keys(change).length > 0 && !await choosePreferences(change)) return;
+  if (Object.keys(change).length > 0 && !(await choosePreferences(change))) return;
   try {
     for (const key of keys) localStorage.removeItem(key);
-  } catch { /* Storage can be unavailable; then there is nothing to forget either. */ }
+  } catch {
+    /* Storage can be unavailable; then there is nothing to forget either. */
+  }
 }

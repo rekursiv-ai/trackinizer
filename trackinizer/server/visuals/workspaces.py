@@ -975,6 +975,9 @@ def refuse_params(
       reason: A sentence for the refused caller, naming the bound it breaks, or None.
 
     """
+    params = dict(params)
+    if "machine" in params and "host" in descriptor.parameter_schema:
+        params["host"] = params.pop("machine")
     if set(params) - set(descriptor.parameter_schema):
         return "Visual parameters do not match the catalog schema."
     for name, value in params.items():
@@ -1105,10 +1108,13 @@ def apply_operation(
         reason = refuse_params(operation.params, descriptor=descriptor)
         if reason is not None:
             raise ValueError(reason)
+        op_params = dict(operation.params)
+        if "machine" in op_params and "host" in descriptor.parameter_schema:
+            op_params["host"] = op_params.pop("machine")
         params = {
             name: schema.default for name, schema in descriptor.parameter_schema.items()
         }
-        params.update(operation.params)
+        params.update(op_params)
         existing = next(
             (visual for visual in updated.visuals if visual.type == descriptor.type),
             None,

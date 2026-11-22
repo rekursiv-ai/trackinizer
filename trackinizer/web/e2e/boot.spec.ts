@@ -1,19 +1,18 @@
-import { expect, failedResource, revealBar, test } from "./fixtures";
+import { expect, failedResource, test, route } from "./fixtures";
+import { must } from "../src/must";
 
 // The server runs with --no-auth, so every request is the synthetic admin.
 test("the shell boots and shows the signed-in profile", async ({ page }) => {
-  await page.goto("/app/");
+  await page.goto("/trax/");
   await expect(page).toHaveTitle("Trackinizer");
-  // The account is its avatar until the pointer rests on it; then the address and the role show.
-  const me = (await revealBar(page)).getByRole("button", { name: "Account: no-auth@localhost, admin" });
-  await me.hover();
+  const me = page.getByLabel("Signed in");
   await expect(me.getByText("no-auth@localhost")).toBeVisible();
   await expect(me.getByText("admin", { exact: true })).toBeVisible();
   const favicon = await page.locator('link[rel="icon"]').getAttribute("href");
-  expect((await page.request.get(favicon!)).status()).toBe(200);
+  expect((await page.request.get(must(favicon))).status()).toBe(200);
 });
 
-test("a 401 sends the browser to the login page, and the next boot restores the hash", async ({
+test("a 401 sends the browser to the login page, whose next is the page it was on", async ({
   page,
   allowErrors,
 }) => {
@@ -25,12 +24,12 @@ test("a 401 sends the browser to the login page, and the next boot restores the 
   await page.route("**/api/me/profile", (route) =>
     route.fulfill({ status: 401, json: { detail: "not signed in" } }),
   );
-  await page.goto("/app/#/list/Paper");
-  await page.waitForURL("**/auth/login_page?next=%2Fapp%2F");
+  await page.goto("/trax/list/Paper");
+  await page.waitForURL("**/auth/login_page?next=%2Ftrax%2Flist%2FPaper");
 
-  // Signed in again: the login page returns to /app/ with no hash.
+  // Signed in again: the login page returns to its next.
   await page.unroute("**/api/me/profile");
-  await page.goto("/app/");
+  await page.goto(must(new URL(page.url()).searchParams.get("next")));
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Papers");
-  expect(new URL(page.url()).hash).toBe("#/list/Paper");
+  expect(route(page)).toBe("#/list/Paper");
 });

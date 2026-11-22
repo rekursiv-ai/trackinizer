@@ -24,26 +24,17 @@ templates make.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.wire.column_shapes import _REAL_TEXT, _TS_TEXT
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Sequence
+    from collections.abc import Iterator, Sequence
 
     from trackinizer.lib.postgres import PGliteEngine
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def engine(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
-    """Return the session's shared PGlite engine; a rendering needs no schema."""
-    await reset_schema(pglite_engine)
-    yield pglite_engine
 
 
 # The golden-ratio low-discrepancy sequence rather than a PRNG: it needs no seed to be
@@ -52,7 +43,7 @@ async def engine(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
 # narrow band of the domain, so coverage is what finds it.
 def _spread(count: int) -> Iterator[float]:
     """``count`` points spread over ``[0, 1)``, deterministically."""
-    golden_ratio_minus_one: Final = (5.0**0.5 - 1.0) / 2.0
+    golden_ratio_minus_one: Final = (cast(float, 5.0**0.5) - 1.0) / 2.0
     for index in range(count):
         yield float((index * golden_ratio_minus_one) % 1.0)
 
@@ -151,7 +142,7 @@ async def _rendered(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_real_template_renders_what_python_str_renders(
-    engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """``_REAL_TEXT`` must equal ``str(float)`` for every reachable float.
 
@@ -163,7 +154,7 @@ async def test_the_real_template_renders_what_python_str_renders(
     values = _reals()
     disagreed = [
         (value, rendered)
-        for value, rendered in await _rendered(engine, "float8", _REAL_TEXT, values)
+        for value, rendered in await _rendered(pglite_db, "float8", _REAL_TEXT, values)
         if rendered != str(value)
     ]
 
@@ -176,7 +167,7 @@ async def test_the_real_template_renders_what_python_str_renders(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_timestamp_template_renders_what_python_str_renders(
-    engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """``_TS_TEXT`` must equal ``str(datetime)`` for every reachable instant.
 
@@ -187,7 +178,12 @@ async def test_the_timestamp_template_renders_what_python_str_renders(
     values = _timestamps()
     disagreed = [
         (value, rendered)
-        for value, rendered in await _rendered(engine, "timestamptz", _TS_TEXT, values)
+        for value, rendered in await _rendered(
+            pglite_db,
+            "timestamptz",
+            _TS_TEXT,
+            values,
+        )
         if rendered != str(value)
     ]
 

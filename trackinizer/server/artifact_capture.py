@@ -8,7 +8,7 @@ from typing import Final
 import re
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 __all__ = ["with_capture_script"]
 

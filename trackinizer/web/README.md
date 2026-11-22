@@ -1,6 +1,6 @@
 # Trackinizer web app
 
-The React app the trackinizer server serves at `/app/`. This file is its
+The React app the trackinizer server serves at `/trax/`. This file is its
 contract with the server and its runbook: the routes it calls, how it renders
 what they return, what it keeps in the browser, how it stays live, which links
 it takes, and how to run, test and deploy it. Route details are in
@@ -16,15 +16,13 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 - `src/api/openapi.json` is the server's schema, committed. `scripts/codegen.ts`
   generates `src/api/generated/` from it (not committed) before every `dev`,
   `build`, `test` and `typecheck`.
-- `src/app/` boots and holds the shell, `src/router/` the hash router,
-  `src/live/` the stream layer, `src/writes/` the write layer, `src/debug/` the
-  logger and Copy details (see [debugging](#debugging)), and the other
-  directories one view or control each.
-- `test/testdata/` holds the server's real answer to the calls of the
-  modules in `fixtures_test.py`'s table (see
-  [response shapes](#response-shapes-and-fixtures)); the canvas's and Chat's
-  calls (`workspaces`, `chats`, `code`, and the visuals, timeline and Artifact
-  modules) have none.
+- `src/app/` boots and holds the shell and the sidebar, `src/router/` the router
+  and the address bar, `src/live/` the stream layer, `src/writes/` the write
+  layer, `src/debug/` the logger and Copy details (see
+  [debugging](#debugging)), and the other directories one view or control each.
+- `test/testdata/` holds the server's real answer to each call
+  `fixtures_test.py` makes (see
+  [response shapes](#response-shapes-and-fixtures)).
 - `e2e/` is the Playwright suite, `e2e/live/` its live and responsiveness part.
 - `scripts/` holds the schema dump, the local preview, the seed and writer
   scripts, the production timing script, the bundle-size check, and the
@@ -37,8 +35,7 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 ### How every call is made
 
 - Every call goes through `send` in `src/api/client.ts`, under a timeout: 15 s
-  for reads, 6 s for search, 30 s for writes, and 35 s for the read of a chat's
-  reply being written, which the server holds up to 25 s. A failure is an `ApiError` with the
+  for reads, 6 s for search, 30 s for writes. A failure is an `ApiError` with the
   status and the server's `detail`. Status 0 means no answer: `code` is
   `timeout` or `network`. A 422's field errors become one line per field. A
   success whose body is not JSON keeps its status, with `code` `unreadable`.
@@ -79,22 +76,23 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
   creates nothing twice. Account and admin writes are never resent on their
   own. A change landing between that read and the resend is overwritten.
 - Errors show the server's message. A domain error is `{"detail": "<text>"}`,
-  some with a `code` (`conflict` on a compare-and-set 409); a request-validation
-  error (422) is `{"detail": [{"loc", "msg", "type", "input"}, ...]}`.
+  some with a `code` (`conflict` on a compare-and-set 409), or
+  `{"detail": {"code", "message"}}`; a request-validation error (422) is
+  `{"detail": [{"loc", "msg", "type", "input"}, ...]}`.
 
 ### The calls
 
-Each call's fixture, where it has one, is
-`test/testdata/<module>/<function>.json`. The `workspaces`, `chats` and `code`
-calls have none: the schema types them (`tsc` against `openapi.json`, kept in step
-by `openapi_drift_test.py`), and their API-module tests check what each sends and
-how it reads a frame or an answer.
+A call's fixture, where it has one, is `test/testdata/<module>/<function>.json`,
+and `<function>.<case>.json` for another case (`getGraphFocus`'s is
+`graph/getGraph.focus.json`). `readFeed`, `sendSessionMessage`,
+`sendRoutedMessage`, `setSessionAudience`, `setPreferences` and
+`getArtifactContentRevision` have none.
 
 | Module | Function | Route |
 |---|---|---|
 | `meta` | `getEnums`, `getFieldOwners`, `getEdgeTopology` | `GET /api/meta/enums`, `/fields`, `/edges` |
 | `me` | `getProfile` | `GET /api/me/profile` |
-| | `acknowledgeRules` | `PUT /api/me/acknowledge` |
+| | `setPreferences` | `PATCH /api/me/preferences` |
 | | `listTokens`, `createToken` | `GET`, `POST /api/me/tokens` |
 | | `setTokenRole`, `revokeToken` | `PUT /api/me/tokens/{id}/role`, `POST .../revoke` |
 | | `signOut` | `POST /auth/logout` (302 to `/`) |
@@ -114,14 +112,15 @@ how it reads a frame or an answer.
 | `changes` | `listChanges` | `GET /api/change_log?kind=&after_id=&since=&limit=&brief=` |
 | `search` | `searchInquiries` | `GET /api/web/search?q=&kind=&limit=&fields=` |
 | `metrics` | `readMetrics` | `GET /api/experiments/{id}/metrics?limit=1000` |
+| `artifacts` | `getArtifactContentRevision` | `GET /api/artifacts/{id}/content` |
 | `sessions` | `listSessionParts` | `GET /api/sessions/{id}/parts` |
 | | `readSessionRecords` | `GET /api/sessions/{id}/records?part=&after_idx=&limit=&plaintext_only=true` |
-| | `sendSessionMessage` | `POST /api/sessions/{id}/inbound` (header `Idempotency-Key`) |
-| | `readFeed` | `GET /api/web/feed?tail=&conversation=&after_created=&after_session=&after_part=&after_seq=&since=&until=&limit=&actor=&room=&cli=&kind=&station=&whose=&hidden=` (each filter repeated per value) |
-| | `readFeedFacets` | `GET /api/web/feed/facets?since=&until=&actor=&room=&cli=&kind=&station=&whose=&hidden=` |
+| | `sendMessage` | `POST /api/sessions/{id}/inputs` |
+| | `readFeed` | `GET /api/web/feed?tail=&conversation=&after_created=&after_session=&after_part=&after_seq=&before_created=&before_session=&before_part=&before_seq=&since=&until=&limit=&actor=&room=&cli=&kind=&whose=&hidden=` (each filter repeated per value) |
+| | `readFeedFacets` | `GET /api/web/feed/facets?since=&until=&actor=&room=&cli=&kind=&whose=&hidden=` |
 | | `sendRoutedMessage` | `POST /api/messages` (header `Idempotency-Key`) |
 | | `setSessionAudience` | `POST /api/sessions/{id}/audience` (header `Idempotency-Key`; `{audience: "private" \| "open"}`) |
-| `histogram` | `readHistogram` | `GET /api/web/feed/histogram?since=&until=&buckets=&actor=&room=&cli=&kind=&station=&whose=&hidden=` |
+| `histogram` | `readHistogram` | `GET /api/web/feed/histogram?since=&until=&buckets=&actor=&room=&cli=&kind=&whose=&hidden=` |
 | `admin` | `setInquiryLock` | `PUT /api/admin/inquiries/{id}/lock` |
 | | `listUsers` | `GET /api/admin/users` |
 | | `setUserRole` | `PUT /api/admin/users/{id}/role` |
@@ -131,17 +130,8 @@ how it reads a frame or an answer.
 | | `setAllowlistRole` | `PUT /api/admin/allowlist/{entry}/role` |
 | | `removeAllowlistEntry` | `DELETE /api/admin/allowlist/{entry}` |
 | `graph` | `getGraph` | `GET /api/web/graph?limit=` |
+| | `getGraphFocus` | `GET /api/web/graph?focus=&hops=&limit=` |
 | `stream` | `openStream` | `GET /api/web/subscribe` (server-sent events) |
-| `workspaces` | `openWorkspaceEvents` | `GET /api/workspaces/{id}/events` (server-sent events) |
-| `chats` | `listChats` | `GET /api/chats` |
-| | `getChatHead` | `GET /api/chats/{id}` (404 until the assistant opens the session: `null`) |
-| | `sendChatLine` | `POST /api/chats` (header `Idempotency-Key`; `conversationId` null starts a conversation; `fork` starts one from a line of another) |
-| | `shareChat`, `unshareChat` | `PUT`, `DELETE /api/chats/{id}/shares/{email}` |
-| | `deleteChat` | `DELETE /api/chats/{id}` |
-| | `readChatPartial` | `GET /api/sessions/{id}/partial?after=&wait_sec=25` (held until the partial's `seq` is not `after`, or 25 s; 404 when the server streams no replies) |
-| `compute` | `listCompute` | `GET /api/compute` |
-| `code` | `getCodeDiff` | `GET /api/code/diff?from=&to=` (404 when either record has no snapshot the reader may read: `null`) |
-| | `readCodeFile` | `GET /api/code/records/{id}/file?path=` |
 
 Edges are stored child to parent: `from` is the child, which `narrows` its
 parent or `proves` its Belief. `/api/web/get` returns `edges` (this row is the
@@ -153,8 +143,9 @@ The schema types most responses as free JSON, so the row types in the API
 modules are written by hand from `types/inquiries.py` and the route code, and
 `tsc` cannot check them. `fixtures_test.py` covers that gap. It starts the
 server as the end-to-end suite does (`--ephemeral --no-auth`, PGlite in memory),
-builds a small graph, makes every call in the table, and compares each exchange
-with its fixture. A server change that alters a response fails it, in Python CI.
+builds a small graph, makes the calls the fixtures record, and compares each
+exchange with its fixture. A server change that alters a response fails it, in
+Python CI.
 
 Before comparing, it normalises what differs from run to run. An inquiry keeps
 one id across all fixtures, `00000000-0000-4000-8000-<n>` for the n-th the graph
@@ -181,10 +172,15 @@ with one response shape, so the fixtures take one per verb.
 ## Rendering rules
 
 - Nothing is hard-coded. Kinds, enums, field owners and edge topology come from
-  `/api/meta/*` at boot. The top bar's Go menu lists kinds in the server's order
+  `/api/meta/*` at boot. The sidebar lists kinds in the server's order
   (`inquiry_kind_all`); a kind the app has no name or icon for shows its own
   name.
 - A viewer sees no write controls; while offline, write controls are disabled.
+- A locked inquiry (`locked` on `/api/web/get`) wears a Locked badge in its
+  header and, for anyone but an admin, shows no write controls (`LockedContext`
+  makes `useWriteMode` answer `hidden`); only an admin's ⋯ menu offers Lock and
+  Unlock (`setInquiryLock`), and a refusal is a toast. Lists and the graph do
+  not carry the flag: it is not a field of the inquiry rows they read.
 - A detail shows every field its kind has. A value that is absent, `null`, `""`
   or `[]` shows as unset. A field is editable when it has a `PUT` route; the
   editor's control comes from the route's body type (`src/api/fields.ts`, from
@@ -201,8 +197,10 @@ with one response shape, so the fixtures take one per verb.
   a UUID shows its first eight characters. Headings step down two levels.
 - A link written as a ref, its text a `Kind#seq` and its target that ref's
   route, alone or after the app's address on any host
-  (`https://<host>/app/#/ref/Issue/4`, or the old UI's `/#/ref/…`), is the
-  ref's own link, as agents copy one from trax. Any other link stays as written.
+  (`https://<host>/trax/ref/Issue/4`; `/trax/#/ref/…` from before routes were
+  paths, `/app/ref/…` and `/app/#/ref/…` from before `/trax/`, or the old UI's
+  `/#/ref/…`), is the ref's own link, as agents copy one from trax. Any other
+  link stays as written.
 - An absolute path in text (`/` or `~/` opening a word, with two segments or
   more; not a URL's, one after a host as in `host:/opt/x`, a ratio as in
   `5/10`, nor the punctuation after it), and an inline code span that is one
@@ -252,6 +250,13 @@ with one response shape, so the fixtures take one per verb.
   relations has none, and the graph's Peek leaves it out.
 - A detail's activity is the last 50 changes `/api/web/get` sends, oldest first,
   with each run of `dependency_changed` alerts folded into "N upstream changes".
+- An Artifact's page reads its content once (`getArtifactContentRevision`,
+  `src/detail/Artifact.tsx`), since a revision never changes; one with no
+  content (404) shows the record alone. A structured revision shows its title,
+  summary, author, sources and sections, each finding with its outcome,
+  uncertainty and citations. An HTML revision opens as its own page across the
+  pane, above the record: a sandboxed frame (scripts and popups only) of
+  `/api/artifacts/{id}/html`.
 - Activity has the tabs All, Status, Judgements, Created, Relations and Edits,
   each a set of change kinds read in one `change_log` query (a repeated `kind`):
   Status `status`; Judgements `belief_judgement`; Created `created` and
@@ -634,8 +639,8 @@ with one response shape, so the fixtures take one per verb.
   one on the left (the search results, the console's rail); the palette lists
   each under Panels. Collapsed, Peek and the search results leave a 40 px
   strip at their edge with the button that expands them and the ref or the
-  match count; a rail leaves nothing, its button staying in the top bar, as
-  the graph's Key does. Under its strip, Peek's detail stays mounted, hidden,
+  match count; a rail leaves nothing, its button staying in the view's top bar,
+  as the graph's Key does. Under its strip, Peek's detail stays mounted, hidden,
   so an edit begun in it is there on expanding. Whatever collapses or expands
   a panel, a focus in what hides or goes then moves to the button that takes
   its place. A collapsed Peek
@@ -643,58 +648,38 @@ with one response shape, so the fixtures take one per verb.
   do: only its button, `]`, or Space in a list expands it. Peek's detail shows
   its rail whatever the detail page chose, with no button for it. Collapsing
   or expanding one frames the graph again.
-- The app has one bar, along the top over Chat and the canvas
-  (`src/topbar/TopBar.tsx`), and no sidebar: the logo (home, the graph), Go,
-  Search (⌘K), New for the kind on screen (its icon alone), the user's
-  workstreams and `+ Workstream` (with the canvas only), the pin, Machines, the
-  Workbench and the account. It folds away, leaving an 8 px strip along the window's top
-  (Open app bar): the pointer resting on the strip or the bar for 120 ms, or a
-  click or tap on the strip, opens it, and it folds 300 ms after the pointer and
-  the keyboard have left (`hoverOpen.ts`), or, on a touch screen, at a press
-  outside it. The pin (Keep the bar open) holds it open until a reload. Go is a
-  menu of the pages: Graph, Console, Activity, then each kind, the page on show marked,
-  each with its `g` keys where it has them; a link followed closes it, and so do
-  a press outside and Esc, which gives focus back to its button. While a
-  workbench is mounted, the sliders button opens the Workbench menu: the visual
-  toggles and the Artifact link, focus on the first (the menu's body is a slot,
-  `src/app/workbenchSlot.tsx`, that the canvas draws into, mounted while the
-  menu is closed). Machines (`MachinesMenu.tsx`, where commands run) opens
-  on the user's own machines, each online or offline, with Allow on one enrolled
-  with a token that waits for its owner, as the terminal side has it; then
-  Connect a machine, the steps of the user guide's "Connect a computer" with
-  this page's address in the setup command, open while the user has no
-  machine; then Provided by and the app's name, the notes the deployment set
-  (`TRACKINIZER_COMPUTE`, `GET /api/compute`), left out when it set none. The
-  machines are the terminal's read under `["terminal-machines", null]`, made
-  only while the bar is shown, and each minute it stays shown, so a page's
-  first reads stay its own; a dot on the button says one is online. A server
-  without sign-in and a viewer read none. The menu's body is a chunk of its
-  own. Settings has a Close link in its header, back to the last page
-  before Settings or Admin, or the graph; the page is as wide as its sections, so
-  Close stands at their edge. On a phone (760 px and narrower) `+ Workstream`
-  shows its + alone, the account's email stays hidden, and Go reaches every page.
-- The account stands at the bar's end, as Google's does (`AccountMenu.tsx`): the
-  avatar alone at rest, which the pointer resting on it widens to show the email
-  and the role. A click opens the menu: the account, Your settings, Admin (for
-  admins), Appearance, the other accounts this browser has signed in as, Add
-  another account, and Sign out last. Appearance picks the skin, the user's
-  `skin` preference: Default, which the theme colours (Light, Dark or System,
-  offered beside it), or one of the fixed skins (Retro 70s, Sci-fi, DOS 80s,
-  8-bit Console, Matrix, Hacker, Minimalist, Brutalist), the root's `data-skin`,
-  which `src/skins.css` colours over any theme from system fonts alone; the graph
-  takes the light or dark set by the skin's ground (`src/graph/tokens.css`), and
-  redraws as the skin changes. Settings' Appearance offers the skin and the theme
-  too, the theme disabled under a fixed skin, and shows a choice made here at once
-  (`useTheme` in `src/theme.ts`).
-  The other accounts are this browser's alone, kept in `localStorage`
-  (`trackinizer.v2.accounts`, at most 8, the one signed in last first), since the
-  server knows each account alone: each shows its role, its organisation's domain
-  or Personal (a mail host anyone joins), and Work or Personal. A press on one
-  sends any waiting draft, then opens Google's sign-in with it picked
-  (`/auth/login?login_hint=<email>`); Add another account opens Google's chooser;
-  × forgets one in this browser only; Sign out keeps the account in the list.
-  A server run with `--no-auth` has no one to sign in as: the accounts and Sign
-  out are left out there, and none is remembered.
+- The sidebar (`src/app/Sidebar.tsx`) holds the logo, a link home to the
+  graph, search (⌘K), New for the kind on screen (not for a viewer), then
+  Graph, Console and Activity, Browse with one entry per kind, and Settings
+  with Your settings and, for admins, Admin; the signed-in user, their role and
+  the theme button stand at its foot. A section's heading folds it.
+- The app's sidebar collapses too, by the button beside New or ⌘B (Ctrl+B),
+  as VS Code's primary side bar does: `[` and `]` stay each view's own. It
+  narrows to a 48 px rail of its icons, as VS Code's activity bar is: the
+  button that expands it on top, then search, New and every entry in its
+  order, each a link named and titled by its label, the current one marked,
+  and the user's avatar at the foot. Rules stand in for the section headings.
+  The graph frames again in the width it gives. Narrow, the sidebar is the
+  drawer, whole, whether collapsed or not, and has no collapse button.
+- The sun or moon beside the user, in the sidebar or its rail, switches the
+  theme to light or dark; Settings' Appearance also offers System, and shows
+  a switch made here at once (`useTheme` in `src/theme.ts`). Appearance also
+  picks the skin, the user's `skin` preference: Default, which the theme
+  colours, or one of the fixed skins (Retro 70s, Sci-fi, DOS 80s, 8-bit
+  Console, Matrix, Hacker, Minimalist, Brutalist), the root's `data-skin`,
+  which `src/skins.css` colours over any theme from system fonts alone; under a
+  fixed skin Appearance's theme is disabled. The graph takes the light or dark
+  set by the skin's ground (`src/graph/tokens.css`), and redraws as the skin
+  changes.
+- Your settings and Admin are pages of their own. Settings shows the profile,
+  the names that mean you (aliases), Appearance, the preferences document, API
+  tokens, and Sign out, except under `--no-auth`. The preferences document is
+  every preference the server marks a setting (`x-setting`), each under the
+  server's description of it, as VS Code's settings.json is: Save sends only
+  the keys whose values changed, a key taken out goes back to its default, and
+  Reset to defaults resets every one. A document with any problem, a refusal by
+  the server included, changes nothing and shows each problem with its line.
+  Admin, for admins, lists the users and the allowlist.
 - Search in the palette answers while you type from what the app has loaded:
   list rows and recent details. After a 300 ms pause, or on Enter, it asks the
   server one kind at a time, Issues first, 5 rows each. A `Kind#seq` or a UUID
@@ -758,8 +743,17 @@ with one response shape, so the fixtures take one per verb.
   A group drawn about a step the reader opened, or is on, starts open, so a
   later step that folds it in leaves it open and focused as it was. The console
   shows every record as a line of its own, so it folds none.
-- A `trax run sh` run shows as one terminal, its colours kept; a record's model
+- A run of the runner's `sh` shows as one terminal, its colours kept; a record's model
   and time show when they change.
+- An AgentSession's page shows Changes above its transcript when its capture
+  filed a `worktree-diff` part, the net `git diff` of the files it edited (the
+  runner's `--diff`); that part is left out of the transcript and its record
+  count. Each file shows under its path, its hunks split, side by side, or
+  unified, by Split and Unified, a choice this browser keeps (`trax.diff-mode`
+  in `localStorage`); a file draws at most 400 rows, then counts the rest
+  (`src/detail/transcript/SplitDiff.tsx`). Where the capture left a note in
+  place of a diff (a binary or over-size file), the note shows. The panel is
+  read again whenever the stream names the session.
 - Relative times ("2h ago") re-render every minute.
 - The console shows one view at a time: the agents and rooms it picks, by name
   or by a pattern such as `atlas-*` that takes in new agents as they appear,
@@ -769,6 +763,26 @@ with one response shape, so the fixtures take one per verb.
   have listed since the console opened, so a narrower activity window drops none
   of the view's agents, records or To chips. A pick that matches none of them
   reads nothing and says so.
+- Every console read is scoped by whose sessions it reads. A view that picks
+  agents, rooms or CLIs opens on Everyone, `whose=everyone`, every session the
+  server's org mode lets the person read, since what it names is often a
+  campaign's or a colleague's; any other opens on Mine, `whose=mine`, the
+  person's own sessions. The Scope control (Mine, My campaigns, Everyone)
+  switches it for the open view: My campaigns is `whose=campaigns`, the
+  sessions of the campaigns the person launched (the server matches the
+  `<slug>:asker:<email>` label of their briefs). Show private adds
+  `hidden=true`: the reads then keep the sessions their owners made private
+  (audience `private`) that the person reads, their own and, for staff and
+  admins, other people's; each such row says Private. A row the facets mark
+  `hideable` (the person's own session, never a chat) has a switch that says
+  Public or Private and flips it (`setSessionAudience`); the console then reads
+  its feed afresh and its facets and histogram again, making one private offers
+  Undo, and a refusal (`session_not_owner`, `session_staff`, which the server
+  sends as a code alone) has a sentence of its own. Neither the scope nor Show
+  private is saved with the view.
+- A science chat's session (`chat-` and twelve hex digits) is no message
+  target: no `@` completion, To chip, `@*` or Message button names one, and a
+  typed `@chat-...` says that only its own Chat posts to it.
 - The console's levels are Messages, + Calls, + Output and All. Messages is the
   conversation: a person's message (not what a harness writes on the user's
   turn: Claude's `isMeta`, codex's context, a background task's notice), the
@@ -841,9 +855,8 @@ with one response shape, so the fixtures take one per verb.
   `["activity", ...]`, `["search", q, kind]` (kind `null` across every kind),
   `["ancestry", ids]` (an Issue list's `narrows` ancestry, by the ids it
   shows), `["graph", limit]`, `["graph", "focus", id, hops]` (a detail's graph
-  preview), `["compute"]` (the deployment's notes), `["settings", ...]` and
-  `["admin", ...]`. Nothing refetches on window focus;
-  the stream keeps data current.
+  preview), `["settings", ...]` and `["admin", ...]`. Nothing refetches on
+  window focus; the stream keeps data current.
 - The entry chunk (`src/main.tsx`) starts the four boot reads and the first
   view's data (the graph's 1,000 newest, or a list's first page, when the tab
   has kept no state for it, or a detail and its `Kind#seq` lookup) before React
@@ -857,10 +870,10 @@ with one response shape, so the fixtures take one per verb.
   the app holds opens by that row's id, with no by-seq lookup.
 - A 401 from any read or write ends the session: the drafts still open are saved
   to `localStorage` (`trackinizer.v2.drafts.<email>`, and `trackinizer.v2.create.<email>`
-  for the create form), since the server can no longer take them, the current hash
-  to `sessionStorage` (`trackinizer.v2.return_hash`), and the browser goes to
-  `/auth/login_page?next=%2Fapp%2F`. The next boot sends the drafts to the user's
-  preferences (`adoptLocalUserData`) and restores the hash.
+  for the create form), since the server can no longer take them, and the browser
+  goes to the login page with the page it was on as `next`
+  (`/auth/login_page?next=%2Ftrax%2Fref%2FIssue%2F7`). The next boot sends the
+  drafts to the user's preferences (`adoptLocalUserData`).
 - A write refused with 403 refetches the profile, since the role may have
   changed.
 - The user's own data lives in their preferences on the server
@@ -869,11 +882,8 @@ with one response shape, so the fixtures take one per verb.
   aliases, people added by hand, notification read state (`{boundary, marks}`),
   folded sections (`collapsed`), the last lens, unsent drafts of a field
   (`drafts`, by inquiry id and field), the create form's (`create_draft`) and the
-  console's views (`console_views`).
-  `src/state/store.ts` is a view of it: a change sends only the keys it changed,
-  each replaced whole. Only `ui.tiles` stays in `localStorage`, one versioned JSON
-  value keyed `trackinizer.v2.<origin>.<email>`, and tabs see each other's tiles
-  through the `storage` event.
+  console's views (`console_views`). `src/state/store.ts` is a view of it: a
+  change sends only the keys it changed, each replaced whole.
 - A draft is written after typing pauses for 500 ms, one request however many
   keys were typed, and again as the page closes (`choosePreferencesSoon`); sending
   or discarding it removes it. It reopens on the next load of its field or form, in
@@ -881,45 +891,6 @@ with one response shape, so the fixtures take one per verb.
   first boot, merged into the user's (`adoptLocalUserData`: stars, names, people and
   views are unions; a draft kept here replaces the server's of the same field),
   then forgets it.
-- A tile's bar is how it is placed; there is no Focus button and no placement
-  menu. A press on the bar focuses the tile. A drag floats it, or docks it at
-  the edge of the stage it is dropped on: the left or right 48 px for the
-  column at that side, the top 12 px for the main strip beside the page, with
-  an outline of where it will stand shown before the release. A docked tile
-  leaves its place only after 24 px, so a click that slips still focuses; it
-  stays in its strip while dragged (the strip would clip it) and a card with
-  its name follows the pointer. Every visual but the page also has two dock
-  buttons, ◧ and ◨, the same docking by one press or by the keyboard. The page
-  stays the page: docked, its bar only focuses.
-- Every boundary on the canvas resizes what it bounds, as a desktop's windows
-  and an editor's panes do. A floating window resizes by any of its four edges
-  and four corners: the opposite sides stay, it never goes under 280 by 220 px,
-  and no side leaves the stage. The edge between a side column and the page
-  resizes the column, by the pointer or the arrow keys (16 px, 48 with Shift),
-  between 260 px and seven tenths of the stage. The divider between two docked
-  tiles, across the main strip or down a column, moves room from one to the
-  other, down to each one's least size. The sizes are this browser's, kept in
-  `localStorage` (`trackinizer.v2.canvas.sizes`): a column's width per side, a
-  window's size per visual type, and a docked tile's share of its strip per
-  visual type (an even share is 1).
-- A floating canvas tile (a visual placed Float) moves
-  by its whole top bar and by the
-  ⠿ handle, which also moves by the arrow keys (16 px, 48 with Shift) and never
-  docks. A press on the bar that stays within 4 px is a click, which focuses;
-  the fold button folds the tile to its bar and unfolds it. Controls on the bar
-  are not part of the bar: a press on one starts nothing. At 900 px and narrower
-  the tile stands in the page's flow and does not move by the bar: a header whose
-  Expand shows it 400 px or 48% of the screen high, whichever is less, and at
-  760 px and narrower (a phone) that high from the start, with no Expand. A move
-  is a transform on the tile alone, kept inside the stage, and the canvas takes
-  the place once, on release. The place and the fold are kept per visual type in
-  `ui.tiles` (`{collapsed, place: {left, top} | null}`), so they survive a
-  reload; a browser that cannot store keeps them for the session. A drag and an arrow key
-  start from where the tile is drawn, which the stage's hold may have moved from
-  the saved place. The stage holds each tile from the place it is meant to stand
-  at, not from where an earlier hold left it, so a tile a narrow window pushed in
-  returns when the window grows back; under 900 px it holds nothing. A drag whose
-  bar loses pointer capture (the tile left the page) ends there.
 - "Me" is the account email plus the aliases ticked in Settings. An owner or
   subscriber filter for me matches any of them; a write of me writes the email.
 - Each list keeps its tab, filters, grouping, sort, view (List, or Streams or
@@ -927,55 +898,50 @@ with one response shape, so the fixtures take one per verb.
   in `sessionStorage` (`trackinizer.v2.list.<id>`), so Back returns to it as it
   was.
 - The console's views are the user's `console_views` preference, kept on the
-  server so any browser finds them: each view's id, name, pin, start time, agents,
-  rooms, CLIs, level and range. A view saves itself on every change; a new
-  "Untitled view" is stored on its first. Pinned views list first, then the rest,
-  each newest first. The open view's id lives in the station's layout, so a reload
-  opens it again, another tab's edit shows, and another tab's delete opens the
-  first view left; a station with none opens the first view. When the server
-  refuses a change, the open view still shows it, unsaved. A browser that kept
-  views under `trackinizer.v2.console.<email>` has them merged into the user's
-  once, by id with the server's copy winning, and the key removed
-  (`adoptLocalUserData`). The console's feed pages and
-  facets are read through the query cache under `["console", "feed", read]` and
-  `["console", "facets", window]`; live, the facets are read again on a stream
-  batch at most every 10 s, and every minute. After a
-  gap in the stream the feed reads its newest page again too, and each record it
-  reads again replaces the one held under the same key.
+  server so any browser finds them: each view's id, name, pin, start time,
+  agents, rooms, CLIs, level and range. A view saves itself on every change; a
+  new "Untitled view" is stored on its first. Pinned views list first, then the
+  rest, each newest first. The tab's open view is the stored one with the id in
+  `sessionStorage` (`trackinizer.v2.console.open`), so a reload opens it again,
+  another tab's edit shows, and another tab's delete opens the first view left;
+  a tab with none opens the first view, or a new one when there is none. When
+  the server refuses a change, the open view still shows it, unsaved. A browser
+  that kept views under `trackinizer.v2.console.<email>` has them merged into
+  the user's once, by id with the server's copy winning, and the key removed
+  (`adoptLocalUserData`). The console's feed pages, facets and histogram are
+  read through the query cache under `["console", "feed", read]`,
+  `["console", "facets", window, scope]` and `["console", "histogram", read]`;
+  live, the facets are read again on a stream batch at most every 10 s, and
+  every minute. After a gap in the stream the feed reads its newest page again
+  too, and each record it reads again replaces the one held under the same key.
 - The graph keeps its node limit, the kinds and statuses it hides, the edge
   kinds a focus does not walk, Only these, and whether the key and the roots
   list show in `sessionStorage` (`trackinizer.v2.graph`). Its focus, hops and
   grouping live in the hash: they say what is looked at, and a link carries
   them; whether a panel shows is the tab's preference, as the key's is.
 - So is whether each panel that collapses is collapsed, in `sessionStorage`
-  under `trackinizer.v2.panel.<id>`: `peek`, `graph.results`, `detail.rail` and
-  `console.rail`. A new tab starts with each expanded.
+  under `trackinizer.v2.panel.<id>`: `app.sidebar`, `peek`, `graph.results`,
+  `detail.rail` and `console.rail`. A new tab starts with each expanded.
 - Drafts live in their editor's state, never in a cached row, so a refetch
   leaves them alone.
-- The canvas's state is `["workspace", id]` in the cache, filled by the shell's
-  workspace events stream (`newerWorkspace` keeps the newest revision) and, once,
-  by a read. A conversation's records are `["chat", "records", session]` and its head
-  `["chat", "head", id]`; the user's stations are `["stations"]`. What is not records
-  (how often the stream opened and a Continue in Chat request) is the shell's `ChatFeed`
-  (`src/visuals/chatFeed.ts`), above Chat, which is a lazy chunk that may load
-  after a frame arrived and mount again.
 
 ## The stream
 
 `openStream` (`src/api/stream.ts`) opens one `EventSource` on
 `/api/web/subscribe`. Each frame is `data: {"id": "<subject uuid>"}`, with no
 event name or resume: one frame for every `change_log` row, and one with the
-session's id for every transcript append. Metric writes, and user, token and
-allowlist writes send none. The server
-also sends an SSE comment when the stream opens and after every 25 s without a
-frame, which `EventSource` ignores: a proxy in front of production holds the
-headers until the first body byte, and the edge answers 524 after 125 s without
-one and cuts a stream idle for 125 s. The
-browser reconnects on its own after a drop. When the server refuses the stream
-outright, the wrapper refetches the profile (a 401 then ends the session) and
-tries again after 1, 3 and 10 s, then every 30 s. The server checks the stream's
-credential only when it opens, so a revoked key or a disabled user keeps an open
-stream until it drops, and its reconnect is refused.
+session's id for every transcript append to a session the viewer reads. Metric
+writes, and user, token and allowlist writes send none. The server also sends
+an SSE comment when the stream opens, and a `ping` event after every 25 s
+without a frame: a proxy in front of production holds the headers until the
+first body byte, and the edge answers 524 after 125 s without one and cuts a
+stream idle for 125 s. The browser reconnects on its own after a drop. A
+stream that has heard nothing for 62.5 s counts as dropped, and the wrapper
+opens a new one. When the server refuses the stream outright, the wrapper
+refetches the profile (a 401 then ends the session) and tries again after 1, 3
+and 10 s, then every 30 s. The server checks the stream's credential only when
+it opens, so a revoked key or a disabled user keeps an open stream until it
+drops, and its reconnect is refused.
 
 To test what the proxy path does to a stream, without a redeploy, use
 `scripts/probe_stream.py`. It asks `GET /api/web/subscribe/probe` for frames on
@@ -1022,81 +988,56 @@ tunnel), which tells which hop holds headers or cuts an idle stream; see its
   every query does. A hidden tab fetches nothing and only collects ids.
 - After the stream has been down 10 s, a bar says live updates are paused.
 
-### The workspace events stream
-
-With the canvas on, the tab has one stream, and it is not `/api/web/subscribe`:
-`CanvasStream` (`src/app/canvasStream.tsx`), above the routes, creates the user's
-workspace and opens `openWorkspaceEvents` (`src/api/workspaces.ts`), one
-`EventSource` on `/api/workspaces/{id}/events`. It carries the inquiry ids too,
-so the live layer takes them from it, and the early `/api/web/subscribe` stream
-that `main.tsx` opens before the profile is known is closed once the profile
-says the canvas is on. A user who opted out keeps `/api/web/subscribe` as above.
-The stream reconnects as `openStream` does (both share `openEvents` in
-`src/api/stream.ts`): the browser reconnects by itself, and after a refusal the
-wrapper tries again after 1, 3 and 10 s, then every 30 s. It outlives the canvas,
-which unmounts on Settings and Admin. Each open, and each drop and refusal, goes
-to the live layer, which recovers a gap as it does for `/api/web/subscribe`
-(above). Every frame is JSON with `t`, the server's epoch milliseconds:
-
-| Frame | Does |
-|---|---|
-| `{type: "workspace", state, t}` | The canvas as it stands: on every open, after every applied operation, and when the partner changes. Applied through `newerWorkspace`, so a frame never regresses a revision. |
-| `{type: "navigate", route, t}` | An agent moved the page: the browser goes to `route` when `parseHash` accepts it. |
-| `{type: "highlight", ids, t}` | An agent pointed at inquiries: the tab's highlight store (`app/highlights.ts`) takes `ids` as its marks, replacing the last; `[]` clears. The graph rings those nodes, list rows and the rail's peers take `is-highlighted`, and a record page marks its own header. Not state: a closed stream clears them. |
-| `{type: "changed", id, t}` | An inquiry changed, as `/api/web/subscribe` says it. A record appended to a science chat's session changes it, so an open Chat reads what the session gained. |
-
-A frame of another shape is logged and skipped. There is no polling beside the
-stream, and no read of the canvas at boot: the stream's opening frame is the
-canvas, and the canvas reads only after a refused write. A conversation's
-records are read once at mount and then when the live layer reports the session
-changed or a gap.
-While the stream is down the live layer shows the paused bar, as it does for
-`/api/web/subscribe`. The canvas loads every renderer's chunk and the record
-view as soon as it is up (`preloadRenderers`, `src/visuals/registry.tsx`): a
-first render that suspends holds its fallback for React's 300 ms throttle, which
-was the 305 to 335 ms the first show of every visual type took before.
-
 Metrics and transcripts are not on the stream: they refresh when their row's id
 arrives, on open, and from their Refresh button.
 
 ## Deep links
 
-The app lives at `https://<host>/app/`, and every view is a hash route
-(`src/router/route.ts`):
+The app lives at `https://<host>/trax/` (`src/base.ts`), and every view is a
+route (`src/router/route.ts`): the app names one `#/ref/Issue/7`, and the
+address bar shows it as a path under the app, `/trax/ref/Issue/7`
+(`src/router/addressBar.ts`). The server serves the app's page at every such
+path. A click on a link to one moves the app in place.
 
-| Hash | Opens |
+| Address | Opens |
 |---|---|
-| (empty) | the graph |
-| `#/list/<Kind>` | one kind's list |
-| `#/list/<Kind>?view=columns&path=<seq>,…` | an Issue list's Columns, the Issues selected column by column |
-| `#/ref/<Kind>/<seq>` | an inquiry, found by `GET /api/inquiries/{Kind}/{seq}` |
-| `#/lookup/<uuid>` | an inquiry, read with `GET /api/web/get/{id}` |
-| `#/activity` | Activity |
-| `#/console` | the live feed across sessions, narrowed by a saved view, and a line for messaging agents |
-| `#/graph` | the graph of the newest 1,000 inquiries (or the count chosen), each followed by the older ones it links to, and the edges between them, gathered into one island per root |
-| `#/graph?focus=<Kind>/<seq>&hops=<1\|2\|3\|all>` | the graph lit within that many hops of one inquiry; `focus` also takes a UUID, and `hops` is 1 when left out |
-| `#/graph?group=none` | the graph as one web, not gathered by root, after any focus and hops |
-| `#/search/<q>` | the search page for `q` |
-| `#/new/<Kind>` | the create form, over the last view |
-| `#/settings`, `#/admin` | Your settings; Admin (non-admins see "Admins only") |
+| `/trax/` | the graph |
+| `/trax/list/<Kind>` | one kind's list |
+| `/trax/list/<Kind>?view=columns&path=<seq>,…` | an Issue list's Columns, the Issues selected column by column |
+| `/trax/ref/<Kind>/<seq>` | an inquiry, found by `GET /api/inquiries/{Kind}/{seq}` |
+| `/trax/lookup/<uuid>` | an inquiry, read with `GET /api/web/get/{id}` |
+| `/trax/activity` | Activity |
+| `/trax/console` | the live feed across sessions, narrowed by a saved view, and a line for messaging agents |
+| `/trax/graph` | the graph of the newest 1,000 inquiries (or the count chosen), each followed by the older ones it links to, and the edges between them, gathered into one island per root |
+| `/trax/graph?focus=<Kind>/<seq>&hops=<1\|2\|3\|all>` | the graph lit within that many hops of one inquiry; `focus` also takes a UUID, and `hops` is 1 when left out |
+| `/trax/graph?group=none` | the graph as one web, not gathered by root, after any focus and hops |
+| `/trax/search/<q>` | the search page for `q` |
+| `/trax/new/<Kind>` | the create form, over the last view |
+| `/trax/settings`, `/trax/admin` | Your settings; Admin (non-admins see "Admins only") |
 
-The old UI's links still work: `#/inquiry/<uuid>` opens the lookup, `#/recent`
-Activity, `#/search?q=` the search page, and a bare `#/list` or `#/new` the first
-kind's list or create form. `#/graph?group=root`, from before grouping was the
-default, opens the graph grouped. Kinds match in any case and are
-rewritten as the server spells them; a hash that is not canonical is replaced in
-place. The path is split into parts before any part is decoded, so an encoded
-`?` or `/` stays in its part. A hash that names nothing shows a not-found view.
+Old links still work. An address with a `#/...` route, from before routes
+were paths (`/trax/#/ref/Issue/7`, the old UI's `/#/ref/Issue/7`), opens that
+route, and the router moves the address onto its path in place. The server
+answers the app's old address, `/app/<path>?<query>`, with a 302 to
+`/trax/<path>?<query>`, and the browser keeps the hash. The old UI's routes
+still parse: `#/inquiry/<uuid>` opens the lookup, `#/recent` Activity,
+`#/search?q=` the search page, and a bare `#/list` or `#/new` the first kind's
+list or create form. `#/graph?group=root`, from before grouping was the default,
+opens the graph grouped. Kinds match in any case and are rewritten as the
+server spells them; a route that is not canonical is replaced in place. The
+path is split into parts before any part is decoded, so an encoded `?` or `/`
+stays in its part. A route that names nothing shows a not-found view.
 
-A signed-out request for `/app/` gets the server's 302 to the login page. The
-browser keeps the hash across that redirect, and the login page puts it back on
-`next`, so sign-in returns to the same view. A 401 that the running app sees
-keeps the hash its own way, as described under [client state](#client-state).
+A signed-out request for a page of the app gets the server's 302 to the login
+page, whose `next` is that page, so sign-in returns to the same view; the
+login page puts an old link's `#/...` route back on `next` too. A 401 that the
+running app sees returns to its page the same way, as described under
+[client state](#client-state).
 
 ## Running it
 
 An installed trackinizer serves the build packaged with it: run
-`trackinizer --no-auth`, then open http://127.0.0.1:8765/app/. The rest of this
+`trackinizer --no-auth`, then open http://127.0.0.1:8765/trax/. The rest of this
 section runs the app from source. Its commands run from this directory unless
 they say otherwise.
 
@@ -1109,17 +1050,17 @@ that Node first on `PATH`:
 ```
 
 The local preview is a trackinizer server on a persistent PGlite database with
-`--no-auth`, serving the latest build at `/app/`, with `vite build --watch`
+`--no-auth`, serving the latest build at `/trax/`, with `vite build --watch`
 keeping `dist/` current:
 
 ```sh
-scripts/preview.sh      # then open http://127.0.0.1:8765/app/
+scripts/preview.sh      # then open http://127.0.0.1:8765/trax/
 scripts/seed_local.py   # seed a representative graph; safe to rerun
 scripts/seed_local.py --writer --interval 1   # then keep editing, for live checks
 ```
 
 `PORT` changes the port and `PREVIEW_DATA` the database directory, by default
-`/opt/scratch/runs/trackinizer-web-local`, which a machine without
+`/opt/scratch/runs/trackinizer-web-local`, which a host without
 `/opt/scratch` must change; two servers cannot share one. `--no-auth` makes
 every request an admin, so never expose it.
 
@@ -1130,7 +1071,7 @@ read the trax CLI's `TRACKINIZER_URL` or `TRACKINIZER_TOKEN`. Against a shared
 server, use a token capped at the viewer role.
 
 ```sh
-./npm run dev           # http://127.0.0.1:5173/app/
+./npm run dev           # http://127.0.0.1:5173/trax/
 ```
 
 To serve a build you already have, on an in-memory database beside a running
@@ -1155,7 +1096,7 @@ The web checks, as CI runs them:
 ./npm test              # Vitest: unit and screen tests, each under 100 ms
 ./npm run build         # vite build into dist/, with dist/version.json
 ./npm run size          # first-load JavaScript under 250 KB gzip
-./npm exec -- playwright install chromium   # once per machine
+./npm exec -- playwright install chromium   # once per host
 ./npm run e2e           # build into dist-e2e/<port>, then Playwright
 ```
 
@@ -1171,27 +1112,6 @@ runs one spec. The live and responsiveness suite, `e2e/live/`, starts a server
 of its own and drives it through `scripts/writer.py`, the Python client as a
 second user. `src/writes/cas.live.test.tsx` runs only with
 `TRACKINIZER_LIVE_URL` naming a disposable local server.
-
-`e2e/live/canvas-push.spec.ts` is the canvas's push bar: it applies 20
-operations per visual type through `POST /api/workspaces/{id}/operations`, and
-20 navigations, waits for each paint (`trackinizer.timings()`), and writes p50,
-p90 and max of `paint wall time - frame t` (and, for the context graph, timeline
-and Artifact, of the data's paint, and for a navigation, of the target page drawn
-with its data) to
-`/opt/scratch/artifacts/trackinizer-web/canvas-chat/timings/canvas-push.json`.
-It fails when any p50 or p90 reaches 100 ms. The canvas is on by default, so the
-specs that watch the stream (`stream.spec.ts`, `session-chat.spec.ts`, `live/`)
-take that path: they wait on whichever stream the
-app uses (`streamOpened`, `abortStream` in `e2e/fixtures.ts`), the canvas's
-events stream here, and `live/` runs on a 1640 x 790 screen that leaves its page
-the size it had without the canvas. Every other spec measures the page's own
-geometry and keys, which a Chat pane beside it changes, so `e2e/fixtures.ts`
-turns the suite's one user's canvas off for it (`test.use({ canvas: true })` asks
-for it on); `e2e/canvas-optout.spec.ts` covers a user who opted out, with
-`/api/web/subscribe` and no canvas. `e2e/canvas-layout.spec.ts` shows
-Chat with a side or a main visual at 1280 x 800, where nothing may scroll
-sideways, and at 390 px, where nothing may either and the message box and Send
-must be on screen.
 
 `e2e/a11y.spec.ts` runs axe's WCAG 2.0 and 2.1 A and AA rules on each main view
 in both themes and fails on any violation.
@@ -1231,7 +1151,7 @@ takes the screenshots again from synthetic records, and `scripts/demo_video.ts`
 records the video:
 
 ```sh
-./npm exec -- playwright install chromium   # once per machine
+./npm exec -- playwright install chromium   # once per host
 brew install webp ffmpeg                     # once: cwebp, img2webp, ffmpeg (apt install webp ffmpeg on Linux)
 ./npm run screenshots                        # rewrites ../docs/screenshots/*.webp
 ./npm run screenshots -- DIR                 # or writes them into DIR
@@ -1272,14 +1192,14 @@ fingerprint being the first 24 hex digits of the SHA-256 of the five files'
   unhandled rejections and render crashes log console errors; a render crash
   shows a screen with Copy details and Reload in place of a blank page.
 - Every failure the app shows has Copy details, the copy icon beside it. It
-  copies the message, the time, the page's hash (search text left out), the
-  build's commit, the browser, the failed request (method, path, status, request
-  id, attempt, duration) and the last 200 events.
+  copies the message, the time, the page's route (its query and search text
+  left out), the build's commit, the browser, the failed request (method, path,
+  status, request id, attempt, duration) and the last 200 events.
 - Those events (`src/debug/log.ts`) are boot (commit and role), navigation,
   every request, a 401's end of session, a 403, each write's send, automatic
   retry (attempt, wait, key), replay, conflict and final failure, and the errors
   above. Warnings and errors always reach the console. The rest reach it with
-  debug on: open `/app/?debug=1`, or run
+  debug on: open `/trax/?debug=1`, or run
   `localStorage.setItem("trackinizer.v2.debug", "1")` and reload
   (`removeItem` turns it off).
 - In the devtools console, `trackinizer.events()` returns the events and
@@ -1287,23 +1207,9 @@ fingerprint being the first 24 hex digits of the SHA-256 of the five files'
   `trackinizer.graph()` returns what it draws: each node, with its screen
   position, and edge, hidden or not, the selection and the focus, since its
   canvas cannot be read. When the browser refuses the
-  clipboard (a page over plain http from another machine), the button says
+  clipboard (a page over plain http from another host), the button says
   "Not copied: see the console", and `trackinizer.details()` gives the text it
   could not copy; the console only says where to find it.
-- `trackinizer.timings()` returns the canvas's timing marks, the last 200 pushed
-  frames, each with its `t` (server epoch milliseconds), when it arrived
-  (`received`, `performance.now()`, and `receivedWall`, epoch milliseconds) and
-  its marks. A `workspace` frame has its `revision` and the marks of the visuals
-  it changed: `paint` is the pane's content committed and painted (a lazy
-  renderer's mark waits for the renderer, not its fallback), and `data`, for the
-  context graph, the timeline and the Artifact, is its data painted. A
-  `navigate` frame has its `route`, and one `page` mark: the target's detail
-  drawn with its data (other views have no mark). Each mark is taken in the first
-  task after the frame that follows the commit, so `wall - t` is the time from
-  the server accepting an operation to the pixels when browser and server share
-  a clock. A change is to a visual's type, version, placement, record or
-  parameters; moving a floating pane is none, and a revision no frame carried
-  (the browser's own write) has no marks.
 - Nothing logged holds a token, a cookie or `Authorization` value, a request
   body, a URL's query, or text a user wrote (titles, descriptions, search text):
   events carry ids, kinds, fields, routes, statuses and timings.

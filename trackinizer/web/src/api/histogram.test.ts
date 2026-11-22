@@ -20,7 +20,7 @@ test("the histogram is a GET with the feed's filters repeated, its window and it
       room: ["ops"],
       cli: ["codex"],
       kind: ["UserMessage", "AssistantMessage"],
-      station: "w1",
+      canvas: "w1",
       whose: "campaigns",
       hidden: true,
       since: "2026-10-02T20:00:00.000Z",
@@ -31,7 +31,13 @@ test("the histogram is a GET with the feed's filters repeated, its window and it
   await readHistogram({ buckets: 1000 });
   // An empty filter filters nothing, as an unset one.
   await readHistogram({ actor: [], room: [], cli: [], kind: [] });
-  expect(sent.map((request) => [request.method, request.path, [...new URLSearchParams(request.query)]])).toEqual([
+  expect(
+    sent.map((request) => [
+      request.method,
+      request.path,
+      [...new URLSearchParams(request.query)],
+    ]),
+  ).toEqual([
     [
       "GET",
       "/api/web/feed/histogram",
@@ -42,7 +48,7 @@ test("the histogram is a GET with the feed's filters repeated, its window and it
         ["cli", "codex"],
         ["kind", "UserMessage"],
         ["kind", "AssistantMessage"],
-        ["station", "w1"],
+        ["canvas", "w1"],
         ["whose", "campaigns"],
         ["hidden", "true"],
         ["since", "2026-10-02T20:00:00.000Z"],

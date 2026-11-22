@@ -2,7 +2,7 @@
 # ruff: noqa: EXE003, D300, D205 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Seed an empty local server with the synthetic records the README's screenshots show.
 
 First a large graph: the shape of a real research graph, read from
@@ -42,10 +42,11 @@ import uuid
 from treekle import from_plain
 
 from trackinizer.client.client import Client
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AssistantMessage,
-    ShellCommandResult,
+    BashResult,
     ToolCall,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.types.session_records import SessionRecordRow
@@ -249,7 +250,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8812")
 
 
-type _Turn = UserMessage | AssistantMessage | ToolCall | ShellCommandResult
+type _Turn = UserMessage | AssistantMessage | ToolCall | ToolMessage[BashResult]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -388,8 +389,7 @@ def _ending_at(sessions: Sequence[_Session], end: datetime) -> list[_Session]:
         replace(
             session,
             turns=tuple(
-                replace(turn, timestamp=(_stamp(turn) + shift).isoformat())
-                for turn in session.turns
+                replace(turn, timestamp=_stamp(turn) + shift) for turn in session.turns
             ),
         )
         for session in sessions
@@ -409,7 +409,7 @@ def _start(session: _Session) -> SessionStart:
 def _stamp(turn: _Turn) -> datetime:
     if turn.timestamp is None:
         raise ValueError(f"every seeded turn is stamped: {turn}")
-    return datetime.fromisoformat(turn.timestamp)
+    return turn.timestamp
 
 
 def _nodes() -> list[_Node]:
@@ -980,7 +980,7 @@ def _shell(
     call_id: str,
     command: str,
     stdout: str,
-) -> tuple[ToolCall, ShellCommandResult]:
+) -> tuple[ToolCall, ToolMessage[BashResult]]:
     """Make a Bash call at ``called`` and its output at ``answered``."""
     return (
         ToolCall(
@@ -989,18 +989,19 @@ def _shell(
             name="Bash",
             arguments={"command": command},
         ),
-        ShellCommandResult(
+        ToolMessage(
             timestamp=_when(answered),
             call_id=call_id,
-            stdout=stdout,
-            exit_code=0,
+            state="done",
+            stdout=(stdout,),
+            result=BashResult(exit_code=0),
         ),
     )
 
 
-def _when(clock: str) -> str:
+def _when(clock: str) -> datetime:
     """``clock``, ``HH:MM:SS`` in UTC, on the seed's one day."""
-    return f"2026-03-12T{clock}+00:00"
+    return datetime.fromisoformat(f"2026-03-12T{clock}+00:00")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,12 @@ test("a click toggles one row", () => {
 });
 
 test("a shift-click selects every row shown from the anchor to it, either way, and keeps the rest", () => {
-  expect(sorted(clickSelect(new Set(["a"]), ORDER, "b", "d"))).toEqual(["a", "b", "c", "d"]);
+  expect(sorted(clickSelect(new Set(["a"]), ORDER, "b", "d"))).toEqual([
+    "a",
+    "b",
+    "c",
+    "d",
+  ]);
   expect(sorted(clickSelect(new Set(), ORDER, "d", "b"))).toEqual(["b", "c", "d"]);
   // A range only adds: a selected row inside it stays selected.
   expect(sorted(clickSelect(new Set(["c"]), ORDER, "b", "d"))).toEqual(["b", "c", "d"]);

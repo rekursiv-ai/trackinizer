@@ -11,7 +11,7 @@ real app, so a route that forgets the check answers 200 here.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final
 
 import uuid
 
@@ -20,13 +20,17 @@ from treekle import from_plain, immutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import UserMessage
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api.app import app
-from trackinizer.server.api.canvas_test_support import ASSISTANT_CONFIG
 from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
+)
+from trackinizer.server.api.session_test_support import (
+    ASSISTANT_CONFIG,
+    ServingRelay,
 )
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.config import Config
@@ -39,7 +43,6 @@ if TYPE_CHECKING:
     import httpx2
 
     from trackinizer.server.auth import AuthIdentity
-    from trackinizer.server.inbound import InboundQueue
     from trackinizer.server.store.core import Store
 
 
@@ -95,12 +98,7 @@ ASSISTANT: Final = _principal("scout@example.com", "writer", OPEN)
 ALL: Final = (STAFF_USER, WRITER, VIEWER, CAMPAIGN, ASSISTANT)
 # The configuration under which the server itself finds the staff user to be staff, as
 # it must for an asker the assistant names.
-_SERVING_STAFF: Final = replace(ASSISTANT_CONFIG, staff=(STAFF_USER.email,))
-
-
-def _inbound() -> InboundQueue:
-    """Return the queue the app under test is serving."""
-    return cast("InboundQueue", app.state.inbound)
+_SERVING_STAFF: Final[Config] = replace(ASSISTANT_CONFIG, staff=(STAFF_USER.email,))
 
 
 def _as(principal: _Principal) -> None:
@@ -114,6 +112,11 @@ class _Hidden:
     lead: uuid.UUID
     campaign_own: uuid.UUID
     viewer_own: uuid.UUID
+    relay: ServingRelay
+
+    def sent_to(self, session_id: uuid.UUID) -> int:
+        """Return how many lines reached ``session_id``'s agent process."""
+        return [sent[0] for sent in self.relay.sent].count(session_id)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -123,12 +126,14 @@ async def hidden(
 ) -> _Hidden:
     """Seed the principals and three live staff sessions holding the canary."""
     _, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    relay = ServingRelay()
+    patch_state(monkeypatch, "session_relay", relay)
     async with store.engine.acquire() as conn:
         for who in ALL:
             await conn.execute(
                 "INSERT INTO users (id, email, name, role, status, "
-                "visual_workspace_enabled) VALUES ($1, $2, 'n', 'writer', 'active', "
+                "visual_canvas_enabled) VALUES ($1, $2, 'n', 'writer', 'active', "
                 "TRUE)",
                 who.user_id,
                 who.email,
@@ -140,14 +145,12 @@ async def hidden(
                 who.user_id,
                 f"trax_{who.key_id.hex[:6]}",
             )
-    seeded = _Hidden(
+    return _Hidden(
         lead=await _staff_session(store, STAFF_USER, actor="lead"),
         campaign_own=await _staff_session(store, CAMPAIGN, actor="campaign"),
         viewer_own=await _staff_session(store, VIEWER, actor="viewer-run"),
+        relay=relay,
     )
-    for session_id in (seeded.lead, seeded.campaign_own, seeded.viewer_own):
-        _inbound().mark_poller(session_id)
-    return seeded
 
 
 # A session with no ``actor`` is unowned, which is what a purge requires.
@@ -202,7 +205,7 @@ def _refusal(response: httpx2.Response) -> dict[str, object]:
     return from_plain(detail, dict[str, object])
 
 
-async def _audience_of(store: Store, session_id: uuid.UUID) -> str:
+async def _session_audience(store: Store, session_id: uuid.UUID) -> str:
     async with store.engine.acquire() as conn:
         found = await conn.fetchval(
             "SELECT agentsession_audience FROM inquiries WHERE id = $1",
@@ -211,7 +214,7 @@ async def _audience_of(store: Store, session_id: uuid.UUID) -> str:
     return from_plain(found, str)
 
 
-@pytest.mark.parametrize("route", ["parts", "records", "turns"])
+@pytest.mark.parametrize("route", ["parts", "records", "turns", "usage", "download"])
 async def test_an_open_reader_is_refused_a_staff_sessions_transcript(
     pglite_route_client: _Client,
     hidden: _Hidden,
@@ -229,10 +232,11 @@ async def test_an_open_reader_is_refused_a_staff_sessions_transcript(
 
     assert refusals == [{"code": "session_audience", "audience": "staff"}] * 3
     assert allowed.status_code == 200
-    assert route == "parts" or _CANARY in allowed.text
+    # A part list and a usage total name no line, so only the others carry the canary.
+    assert route in {"parts", "usage"} or _CANARY in allowed.text
 
 
-async def test_the_key_that_opened_a_staff_session_reads_appends_drains_and_ends_it(
+async def test_the_key_that_opened_a_staff_session_reads_appends_and_ends_it(
     pglite_route_client: _Client,
     hidden: _Hidden,
 ) -> None:
@@ -245,15 +249,10 @@ async def test_the_key_that_opened_a_staff_session_reads_appends_drains_and_ends
         for route in ("parts", "records", "turns")
     ]
     appended = await client.post(f"/api/sessions/{session}/records", json={})
-    drained = await client.get(f"/api/sessions/{session}/inbound")
     ended = await client.post(f"/api/sessions/{session}/end", json={})
 
     assert reads == [200, 200, 200]
-    assert (appended.status_code, drained.status_code, ended.status_code) == (
-        200,
-        200,
-        200,
-    )
+    assert (appended.status_code, ended.status_code) == (200, 200)
 
 
 async def test_a_viewer_key_runs_the_staff_session_it_opened(
@@ -308,7 +307,7 @@ async def test_ending_a_staff_session_needs_its_audience_or_its_opener(
 
     assert _refusal(refused) == {"code": "session_audience", "audience": "staff"}
     assert allowed.status_code == 200
-    assert await _audience_of(store, hidden.lead) == "staff"
+    assert await _session_audience(store, hidden.lead) == "staff"
 
 
 async def test_purging_or_editing_a_staff_session_by_id_is_refused(
@@ -374,18 +373,14 @@ async def test_staff_edits_and_purges_a_staff_session_by_id(
     assert (edited.status_code, purged.status_code) == (200, 200)
 
 
-async def test_input_to_a_staff_session_needs_its_audience_or_the_assistant(
+async def test_staff_visibility_does_not_grant_the_assistants_asker_input(
     pglite_route_client: _Client,
     hidden: _Hidden,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The assistant relays for an asker who holds staff, as staff sends itself.
-
-    The askers it is refused for are in ``assistant_asker_pglite_test``.
-    """
-    monkeypatch.setattr(app.state, "config", _SERVING_STAFF, raising=False)
+    """The opening key sends input; the assistant's asker only reads the session."""
+    patch_state(monkeypatch, "config", _SERVING_STAFF)
     client, _ = pglite_route_client
-    url = f"/api/sessions/{hidden.lead}/inbound"
     answers = {}
     for name, principal in (
         ("writer", WRITER),
@@ -394,36 +389,16 @@ async def test_input_to_a_staff_session_needs_its_audience_or_the_assistant(
         ("assistant", ASSISTANT),
     ):
         _as(principal)
-        body = {"text": "hi"}
+        body = {"actor": "lead", "room": "ops", "text": "hi"}
         if name == "assistant":
             body["asker"] = STAFF_USER.email
-        answers[name] = (await client.post(url, json=body)).status_code
+        answers[name] = (await client.post("/api/messages", json=body)).status_code
 
-    assert answers["writer"] == answers["viewer"] == 403
-    assert answers["staff"] == answers["assistant"] == 200
-    assert _inbound().pending(hidden.lead) == 2
-
-
-async def test_only_the_opener_or_a_holder_drains_a_staff_sessions_queue(
-    pglite_route_client: _Client,
-    hidden: _Hidden,
-) -> None:
-    client, _ = pglite_route_client
-    url = f"/api/sessions/{hidden.lead}/inbound"
-
-    _as(WRITER)
-    refused = await client.get(url)
-    _as(ASSISTANT)
-    assistant = await client.get(url)
-    _as(STAFF_USER)
-    allowed = await client.get(url)
-
-    assert _refusal(refused) == {"code": "session_audience", "audience": "staff"}
-    assert assistant.status_code == 403
-    assert allowed.status_code == 200
+    assert answers == {"writer": 403, "viewer": 403, "staff": 200, "assistant": 403}
+    assert hidden.sent_to(hidden.lead) == 1
 
 
-async def test_a_message_to_a_staff_actor_is_refused_whole_and_queues_nothing(
+async def test_a_message_to_a_staff_actor_is_refused_whole_and_sends_nothing(
     pglite_route_client: _Client,
     hidden: _Hidden,
 ) -> None:
@@ -438,15 +413,15 @@ async def test_a_message_to_a_staff_actor_is_refused_whole_and_queues_nothing(
 
     assert _refusal(refused) == {"code": "session_audience", "audience": "staff"}
     assert by_room.status_code == 403
-    assert _inbound().pending(hidden.lead) == 0
+    assert hidden.sent_to(hidden.lead) == 0
 
 
-async def test_the_assistant_and_staff_message_a_staff_actor(
+async def test_only_the_opening_key_messages_this_staff_actor(
     pglite_route_client: _Client,
     hidden: _Hidden,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(app.state, "config", _SERVING_STAFF, raising=False)
+    patch_state(monkeypatch, "config", _SERVING_STAFF)
     client, _ = pglite_route_client
 
     delivered: list[object] = []
@@ -461,11 +436,14 @@ async def test_the_assistant_and_staff_message_a_staff_actor(
                 **({"asker": STAFF_USER.email} if principal is ASSISTANT else {}),
             },
         )
-        assert sent.status_code == 200, sent.text
-        delivered.append(from_plain(sent.json(), dict[str, object])["delivered"])
+        if principal is ASSISTANT:
+            assert sent.status_code == 403, sent.text
+        else:
+            assert sent.status_code == 200, sent.text
+            delivered.append(from_plain(sent.json(), dict[str, object])["delivered"])
 
-    assert delivered == [[str(hidden.lead)]] * 2
-    assert _inbound().pending(hidden.lead) == 2
+    assert delivered == [[str(hidden.lead)]]
+    assert hidden.sent_to(hidden.lead) == 1
 
 
 async def test_a_staff_sessions_envelope_and_filed_rows_stay_open(
@@ -510,7 +488,7 @@ async def test_no_route_sets_an_audience_field(
         ("/api/sessions/{session_id}/audience", ["POST"]),
     ]
     assert lowered.status_code == 409
-    assert await _audience_of(store, hidden.lead) == "staff"
+    assert await _session_audience(store, hidden.lead) == "staff"
 
 
 async def test_an_unauthenticated_caller_is_refused_before_the_audience_is_read(
@@ -570,7 +548,7 @@ async def test_the_audience_of_each_session_is_read_by_id(
     _, store = pglite_route_client
     no_session = uuid.uuid4()
 
-    found = await store.read_session_audiences([hidden.lead, no_session])
+    found = await store.read_push_audiences([hidden.lead, no_session])
 
     assert found == {hidden.lead: STAFF}
 
@@ -583,16 +561,11 @@ async def staff_owner(
     """Seed the staff user whose keys the tests below present, and serve as staff."""
     _, store = pglite_route_client
     monkeypatch.setattr("trackinizer.server.auth._SCRYPT_N", 2)
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        Config(staff=(STAFF_USER.email,)),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", Config(staff=(STAFF_USER.email,)))
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status, "
-            "visual_workspace_enabled) VALUES ($1, $2, 'n', 'writer', 'active', TRUE)",
+            "visual_canvas_enabled) VALUES ($1, $2, 'n', 'writer', 'active', TRUE)",
             STAFF_USER.user_id,
             STAFF_USER.email,
         )
@@ -612,7 +585,7 @@ async def _key(store: Store, *, open_into: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {secret}"}
 
 
-def _batch_of(*items: tuple[str, str]) -> dict[str, object]:
+def _titled_batch(*items: tuple[str, str]) -> dict[str, object]:
     """Build a batch body of ``(kind, title)`` items, each with its own key."""
     return {
         "items": [
@@ -640,7 +613,7 @@ async def _open_each_way(
         ),
         await client.post(
             "/api/inquiries/batch",
-            json=_batch_of(("AgentSession", "b")),
+            json=_titled_batch(("AgentSession", "b")),
             headers=headers,
         ),
     ]
@@ -654,7 +627,7 @@ async def _audiences_opened(store: Store, opened: list[httpx2.Response]) -> list
         from_plain(submit["id"], str),
         from_plain(batch["ids"], list[str])[0],
     ]
-    return [await _audience_of(store, uuid.UUID(session_id)) for session_id in ids]
+    return [await _session_audience(store, uuid.UUID(session_id)) for session_id in ids]
 
 
 async def _count(store: Store, kind: str) -> int:
@@ -697,7 +670,7 @@ async def test_a_pin_the_owner_lost_is_403(
     """A demoted owner's staff key is refused, not quietly opened into ``open``."""
     client, store = pglite_route_client
     headers = await _key(store, open_into="staff")
-    monkeypatch.setattr(app.state, "config", Config())
+    patch_state(monkeypatch, "config", Config())
 
     refused = await _open_each_way(client, headers)
 
@@ -715,7 +688,7 @@ async def test_a_pin_the_owner_lost_still_files_rows_that_are_not_sessions(
     """The pin decides where a session opens; it does not gate an Issue."""
     client, store = pglite_route_client
     headers = await _key(store, open_into="staff")
-    monkeypatch.setattr(app.state, "config", Config())
+    patch_state(monkeypatch, "config", Config())
 
     single = await client.post(
         "/api/inquiries/issue",
@@ -724,12 +697,12 @@ async def test_a_pin_the_owner_lost_still_files_rows_that_are_not_sessions(
     )
     batch = await client.post(
         "/api/inquiries/batch",
-        json=_batch_of(("Issue", "i")),
+        json=_titled_batch(("Issue", "i")),
         headers=headers,
     )
     mixed = await client.post(
         "/api/inquiries/batch",
-        json=_batch_of(("Issue", "j"), ("AgentSession", "s")),
+        json=_titled_batch(("Issue", "j"), ("AgentSession", "s")),
         headers=headers,
     )
 

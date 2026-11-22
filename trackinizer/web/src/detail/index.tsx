@@ -1,12 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { APP } from "../appName";
-import { lazy, Suspense, type ReactNode, startTransition, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { markPageDrawn } from "../debug/timings";
+import {
+  lazy,
+  Suspense,
+  type ReactNode,
+  startTransition,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { setInquiryLock } from "../api/admin";
 import { ApiError } from "../api/client";
 import type { Detail, DetailRow } from "../api/detail";
 import { LockedContext, useMeta, useProfile, useWriteMode } from "../app/boot";
-import { useIsHighlighted } from "../app/highlights";
 import { mayPurge, PurgeDialog } from "../bulk/Purge";
 import { useCommands } from "../commands/registry";
 import { CopyDetails } from "../debug/CopyDetails";
@@ -17,7 +25,8 @@ import { Markdown, useMarkdownWarm } from "../markdown/Markdown";
 import { ProgressiveMarkdown } from "../markdown/ProgressiveMarkdown";
 import { cachedInquiries } from "../palette/sources";
 import { RelationFlows, useRelationActions } from "../relations/flows";
-import { formatRoute, type Route } from "../router/route";
+import { routeHref } from "../router/addressBar";
+import type { Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { Bar } from "../ui/bars";
 import { capitalize } from "../ui/glyphs";
@@ -36,13 +45,15 @@ import { Rail } from "./Rail";
 import { Relations } from "./Relations";
 import { dateTime, relativeTime, useMinuteClock } from "./time";
 import { Transcript } from "./transcript";
-import { conversationOf, SCIENCE_CHAT_LABEL } from "../api/chats";
-import { useContinueInChat } from "../visuals/continueChat";
 import "../writes/writes.css";
 import "./detail.css";
 
-const ArtifactContent = lazy(() => import("../visuals/Artifact").then((module) => ({ default: module.ArtifactPage })));
-const ArtifactFrame = lazy(() => import("../visuals/Artifact").then((module) => ({ default: module.ArtifactFrame })));
+const ArtifactContent = lazy(() =>
+  import("./Artifact").then((module) => ({ default: module.ArtifactPage })),
+);
+const ArtifactFrame = lazy(() =>
+  import("./Artifact").then((module) => ({ default: module.ArtifactFrame })),
+);
 
 /** Which inquiry a detail shows: by kind and seq, or by id. */
 export type DetailTarget = { kind: string; seq: number } | { id: string };
@@ -56,20 +67,38 @@ export type DetailTarget = { kind: string; seq: number } | { id: string };
  * Keyed by target, so moving to another inquiry starts fresh.
  */
 export function DetailView({ target }: { target: DetailTarget }) {
-  if ("id" in target) return <DetailById key={target.id} id={target.id} kind={null} name={target.id} />;
-  return <DetailByRef key={`${target.kind}#${target.seq}`} kind={target.kind} seq={target.seq} />;
+  if ("id" in target)
+    return <DetailById key={target.id} id={target.id} kind={null} name={target.id} />;
+  return (
+    <DetailByRef
+      key={`${target.kind}#${target.seq}`}
+      kind={target.kind}
+      seq={target.seq}
+    />
+  );
 }
 
 function DetailByRef({ kind, seq }: { kind: string; seq: number }) {
   const queryClient = useQueryClient();
   const ref = useQuery({
     ...detailQueries.ref(kind, seq),
-    initialData: () => cachedInquiries(queryClient).find((held) => held.kind === kind && held.seq === seq)?.id,
+    initialData: () =>
+      cachedInquiries(queryClient).find(
+        (held) => held.kind === kind && held.seq === seq,
+      )?.id,
   });
   if (ref.data) return <DetailById id={ref.data} kind={kind} name={`${kind}#${seq}`} />;
   return (
     <Frame kind={kind} name={`${kind}#${seq}`} busy={!ref.isError}>
-      {ref.isError ? <Failure error={ref.error} name={`${kind}#${seq}`} retry={() => void ref.refetch()} /> : <Loading />}
+      {ref.isError ? (
+        <Failure
+          error={ref.error}
+          name={`${kind}#${seq}`}
+          retry={() => void ref.refetch()}
+        />
+      ) : (
+        <Loading />
+      )}
     </Frame>
   );
 }
@@ -84,7 +113,15 @@ function DetailByRef({ kind, seq }: { kind: string; seq: number }) {
  * defers still come after. Drawn at once, a hub's page, its first Markdown with
  * it, was one task of 61 to 64 ms with the CPU slowed 4x on a Xeon.
  */
-function DetailById({ id, kind, name }: { id: string; kind: string | null; name: string }) {
+function DetailById({
+  id,
+  kind,
+  name,
+}: {
+  id: string;
+  kind: string | null;
+  name: string;
+}) {
   const query = useQuery(detailQueries.detail(id));
   const queryClient = useQueryClient();
   useEffect(() => markOpened(queryClient, id), [queryClient, id]);
@@ -96,11 +133,6 @@ function DetailById({ id, kind, name }: { id: string; kind: string | null; name:
   }, [ready, shown]);
   // A row purged while open answers 404 on refetch: say so rather than show it stale.
   const gone = query.error instanceof ApiError && query.error.status === 404;
-  const drawn = !!query.data && !gone && shown;
-  // After an agent's navigation here, the page drawn with its data is what its timing mark waits for.
-  useLayoutEffect(() => {
-    if (drawn) markPageDrawn(window.location.hash);
-  }, [drawn, id]);
   if (query.data && !gone && shown) {
     return (
       <Page
@@ -112,7 +144,11 @@ function DetailById({ id, kind, name }: { id: string; kind: string | null; name:
   }
   return (
     <Frame kind={kind} name={name} busy={!query.isError}>
-      {query.isError ? <Failure error={query.error} name={name} retry={() => void query.refetch()} /> : <Loading />}
+      {query.isError ? (
+        <Failure error={query.error} name={name} retry={() => void query.refetch()} />
+      ) : (
+        <Loading />
+      )}
     </Frame>
   );
 }
@@ -125,14 +161,27 @@ function DetailById({ id, kind, name }: { id: string; kind: string | null; name:
  * this reading order. Its button in the top bar, or `]`, collapses it, for the
  * tab.
  */
-function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; retry: () => void }) {
+function Page({
+  detail,
+  stale,
+  retry,
+}: {
+  detail: Detail;
+  stale: Error | null;
+  retry: () => void;
+}) {
   const { fieldOwners, kinds } = useMeta();
   const now = useMinuteClock();
   const row = detail.self;
   const fields = useMemo(() => kindFields(row, fieldOwners), [row, fieldOwners]);
-  const at = (place: Field["look"]["place"]) => fields.filter((field) => field.look.place === place);
+  const at = (place: Field["look"]["place"]) =>
+    fields.filter((field) => field.look.place === place);
   const cost = fields.reduce(
-    (sum, field) => sum + (field.look.format === "usd" && typeof field.value === "number" ? field.value : 0),
+    (sum, field) =>
+      sum +
+      (field.look.format === "usd" && typeof field.value === "number"
+        ? field.value
+        : 0),
     0,
   );
   const rail = usePanel(RAIL);
@@ -147,7 +196,6 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
           name={`${row.kind}#${row.seq}`}
           actions={
             <>
-              <ContinueInChat row={row} />
               <ShowInGraph row={row} />
               <MoreMenu detail={detail} />
               <PanelToggle panel={rail} controls={railId} />
@@ -160,14 +208,19 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
               <button type="button" className="btn ghost" onClick={retry}>
                 Retry
               </button>
-              <CopyDetails message={`Could not refresh ${detail.self.kind}#${detail.self.seq}: ${stale.message}`} error={stale} />
+              <CopyDetails
+                message={`Could not refresh ${detail.self.kind}#${detail.self.seq}: ${stale.message}`}
+                error={stale}
+              />
             </Bar>
           ) : null}
           <div className="d-scroll">
             {/* An HTML Artifact opens as its own page, across the pane; the record follows below it. */}
-            {row.kind === "Artifact" && <Suspense fallback={null}>
-              <ArtifactFrame id={row.id} />
-            </Suspense>}
+            {row.kind === "Artifact" && (
+              <Suspense fallback={null}>
+                <ArtifactFrame id={row.id} />
+              </Suspense>
+            )}
             <div className="d-grid">
               <div className="d-top">
                 <div className="d-main-inner">
@@ -191,9 +244,11 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
                       <JsonField field={field} />
                     </TextEditor>
                   ))}
-                  {row.kind === "Artifact" && <Suspense fallback={<p className="d-loading">Loading Artifact…</p>}>
-                    <ArtifactContent id={row.id} optional framed={false} />
-                  </Suspense>}
+                  {row.kind === "Artifact" && (
+                    <Suspense fallback={<p className="d-loading">Loading Artifact…</p>}>
+                      <ArtifactContent id={row.id} optional framed={false} />
+                    </Suspense>
+                  )}
                   <Metrics row={row} />
                   <Transcript row={row} />
                   <Relations detail={detail} />
@@ -209,22 +264,6 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
 }
 
 /**
- * Continue in Chat, on a science chat's session: Chat opens on the conversation, which anyone
- * signed in as a writer can post in. Offered only where the canvas offers Chat.
- */
-function ContinueInChat({ row }: { row: DetailRow }) {
-  const continueIn = useContinueInChat();
-  const labels = Array.isArray(row.labels) ? row.labels : [];
-  const conversation = conversationOf(typeof row.cli_session_id === "string" ? row.cli_session_id : null);
-  if (!continueIn || row.kind !== "AgentSession" || !conversation || !labels.includes(SCIENCE_CHAT_LABEL)) return null;
-  return (
-    <button type="button" className="btn ghost" onClick={() => continueIn(row.id)}>
-      Continue in Chat
-    </button>
-  );
-}
-
-/**
  * Show in graph: the graph focused on this inquiry, lit two hops out. A link,
  * so a ⌘-click opens it in a tab, and a palette command under the inquiry's
  * `Kind#seq`. Under the graph's route the detail is the graph's Peek, already
@@ -233,13 +272,29 @@ function ContinueInChat({ row }: { row: DetailRow }) {
 function ShowInGraph({ row }: { row: DetailRow }) {
   const { route, navigate } = useRouter();
   const inGraph = route.name === "graph";
-  const graph: Route = { name: "graph", focus: { ref: { kind: row.kind, seq: row.seq }, hops: 2 } };
+  const graph: Route = {
+    name: "graph",
+    focus: { ref: { kind: row.kind, seq: row.seq }, hops: 2 },
+  };
   useCommands(
-    inGraph ? [] : [{ id: "detail.graph", title: "Show in graph", section: `${row.kind}#${row.seq}`, run: () => navigate(graph) }],
+    inGraph
+      ? []
+      : [
+          {
+            id: "detail.graph",
+            title: "Show in graph",
+            section: `${row.kind}#${row.seq}`,
+            run: () => navigate(graph),
+          },
+        ],
   );
   if (inGraph) return null;
   return (
-    <a className="btn ghost" href={formatRoute(graph)} title={`Show ${row.kind}#${row.seq} in the graph`}>
+    <a
+      className="btn ghost"
+      href={routeHref(graph)}
+      title={`Show ${row.kind}#${row.seq} in the graph`}
+    >
       <Icon name="graph" size={14} />
       <span className="hide-sm">Show in graph</span>
     </a>
@@ -266,7 +321,14 @@ function MoreMenu({ detail }: { detail: Detail }) {
       <Menu
         label={`${name} actions…`}
         trigger={
-          <button ref={trigger} type="button" className="icon-btn" aria-label={`${name} actions`} title="More actions" disabled={offline}>
+          <button
+            ref={trigger}
+            type="button"
+            className="icon-btn"
+            aria-label={`${name} actions`}
+            title="More actions"
+            disabled={offline}
+          >
             <Icon name="more" />
           </button>
         }
@@ -278,10 +340,23 @@ function MoreMenu({ detail }: { detail: Detail }) {
             hint: keys?.[0]?.toUpperCase(),
           })),
           ...(admin
-            ? [{ value: LOCK, label: detail.locked ? "Unlock" : "Lock", icon: <Icon name="lock" size={14} /> }]
+            ? [
+                {
+                  value: LOCK,
+                  label: detail.locked ? "Unlock" : "Lock",
+                  icon: <Icon name="lock" size={14} />,
+                },
+              ]
             : []),
           ...(mayPurge(detail.self, profile)
-            ? [{ value: PURGE, label: "Purge…", icon: <Icon name="trash" size={14} />, danger: true }]
+            ? [
+                {
+                  value: PURGE,
+                  label: "Purge…",
+                  icon: <Icon name="trash" size={14} />,
+                  danger: true,
+                },
+              ]
             : []),
         ]}
         onPick={(id) => {
@@ -290,7 +365,13 @@ function MoreMenu({ detail }: { detail: Detail }) {
           else actions.find((action) => action.id === id)?.run(trigger.current);
         }}
       />
-      {purging ? <PurgeDialog detail={detail} returnTo={trigger.current} onClose={() => setPurging(false)} /> : null}
+      {purging ? (
+        <PurgeDialog
+          detail={detail}
+          returnTo={trigger.current}
+          onClose={() => setPurging(false)}
+        />
+      ) : null}
     </>
   );
 }
@@ -308,13 +389,25 @@ function useLockToggle(detail: Detail) {
   const name = `${detail.self.kind}#${detail.self.seq}`;
   return useMutation({
     mutationFn: () => setInquiryLock(detail.self.id, !detail.locked),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: detailQueries.detail(detail.self.id).queryKey }),
-    onError: (error) => toast(`Could not ${detail.locked ? "unlock" : "lock"} ${name}: ${error.message}`, { failed: true, error }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: detailQueries.detail(detail.self.id).queryKey,
+      }),
+    onError: (error) =>
+      toast(
+        `Could not ${detail.locked ? "unlock" : "lock"} ${name}: ${error.message}`,
+        { failed: true, error },
+      ),
   });
 }
 
 /** The rail as a panel: on the right, and `]` collapses or expands it. */
-const RAIL: PanelSpec = { id: "detail.rail", name: "parents, children and properties", side: "right", keys: ["]"] };
+const RAIL: PanelSpec = {
+  id: "detail.rail",
+  name: "parents, children and properties",
+  side: "right",
+  keys: ["]"],
+};
 
 /**
  * The header: the inquiry's kind, its own cost, when it changed, and its title,
@@ -327,9 +420,8 @@ const RAIL: PanelSpec = { id: "detail.rail", name: "parents, children and proper
 function Head({ detail, now, cost }: { detail: Detail; now: number; cost: number }) {
   const row = detail.self;
   const one = kindLook(row.kind).one;
-  const highlighted = useIsHighlighted(row.id);
   return (
-    <div className={highlighted ? "d-head is-highlighted" : "d-head"}>
+    <div className="d-head">
       <div className="eyebrow">
         <KindIcon kind={row.kind} size={13} />
         {capitalize(one)}
@@ -337,7 +429,10 @@ function Head({ detail, now, cost }: { detail: Detail; now: number; cost: number
           Cost of this {one} <b>{cost ? usd(cost) : "none recorded"}</b>
         </span>
         {detail.locked ? (
-          <span className="d-lock" title="Locked: only an admin can change this, its edges or delete it">
+          <span
+            className="d-lock"
+            title="Locked: only an admin can change this, its edges or delete it"
+          >
             <Icon name="lock" size={12} />
             Locked
           </span>
@@ -361,14 +456,22 @@ function TextField({ field, kinds }: { field: Field; kinds: readonly string[] })
   if (field.name === "description") {
     return (
       <div data-field="description">
-        {text ? <ProgressiveMarkdown source={text} kinds={kinds} /> : <p className="md-empty">No description.</p>}
+        {text ? (
+          <ProgressiveMarkdown source={text} kinds={kinds} />
+        ) : (
+          <p className="md-empty">No description.</p>
+        )}
       </div>
     );
   }
   return (
     <section className="callout" aria-label={field.look.label} data-field={field.name}>
       <span className="k">{field.look.label}</span>
-      {text ? <Markdown source={text} kinds={kinds} /> : <span className="unset">Not set</span>}
+      {text ? (
+        <Markdown source={text} kinds={kinds} />
+      ) : (
+        <span className="unset">Not set</span>
+      )}
     </section>
   );
 }
@@ -382,7 +485,9 @@ function JsonField({ field }: { field: Field }) {
         {field.look.label}
         {field.value === undefined ? <span className="unset"> — not set</span> : null}
       </summary>
-      {field.value === undefined ? null : <pre>{JSON.stringify(field.value, null, 2)}</pre>}
+      {field.value === undefined ? null : (
+        <pre>{JSON.stringify(field.value, null, 2)}</pre>
+      )}
     </details>
   );
 }
@@ -409,7 +514,14 @@ function Frame({
   const { navigate } = useRouter();
   useCommands(
     kind
-      ? [{ id: "detail.back", title: `Back to ${kindLook(kind).plural}`, keys: ["Escape"], run: () => navigate({ name: "list", kind }) }]
+      ? [
+          {
+            id: "detail.back",
+            title: `Back to ${kindLook(kind).plural}`,
+            keys: ["Escape"],
+            run: () => navigate({ name: "list", kind }),
+          },
+        ]
       : [],
   );
   return (
@@ -418,7 +530,11 @@ function Frame({
         <nav className="crumbs" aria-label="Breadcrumb">
           {kind ? (
             <>
-              <a className="crumb-btn" href={formatRoute({ name: "list", kind })} title="Back (Esc)">
+              <a
+                className="crumb-btn"
+                href={routeHref({ name: "list", kind })}
+                title="Back (Esc)"
+              >
                 <Icon name="arrowL" size={14} />
                 <span className="hide-sm">{kindLook(kind).plural}</span>
               </a>
@@ -443,7 +559,15 @@ function Loading() {
 }
 
 /** Why the inquiry could not be shown: gone (404), or the server's message with Retry. */
-function Failure({ error, name, retry }: { error: Error; name: string; retry: () => void }) {
+function Failure({
+  error,
+  name,
+  retry,
+}: {
+  error: Error;
+  name: string;
+  retry: () => void;
+}) {
   if (error instanceof ApiError && error.status === 404) {
     return (
       <EmptyState icon={<Icon name="trash" size={24} />} title="Deleted or purged">
@@ -460,7 +584,10 @@ function Failure({ error, name, retry }: { error: Error; name: string; retry: ()
         <button type="button" className="btn" onClick={retry}>
           Retry
         </button>
-        <CopyDetails message={`Could not load ${name}: ${error.message}`} error={error} />
+        <CopyDetails
+          message={`Could not load ${name}: ${error.message}`}
+          error={error}
+        />
       </span>
     </EmptyState>
   );

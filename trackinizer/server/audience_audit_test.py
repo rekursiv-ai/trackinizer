@@ -40,7 +40,7 @@ from trackinizer.server.route_iter import iter_routes
 from trackinizer.wire.audience import SESSION_CONTENT_ROUTES
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -53,9 +53,11 @@ _TABLES: Final = (
     "session_records",
     "session_manifests",
     "session_slash_commands",
-    "session_embeddings",
     "session_ciphertext",
     "session_bodies",
+    # The embedding addon's vectors of transcripts: their nearest units say what a
+    # hidden session holds.
+    r"embedding\.vectors",
 )
 
 _TABLE_NAME: Final = re.compile("|".join(_TABLES))
@@ -75,13 +77,14 @@ _NAMES_A_TABLE: Final = re.compile(
 # walk itself decides.
 _DYNAMIC_TABLE: Final = re.compile(
     r"\b(?:FROM|JOIN|INTO|UPDATE)\s*(?:\{|%s|[\"']\s*(?:[,)+]|$))",
-    re.IGNORECASE,
+    re.IGNORECASE | re.MULTILINE,
 )
 # An unindented line that opens a function, a class or a decorator.
 _CUT: Final = re.compile(r"^(?:@|(?:async[ \t]+)?def\b|class\b)", re.MULTILINE)
 # The store methods that read or write a session's content for any id they are given.
 _CONTENT_METHODS: Final = frozenset(
     {
+        "append_session_part",
         "append_session_records",
         "read_recent_session_turns",
         "read_session_manifests",
@@ -111,24 +114,17 @@ _ENFORCED_AGGREGATES: Final = frozenset(
         ("server/store/session_feed.py", "_SessionFeedMixin.read_feed_facets"),
         ("server/store/session_feed.py", "_SessionFeedMixin.read_feed_histogram"),
         ("server/store/session_feed.py", "_count_buckets"),
-        ("server/store/session_search.py", "_fts_arm"),
-        ("server/store/session_search.py", "_semantic_arm"),
+        ("server/store/search.py", "_fts_arm"),
+        ("server/store/search.py", "_semantic_arm"),
+        ("addons/embedding/search.py", "_sql"),
         # The SQL-lowered form of a record filter: an EXISTS over the records of
         # ``inquiries.id``, which would let a viewer probe a hidden transcript were
         # ``list_kind`` not to keep hidden sessions out of the rows it meets.
         ("wire/column_shapes.py", "_RECORDS_WHERE"),
-        # Not an aggregate but a probe of one transcript: whether a fork point is a
-        # line. Its yes or no was the answer to a question about a hidden session,
-        # and a yes let the assistant copy that session's lines into a fork.
-        ("server/visuals/science_chats.py", "science_chat_exists_at"),
-        # Whether anyone but a chat's starter posted in it, which lets the starter
-        # delete it: read only off the sessions the caller reads, a hidden one
-        # counting as someone else's.
-        ("server/visuals/science_chats.py", "_HEAD"),
         # A writer whose commit pings every live stream. The ping names the
         # session's audience, so a stream holds it back from a viewer who does not
         # read it; ``untagged_notifiers`` fails a writer that pings without one.
-        ("server/store/session_ir.py", "_SessionIRMixin.append_session_records"),
+        ("server/store/session_ir.py", "_SessionIRMixin.append_session_part"),
     },
 )
 
@@ -145,6 +141,7 @@ _PREFIXES: Final = (
     "/api/messages",
 )
 _EXACT: Final = (
+    "/api/sessions",
     "/api/web/search_sessions",
     "/api/inquiries",
     "/api/export",
@@ -248,6 +245,8 @@ class _Reader:
 @functools.cache
 def _classified(source: str) -> tuple[_Reader, ...]:
     """Return each scope of ``source`` with SQL on a session table, classified."""
+    if _TABLE_NAME.search(source) is None and _DYNAMIC_TABLE.search(source) is None:
+        return ()
     lines = source.split("\n")
     # Only a scope with a line that could name a table is walked: most of a module
     # does not, and walking all of it dominates the cost of the audit.
@@ -468,15 +467,6 @@ def _repository_scopes() -> tuple[tuple[str, _Reader], ...]:
         gc.enable()
 
 
-def _repository_readers() -> frozenset[tuple[str, str]]:
-    """Return ``(path, name)`` for each unmarked reader anywhere in the package."""
-    return frozenset(
-        (path, reader.name)
-        for path, reader in _repository_scopes()
-        if not reader.marked
-    )
-
-
 def _repository_gated() -> frozenset[tuple[str, str]]:
     """Return ``(path, name)`` for each reader marked gated anywhere in the package."""
     return frozenset(
@@ -505,14 +495,24 @@ def _repository_callers() -> frozenset[tuple[str, str]]:
     return frozenset(found)
 
 
-def test_every_function_on_session_tables_says_how_it_is_gated() -> None:
-    unclassified = _repository_readers()
+def _relative_id(path: Path) -> str:
+    """Name a scanned module by its path under the package."""
+    return path.relative_to(_TRACKINIZER).as_posix()
+
+
+@pytest.mark.parametrize(
+    "path",
+    list(_modules(_TRACKINIZER)),
+    ids=_relative_id,
+)
+def test_every_function_on_session_tables_says_how_it_is_gated(path: Path) -> None:
+    unclassified = unmarked_readers(path.read_text(encoding="utf-8"))
 
     assert not unclassified, (
         "functions with SQL on a session-content table and no marker; add "
         "'# Audience: gated' if the caller checks the viewer's audience, or "
         "'# Audience: internal' if nothing they return reaches a caller:\n"
-        + "\n".join(f"  {path}  {name}" for path, name in sorted(unclassified))
+        + "\n".join(f"  {path}  {name}" for name in unclassified)
     )
 
 

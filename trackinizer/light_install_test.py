@@ -1,18 +1,25 @@
 """A bare ``pip install trackinizer`` carries the client side only.
 
 ``trax``, the client, the wire models and the types need no server package.
-FastAPI, asyncpg, torch and the rest of the ``server`` extra install only with
-``trackinizer[server]``. These tests keep that true: every client-side module
-imports with the extra's packages unimportable, and the ``trackinizer`` command
-explains a missing extra instead of printing a traceback.
+FastAPI, asyncpg and the rest of the ``server`` extra install only with
+``trackinizer[server]``, and the embedding add-on's model stack (torch,
+transformers) only with ``trackinizer[embedding]``. These tests keep that true:
+every client-side module imports with the server extra's packages unimportable,
+the server and the add-on import with the embedding extra's, and the
+``trackinizer`` command explains a missing extra instead of printing a traceback.
 """
 
 from __future__ import annotations
 
+from bisect import bisect_left
+from functools import cache, partial
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
+from unicodedata import normalize
+from unittest.mock import Mock
 
 import ast
+import gc
 import json
 import subprocess
 import sys
@@ -27,7 +34,11 @@ import pytest
 from trackinizer.server import entry
 
 
-_CWD: Final = Path(__file__).resolve().parent
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 # The package this test lives in; the monorepo and the export name it differently.
 _BASE: Final = __name__.rpartition(".")[0]
@@ -38,8 +49,12 @@ _ROOT: Final = _CWD.parents[_BASE.count(".")]
 
 _CLIENT_PACKAGES: Final = ("client", "trax", "types", "wire")
 
-# Only ``server/`` imports the embedder protocol, and it names torch.
-_SERVER_ONLY_MODULES: Final = frozenset({"types.embedder"})
+# Test support the wheel leaves out (``.export/pyproject.delta.toml``), so no
+# install imports it; it imports torch at module scope.
+_TEST_SUPPORT_MODULES: Final = frozenset({"addons.embedding.fakes"})
+
+# The modules a server imports at start, before any add-on's own.
+_SERVER_ENTRY_MODULES: Final = ("server.server", "server.api.app", "server.web")
 
 # The monorepo imports configgle as a sibling package under another name. The
 # export rewrites that name to the published one, which repeats the first entry.
@@ -103,13 +118,42 @@ def test_client_side_modules_import_without_server_only_packages() -> None:
     extra. One module that imports FastAPI, asyncpg or torch at import time
     would make a bare ``pip install trackinizer`` fail on ``trax``.
     """
-    modules = _client_side_modules()
+    modules = _package_modules(*_CLIENT_PACKAGES)
     assert {f"{_BASE}.{name}" for name in ("trax.cli", "client.client")} <= set(modules)
 
-    failures = _import_failures(modules, root=_ROOT)
+    failures = _import_failures(modules, root=_ROOT, blocked=_blocked_names())
 
     assert not failures, (
         "client-side modules need a server-only package:\n"
+        + "\n".join(
+            f"{module}: {reason}" for module, reason in sorted(failures.items())
+        )
+    )
+
+
+@pytest.mark.cli_python_subprocess
+def test_server_and_embedding_addon_import_without_the_embedding_extra() -> None:
+    """The server and the embedding add-on import without the ``embedding`` extra.
+
+    A ``trackinizer[server]`` install must start a server, and the add-on's modules
+    must import there too, deferring the model stack to the first embed. One module
+    that imports torch at import time would make every server need the model stack.
+    """
+    modules = [
+        *(f"{_BASE}.{name}" for name in _SERVER_ENTRY_MODULES),
+        *_package_modules("addons/embedding"),
+    ]
+    assert f"{_BASE}.addons.embedding.model" in modules
+
+    failures = _import_failures(
+        modules,
+        root=_ROOT,
+        blocked=_extra_packages("embedding"),
+    )
+
+    assert not failures, (
+        "the server or the embedding add-on needs a package of the embedding extra "
+        "at import time:\n"
         + "\n".join(
             f"{module}: {reason}" for module, reason in sorted(failures.items())
         )
@@ -125,12 +169,27 @@ def test_import_probe_reports_a_module_that_needs_a_server_only_package(
     (tmp_path / "lazy.py").write_text("def embed():\n    import torch\n")
     (tmp_path / "plain.py").write_text("import json\n")
 
-    failures = _import_failures(["leaky", "lazy", "plain"], root=tmp_path)
+    failures = _import_failures(
+        ["leaky", "lazy", "plain"],
+        root=tmp_path,
+        blocked=frozenset({"torch"}),
+    )
 
     assert failures == {"leaky": "ModuleNotFoundError: No module named 'torch'"}
 
 
-def test_client_side_modules_never_name_a_server_only_package() -> None:
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    """Give each client entry point its own transitive import check."""
+    if (
+        metafunc.definition.originalname
+        == "test_client_side_modules_never_name_a_server_only_package"
+    ):
+        metafunc.parametrize("client_module", _package_modules(*_CLIENT_PACKAGES))
+
+
+def test_client_side_modules_never_name_a_server_only_package(
+    client_module: str,
+) -> None:
     """No module the client side can reach imports a package of the ``server`` extra.
 
     The import probe sees only what runs at import time. This scan follows every
@@ -139,13 +198,11 @@ def test_client_side_modules_never_name_a_server_only_package() -> None:
     function imports later, such as ``watchdog`` on macOS from the filesystem
     follower, would fail ``trax run`` on a bare install, and the probe cannot see it.
     """
-    modules = _client_side_modules()
-
     reached = _blocked_imports(
-        modules,
+        [client_module],
         root=_ROOT,
         blocked=_blocked_names(),
-        skip=frozenset(f"{_BASE}.{name}" for name in _SERVER_ONLY_MODULES),
+        skip=frozenset(),
     )
 
     assert not reached, "the client side needs a server-only package:\n" + "\n".join(
@@ -187,9 +244,98 @@ def test_static_scan_follows_later_lazy_and_relative_imports(tmp_path: Path) -> 
     }
 
 
+def test_static_scan_does_not_walk_unrelated_expression_trees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(
+        "def unrelated():\n    return "
+        + " + ".join(str(value) for value in range(32))
+        + '\n\ndef caller():\n    return lazy_import("torch")\n',
+    )
+    children = Mock(wraps=ast.iter_child_nodes)
+    monkeypatch.setattr(ast, "iter_child_nodes", children)
+
+    assert _imported_names(path.read_text(), package="pkg") == {"torch"}
+    assert children.call_count < 20
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_static_scan_keeps_dynamic_imports_in_every_expression(
+    tmp_path: Path,
+    newline: str,
+) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(
+        newline.join(
+            [
+                "from . import sibling",
+                "import json",
+                '@lazy_import("decorator")',
+                'def caller(default=import_module("default")):',
+                "    if TYPE_CHECKING:",
+                "        import hidden",
+                '        value = lazy_import("hidden_dynamic")',
+                "    else:",
+                "        import visible",
+                '    return [lazy_import("comprehension") for item in ()]',
+                "value = f\"{import_module('formatted')}\"",
+                'value = (lambda: loader.import_module("lambda_body"))()',
+                'value = Ｌａｚｙ.lazy_import("qualified")',
+                'value = ｌａｚｙ＿ｉｍｐｏｒｔ("normalized")',
+                "value = (loader",
+                " .import_module",
+                ')("multiline")',
+                "value = lazy_import(",
+                '    "argument_on_next_line",',
+                ")",
+            ],
+        ),
+    )
+
+    assert _imported_names(path.read_text(), package="pkg") == {
+        "pkg",
+        "pkg.sibling",
+        "json",
+        "decorator",
+        "default",
+        "visible",
+        "comprehension",
+        "formatted",
+        "lambda_body",
+        "qualified",
+        "normalized",
+        "multiline",
+        "argument_on_next_line",
+    }
+
+
+def test_static_scan_resolves_new_modules_on_every_invocation(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "root.py").write_text("from . import later\n")
+    blocked = frozenset({"torch"})
+
+    assert not _blocked_imports(
+        ["pkg.root"],
+        root=tmp_path,
+        blocked=blocked,
+        skip=frozenset(),
+    )
+    (package / "later.py").write_text("import torch\n")
+    assert _blocked_imports(
+        ["pkg.root"],
+        root=tmp_path,
+        blocked=blocked,
+        skip=frozenset(),
+    ) == {"pkg.later": {"torch"}}
+
+
 def test_missing_extra_guard_names_every_package_of_the_server_extra() -> None:
     """``entry.SERVER_ONLY`` is the ``server`` extra, by import name."""
-    assert _server_only_packages() == entry.SERVER_ONLY
+    assert _extra_packages("server") == entry.SERVER_ONLY
 
 
 @pytest.mark.cli_python_subprocess
@@ -215,10 +361,10 @@ def test_server_command_explains_a_missing_extra() -> None:
     assert not result.stdout
 
 
-def _client_side_modules() -> list[str]:
-    """Return the dotted name of every module of the client side, tests excluded."""
+def _package_modules(*packages: str) -> list[str]:
+    """Return the dotted name of every module under ``packages``, tests excluded."""
     modules: list[str] = []
-    for package in _CLIENT_PACKAGES:
+    for package in packages:
         for path in sorted((_CWD / package).rglob("*.py")):
             relative = path.relative_to(_CWD).with_suffix("")
             name = ".".join(
@@ -227,7 +373,7 @@ def _client_side_modules() -> list[str]:
             if (
                 relative.name in {"conftest", "__main__"}
                 or relative.name.endswith("_test")
-                or name in _SERVER_ONLY_MODULES
+                or name in _TEST_SUPPORT_MODULES
                 # A script beside the package, not a module of it.
                 or not all(
                     (_CWD.joinpath(*relative.parts[:depth]) / "__init__.py").is_file()
@@ -241,7 +387,7 @@ def _client_side_modules() -> list[str]:
 
 def _blocked_names() -> frozenset[str]:
     """Return the dotted names a bare install cannot import."""
-    return frozenset({*_server_only_packages(), *_CONFIGGLE})
+    return frozenset({*_extra_packages("server"), *_CONFIGGLE})
 
 
 # Reads source, so an import anywhere in a module counts: at module scope, in a
@@ -256,38 +402,48 @@ def _blocked_imports(
     skip: frozenset[str],
 ) -> dict[str, set[str]]:
     """Return the blocked names each module reachable from ``modules`` imports."""
+    module_path = cache(partial(_module_path, root=root))
     reached: dict[str, set[str]] = {}
     pending = list(modules)
     seen = set(modules)
-    while pending:
-        module = pending.pop()
-        path = _module_path(module, root=root)
-        assert path is not None, module
-        package = module if path.name == "__init__.py" else module.rpartition(".")[0]
-        for name in _imported_names(path, package=package):
-            hit = _blocked_prefix(name, blocked)
-            if hit is not None:
-                reached.setdefault(module, set()).add(hit)
-                continue
-            # Importing a.b.c also imports a and a.b.
-            parts = name.split(".")
-            for end in range(1, len(parts) + 1):
-                parent = ".".join(parts[:end])
-                if (
-                    parent not in seen
-                    and parent not in skip
-                    and _module_path(parent, root=root) is not None
-                ):
-                    seen.add(parent)
-                    pending.append(parent)
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        while pending:
+            module = pending.pop()
+            path = module_path(module)
+            assert path is not None, module
+            package = (
+                module if path.name == "__init__.py" else module.rpartition(".")[0]
+            )
+            for name in _imported_names(path.read_text(), package=package):
+                hit = _blocked_prefix(name, blocked)
+                if hit is not None:
+                    reached.setdefault(module, set()).add(hit)
+                    continue
+                # Importing a.b.c also imports a and a.b.
+                parts = name.split(".")
+                for end in range(1, len(parts) + 1):
+                    parent = ".".join(parts[:end])
+                    if (
+                        parent not in seen
+                        and parent not in skip
+                        and module_path(parent) is not None
+                    ):
+                        seen.add(parent)
+                        pending.append(parent)
+    finally:
+        if collecting:
+            gc.enable()
     return reached
 
 
 def _blocked_prefix(name: str, blocked: frozenset[str]) -> str | None:
     """Return the blocked name that ``name`` is or lies inside, if any."""
-    for blocked_name in blocked:
-        if name == blocked_name or name.startswith(blocked_name + "."):
-            return blocked_name
+    while name:
+        if name in blocked:
+            return name
+        name = name.rpartition(".")[0]
     return None
 
 
@@ -300,10 +456,11 @@ def _module_path(module: str, *, root: Path) -> Path | None:
     return None
 
 
-def _imported_names(path: Path, *, package: str) -> set[str]:
-    """Return every dotted module name ``path`` imports, however and wherever."""
+@cache
+def _imported_names(source: str, *, package: str) -> frozenset[str]:
+    """Return the imports of ``source``, shared by entries reaching the same module."""
     names: set[str] = set()
-    for node in _executed_nodes(ast.parse(path.read_text())):
+    for node in _executed_nodes(source):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -316,7 +473,7 @@ def _imported_names(path: Path, *, package: str) -> set[str]:
                 source = "" if module is None else module
             names.add(source)
             names.update(f"{source}.{alias.name}" for alias in node.names)
-        elif isinstance(node, ast.Call):
+        else:
             callee = node.func
             if isinstance(callee, ast.Attribute):
                 called = callee.attr
@@ -328,21 +485,35 @@ def _imported_names(path: Path, *, package: str) -> set[str]:
                 first = node.args[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     names.add(first.value)
-    return names
+    return frozenset(names)
 
 
-def _executed_nodes(tree: ast.AST) -> list[ast.AST]:
-    """Return every node of ``tree`` outside an ``if TYPE_CHECKING`` body."""
-    found: list[ast.AST] = []
-    pending: list[ast.AST] = [tree]
+def _executed_nodes(source: str) -> Iterator[ast.Import | ast.ImportFrom | ast.Call]:
+    """Yield imports and candidate calls outside ``if TYPE_CHECKING`` bodies."""
+    import_lines = [
+        number
+        for number, line in enumerate(normalize("NFKC", source).split("\n"), start=1)
+        if "import" in line
+    ]
+    pending: list[ast.AST] = [ast.parse(source)]
     while pending:
         node = pending.pop()
-        found.append(node)
+        # Definition line ranges exclude decorators, which can import dynamically.
+        if isinstance(node, ast.stmt | ast.expr) and not isinstance(
+            node,
+            ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        ):
+            at = bisect_left(import_lines, node.lineno)
+            if at == len(import_lines) or import_lines[at] > (
+                node.end_lineno or node.lineno
+            ):
+                continue
+        if isinstance(node, ast.Import | ast.ImportFrom | ast.Call):
+            yield node
         if isinstance(node, ast.If) and _is_type_checking(node.test):
             pending.extend(node.orelse)
         else:
             pending.extend(ast.iter_child_nodes(node))
-    return found
 
 
 def _is_type_checking(test: ast.expr) -> bool:
@@ -352,9 +523,13 @@ def _is_type_checking(test: ast.expr) -> bool:
     )
 
 
-def _import_failures(modules: list[str], *, root: Path) -> dict[str, str]:
-    """Import ``modules`` in a child interpreter that cannot import the server extra."""
-    blocked = [*_server_only_packages(), *_CONFIGGLE]
+def _import_failures(
+    modules: list[str],
+    *,
+    root: Path,
+    blocked: frozenset[str],
+) -> dict[str, str]:
+    """Import ``modules`` in a child interpreter that cannot import ``blocked``."""
     result = subprocess.run(  # noqa: S603 -- argv is this interpreter and a fixed probe.
         [
             sys.executable,
@@ -373,8 +548,8 @@ def _import_failures(modules: list[str], *, root: Path) -> dict[str, str]:
     return json_loads(result.stdout, dict[str, str])
 
 
-def _server_only_packages() -> frozenset[str]:
-    """Return the import name of each requirement of the ``server`` extra."""
+def _extra_packages(extra: str) -> frozenset[str]:
+    """Return the import name of each requirement of ``extra``, less trackinizer's own."""
     # The monorepo keeps the extra in the export's pyproject delta; the exported
     # package has the rendered pyproject.toml at its root instead.
     for candidate in (
@@ -383,15 +558,18 @@ def _server_only_packages() -> frozenset[str]:
     ):
         if candidate.is_file():
             project = from_plain(
-                tomllib.loads(candidate.read_text())["project"],
-                dict[str, object],
-            )
+                tomllib.loads(candidate.read_text()),
+                dict[str, dict[str, object]],
+            )["project"]
             # The delta also holds operations on the base's extras, as ``!name = true``.
             extras = from_plain(project["optional-dependencies"], dict[str, object])
-            return frozenset(
+            # An extra that names another, ``trackinizer[server]``, installs that one's
+            # packages too; they are not this extra's own.
+            names = (
                 canonicalize_name(Requirement(requirement).name).replace("-", "_")
-                for requirement in from_plain(extras["server"], list[str])
+                for requirement in from_plain(extras[extra], list[str])
             )
+            return frozenset(name for name in names if name != "trackinizer")
     raise FileNotFoundError("no pyproject.toml or pyproject.delta.toml found")
 
 

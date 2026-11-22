@@ -26,7 +26,7 @@ from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX, chat_convers
 from trackinizer.wire.wire_service_accounts import is_service_address
 from trackinizer.wire.wire_sessions import (
     GIT_LABEL_PREFIX,
-    STATION_LABEL_PREFIX,
+    CANVAS_LABEL_PREFIX,
     GitRef,
     PlaceSession,
     SessionPlacement,
@@ -169,7 +169,7 @@ async def place_session(
         email=email,
         workstream_id=workstream_id,
         wanted=[
-            f"{STATION_LABEL_PREFIX}{workspace_id}",
+            f"{CANVAS_LABEL_PREFIX}{workspace_id}",
             *([] if label is None else [label]),
         ],
     )
@@ -258,7 +258,7 @@ async def move_session(
             session.id,
             str(workstream_id),
             str(session.id),
-            STATION_LABEL_PREFIX,
+            CANVAS_LABEL_PREFIX,
         )
     return True
 
@@ -288,7 +288,7 @@ async def move_station_sessions(
             "SELECT id FROM inquiries WHERE kind = 'AgentSession' AND account = $1 "
             "AND $2 = ANY(labels) ORDER BY created DESC, id LIMIT $3",
             email,
-            f"{STATION_LABEL_PREFIX}{workspace_id}",
+            f"{CANVAS_LABEL_PREFIX}{workspace_id}",
             _STATION_SESSIONS,
         )
     for row in rows:
@@ -330,9 +330,9 @@ async def _decide(
         str(session.id),
         next(
             (
-                label.removeprefix(STATION_LABEL_PREFIX)
+                label.removeprefix(CANVAS_LABEL_PREFIX)
                 for label in session.labels or ()
-                if label.startswith(STATION_LABEL_PREFIX)
+                if label.startswith(CANVAS_LABEL_PREFIX)
             ),
             "-",
         ),
@@ -396,7 +396,7 @@ async def _record(
         api_key_id=api_key_id,
         actor=email,
     )
-    families = (STATION_LABEL_PREFIX, GIT_LABEL_PREFIX)
+    families = (CANVAS_LABEL_PREFIX, GIT_LABEL_PREFIX)
     for old in current:
         if old.startswith(families) and old not in wanted:
             _ = await store.remove_label(

@@ -5,10 +5,9 @@
   },
   "response": {
     "body": {
-      "acknowledged_at": null,
-      "acknowledged_rules_version": null,
       "api_key_id": null,
       "email": "no-auth@localhost",
+      "host": null,
       "last_login": null,
       "name": "no-auth",
       "open_audiences": [
@@ -16,36 +15,86 @@
         "private",
         "staff"
       ],
-      "org_mode": "individual",
       "pinned_audience": null,
       "preferences": {
         "aliases": [],
-        "chat_provider": "assistant",
+        "app_bar": "top",
+        "app_bar_folded": false,
+        "app_bar_pinned": true,
+        "app_bar_width": 220,
+        "assistant_prompt": "sagent",
+        "autofix": true,
+        "automerge": false,
+        "canvas_text_size": 14,
         "chat_side": "left",
-        "chat_tool_calls": false,
+        "chat_text_size": 13,
+        "chat_view": {
+          "density": "auto",
+          "output_lines": "tool",
+          "thinking": false,
+          "times": false,
+          "tool_groups": "open",
+          "view": "chat"
+        },
+        "cli_folder": "",
         "collapsed": [],
         "console_views": [],
         "create_draft": null,
+        "default_host": "",
+        "dismissed": [],
+        "display_text_sizes": {},
         "drafts": {},
+        "font": "system",
+        "hide_closed_pulls": true,
         "highlight_mentions": true,
         "home": "graph",
+        "interface_text_size": 14,
         "lens": null,
         "people": {},
         "read": {
           "boundary": null,
           "marks": []
         },
+        "scanlines": true,
         "settings_artifact_id": null,
         "skin": "default",
         "stars": [],
+        "terminal_colors": {
+          "background": "#000000",
+          "bold": null,
+          "bold_is_bright": true,
+          "palette": [
+            "#171421",
+            "#c01c28",
+            "#26a269",
+            "#a2734c",
+            "#12488b",
+            "#a347ba",
+            "#2aa1b3",
+            "#d0cfcc",
+            "#5e5c64",
+            "#f66151",
+            "#33d17a",
+            "#e9ad0c",
+            "#2a7bde",
+            "#c061cb",
+            "#33c7de",
+            "#ffffff"
+          ],
+          "text": "#00ff00"
+        },
         "terminal_font_size": "13px",
         "terminal_tab_chords": false,
         "theme": "dark",
+        "unread_tabs": [],
         "views": [],
-        "workstreams": {
+        "workspaces": {
+          "colors": {},
+          "expanded": [],
           "hidden": [],
+          "last_canvas": {},
           "order": [],
-          "pinned": []
+          "tabs": []
         }
       },
       "read_audiences": [
@@ -54,11 +103,7 @@
         "staff"
       ],
       "role": "admin",
-      "rules_issue_id": null,
-      "rules_version": null,
-      "summary_accounts": [],
-      "user_id": "00000000-0000-4000-9000-000000000001",
-      "visual_workspace_enabled": true
+      "user_id": "00000000-0000-4000-9000-000000000001"
     },
     "headers": {
       "content-type": "application/json"

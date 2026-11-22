@@ -14,61 +14,92 @@ Three layers:
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import replace
+from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal, NoReturn, cast
-from unittest.mock import AsyncMock, MagicMock, _Call
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, cast
+from unittest.mock import AsyncMock, MagicMock
 
+import itertools
 import logging
 import os
 import uuid
 
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from starlette.requests import HTTPConnection
+from starlette.routing import BaseRoute, Route, WebSocketRoute
+from treekle import from_plain
 
 import pytest
 
 from trackinizer.conftest import (
+    ExchangeEngine,
     FakeEngine,
+    Says,
     executed_sql,
     make_conn,
 )
 from trackinizer.lib.postgres import Conn, DatabaseEngine, PostgresEngine
-from trackinizer.server import auth
+from trackinizer.lib.userdirs import data_dir
+from trackinizer.server import auth, web
+from trackinizer.server.access_policy import DefaultPolicy
+from trackinizer.server.api.app import app
 from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
+    PAGE_ACCOUNT_HEADER,
+    PAGE_USER_PARAM,
+    PROCESS_KEY_SQL,
     TOKEN_PREFIX_LEN,
     AudienceCeilingError,
     AuthIdentity,
+    ProcessKey,
     RoleCeilingError,
-    _publish_bootstrap_token,
-    _stage_bootstrap_token,
     allowlist_match,
+    assert_account_active,
     bootstrap_admin,
     create_api_key,
     current_human,
     current_user,
     effective_role,
+    end_session,
     generate_token,
     hash_secret,
     key_within_caller,
+    list_api_keys,
+    live_process_keys,
     lookup_user_by_id,
+    process_key_minted,
+    process_key_name,
+    publish_token_file,
+    request_user,
     require_role,
     revoke_api_key,
+    revoke_host_login_keys,
+    revoke_host_process_keys,
+    revoke_process_key,
+    seed_no_auth_user,
     set_api_key_role,
-    user_of,
+    stage_token_file,
     verify_secret,
 )
 from trackinizer.server.config import Config
-from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.route_iter import iter_route_leaves
 from trackinizer.server.session import (
     SESSION_COOKIE_NAME,
     read_session_cookie,
     set_session_cookie,
 )
 from trackinizer.server.store.core import Store
+from trackinizer.server.values import vetted_sql
+from trackinizer.wire.wire_process_keys import PROCESS_KEY_ROUTES, WEBSOCKET
+from trackinizer.wire.wire_session_relay import SESSION_PROCESS_WS_PATH
+
+
+if TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockCall
 
 
 class TestHashSecret:
@@ -82,10 +113,32 @@ class TestHashSecret:
         encoded = hash_secret("hunter2")
         assert not verify_secret("hunter3", encoded)
 
-    @pytest.mark.compute_large_fixture
-    def test_distinct_hashes_for_same_secret(self) -> None:
+    @pytest.mark.parametrize(
+        ("raw", "encoded"),
+        [
+            (b"", ""),
+            (b"\xfb", "-w"),
+            (b"\xfb\xef", "--8"),
+            (b"abc", "YWJj"),
+            (b"\x00\x00\x17", "AAAX"),
+        ],
+    )
+    def test_hash_fields_use_unpadded_urlsafe_base64(
+        self,
+        raw: bytes,
+        encoded: str,
+    ) -> None:
+        assert auth._b64encode(raw) == encoded
+        assert auth._b64decode(encoded) == raw
+
+    def test_distinct_hashes_for_same_secret(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         # Salts must randomize per call; two hashes of the same input
-        # must differ -- otherwise the hash leaks a fingerprint.
+        # must differ -- otherwise the hash leaks a fingerprint. The work factor is
+        # no part of that, and four hashes at the server's cost 0.11 s on x86.
+        monkeypatch.setattr(auth, "_SCRYPT_N", 16)
         a = hash_secret("hunter2")
         b = hash_secret("hunter2")
         assert a != b
@@ -103,6 +156,18 @@ class TestHashSecret:
         int(parts[2])
         int(parts[3])
 
+    def test_the_prefix_miss_hash_is_one_unguessable_scrypt_hash_per_process(
+        self,
+    ) -> None:
+        # Cached per process, so another file's miss may have filled it first.
+        auth._dummy_verify_hash.cache_clear()
+
+        sentinel = auth._dummy_verify_hash()
+
+        assert sentinel.startswith("scrypt$")
+        assert auth._dummy_verify_hash() is sentinel
+        assert not verify_secret("", sentinel)
+
     def test_verify_rejects_malformed_hash(self) -> None:
         # Corrupted rows should surface as ``False``, never as an
         # exception that would 500 the auth middleware.
@@ -110,12 +175,51 @@ class TestHashSecret:
         assert not verify_secret("x", "scrypt$bad$8$1$AAAA$BBBB")
         assert not verify_secret("x", "scrypt$16384$8$1$AAAA$")
         assert not verify_secret("x", "")
+        encoded = hash_secret("x")
+        assert not verify_secret("x", encoded.replace("scrypt$", "unknown$", 1))
+        assert not verify_secret("x", encoded.rsplit("$", 1)[0])
 
     def test_verify_rejects_oversized_scrypt_params(self) -> None:
         encoded = hash_secret("x")
         _prefix, _n, r, p, salt, key = encoded.split("$")
         bad_hash = "$".join(("scrypt", str(2**30), r, p, salt, key))
         assert not verify_secret("x", bad_hash)
+
+    @pytest.mark.parametrize(
+        ("n", "r", "p", "accepted"),
+        [
+            (2, 1, 1, True),
+            (2**20, 1, 1, True),
+            (2, 128, 1, True),
+            (2, 1, 128, True),
+            (0, 1, 1, False),
+            (1, 1, 1, False),
+            (3, 1, 1, False),
+            (2**21, 1, 1, False),
+            (2, 0, 1, False),
+            (2, 129, 1, False),
+            (2, 1, 0, False),
+            (2, 1, 129, False),
+        ],
+    )
+    def test_verifier_bounds_work_before_deriving_the_stored_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        n: int,
+        r: int,
+        p: int,
+        *,
+        accepted: bool,
+    ) -> None:
+        derive = MagicMock(return_value=b"k")
+        monkeypatch.setattr(auth, "hashlib", SimpleNamespace(scrypt=derive))
+
+        assert verify_secret("secret", f"scrypt${n}${r}${p}$cw$aw") is accepted
+
+        if accepted:
+            derive.assert_called_once_with(b"secret", salt=b"s", n=n, r=r, p=p, dklen=1)
+        else:
+            derive.assert_not_called()
 
     def test_generate_token_shape(self) -> None:
         secret, prefix = generate_token()
@@ -186,9 +290,15 @@ def _row(
     key_role: str | None = None,
     hosted_domain: str | None = None,
     open_into: str | None = None,
+    process: bool = False,
+    name: str = "k",
+    host_id: uuid.UUID | None = None,
 ) -> dict[str, object]:
     """Build one ``api_keys JOIN users`` row as ``_resolve_identity`` reads it."""
     return {
+        "process": process,
+        "name": name,
+        "host_id": host_id,
         "key_id": key_id or uuid.uuid4(),
         "secret_hash": secret_hash,
         "user_id": user_id or uuid.uuid4(),
@@ -208,6 +318,8 @@ def _row(
 # A fresh :class:`Store` is bound on ``app.state.store`` by default so the per-instance
 # ``last_used_at`` throttle is hermetic per call; tests that care about throttle
 # behaviour across multiple requests pass an explicit ``store`` to reuse one.
+# ``route`` is the route the router matched, and ``session_id`` the session its path
+# names; a ``WebSocketRoute`` makes it a socket's handshake.
 def _request_with(
     engine: FakeEngine,
     authorization: str | None,
@@ -215,27 +327,47 @@ def _request_with(
     cookies: dict[str, str] | None = None,
     config: Config | None = None,
     store: Store | None = None,
+    method: str = "GET",
+    origin: str | None = None,
+    page_account: str | None = None,
+    page_user: str | None = None,
+    route: BaseRoute | None = None,
+    session_id: uuid.UUID | str | None = None,
 ) -> Request:
-    """Build a fake :class:`fastapi.Request` carrying one header + the engine."""
+    """Build a fake :class:`fastapi.Request` carrying its headers + the engine."""
     request = MagicMock()
     request.app = SimpleNamespace(
         state=SimpleNamespace(
             engine=engine,
             config=Config() if config is None else config,
-            store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
-            if store is None
-            else store,
+            store=Store(cast(DatabaseEngine, engine)) if store is None else store,
         ),
     )
     request.state = SimpleNamespace(request_id="")
-    headers: dict[str, str] = {}
+    request.scope = (
+        {"type": "websocket", "route": route}
+        if isinstance(route, WebSocketRoute)
+        else {"type": "http", "method": method, "route": route}
+    )
+    path_params: dict[str, str] = (
+        {} if session_id is None else {"session_id": str(session_id)}
+    )
+    request.path_params = path_params
+    headers: dict[str, str] = {"host": "trax.test"}
     if authorization is not None:
         headers["Authorization"] = authorization
+    if origin is not None:
+        headers["origin"] = origin
+    if page_account is not None:
+        headers[PAGE_ACCOUNT_HEADER] = page_account
     request.headers = headers
+    query: dict[str, str] = {} if page_user is None else {PAGE_USER_PARAM: page_user}
+    request.query_params = query
     request.cookies = cookies or {}
     return cast(Request, request)
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestCurrentUser:
     """Bearer-token middleware behaviour."""
 
@@ -249,7 +381,7 @@ class TestCurrentUser:
         ],
         ids=["credential", "enrollment", "gpu-box"],
     )
-    async def test_a_machine_secret_is_401_before_any_lookup(
+    async def test_a_host_secret_is_401_before_any_lookup(
         self,
         bearer: str,
     ) -> None:
@@ -292,6 +424,63 @@ class TestCurrentUser:
         assert any("UPDATE api_keys SET last_used_at" in s for s in sqls)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("named", [True, False], ids=["now", "before sessions"])
+    async def test_a_key_minted_for_an_agent_process_says_for_what(
+        self,
+        named: bool,
+    ) -> None:
+        secret, _ = generate_token()
+        process, session, host = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+        row = _row(
+            secret_hash=hash_secret(secret),
+            process=True,
+            name=process_key_name(process, session_id=session)
+            if named
+            else f"agent process {process}",
+            host_id=host,
+        )
+        engine = ExchangeEngine(
+            Says(
+                method="fetch",
+                sql=vetted_sql(
+                    "SELECT credential.id AS key_id, credential.secret_hash, "
+                    "credential.role AS key_role, credential.open_into, "
+                    "credential.name, credential.host_id, ",
+                    PROCESS_KEY_SQL,
+                    " AS process, u.id AS user_id, u.email, u.role AS user_role, "
+                    "u.status, u.hosted_domain "
+                    "FROM api_keys credential JOIN users u "
+                    "ON u.id = credential.user_id "
+                    "WHERE credential.prefix = $1 AND credential.revoked_at IS NULL",
+                ),
+                args=(secret[:TOKEN_PREFIX_LEN],),
+                answer=[row],
+            ),
+            Says(
+                method="execute",
+                sql="UPDATE api_keys SET last_used_at = clock_timestamp() "
+                "WHERE id = $1",
+                args=(row["key_id"],),
+                answer="UPDATE 1",
+            ),
+        )
+
+        identity = await auth._resolve_identity(
+            Store(cast(DatabaseEngine, engine)),
+            secret,
+            staff=(),
+            request_id="",
+        )
+
+        assert identity is not None
+        assert identity.process == ProcessKey(
+            process_id=process,
+            session_id=session if named else None,
+            host_id=host,
+        )
+        assert engine.done
+
+    @pytest.mark.asyncio
     async def test_bearer_auth_logs_correlated_stage_timings(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -317,6 +506,75 @@ class TestCurrentUser:
         assert fields["query_sec"] >= 0
         assert fields["verify_sec"] >= 0
         assert fields["duration_sec"] >= fields["query_sec"] + fields["verify_sec"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("found", "logged"),
+        [
+            ("cache", ("cache", "success", 0.0, 0.0, 1.0)),
+            ("none", ("miss", "rejected", 1.0, 1.0, 5.0)),
+            ("two that do not verify", ("prefix", "rejected", 1.0, 2.0, 7.0)),
+            ("one that verifies", ("prefix", "success", 1.0, 1.0, 5.0)),
+        ],
+    )
+    async def test_each_resolution_logs_its_own_timings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        found: str,
+        logged: tuple[str, str, float, float, float],
+    ) -> None:
+        """Each read of the clock is a second later than the last."""
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        store = Store(cast(DatabaseEngine, engine))
+        if found == "cache":
+            store.remember_bearer_identity(
+                secret,
+                AuthIdentity(
+                    user_id=uuid.uuid4(),
+                    api_key_id=uuid.uuid4(),
+                    email="ada@example.com",
+                    role="writer",
+                ),
+            )
+        engine.conn.fetch.return_value = {
+            "cache": [],
+            "none": [],
+            "two that do not verify": [
+                _row(secret_hash=hash_secret("another")) for _ in range(2)
+            ],
+            "one that verifies": [_row(secret_hash=hash_secret(secret))],
+        }[found]
+        # Not from zero: a duration of ``now + started`` must read differently.
+        ticks = itertools.count(100)
+        monkeypatch.setattr(
+            auth,
+            "time",
+            SimpleNamespace(perf_counter=lambda: float(next(ticks))),
+        )
+
+        with caplog.at_level(logging.INFO):
+            _ = await auth._resolve_identity(
+                store,
+                secret,
+                staff=(),
+                request_id="request-123",
+            )
+
+        [fields] = [
+            record.__dict__
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_auth_completed"
+        ]
+        assert (
+            fields["request_id"],
+            fields["lookup_mode"],
+            fields["outcome"],
+            fields["query_sec"],
+            fields["verify_sec"],
+            fields["duration_sec"],
+        ) == ("request-123", *logged)
 
     @pytest.mark.asyncio
     async def test_effective_role_is_min_of_user_and_key(self) -> None:
@@ -454,42 +712,38 @@ class TestCurrentUser:
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
-    @pytest.mark.compute_large_fixture
-    async def test_prefix_collision_disabled_then_active_resolves_active(self) -> None:
-        # Two ``api_keys`` rows share the full secret (same prefix AND
-        # same plaintext) -- can arise when an operator disables a user
-        # via ``status='disabled'`` without revoking the credential and
-        # subsequently re-mints the same plaintext for an active user
-        # (or in any future scenario where prefix-scoped rows happen to
-        # both verify). The resolver iterates in DB order; a
-        # disabled-row short-circuit would deny the active user even
-        # though the active row's verify also succeeds. The resolver
-        # must exhaust every prefix-matching row that verifies and
-        # return the first ACTIVE match.
+    @pytest.mark.parametrize("rejected", ["wrong-secret", "disabled"])
+    async def test_prefix_collision_disabled_then_active_resolves_active(
+        self,
+        rejected: str,
+    ) -> None:
         secret, _ = generate_token()
-        shared_hash = hash_secret(secret)
-        active_user_id = uuid.uuid4()
-        active_key_id = uuid.uuid4()
+        key_id, user_id = uuid.uuid4(), uuid.uuid4()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [
             _row(
-                secret_hash=shared_hash,
-                status="disabled",
+                secret_hash=hash_secret(
+                    "wrong" if rejected == "wrong-secret" else secret,
+                ),
+                status="disabled" if rejected == "disabled" else "active",
                 email="ghost@example.com",
             ),
             _row(
                 secret_hash=hash_secret(secret),
-                status="active",
-                user_id=active_user_id,
-                key_id=active_key_id,
+                key_id=key_id,
+                user_id=user_id,
                 email="alice@example.com",
-                role="writer",
             ),
         ]
+
         identity = await current_user(_request_with(engine, f"Bearer {secret}"))
-        assert identity.user_id == active_user_id
-        assert identity.api_key_id == active_key_id
+
+        assert identity.api_key_id == key_id
+        assert identity.user_id == user_id
         assert identity.email == "alice@example.com"
+        assert [call.args[1:] for call in engine.conn.execute.await_args_list] == [
+            (key_id,),
+        ]
 
     @pytest.mark.asyncio
     async def test_last_used_at_coalesces_repeat_hits(
@@ -510,7 +764,7 @@ class TestCurrentUser:
         engine.conn.fetch.return_value = [row]
         # One ``Store`` reused across calls so the throttle stays the
         # subject of the test rather than the fixture.
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
 
         clock: list[float] = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
@@ -550,8 +804,8 @@ class TestCurrentUser:
         row = _row(secret_hash=hash_secret(secret), key_id=key_id)
         engine = FakeEngine()
         engine.conn.fetch.return_value = [row]
-        store_a = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
-        store_b = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store_a = Store(cast(DatabaseEngine, engine))
+        store_b = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store_a))
@@ -565,6 +819,7 @@ class TestCurrentUser:
         assert len(bump_sqls) == 2
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestVerifiedBearerCache:
     """The verified-bearer cache: scrypt runs once per key per TTL."""
 
@@ -579,7 +834,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         verifies: list[str] = []
@@ -612,9 +867,12 @@ class TestVerifiedBearerCache:
         # which is the opposite of what the column is for. The two clocks are
         # independent: a cache hit must still consult the bump throttle.
         secret, _ = generate_token()
+        key_id = uuid.uuid4()
         engine = FakeEngine()
-        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        engine.conn.fetch.return_value = [
+            _row(secret_hash=hash_secret(secret), key_id=key_id),
+        ]
+        store = Store(cast(DatabaseEngine, engine))
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
         # TTL well past the bump interval so the entry is still cached when
@@ -631,6 +889,7 @@ class TestVerifiedBearerCache:
             if "UPDATE api_keys SET last_used_at" in _sql(c)
         ]
         assert len(bump_sqls) == 2
+        assert [call.args[1:] for call in bump_sqls] == [(key_id,), (key_id,)]
 
     @pytest.mark.asyncio
     async def test_cache_hit_inside_the_interval_skips_the_bump(
@@ -642,7 +901,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         for _ in range(5):
@@ -666,7 +925,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
@@ -692,7 +951,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
 
@@ -722,7 +981,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = list[dict[str, object]]()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         verifies: list[str] = []
@@ -753,7 +1012,7 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [
             _row(secret_hash=hash_secret(secret), user_id=user_id),
         ]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
@@ -772,52 +1031,12 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [
             _row(secret_hash=hash_secret(kept_secret), user_id=kept_user),
         ]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {kept_secret}", store=store))
         store.forget_bearer_identities(uuid.uuid4())
         assert store.cached_bearer_identity(kept_secret) is not None
-
-    def test_cache_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A flood of distinct keys must not pin unbounded memory.
-        engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth, "VERIFIED_BEARER_MAX_ENTRIES", 4)
-        clock = [1_000.0]
-        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
-
-        identity = AuthIdentity(
-            user_id=uuid.uuid4(),
-            api_key_id=uuid.uuid4(),
-            email="u@example.com",
-            role="writer",
-        )
-        secrets_seen = [generate_token()[0] for _ in range(10)]
-        for secret in secrets_seen:
-            store.remember_bearer_identity(secret, identity)
-            clock[0] += 1.0
-        assert len(store._verified_bearers) == 4
-        # Eviction is soonest-expiring-first, so the newest survive.
-        assert store.cached_bearer_identity(secrets_seen[-1]) is not None
-        assert store.cached_bearer_identity(secrets_seen[0]) is None
-
-    def test_plaintext_secret_is_not_held_in_memory(self) -> None:
-        # The cache key is a digest: a heap dump of a live server must not
-        # yield replayable tokens.
-        engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
-        secret, _ = generate_token()
-        store.remember_bearer_identity(
-            secret,
-            AuthIdentity(
-                user_id=uuid.uuid4(),
-                api_key_id=uuid.uuid4(),
-                email="u@example.com",
-                role="writer",
-            ),
-        )
-        assert all(secret.encode("utf-8") not in key for key in store._verified_bearers)
 
 
 class TestCurrentUserNoAuth:
@@ -871,8 +1090,13 @@ class TestCurrentUserNoAuth:
 
 @pytest.fixture
 def cheap_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hash secrets at the smallest accepted cost so a test pays no scrypt round."""
-    monkeypatch.setattr("trackinizer.server.auth._SCRYPT_N", 2)
+    """Keep hashing real without production cost or a process-shared sentinel."""
+    monkeypatch.setattr(auth, "_SCRYPT_N", 2)
+    monkeypatch.setattr(
+        auth,
+        "_dummy_verify_hash",
+        cache(auth._dummy_verify_hash.__wrapped__),
+    )
 
 
 async def _bearer_identity(
@@ -928,6 +1152,7 @@ class TestBearerAudiences:
         )
         consumer = await _bearer_identity(email="ada@example.com", staff=staff)
         assert member.read_audiences == {"open", "private", "staff"}
+        assert member.hosted_domain == "example.com"
         assert consumer.read_audiences == {"open", "private"}
 
     @pytest.mark.asyncio
@@ -961,7 +1186,7 @@ class TestBearerAudiences:
                 email="ada@example.com",
             ),
         ]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
         config = Config(staff=("ada@example.com",))
         request = _request_with(engine, f"Bearer {secret}", config=config, store=store)
@@ -981,7 +1206,7 @@ class TestBearerAudiences:
         """Staff is recomputed from the owner's current email, not stored on the key."""
         secret, _ = generate_token()
         engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
         request = _request_with(
@@ -1005,14 +1230,18 @@ class TestBearerAudiences:
         assert after.read_audiences == {"open", "private"}
 
 
+# ``page_account`` is the ``X-Page-Account`` the request carries, if any.
 async def _session_identity(
     *,
     email: str,
-    hosted_domain: str | None,
-    staff: tuple[str, ...],
+    hosted_domain: str | None = None,
+    staff: tuple[str, ...] = (),
+    page_account: str | None = None,
+    page_user: str | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> AuthIdentity:
     """Resolve a signed session cookie for a canned active ``users`` row."""
-    user_id = uuid.uuid4()
+    user_id = uuid.uuid4() if user_id is None else user_id
     signing_key = "session-signing-x"
     engine = FakeEngine()
     engine.conn.fetchrow = AsyncMock(
@@ -1030,6 +1259,8 @@ async def _session_identity(
             authorization=None,
             cookies={SESSION_COOKIE_NAME: _session_cookie_value(user_id, signing_key)},
             config=replace(_config_with_session_secret(signing_key), staff=staff),
+            page_account=page_account,
+            page_user=page_user,
         ),
     )
 
@@ -1038,7 +1269,7 @@ class TestSessionAudiences:
     """A browser session holds what its user holds, with no key limits."""
 
     @pytest.mark.asyncio
-    async def test_a_workspace_member_of_the_staff_domain_holds_staff(self) -> None:
+    async def test_a_canvas_member_of_the_staff_domain_holds_staff(self) -> None:
         identity = await _session_identity(
             email="ada@example.com",
             hosted_domain="example.com",
@@ -1047,6 +1278,7 @@ class TestSessionAudiences:
         assert identity.read_audiences == {"open", "private", "staff"}
         assert identity.open_audiences == {"open", "private", "staff"}
         assert identity.pinned_audience is None
+        assert identity.hosted_domain == "example.com"
 
     @pytest.mark.asyncio
     async def test_a_consumer_account_on_the_staff_domain_holds_open_only(self) -> None:
@@ -1059,7 +1291,345 @@ class TestSessionAudiences:
         assert identity.open_audiences == {"open", "private"}
 
 
+class TestPageAccount:
+    """A page read as one account sends nothing as another the browser signed in as."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("page", [None, "ada@example.com", "Ada@Example.com"])
+    async def test_a_page_of_the_signed_in_account_passes(
+        self,
+        page: str | None,
+    ) -> None:
+        identity = await _session_identity(email="ada@example.com", page_account=page)
+        assert identity.email == "ada@example.com"
+
+    @pytest.mark.asyncio
+    async def test_a_page_of_another_account_is_refused_with_409(self) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await _session_identity(
+                email="sam@example.com",
+                page_account="ada@example.com",
+            )
+        assert refused.value.status_code == 409
+        assert refused.value.detail == {
+            "code": "other_account",
+            "message": "Nothing was sent: this page was read as ada@example.com, "
+            "and you are signed in as sam@example.com now. Reload it to see "
+            "sam@example.com's.",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("page_account", "page_user"),
+        [("ada@example.com", None), (None, str(uuid.UUID(int=7)))],
+    )
+    async def test_a_bearer_is_not_a_page(
+        self,
+        page_account: str | None,
+        page_user: str | None,
+    ) -> None:
+        """A token names its own account: the header and ``page_user`` are a page's."""
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [
+            _row(secret_hash=hash_secret(secret), email="sam@example.com"),
+        ]
+        request = _request_with(
+            engine,
+            f"Bearer {secret}",
+            page_account=page_account,
+            page_user=page_user,
+        )
+        assert (await current_user(request)).email == "sam@example.com"
+
+    @pytest.mark.asyncio
+    async def test_a_stream_of_the_signed_in_user_passes(self) -> None:
+        """A stream names its page's user by id, as an ``EventSource`` sends no header."""
+        user_id = uuid.uuid4()
+        identity = await _session_identity(
+            email="ada@example.com",
+            user_id=user_id,
+            page_user=str(user_id),
+        )
+        assert identity.user_id == user_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("page_user", [str(uuid.UUID(int=7)), "not-an-id"])
+    async def test_a_stream_of_another_user_is_refused_with_409(
+        self,
+        page_user: str,
+    ) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await _session_identity(email="sam@example.com", page_user=page_user)
+        assert refused.value.status_code == 409
+        assert refused.value.detail == {
+            "code": "other_account",
+            "message": "Nothing was sent: this page was read as another account, "
+            "and you are signed in as sam@example.com now. Reload it to see "
+            "sam@example.com's.",
+        }
+
+
 # ---- service accounts -----------------------------------------------------
+
+
+_OWN_SESSION: Final = uuid.UUID(int=2)
+"""The session the process of :func:`_let_through`'s key was started for."""
+
+
+@cache
+def _served_app() -> FastAPI:
+    """Return every route the live server serves: the API, and the web surface's."""
+    served = FastAPI()
+    served.router.routes.extend(app.routes)
+    web.attach(served)
+    return served
+
+
+def _calls(route: BaseRoute) -> list[str]:
+    """Return how a request reaches ``route``: each HTTP method, or the socket's."""
+    if isinstance(route, WebSocketRoute):
+        return [WEBSOCKET]
+    if isinstance(route, Route):
+        return sorted((route.methods or set()) - {"HEAD"})
+    return []
+
+
+# ``spawned_below`` is the database's answer to whether ``named`` was spawned below
+# ``session_id``.
+async def _let_through(
+    route: BaseRoute | None,
+    *,
+    method: str = "GET",
+    named: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | None = _OWN_SESSION,
+    engine: FakeEngine | None = None,
+    spawned_below: bool = False,
+) -> bool:
+    """Say whether a process key of ``session_id`` is let through to ``route``."""
+    if engine is None:
+        engine = FakeEngine()
+        engine.conn.fetchrow = AsyncMock(return_value={"account": "ada@example.com"})
+    engine.conn.fetchval.return_value = spawned_below
+    store = Store(cast(DatabaseEngine, engine))
+    store.remember_bearer_identity(
+        "trax_process",
+        AuthIdentity(
+            user_id=uuid.uuid4(),
+            api_key_id=uuid.uuid4(),
+            email="ada@example.com",
+            role="writer",
+            process=ProcessKey(
+                process_id=uuid.UUID(int=1),
+                session_id=session_id,
+                host_id=uuid.UUID(int=3),
+            ),
+        ),
+    )
+    request = _request_with(
+        engine,
+        "Bearer trax_process",
+        store=store,
+        method=method,
+        route=route,
+        session_id=named,
+    )
+    if isinstance(route, Route) and "{target_id}" in route.path and named is not None:
+        request.path_params["target_id"] = request.path_params.pop("session_id")
+    try:
+        _ = await request_user(request)
+    except HTTPException as error:
+        refused = error
+    else:
+        return True
+    assert (refused.status_code, refused.detail) == (
+        403,
+        (
+            "an agent process's key reaches only what its process calls, for its own "
+            "session and the sessions its agents spawned"
+        ),
+    )
+    return False
+
+
+class TestProcessKeyRoutes:
+    """A process key reaches only what its process calls, for its own session's tree."""
+
+    @pytest.mark.asyncio
+    async def test_every_route_of_the_server_refuses_it_unless_listed(self) -> None:
+        """A route added tomorrow is refused until someone lists it."""
+        passed: set[tuple[str, str]] = set()
+        refused: set[tuple[str, str]] = set()
+        # One engine for the walk: an engine apiece builds a mock connection for
+        # each of some 250 routes, which was most of this test's 0.2 s.
+        engine = FakeEngine()
+        engine.conn.fetchrow = AsyncMock(return_value={"account": "ada@example.com"})
+        for path, original in iter_route_leaves(_served_app()):
+            route = copy(original)
+            if isinstance(route, Route | WebSocketRoute):
+                route.path = path
+            for method in _calls(route):
+                own = (
+                    uuid.UUID(int=9)
+                    if "{session_id}" in path or "{target_id}" in path
+                    else None
+                )
+                let = await _let_through(
+                    route,
+                    method=method,
+                    named=own,
+                    engine=engine,
+                    spawned_below=True,
+                )
+                (passed if let else refused).add((method, path))
+
+        # The canvas routes are the app's; a server without the app serves none.
+        assert passed == PROCESS_KEY_ROUTES.keys() & (passed | refused)
+        assert len(refused) > len(passed)
+
+    @pytest.mark.asyncio
+    async def test_a_listed_route_takes_it_for_its_own_session_and_its_children(
+        self,
+    ) -> None:
+        routes = dict(iter_route_leaves(_served_app()))
+        records = routes["/api/sessions/{session_id}/records"]
+        socket = routes[SESSION_PROCESS_WS_PATH]
+        messages = routes["/api/messages"]
+        child = uuid.UUID(int=9)
+
+        assert await _let_through(socket, named=_OWN_SESSION)
+        assert await _let_through(records, method="POST", named=_OWN_SESSION)
+        assert await _let_through(messages, method="POST")
+        assert await _let_through(
+            records,
+            method="POST",
+            named=child,
+            spawned_below=True,
+        )
+        assert not await _let_through(socket, named=child)
+        assert not await _let_through(records, method="POST", named=child)
+        assert not await _let_through(records, method="POST", named="not-an-id")
+        # A key minted before keys named their session acts for none.
+        assert not await _let_through(messages, method="POST", session_id=None)
+        # A request no route matched names no route a process calls.
+        assert not await _let_through(None, method="POST")
+
+    @pytest.mark.asyncio
+    async def test_route_scope_comes_from_the_allowlist(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        path = "/api/sessions/{session_id}/records"
+        monkeypatch.setattr(auth, "PROCESS_KEY_ROUTES", {("GET", path): "descendant"})
+        route = dict(iter_route_leaves(_served_app()))[path]
+
+        assert not await _let_through(route, named=_OWN_SESSION, spawned_below=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "path", "account_checked"),
+        [
+            ("PUT", "/api/sessions/{session_id}/process", True),
+            ("POST", "/api/sessions/{session_id}/records", False),
+            ("GET", "/api/inquiries/{target_id}", False),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "account",
+        ["ada@example.com", "ADA@EXAMPLE.COM", "bob@example.com", None],
+    )
+    async def test_descendant_account_is_checked_before_the_handler(
+        self,
+        method: str,
+        path: str,
+        account: str | None,
+        *,
+        account_checked: bool,
+    ) -> None:
+        engine = FakeEngine()
+        engine.conn.fetchrow = AsyncMock(
+            return_value=None if account is None else {"account": account},
+        )
+        route = dict(iter_route_leaves(_served_app()))[path]
+
+        assert await _let_through(
+            route,
+            method=method,
+            named=uuid.UUID(int=9),
+            spawned_below=True,
+            engine=engine,
+        ) is (
+            not account_checked
+            or (account is not None and account.lower() == "ada@example.com")
+        )
+        if account_checked:
+            engine.conn.fetchrow.assert_awaited_once_with(
+                "SELECT account FROM inquiries WHERE id = $1 AND kind = 'AgentSession'",
+                uuid.UUID(int=9),
+            )
+        else:
+            engine.conn.fetchrow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("PUT", "/api/sessions/{session_id}/process"),
+            ("DELETE", "/api/sessions/{session_id}/process"),
+            ("GET", "/api/sessions/{session_id}/process"),
+            ("GET", "/api/sessions/{session_id}/lines"),
+            ("GET", "/api/inquiries/{target_id}"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("named", "below", "allowed"),
+        [
+            (_OWN_SESSION, False, False),
+            (_OWN_SESSION, True, False),
+            (uuid.UUID(int=9), True, True),
+            (uuid.UUID(int=9), False, False),
+            ("not-an-id", True, False),
+        ],
+        ids=["own", "own-in-cycle", "descendant", "sibling", "invalid"],
+    )
+    async def test_launch_management_reaches_only_descendants(
+        self,
+        method: str,
+        path: str,
+        named: uuid.UUID | str,
+        *,
+        below: bool,
+        allowed: bool,
+    ) -> None:
+        route = dict(iter_route_leaves(_served_app()))[path]
+        assert (
+            await _let_through(
+                route,
+                method=method,
+                named=named,
+                spawned_below=below,
+            )
+            is allowed
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_person_s_key_is_let_through_wherever_its_route_lets_it(
+        self,
+    ) -> None:
+        store = Store(cast(DatabaseEngine, FakeEngine()))
+        person = AuthIdentity(
+            user_id=uuid.uuid4(),
+            api_key_id=uuid.uuid4(),
+            email="ada@example.com",
+            role="writer",
+        )
+        store.remember_bearer_identity("trax_person", person)
+
+        found = await request_user(
+            _request_with(FakeEngine(), "Bearer trax_person", store=store),
+        )
+
+        assert found is person
 
 
 class TestCurrentHuman:
@@ -1085,8 +1655,10 @@ class TestCurrentHuman:
         )
         with pytest.raises(HTTPException) as refused:
             await current_human(service)
-        assert refused.value.status_code == 403
-        assert "service account" in refused.value.detail
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "A service account cannot manage tokens; an admin does.",
+        )
 
     @pytest.mark.asyncio
     async def test_a_session_resolves_only_a_person(self) -> None:
@@ -1102,7 +1674,12 @@ class TestCurrentHuman:
             },
         )
         assert (
-            await lookup_user_by_id(cast(Conn, conn), user_id=uuid.uuid4(), staff=())
+            await lookup_user_by_id(
+                cast(Conn, conn),
+                user_id=uuid.uuid4(),
+                generation=0,
+                staff=(),
+            )
             is None
         )
 
@@ -1115,8 +1692,23 @@ class TestCurrentHuman:
 _BOOTSTRAP_WINNER_ID: uuid.UUID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestBootstrapAdmin:
     """``TRACKINIZER_BOOTSTRAP_ADMIN`` env-driven seed path."""
+
+    @pytest.mark.parametrize("override", [None, "", " \t"])
+    def test_token_path_without_an_override_uses_the_user_data_directory(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        override: str | None,
+    ) -> None:
+        if override is None:
+            monkeypatch.delenv(BOOTSTRAP_TOKEN_FILE_ENV, raising=False)
+        else:
+            monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, override)
+        assert auth._bootstrap_token_path() == (
+            data_dir() / "rekursiv-ai" / "trackinizer" / "bootstrap_token"
+        )
 
     @pytest.mark.asyncio
     async def test_seeds_admin_when_users_empty(
@@ -1132,7 +1724,7 @@ class TestBootstrapAdmin:
         # -> the winner id; then ``create_api_key`` looks up the just-inserted
         # bootstrap admin's role.
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         inserts = [
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
@@ -1157,7 +1749,7 @@ class TestBootstrapAdmin:
         conn = make_conn()
         # Probe -> None (looked empty); users insert RETURNING id -> None (lost).
         conn.fetchval = AsyncMock(side_effect=[None, None])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         # No api_key minted, and the tx still committed (no rollback).
         assert not any("INSERT INTO api_keys" in s for s in sqls)
@@ -1170,7 +1762,7 @@ class TestBootstrapAdmin:
     async def test_skips_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(BOOTSTRAP_ADMIN_ENV, raising=False)
         conn = make_conn()
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         # No SQL at all when the env var is missing -- offline tests
         # and dev bootstraps must not require it.
         assert conn.execute.call_count == 0
@@ -1180,7 +1772,7 @@ class TestBootstrapAdmin:
     async def test_skips_when_env_blank(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "   ")
         conn = make_conn()
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         assert conn.execute.call_count == 0
 
     @pytest.mark.asyncio
@@ -1193,7 +1785,7 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "admin@example.com")
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value=1)
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         inserts = [
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
@@ -1211,7 +1803,7 @@ class TestBootstrapAdmin:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="service"):
-            await bootstrap_admin(cast(Conn, conn))
+            await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         assert conn.execute.call_count == 0
         assert not (tmp_path / "bt").exists()
 
@@ -1222,11 +1814,11 @@ class TestBootstrapAdmin:
     ) -> None:
         # The staged ``.tmp`` carries the same mode-0600 invariant as the
         # final path: a wide-open umask must not race a permission bump.
-        # ``_stage_bootstrap_token`` opens with ``O_CREAT, 0o600`` then
+        # ``stage_token_file`` opens with ``O_CREAT, 0o600`` then
         # chmods to 0o600 explicitly; both steps must land before any
         # readable mode is observable on the file.
-        token_path = tmp_path / "bootstrap_token"
-        tmp_token_path = tmp_path / "bootstrap_token.tmp"
+        token_path = tmp_path / "nested" / "tokens" / "bootstrap_token"
+        tmp_token_path = token_path.with_name("bootstrap_token.tmp")
         original_chmod = Path.chmod
         observed_modes: list[int] = []
 
@@ -1238,8 +1830,8 @@ class TestBootstrapAdmin:
         monkeypatch.setattr(Path, "chmod", spy_chmod)
         old_umask = os.umask(0o022)
         try:
-            _stage_bootstrap_token(token_path, "secret")
-            _publish_bootstrap_token(token_path)
+            stage_token_file(token_path, "secret")
+            publish_token_file(token_path)
         finally:
             os.umask(old_umask)
         assert observed_modes == [0o600]
@@ -1265,8 +1857,8 @@ class TestBootstrapAdmin:
         # bootstrap admin is now present) and the function short-circuits
         # before ``create_api_key``.
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin", 1])
-        await bootstrap_admin(cast(Conn, conn))
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         inserts = [
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
@@ -1284,8 +1876,20 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "admin@example.com")
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bootstrap_token"))
         conn = make_conn()
-        conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn))
+        conn.fetchval.side_effect = [None, _BOOTSTRAP_WINNER_ID, "admin"]
+        policy = _HeardUsers()
+        await bootstrap_admin(cast(Conn, conn), policy=policy)
+        user_insert = conn.fetchval.await_args_list[1]
+        user_id = user_insert.args[1]
+        assert isinstance(user_id, uuid.UUID)
+        assert user_insert.args[1:] == (user_id, "admin@example.com", "admin")
+        assert policy.heard == [(conn, "admin@example.com", "admin")]
+        key_insert = next(
+            call
+            for call in conn.execute.await_args_list
+            if "INSERT INTO api_keys" in _sql(call)
+        )
+        assert key_insert.args[2:4] == (user_id, "bootstrap")
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         # The users insert is a ``fetchval`` now (it reads back ``RETURNING id``
         # to tell the race winner from a loser), so it lands among the queries,
@@ -1306,7 +1910,7 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(token_file))
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         assert token_file.exists()
         # Sensitive: secret is auth-equivalent to a password.
         assert (token_file.stat().st_mode & 0o777) == 0o600
@@ -1343,7 +1947,7 @@ class TestBootstrapAdmin:
         monkeypatch.setattr(Path, "mkdir", _failing_mkdir)
         try:
             with pytest.raises(OSError, match="simulated read-only filesystem"):
-                await bootstrap_admin(cast(Conn, conn))
+                await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         finally:
             monkeypatch.setattr(Path, "mkdir", original_mkdir)
         sqls = executed_sql(conn)
@@ -1381,7 +1985,7 @@ class TestBootstrapAdmin:
 
         conn.execute = AsyncMock(side_effect=execute)
         with pytest.raises(RuntimeError, match="simulated commit failure"):
-            await bootstrap_admin(cast(Conn, conn))
+            await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         # The final path must NOT exist: a rolled-back DB tx and a
         # plaintext credential on disk are an unrecoverable mismatch.
         assert not token_file.exists()
@@ -1413,7 +2017,7 @@ class TestBootstrapAdmin:
 
         monkeypatch.setattr("trackinizer.server.auth.create_api_key", boom)
         with pytest.raises(RuntimeError, match="simulated api_key insert failure"):
-            await bootstrap_admin(cast(Conn, conn))
+            await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         sqls = executed_sql(conn)
         # Atomic bootstrap: BEGIN must precede the INSERTs and ROLLBACK
         # must follow the failure -- the gate row is undone, retry works.
@@ -1436,7 +2040,7 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bt"))
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         allowlist_inserts = [
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
@@ -1484,6 +2088,7 @@ class _SeedAfterUsersProbe:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.usefixtures("integ_store")
 class TestBootstrapAdminRace:
     """Concurrent ``bootstrap_admin`` on empty ``users`` must not crash a server.
 
@@ -1518,6 +2123,7 @@ class TestBootstrapAdminRace:
             # cast at the call site so the test exercises the real signature.
             await bootstrap_admin(
                 cast(Conn, _SeedAfterUsersProbe(conn_b, integ_engine)),
+                policy=DefaultPolicy(),
             )
 
         async with integ_engine.acquire() as conn:
@@ -1579,6 +2185,7 @@ class TestSessionCookieRoundTrip:
         set_session_cookie(
             response,
             user_id=str(user_id),
+            generation=2,
             secret=secret,
             max_age_seconds=600,
         )
@@ -1587,7 +2194,7 @@ class TestSessionCookieRoundTrip:
             secret=secret,
             max_age_seconds=600,
         )
-        assert recovered == str(user_id)
+        assert recovered == (str(user_id), 2)
 
     def test_expired_cookie_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Forge an expired cookie by lying about the clock during
@@ -1603,6 +2210,7 @@ class TestSessionCookieRoundTrip:
         set_session_cookie(
             response,
             user_id="abc",
+            generation=0,
             secret=secret,
             max_age_seconds=600,
         )
@@ -1625,6 +2233,7 @@ class TestSessionCookieRoundTrip:
         set_session_cookie(
             response,
             user_id="abc",
+            generation=0,
             secret=secret,
             max_age_seconds=600,
         )
@@ -1648,6 +2257,7 @@ class TestSessionCookieRoundTrip:
         set_session_cookie(
             response,
             user_id="abc",
+            generation=0,
             secret="signing-secret",  # noqa: S106 -- test fixture.
             max_age_seconds=600,
         )
@@ -1674,12 +2284,18 @@ class TestSessionCookieRoundTrip:
 # ---- current_user session/bearer precedence -------------------------------
 
 
-def _session_cookie_value(user_id: uuid.UUID, secret: str) -> str:
+def _session_cookie_value(
+    user_id: uuid.UUID,
+    secret: str,
+    *,
+    generation: int = 0,
+) -> str:
     """Build a freshly-signed session cookie for a given ``user_id``."""
     response = _FakeResponse()
     set_session_cookie(
         response,
         user_id=str(user_id),
+        generation=generation,
         secret=secret,
         max_age_seconds=600,
     )
@@ -1691,6 +2307,7 @@ def _config_with_session_secret(secret: str) -> Config:
     return Config(session_secret=secret, session_max_age_seconds=600)
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestUserOf:
     """The resolver behind ``current_user``, which a WebSocket handshake also uses."""
 
@@ -1701,7 +2318,7 @@ class TestUserOf:
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
         request = _request_with(engine, f"Bearer {secret}")
 
-        assert await current_user(request) == await user_of(request)
+        assert await current_user(request) == await request_user(request)
 
     @pytest.mark.asyncio
     async def test_a_websocket_handshake_resolves_like_a_request(self) -> None:
@@ -1719,19 +2336,19 @@ class TestUserOf:
                     state=SimpleNamespace(
                         engine=engine,
                         config=Config(),
-                        store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder()),
+                        store=Store(cast(DatabaseEngine, engine)),
                     ),
                 ),
             },
         )
 
-        assert (await user_of(handshake)).api_key_id == key_id
+        assert (await request_user(handshake)).api_key_id == key_id
 
     @pytest.mark.asyncio
     async def test_auth_disabled_resolves_a_synthetic_admin_with_an_id(self) -> None:
         engine = FakeEngine()
 
-        identity = await user_of(
+        identity = await request_user(
             _request_with(engine, None, config=Config(auth_disabled=True)),
         )
 
@@ -1747,12 +2364,12 @@ class TestUserOf:
             "trax_gpubox_" + "0" * 32 + "_" + "A" * 43,
         ],
     )
-    async def test_a_machine_secret_gets_the_unknown_bearer_answer(
+    async def test_a_host_secret_gets_the_unknown_bearer_answer(
         self,
         bearer: str,
     ) -> None:
         with pytest.raises(HTTPException) as refused:
-            await user_of(_request_with(FakeEngine(), f"Bearer {bearer}"))
+            await request_user(_request_with(FakeEngine(), f"Bearer {bearer}"))
 
         assert (refused.value.status_code, refused.value.detail) == (
             401,
@@ -1766,7 +2383,7 @@ class TestUserOf:
         engine.conn.fetch.return_value = list[dict[str, object]]()
 
         with pytest.raises(HTTPException) as refused:
-            await user_of(_request_with(engine, f"Bearer {secret}"))
+            await request_user(_request_with(engine, f"Bearer {secret}"))
 
         assert (refused.value.status_code, refused.value.detail) == (
             401,
@@ -1776,7 +2393,7 @@ class TestUserOf:
     @pytest.mark.asyncio
     async def test_no_credential_is_401_not_authenticated(self) -> None:
         with pytest.raises(HTTPException) as refused:
-            await user_of(_request_with(FakeEngine(), None))
+            await request_user(_request_with(FakeEngine(), None))
 
         assert (refused.value.status_code, refused.value.detail) == (
             401,
@@ -1797,6 +2414,27 @@ class TestUserOf:
                 "hosted_domain": None,
             },
         )
+        cookie = _session_cookie_value(user_id, signing_key, generation=4)
+        request = _request_with(
+            engine,
+            None,
+            cookies={SESSION_COOKIE_NAME: cookie},
+            config=_config_with_session_secret(signing_key),
+        )
+
+        await request_user(request)
+
+        # The row must hold the generation the cookie was signed at: a logout since
+        # raised it, and the row then answers as absent.
+        assert engine.conn.fetchrow.call_args.args[1:] == (user_id, 4)
+
+    @pytest.mark.asyncio
+    async def test_a_cookie_a_logout_ended_is_not_authenticated(self) -> None:
+        user_id = uuid.uuid4()
+        signing_key = "session-secret-x"
+        engine = FakeEngine()
+        # What ``WHERE id = $1 AND session_generation = $2`` finds once it was raised.
+        engine.conn.fetchrow = AsyncMock(return_value=None)
         request = _request_with(
             engine,
             None,
@@ -1804,9 +2442,10 @@ class TestUserOf:
             config=_config_with_session_secret(signing_key),
         )
 
-        await user_of(request)
+        with pytest.raises(HTTPException) as refused:
+            await request_user(request)
 
-        assert user_id in engine.conn.fetchrow.call_args.args
+        assert refused.value.status_code == 401
 
     @pytest.mark.asyncio
     async def test_a_request_without_an_id_logs_an_empty_one(
@@ -1820,7 +2459,7 @@ class TestUserOf:
         cast(MagicMock, request).state = SimpleNamespace()
 
         with caplog.at_level(logging.INFO):
-            await user_of(request)
+            await request_user(request)
 
         logged = [
             record.__dict__["request_id"]
@@ -1830,6 +2469,49 @@ class TestUserOf:
         assert logged == [""]
 
 
+class TestEndSession:
+    """A logout raises the cookie's user's generation, from the one it was signed at."""
+
+    @pytest.mark.asyncio
+    async def test_a_live_cookie_raises_its_users_generation_from_its_own(self) -> None:
+        user_id = uuid.uuid4()
+        engine = FakeEngine()
+        request = _request_with(
+            engine,
+            None,
+            cookies={
+                SESSION_COOKIE_NAME: _session_cookie_value(user_id, "k", generation=4),
+            },
+            config=_config_with_session_secret("k"),
+        )
+
+        await end_session(request)
+
+        engine.conn.execute.assert_awaited_once_with(
+            "UPDATE users SET session_generation = session_generation + 1 "
+            "WHERE id = $1 AND session_generation = $2",
+            user_id,
+            4,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("forged", [False, True], ids=["no cookie", "forged"])
+    async def test_no_live_cookie_changes_nothing(self, *, forged: bool) -> None:
+        engine = FakeEngine()
+        cookie = _session_cookie_value(uuid.uuid4(), "another key")
+        request = _request_with(
+            engine,
+            None,
+            cookies={SESSION_COOKIE_NAME: cookie} if forged else {},
+            config=_config_with_session_secret("k"),
+        )
+
+        await end_session(request)
+
+        engine.conn.execute.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestCurrentUserSession:
     """Session-cookie branch of :func:`current_user`."""
 
@@ -1858,6 +2540,69 @@ class TestCurrentUserSession:
         assert identity.api_key_id is None
         assert identity.email == "u@example.com"
         assert identity.role == "writer"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "origin", "refused"),
+        [
+            ("POST", "http://trax.test", False),
+            ("DELETE", "http://trax.test", False),
+            ("POST", "http://evil.trax.test", True),
+            ("PUT", None, True),
+            ("GET", "http://evil.trax.test", False),
+            ("HEAD", None, False),
+        ],
+    )
+    async def test_a_session_write_from_another_page_is_refused_before_any_lookup(
+        self,
+        method: str,
+        origin: str | None,
+        refused: bool,
+    ) -> None:
+        user_id = uuid.uuid4()
+        secret = "session-secret-x"  # noqa: S105 -- test fixture.
+        engine = FakeEngine()
+        engine.conn.fetchrow = AsyncMock(
+            return_value={
+                "id": user_id,
+                "email": "u@example.com",
+                "role": "admin",
+                "status": "active",
+                "hosted_domain": None,
+            },
+        )
+        request = _request_with(
+            engine,
+            authorization=None,
+            cookies={SESSION_COOKIE_NAME: _session_cookie_value(user_id, secret)},
+            config=_config_with_session_secret(secret),
+            method=method,
+            origin=origin,
+        )
+        if refused:
+            with pytest.raises(HTTPException) as caught:
+                await current_user(request)
+            assert caught.value.status_code == 403
+            engine.conn.fetchrow.assert_not_awaited()
+        else:
+            assert (await current_user(request)).user_id == user_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_bearer_write_needs_no_origin(self) -> None:
+        engine = FakeEngine()
+        request = _request_with(
+            engine,
+            authorization="Bearer trax_unknown",
+            method="POST",
+        )
+        with pytest.raises(HTTPException) as caught:
+            await current_user(request)
+        # Refused for the key, which matches nothing, never for the missing Origin.
+        assert (caught.value.status_code, caught.value.detail) == (
+            401,
+            "invalid bearer token",
+        )
 
     @pytest.mark.asyncio
     async def test_session_rejected_when_user_disabled(self) -> None:
@@ -1921,7 +2666,7 @@ class TestCurrentUserSession:
         # A test that skips the lifespan leaves the app without a config.
         cast("MagicMock", request).app = SimpleNamespace(
             state=SimpleNamespace(
-                store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder()),
+                store=Store(cast(DatabaseEngine, engine)),
             ),
         )
         with pytest.raises(HTTPException) as exc_info:
@@ -2050,7 +2795,7 @@ class TestAllowlistMatch:
     @pytest.mark.asyncio
     async def test_literal_match_returns_role(self) -> None:
         conn = make_conn()
-        conn.fetchval = AsyncMock(return_value="admin")
+        conn.fetchval.return_value = "admin"
         role = await allowlist_match(cast(Conn, conn), email="alice@example.com")
         assert role == "admin"
         # The first SQL probe must be the literal lookup.
@@ -2058,6 +2803,7 @@ class TestAllowlistMatch:
         assert isinstance(sql, str)
         assert "lower(email_or_pattern) = lower($1)" in sql
         assert args == ["alice@example.com"]
+        conn.fetchval.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_literal_match_is_case_insensitive(self) -> None:
@@ -2074,16 +2820,18 @@ class TestAllowlistMatch:
         assert role == "admin"
 
     @pytest.mark.asyncio
-    async def test_pattern_match_returns_role(self) -> None:
+    @pytest.mark.parametrize("email", ["bob@example.com", "b@example.com"])
+    async def test_pattern_match_returns_role(self, email: str) -> None:
         # Literal probe misses (returns None), pattern probe wins.
         conn = make_conn()
-        conn.fetchval = AsyncMock(side_effect=[None, "writer"])
-        role = await allowlist_match(cast(Conn, conn), email="bob@example.com")
+        conn.fetchval.side_effect = [None, "writer"]
+        role = await allowlist_match(cast(Conn, conn), email=email)
         assert role == "writer"
         # Second probe queries the LIKE-anchored pattern table.
         second_sql = conn.fetchval.call_args_list[1].args[0]
         assert isinstance(second_sql, str)
         assert "LIKE '*@%'" in second_sql
+        assert conn.fetchval.call_args_list[1].args[1:] == ("example.com",)
 
     @pytest.mark.asyncio
     async def test_miss_returns_none(self) -> None:
@@ -2101,6 +2849,7 @@ class TestAllowlistMatch:
         conn.fetchval = AsyncMock(return_value=None)
         role = await allowlist_match(cast(Conn, conn), email="no-at-symbol")
         assert role is None
+        conn.fetchval.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -2155,27 +2904,49 @@ class TestEffectiveRole:
 # ---- create_api_key + set_api_key_role tests ------------------------------
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestCreateApiKey:
     """Unit-level ceiling enforcement for :func:`create_api_key`."""
 
     @pytest.mark.asyncio
-    async def test_defaults_to_user_role(self) -> None:
+    @pytest.mark.parametrize("enrolled", [False, True])
+    async def test_defaults_to_user_role(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        enrolled: bool,
+    ) -> None:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="writer")
-        user_id = uuid.uuid4()
+        user_id, expected_key = uuid.uuid4(), uuid.uuid4()
+        host_id = uuid.uuid4() if enrolled else None
+        monkeypatch.setattr(auth, "uuid", SimpleNamespace(uuid4=lambda: expected_key))
         # A non-binding admin ceiling: the default still caps at the user role.
-        _key_id, _secret, _prefix, role = await create_api_key(
+        key_id, secret, prefix, role = await create_api_key(
             cast(Conn, conn),
             user_id=user_id,
             name="laptop",
             ceiling="admin",
+            host_id=host_id,
         )
-        assert role == "writer"
-        # The INSERT must carry the inferred role as the 6th bind.
-        insert = next(
-            c for c in conn.execute.call_args_list if "INSERT INTO api_keys" in _sql(c)
+        assert (key_id, role) == (expected_key, "writer")
+        assert conn.fetchval.await_args is not None
+        assert conn.fetchval.await_args.args[1:] == (user_id,)
+        insert = conn.execute.await_args
+        assert insert is not None
+        stored_hash = insert.args[4]
+        assert isinstance(stored_hash, str)
+        assert verify_secret(secret, stored_hash)
+        assert insert.args[1:] == (
+            expected_key,
+            user_id,
+            "laptop",
+            stored_hash,
+            prefix,
+            "writer",
+            None,
+            host_id,
         )
-        assert insert.args[6] == "writer"
 
     @pytest.mark.asyncio
     async def test_accepts_role_at_or_below_ceiling(self) -> None:
@@ -2270,7 +3041,11 @@ def _minter(
     )
 
 
-async def _mint(minter: AuthIdentity, *, open_into: str | None = None) -> list[_Call]:
+async def _mint(
+    minter: AuthIdentity,
+    *,
+    open_into: str | None = None,
+) -> list[MockCall]:
     """Mint a key as ``minter``; return the INSERT calls it made."""
     conn = make_conn()
     conn.fetchval = AsyncMock(return_value="admin")
@@ -2290,8 +3065,9 @@ class TestCreateApiKeyAudiences:
     """A key's pin stays inside what its minter opens into."""
 
     @pytest.mark.asyncio
-    async def test_the_insert_carries_the_requested_pin(self) -> None:
-        minter = _minter(read={"open", "staff"}, opening={"open", "staff"})
+    @pytest.mark.parametrize("key", [False, True])
+    async def test_the_insert_carries_the_requested_pin(self, *, key: bool) -> None:
+        minter = _minter(read={"open", "staff"}, opening={"open", "staff"}, key=key)
         (insert,) = await _mint(minter, open_into="staff")
         assert insert.args[7] == "staff"
 
@@ -2364,11 +3140,15 @@ class TestKeyWithinCaller:
         conn.fetchrow = AsyncMock(
             return_value=None if absent else {"open_into": target},
         )
+        key_id = key_id or uuid.uuid4()
         within = await key_within_caller(
             cast(Conn, conn),
             identity=caller,
-            key_id=key_id or uuid.uuid4(),
+            key_id=key_id,
         )
+        if conn.fetchrow.await_count:
+            assert conn.fetchrow.await_args is not None
+            assert conn.fetchrow.await_args.args[1:] == (key_id, caller.user_id)
         return within, conn.fetchrow.await_count
 
     @pytest.mark.asyncio
@@ -2445,7 +3225,10 @@ class TestRequireRole:
         assert await require_role("viewer")(writer) is writer
         with pytest.raises(HTTPException) as caught:
             await require_role("admin")(writer)
-        assert caught.value.status_code == 403
+        assert (caught.value.status_code, caught.value.detail) == (
+            403,
+            "role 'writer' insufficient; need 'admin'",
+        )
 
 
 class TestSetApiKeyRole:
@@ -2456,14 +3239,19 @@ class TestSetApiKeyRole:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="writer")
         conn.execute = AsyncMock(return_value="UPDATE 1")
+        key_id, user_id = uuid.uuid4(), uuid.uuid4()
         updated = await set_api_key_role(
             cast(Conn, conn),
-            key_id=uuid.uuid4(),
-            user_id=uuid.uuid4(),
+            key_id=key_id,
+            user_id=user_id,
             role="writer",
             ceiling="admin",
         )
         assert updated is True
+        assert conn.fetchval.await_args is not None
+        assert conn.fetchval.await_args.args[1:] == (user_id,)
+        assert conn.execute.await_args is not None
+        assert conn.execute.await_args.args[1:] == (key_id, user_id, "writer")
 
     @pytest.mark.asyncio
     async def test_rejects_above_ceiling(self) -> None:
@@ -2501,19 +3289,476 @@ class TestSetApiKeyRole:
         # promoting to admin must fail on the ceiling, not the user's role.
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=["admin", 1])
+        key_id, user_id = uuid.uuid4(), uuid.uuid4()
         with pytest.raises(RoleCeilingError):
             await set_api_key_role(
                 cast(Conn, conn),
-                key_id=uuid.uuid4(),
-                user_id=uuid.uuid4(),
+                key_id=key_id,
+                user_id=user_id,
                 role="admin",
                 ceiling="viewer",
             )
+        assert [call.args[1:] for call in conn.fetchval.await_args_list] == [
+            (user_id,),
+            (key_id, user_id),
+        ]
+        sqls = [_sql(c) for c in conn.execute.call_args_list]
+        assert not any("UPDATE api_keys SET role" in s for s in sqls)
+
+    @pytest.mark.asyncio
+    async def test_above_ceiling_on_an_absent_key_is_not_found_not_forbidden(
+        self,
+    ) -> None:
+        # A 403 here would tell a prober the key exists.
+        conn = make_conn()
+        conn.fetchval = AsyncMock(side_effect=["writer", None])
+        key_id, user_id = uuid.uuid4(), uuid.uuid4()
+        updated = await set_api_key_role(
+            cast(Conn, conn),
+            key_id=key_id,
+            user_id=user_id,
+            role="admin",
+            ceiling="admin",
+        )
+        assert updated is False
+        assert [call.args[1:] for call in conn.fetchval.await_args_list] == [
+            (user_id,),
+            (key_id, user_id),
+        ]
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
 
 
-def _sql(call: _Call) -> str:
+class TestApiKeyListing:
+    @pytest.mark.asyncio
+    async def test_lists_only_the_users_keys_without_their_hash(self) -> None:
+        conn = make_conn()
+        user_id, key_id = uuid.uuid4(), uuid.uuid4()
+        conn.fetch = AsyncMock(return_value=[{"id": key_id, "name": "laptop"}])
+        assert await list_api_keys(cast(Conn, conn), user_id=user_id) == [
+            {"id": key_id, "name": "laptop"},
+        ]
+        call = conn.fetch.call_args
+        assert call is not None
+        sql = _sql(call)
+        assert "WHERE user_id = $1" in sql
+        assert "secret_hash" not in sql
+        assert call.args[1:] == (user_id,)
+
+
+class TestAssertAccountActive:
+    @pytest.mark.asyncio
+    async def test_an_active_user_passes(self) -> None:
+        engine = FakeEngine()
+        engine.conn.fetchval = AsyncMock(return_value=1)
+        await assert_account_active(cast(DatabaseEngine, engine), "ada@example.com")
+        assert engine.conn.fetchval.call_args is not None
+        assert engine.conn.fetchval.call_args.args[1:] == ("ada@example.com",)
+
+    @pytest.mark.asyncio
+    async def test_an_inactive_or_unknown_account_is_422(self) -> None:
+        engine = FakeEngine()
+        engine.conn.fetchval = AsyncMock(return_value=None)
+        with pytest.raises(HTTPException) as caught:
+            await assert_account_active(cast(DatabaseEngine, engine), "x@example.com")
+        assert caught.value.status_code == 422
+        assert "'x@example.com' is not an active user" in caught.value.detail
+
+
+class TestSeedNoAuthUser:
+    @pytest.mark.parametrize(
+        ("inserted", "told"),
+        [(uuid.uuid4(), True), (None, False)],
+    )
+    @pytest.mark.asyncio
+    async def test_the_policy_hears_of_the_user_only_when_it_is_new(
+        self,
+        inserted: uuid.UUID | None,
+        told: bool,
+    ) -> None:
+        conn = make_conn()
+        conn.fetchval.return_value = inserted
+        policy = _HeardUsers()
+        await seed_no_auth_user(cast(Conn, conn), policy=policy)
+        identity = await current_user(
+            _request_with(FakeEngine(), None, config=Config(auth_disabled=True)),
+        )
+        assert [call.args[1:] for call in conn.fetchval.await_args_list] == [
+            (identity.user_id, identity.email),
+        ]
+        sql = executed_sql(conn)
+        assert (sql[0], sql[-1]) == ("BEGIN", "COMMIT")
+        assert policy.heard == ([(conn, "no-auth@localhost", "admin")] if told else [])
+
+
+class _HeardUsers:
+    """An access policy that records each new user it is told of."""
+
+    def __init__(self) -> None:
+        self.heard: list[tuple[Conn, str, str]] = []
+
+    async def on_user(self, conn: Conn, *, email: str, role: str) -> None:
+        self.heard.append((conn, email, role))
+
+
+class TestCredentialEdges:
+    def test_a_bare_bearer_scheme_offers_a_blank_secret(self) -> None:
+        request = _request_with(FakeEngine(), "Bearer")
+        assert auth.extract_bearer(request) == ""
+
+    @pytest.mark.asyncio
+    async def test_a_session_cookie_naming_no_uuid_is_no_session(self) -> None:
+        secret = "session-secret-x"  # noqa: S105 -- test fixture.
+        response = _FakeResponse()
+        set_session_cookie(
+            response,
+            user_id="not-a-uuid",
+            generation=0,
+            secret=secret,
+            max_age_seconds=600,
+        )
+        request = _request_with(
+            FakeEngine(),
+            authorization=None,
+            cookies={SESSION_COOKIE_NAME: response.cookies[SESSION_COOKIE_NAME]},
+            config=_config_with_session_secret(secret),
+        )
+        assert auth._try_read_session(request) is None
+
+    @pytest.mark.asyncio
+    async def test_a_cache_hit_without_a_key_is_refused(self) -> None:
+        store = Store(cast(DatabaseEngine, FakeEngine()))
+        with pytest.raises(ValueError, match="key_id is not None"):
+            await auth._bump_last_used(store, None)
+
+
+class TestProcessKeys:
+    """A key minted for an agent process is found again by the name holding its id."""
+
+    @pytest.fixture
+    def cheap_scrypt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("trackinizer.server.auth._SCRYPT_N", 2)
+
+    async def _keys(
+        self,
+        store: Store,
+        *names: tuple[str, uuid.UUID | None],
+    ) -> list[uuid.UUID]:
+        """Give one writer a key of each name, bound to each host; return their ids."""
+        user_id = uuid.uuid4()
+        async with store.engine.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO users (id, email, name, role, status) "
+                "VALUES ($1, 'ada@x.y', 'n', 'writer', 'active')",
+                user_id,
+            )
+            return [
+                (
+                    await create_api_key(
+                        conn,
+                        user_id=user_id,
+                        name=name,
+                        ceiling="writer",
+                        host_id=host_id,
+                    )
+                )[0]
+                for name, host_id in names
+            ]
+
+    async def _hosts(self, store: Store, count: int) -> list[uuid.UUID]:
+        async with store.engine.acquire() as conn:
+            return [
+                from_plain(
+                    await conn.fetchval(
+                        "INSERT INTO hosts (name, updated_by) VALUES ($1, 'x') "
+                        "RETURNING id",
+                        f"h{index}",
+                    ),
+                    uuid.UUID,
+                )
+                for index in range(count)
+            ]
+
+    async def _live(self, store: Store, keys: list[uuid.UUID]) -> list[bool]:
+        async with store.engine.acquire() as conn:
+            return [
+                await conn.fetchval(
+                    "SELECT revoked_at IS NULL FROM api_keys WHERE id = $1",
+                    key,
+                )
+                is True
+                for key in keys
+            ]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_the_live_process_keys_name_their_processes_and_no_other_key(
+        self,
+        store: Store,
+    ) -> None:
+        (host,) = await self._hosts(store, 1)
+        live, revoked, before = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=4)
+        keys = await self._keys(
+            store,
+            (process_key_name(live, session_id=_OWN_SESSION), host),
+            (process_key_name(revoked, session_id=_OWN_SESSION), host),
+            ("a device login", host),
+            (process_key_name(uuid.UUID(int=3), session_id=_OWN_SESSION), None),
+            # Named before keys named their session.
+            (f"agent process {before}", host),
+        )
+        async with store.engine.acquire() as conn:
+            _ = await revoke_process_key(conn, process_id=revoked)
+            found = await live_process_keys(conn)
+            # A person's own key named so is no process's: no stop of one revokes it.
+            mine = await revoke_process_key(conn, process_id=uuid.UUID(int=3))
+
+        assert sorted(found) == [live, before]
+        assert mine == []
+        assert await self._live(store, keys) == [True, False, True, True, True]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_process_is_minted_for_by_a_key_bound_to_its_host_alone(
+        self,
+        store: Store,
+    ) -> None:
+        """A person's own key named for a process locks no process out."""
+        (host,) = await self._hosts(store, 1)
+        minted, before, named = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+        _ = await self._keys(
+            store,
+            (process_key_name(minted, session_id=_OWN_SESSION), host),
+            (f"agent process {before}", host),
+            (process_key_name(named, session_id=_OWN_SESSION), None),
+        )
+        async with store.engine.acquire() as conn:
+            _ = await revoke_process_key(conn, process_id=minted)
+            found = [
+                await process_key_minted(conn, process_id=process)
+                for process in (minted, before, named, uuid.UUID(int=4))
+            ]
+
+        assert found == [True, True, False, False]
+
+    def test_the_name_holds_the_process_and_its_session(self) -> None:
+        process = uuid.UUID(int=7)
+        assert (
+            process_key_name(process, session_id=_OWN_SESSION)
+            == f"agent process {process} for session {_OWN_SESSION}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_process_is_minted_for_when_a_host_bound_key_is_named_for_it(
+        self,
+    ) -> None:
+        process = uuid.UUID(int=1)
+        minted = vetted_sql(
+            "SELECT 1 FROM api_keys AS credential "
+            "WHERE starts_with(credential.name, $1) AND ",
+            PROCESS_KEY_SQL,
+        )
+        engine = ExchangeEngine(
+            *(
+                Says(
+                    method="fetchval",
+                    sql=minted,
+                    args=(f"agent process {process}",),
+                    answer=answer,
+                )
+                for answer in (1, None)
+            ),
+        )
+
+        found = [
+            await process_key_minted(engine.conn, process_id=process) for _ in (1, 2)
+        ]
+
+        assert found == [True, False]
+        assert engine.done
+
+    @pytest.mark.asyncio
+    async def test_the_live_process_keys_are_read_by_the_process_each_is_named_for(
+        self,
+    ) -> None:
+        named, before, host = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+        engine = ExchangeEngine(
+            Says(
+                method="fetch",
+                sql=vetted_sql(
+                    "SELECT credential.name, credential.host_id "
+                    "FROM api_keys AS credential "
+                    "WHERE credential.revoked_at IS NULL AND ",
+                    PROCESS_KEY_SQL,
+                ),
+                answer=[
+                    {
+                        "name": process_key_name(named, session_id=_OWN_SESSION),
+                        "host_id": host,
+                    },
+                    {"name": f"agent process {before}", "host_id": host},
+                ],
+            ),
+        )
+
+        assert await live_process_keys(engine.conn) == [named, before]
+        assert engine.done
+
+    @pytest.mark.asyncio
+    async def test_a_revoke_returns_each_key_it_revoked_for_the_cache_to_forget(
+        self,
+    ) -> None:
+        process, host, key = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+        by_name = vetted_sql(
+            "UPDATE api_keys AS credential SET revoked_at = clock_timestamp() "
+            "WHERE starts_with(credential.name, $1) "
+            "AND credential.revoked_at IS NULL AND ",
+            PROCESS_KEY_SQL,
+            " AND ($2::uuid IS NULL OR credential.host_id = $2::uuid) "
+            "RETURNING credential.id",
+        )
+        engine = ExchangeEngine(
+            Says(
+                method="fetch",
+                sql=by_name,
+                args=(f"agent process {process}", host),
+                answer=[{"id": key}],
+            ),
+            Says(
+                method="fetch",
+                sql=by_name,
+                args=(f"agent process {process}", None),
+                answer=[],
+            ),
+        )
+
+        revoked = await revoke_process_key(
+            engine.conn,
+            process_id=process,
+            host_id=host,
+        )
+        none = await revoke_process_key(engine.conn, process_id=process)
+
+        assert (revoked, none) == ([key], [])
+        assert engine.done
+
+    @pytest.mark.asyncio
+    async def test_a_hosts_revoke_returns_each_process_key_it_revoked(self) -> None:
+        host, keys = uuid.UUID(int=2), [uuid.UUID(int=3), uuid.UUID(int=4)]
+        engine = ExchangeEngine(
+            Says(
+                method="fetch",
+                sql=vetted_sql(
+                    "UPDATE api_keys AS credential SET revoked_at = clock_timestamp() "
+                    "WHERE credential.host_id = $1 AND credential.revoked_at IS NULL AND ",
+                    PROCESS_KEY_SQL,
+                    " RETURNING credential.id",
+                ),
+                args=(host,),
+                answer=[{"id": key} for key in keys],
+            ),
+        )
+
+        assert await revoke_host_process_keys(engine.conn, host_id=host) == keys
+        assert engine.done
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_process_key_is_revoked_by_its_name_and_no_other(
+        self,
+        store: Store,
+    ) -> None:
+        process, other = uuid.UUID(int=1), uuid.UUID(int=2)
+        (host,) = await self._hosts(store, 1)
+        keys = await self._keys(
+            store,
+            (process_key_name(process, session_id=_OWN_SESSION), host),
+            (process_key_name(other, session_id=_OWN_SESSION), host),
+            ("laptop", host),
+        )
+
+        async with store.engine.acquire() as conn:
+            assert await revoke_process_key(conn, process_id=process) == keys[:1]
+            assert await revoke_process_key(conn, process_id=process) == []
+
+        assert await self._live(store, keys) == [False, True, True]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_daemon_reaches_only_a_key_bound_to_its_own_host(
+        self,
+        store: Store,
+    ) -> None:
+        process = uuid.UUID(int=1)
+        host, other = await self._hosts(store, 2)
+        keys = await self._keys(
+            store,
+            (process_key_name(process, session_id=_OWN_SESSION), host),
+        )
+
+        async with store.engine.acquire() as conn:
+            assert (
+                await revoke_process_key(conn, process_id=process, host_id=other) == []
+            )
+        assert await self._live(store, keys) == [True]
+        async with store.engine.acquire() as conn:
+            assert (
+                await revoke_process_key(conn, process_id=process, host_id=host) == keys
+            )
+
+        assert await self._live(store, keys) == [False]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_host_out_of_service_loses_its_process_keys_alone(
+        self,
+        store: Store,
+    ) -> None:
+        host, other = await self._hosts(store, 2)
+        keys = await self._keys(
+            store,
+            (process_key_name(uuid.UUID(int=1), session_id=_OWN_SESSION), host),
+            (process_key_name(uuid.UUID(int=2), session_id=_OWN_SESSION), other),
+            ("a device login", host),
+            (process_key_name(uuid.UUID(int=3), session_id=_OWN_SESSION), None),
+        )
+
+        async with store.engine.acquire() as conn:
+            assert await revoke_host_process_keys(conn, host_id=host) == keys[:1]
+
+        assert await self._live(store, keys) == [False, True, True, True]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_hosts_logins_are_revoked_and_its_process_keys_kept(
+        self,
+        store: Store,
+    ) -> None:
+        host, other = await self._hosts(store, 2)
+        keys = await self._keys(
+            store,
+            ("a device login", host),
+            ("client@h0", host),
+            (process_key_name(uuid.UUID(int=1), session_id=_OWN_SESSION), host),
+            ("a device login", other),
+            ("laptop", None),
+        )
+
+        async with store.engine.acquire() as conn:
+            revoked = await revoke_host_login_keys(conn, host_id=host)
+            again = await revoke_host_login_keys(conn, host_id=host)
+
+        assert (sorted(revoked), again) == (sorted(keys[:2]), [])
+        assert await self._live(store, keys) == [False, False, True, True, True]
+
+
+def _sql(call: MockCall) -> str:
     """Return a recorded SQL argument after narrowing the mock call boundary."""
     sql = call.args[0]
     assert isinstance(sql, str)

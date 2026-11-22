@@ -1,4 +1,5 @@
 import type { Ancestor, InquiryRow } from "../api/inquiries";
+import { must } from "../must";
 
 /** An Issue a stream names: its root goal, a row's parent, another root. */
 export type StreamIssue = Omit<Ancestor, "child_ids">;
@@ -36,7 +37,10 @@ export type Stream = {
  * `ancestry` yet is held back rather than shown under No parent, from which it
  * would move.
  */
-export function buildStreams(rows: readonly InquiryRow[], ancestry: ReadonlyMap<string, readonly Ancestor[]>): Stream[] {
+export function buildStreams(
+  rows: readonly InquiryRow[],
+  ancestry: ReadonlyMap<string, readonly Ancestor[]>,
+): Stream[] {
   const read = rows.flatMap((row) => {
     const ancestors = ancestry.get(row.id);
     return ancestors ? [{ row, ancestors, roots: rootsOf(ancestors) }] : [];
@@ -52,7 +56,11 @@ export function buildStreams(rows: readonly InquiryRow[], ancestry: ReadonlyMap<
   for (const { row, ancestors, roots } of read) {
     if (roots.length > 0) {
       for (const root of roots) {
-        add(root, { row, parent: parentToward(row.id, root.id, ancestors), alsoUnder: roots.filter((other) => other !== root) });
+        add(root, {
+          row,
+          parent: parentToward(row.id, root.id, ancestors),
+          alsoUnder: roots.filter((other) => other !== root),
+        });
       }
     } else if (heads.has(row.id)) {
       add(issueOf(row), { row, parent: null, alsoUnder: [] });
@@ -60,12 +68,15 @@ export function buildStreams(rows: readonly InquiryRow[], ancestry: ReadonlyMap<
       loose.push({ row, parent: null, alsoUnder: [] });
     }
   }
-  return [...streams.values(), ...(loose.length > 0 ? [{ root: null, rows: loose }] : [])].map(({ root, rows: listed }) => ({
+  return [
+    ...streams.values(),
+    ...(loose.length > 0 ? [{ root: null, rows: loose }] : []),
+  ].map(({ root, rows: listed }) => ({
     root,
     rows: listed,
     active: listed.filter(({ row }) => row.status === "active").length,
     done: listed.filter(({ row }) => row.status === "complete").length,
-    newest: listed[0]!.row.created,
+    newest: must(listed[0]).row.created,
   }));
 }
 
@@ -80,7 +91,11 @@ function rootsOf(ancestors: readonly Ancestor[]): StreamIssue[] {
 }
 
 /** The row's parent on its first way up to `rootId`; null when that parent is the root. */
-function parentToward(rowId: string, rootId: string, ancestors: readonly Ancestor[]): StreamIssue | null {
+function parentToward(
+  rowId: string,
+  rootId: string,
+  ancestors: readonly Ancestor[],
+): StreamIssue | null {
   const parents = (id: string) => ancestors.filter((up) => up.child_ids.includes(id));
   const reaches = (from: string) => {
     // Breadth first, each Issue once: `narrows` can hold a cycle.

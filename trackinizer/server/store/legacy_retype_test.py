@@ -11,12 +11,14 @@ are that union's, not the IR's: old ``text`` vs IR ``content``, old
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from treekle import immutable
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import (
-    AgentToAgentMessage,
+from trackinizer.sagent.session.types import (
+    AgentMessage,
     AssistantMessage,
     ContextCompaction,
     IncompleteRecord,
@@ -24,6 +26,7 @@ from trackinizer.lib.agent.types.sessions import (
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolMessage,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
@@ -31,11 +34,14 @@ from trackinizer.lib.agent.types.sessions import (
 from trackinizer.server.store import legacy_retype
 from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,
+    Retyped,
+    SlashCommandOut,
     retype,
 )
+from trackinizer.types.session_records import record_kind
 
 
-STAMP = "2026-01-02T03:04:05+00:00"
+STAMP = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
 # ``timestamp=None`` matches the real rows: 020 wrote ``'timestamp', NULL`` into every
@@ -83,7 +89,7 @@ class TestAgentSendMessage:
         )
         assert len(out.records) == 1
         record = out.records[0]
-        assert isinstance(record, AgentToAgentMessage)
+        assert isinstance(record, AgentMessage)
         assert record.content == "child report"
         assert record.sender == "worker-3"
 
@@ -247,9 +253,11 @@ class TestToolResult:
         )
         assert len(out.records) == 1
         record = out.records[0]
-        assert isinstance(record, UncategorizedToolResult)
+        assert isinstance(record, ToolMessage)
+        assert record_kind(record) == "UncategorizedToolResult"
         assert record.call_id == "call_9"
-        assert record.content == "exit 1: ModuleNotFoundError"
+        assert record.stdout == ("exit 1: ModuleNotFoundError",)
+        assert record.text() == "exit 1: ModuleNotFoundError"
         assert record.extra.get("is_error") is True
 
     def test_diff_fields_survive_in_extra(self) -> None:
@@ -266,7 +274,7 @@ class TestToolResult:
             ),
         )
         record = out.records[0]
-        assert isinstance(record, UncategorizedToolResult)
+        assert isinstance(record, ToolMessage)
         assert record.extra.get("diff") == "-a\n+b"
         assert record.extra.get("diff_file_path") == "f.py"
         assert record.extra.get("summary") == "edited f.py"
@@ -279,7 +287,7 @@ class TestToolResult:
             ),
         )
         record = out.records[0]
-        assert isinstance(record, UncategorizedToolResult)
+        assert isinstance(record, ToolMessage)
         # Old union defaults (False, "") are noise, not provenance.
         assert "is_error" not in record.extra
         assert "diff" not in record.extra
@@ -318,16 +326,268 @@ class TestSlashCommand:
 
 
 class TestAttachments:
-    def test_nonempty_attachments_raise_rather_than_guess(self) -> None:
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "legacy/UserMessage",
+            "legacy/AgentSendMessage",
+            "legacy/AssistantMessage",
+            "legacy/ToolResult",
+        ],
+    )
+    def test_nonempty_attachments_raise_rather_than_guess(self, kind: str) -> None:
         # Measured live (2026-09-19): zero legacy rows carry attachments, so
         # the codec shape is unverified; an encounter must surface loudly.
         with pytest.raises(ValueError, match="attachment"):
-            retype(
-                _legacy(
-                    "legacy/UserMessage",
-                    {"text": "x", "attachments": [{"data": "AAAA"}]},
+            retype(_legacy(kind, {"text": "x", "attachments": [{"data": "AAAA"}]}))
+
+
+class TestWholeRecords:
+    """Each kind maps to exactly these records: every field, stated or not."""
+
+    @pytest.mark.parametrize(
+        ("kind", "payload", "ciphertext", "expected"),
+        [
+            (
+                "legacy/UserMessage",
+                {"text": "fix the bug"},
+                "",
+                Retyped(
+                    records=(
+                        UserMessage(
+                            context_id=0,
+                            timestamp=STAMP,
+                            content="fix the bug",
+                        ),
+                    ),
                 ),
-            )
+            ),
+            (
+                "legacy/UserMessage",
+                {},
+                "",
+                Retyped(
+                    records=(UserMessage(context_id=0, timestamp=STAMP, content=""),),
+                ),
+            ),
+            (
+                "legacy/AgentSendMessage",
+                {"text": "child report", "source": "worker-3"},
+                "",
+                Retyped(
+                    records=(
+                        AgentMessage(
+                            context_id=0,
+                            timestamp=STAMP,
+                            content="child report",
+                            sender="worker-3",
+                        ),
+                    ),
+                ),
+            ),
+            (
+                "legacy/AgentSendMessage",
+                {},
+                "",
+                Retyped(
+                    records=(
+                        AgentMessage(
+                            context_id=0,
+                            timestamp=STAMP,
+                            content="",
+                            sender="",
+                        ),
+                    ),
+                ),
+            ),
+            (
+                "legacy/SystemMessage",
+                {"text": "sandbox on", "role": "developer"},
+                "",
+                Retyped(
+                    records=(
+                        SystemMessage(
+                            context_id=0,
+                            timestamp=STAMP,
+                            content="sandbox on",
+                            extra={"role": "developer"},
+                        ),
+                    ),
+                ),
+            ),
+            (
+                "legacy/SystemMessage",
+                {},
+                "",
+                Retyped(
+                    records=(SystemMessage(context_id=0, timestamp=STAMP, content=""),),
+                ),
+            ),
+            (
+                "legacy/AssistantMessage",
+                {
+                    "text": "running it",
+                    "thinking": "test first",
+                    "tool_calls": [
+                        {"id": "call_1", "name": "Bash", "args": {"cmd": "pytest"}},
+                        {},
+                    ],
+                    "tokens": {"input": 7},
+                },
+                "SEALED",
+                Retyped(
+                    records=(
+                        AssistantMessage(
+                            context_id=0,
+                            timestamp=STAMP,
+                            content="running it",
+                        ),
+                        Thinking(
+                            context_id=0,
+                            timestamp=STAMP,
+                            content="test first",
+                            encrypted="SEALED",
+                        ),
+                        ToolCall(
+                            context_id=0,
+                            timestamp=STAMP,
+                            call_id="call_1",
+                            name="Bash",
+                            arguments={"cmd": "pytest"},
+                        ),
+                        ToolCall(
+                            context_id=0,
+                            timestamp=STAMP,
+                            call_id="",
+                            name="",
+                            arguments={},
+                        ),
+                        TokenUsage(context_id=0, timestamp=STAMP, info={"input": 7}),
+                    ),
+                ),
+            ),
+            (
+                "legacy/AssistantMessage",
+                {},
+                "",
+                Retyped(
+                    records=(
+                        AssistantMessage(context_id=0, timestamp=STAMP, content=""),
+                    ),
+                ),
+            ),
+            (
+                "legacy/ToolResult",
+                {
+                    "call_id": "call_9",
+                    "content": "exit 1",
+                    "is_error": True,
+                    "diff": "-a\n+b",
+                    "diff_file_path": "f.py",
+                    "summary": "edited f.py",
+                },
+                "",
+                Retyped(
+                    records=(
+                        ToolMessage(
+                            context_id=0,
+                            timestamp=STAMP,
+                            call_id="call_9",
+                            state="done",
+                            stdout=("exit 1",),
+                            result=UncategorizedToolResult(),
+                            extra={
+                                "is_error": True,
+                                "diff": "-a\n+b",
+                                "diff_file_path": "f.py",
+                                "summary": "edited f.py",
+                            },
+                        ),
+                    ),
+                ),
+            ),
+            (
+                "legacy/ToolResult",
+                {},
+                "",
+                Retyped(
+                    records=(
+                        ToolMessage(
+                            context_id=0,
+                            timestamp=STAMP,
+                            call_id="",
+                            state="done",
+                            result=UncategorizedToolResult(),
+                        ),
+                    ),
+                ),
+            ),
+            (
+                "legacy/Compaction",
+                {
+                    "text": "The session so far",
+                    "token_before": 9,
+                    "token_after": 2,
+                    "fallback_reason": "too long",
+                },
+                "",
+                Retyped(
+                    records=(
+                        ContextCompaction(
+                            context_id=0,
+                            timestamp=STAMP,
+                            summary="The session so far",
+                            extra={
+                                "token_before": 9,
+                                "token_after": 2,
+                                "fallback_reason": "too long",
+                            },
+                        ),
+                    ),
+                ),
+            ),
+            (
+                "legacy/Compaction",
+                {},
+                "",
+                Retyped(
+                    records=(
+                        ContextCompaction(context_id=0, timestamp=STAMP, summary=""),
+                    ),
+                ),
+            ),
+            (
+                "legacy/SlashCommand",
+                {"command": "model", "args": "gpt-5"},
+                "",
+                Retyped(
+                    slash=SlashCommandOut(
+                        timestamp=STAMP,
+                        command="model",
+                        args="gpt-5",
+                    ),
+                ),
+            ),
+            (
+                "legacy/SlashCommand",
+                {},
+                "",
+                Retyped(
+                    slash=SlashCommandOut(timestamp=STAMP),
+                ),
+            ),
+        ],
+    )
+    def test_a_kind_maps_to_these_records_and_no_other(
+        self,
+        kind: str,
+        payload: dict[str, object],
+        ciphertext: str,
+        expected: Retyped,
+    ) -> None:
+        out = retype(_legacy(kind, payload), timestamp=STAMP, ciphertext=ciphertext)
+
+        assert out == expected
 
 
 class TestContract:
@@ -353,7 +613,13 @@ class TestContract:
 
     def test_ciphertext_with_non_assistant_kind_raises(self) -> None:
         record = _legacy("legacy/UserMessage", {"text": "hi"})
-        with pytest.raises(ValueError, match="ciphertext"):
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"^ciphertext accompanies 'legacy/UserMessage', but only a "
+                r"legacy/AssistantMessage carried sealed reasoning$"
+            ),
+        ):
             retype(record, ciphertext="SEALED")
 
     @pytest.mark.parametrize("kind", sorted(LEGACY_KINDS))

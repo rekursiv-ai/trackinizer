@@ -18,9 +18,17 @@ directly.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
-from fastapi.routing import _IncludedRouter, _RouterIncludeContext
+from fastapi.params import Depends
+from fastapi.routing import (
+    APIRoute,
+    _EffectiveRouteContext,
+    _get_scope_effective_route_context,
+    _IncludedRouter,
+    _RouterIncludeContext,
+)
 from starlette.routing import Mount, Route, WebSocketRoute
 
 
@@ -28,7 +36,46 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from fastapi import FastAPI
+    from starlette.requests import HTTPConnection
     from starlette.routing import BaseRoute
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ApiRouteLeaf:
+    """One HTTP route of an app, as a request reaches it.
+
+    Attributes:
+      path: The fully-prefixed path template (``/api/admin/users``).
+      route: The route; its ``dependant`` holds its own dependencies.
+      include_dependencies: What the routers it was included through add
+        (``include_router(..., dependencies=...)``), which run before the route's
+        own and which its ``dependant`` does not hold.
+
+    """
+
+    path: str
+    route: APIRoute
+    include_dependencies: tuple[Depends, ...]
+
+
+def matched_route_path(connection: HTTPConnection) -> str | None:
+    """Return the matched route's full template, including lazy router prefixes.
+
+    Args:
+      connection: The request or socket, after routing.
+
+    Returns:
+      path: The template, as ``/api/sessions/{session_id}/process/ws``; ``None``
+        when no route matched.
+
+    """
+    context = cast(object, _get_scope_effective_route_context(connection.scope))
+    # A socket's include context holds no path (FastAPI 0.162); its route already
+    # holds the full template, prefixes included.
+    if isinstance(context, _EffectiveRouteContext) and context.path:
+        return context.path
+    route = connection.scope.get("route")
+    return route.path if isinstance(route, Route | WebSocketRoute) else None
 
 
 def iter_routes(app: FastAPI) -> Iterator[tuple[str, frozenset[str]]]:
@@ -48,7 +95,44 @@ def iter_routes(app: FastAPI) -> Iterator[tuple[str, frozenset[str]]]:
         set (empty for mounts and other verb-less routes).
 
     """
-    yield from _walk(app.router.routes, context=None)
+    for path, route in iter_route_leaves(app):
+        yield (path, frozenset(getattr(route, "methods", None) or ()))
+
+
+def iter_route_leaves(app: FastAPI) -> Iterator[tuple[str, BaseRoute]]:
+    """Yield every route of ``app`` with its fully-prefixed path: HTTP, socket and mount.
+
+    Args:
+      app: The application whose route tree to flatten.
+
+    Yields:
+      leaf: A ``(path, route)`` pair, the route the one a request that reaches it
+        carries as its scope's ``route``.
+
+    """
+    for path, route, _context in _walk(app.router.routes, context=None):
+        yield path, route
+
+
+def iter_api_routes(app: FastAPI) -> Iterator[ApiRouteLeaf]:
+    """Yield every HTTP route of ``app``, fully prefixed; no socket and no mount.
+
+    Args:
+      app: The application whose route tree to flatten.
+
+    Yields:
+      leaf: Each route, with its path and what its includes add.
+
+    """
+    for path, route, context in _walk(app.router.routes, context=None):
+        if isinstance(route, APIRoute):
+            yield ApiRouteLeaf(
+                path=path,
+                route=route,
+                include_dependencies=()
+                if context is None
+                else tuple(context.dependencies),
+            )
 
 
 def registered_paths(app: FastAPI) -> set[str]:
@@ -81,8 +165,8 @@ def _walk(
     routes: list[BaseRoute],
     *,
     context: _RouterIncludeContext | None,
-) -> Iterator[tuple[str, frozenset[str]]]:
-    """Recurse the route tree, composing include-prefixes as it descends."""
+) -> Iterator[tuple[str, BaseRoute, _RouterIncludeContext | None]]:
+    """Recurse the route tree, composing include contexts as it descends."""
     for route in routes:
         if isinstance(route, _IncludedRouter):
             child = route.include_context
@@ -94,5 +178,4 @@ def _walk(
         if not isinstance(route, (Route, WebSocketRoute, Mount)):
             continue
         path = route.path if context is None else context.path_for(route)
-        methods = frozenset(getattr(route, "methods", None) or ())
-        yield (path, methods)
+        yield (path, route, context)

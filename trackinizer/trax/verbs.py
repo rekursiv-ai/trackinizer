@@ -2,13 +2,22 @@
 
 The nine kind names share one ``Kind`` command. Helpers cover recent activity,
 search, identity, scheduling, graphs, costs, confidence, authority, messaging,
-version, export, and visual workspaces.
+version, export, and visual canvases.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast, get_args, override
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Final,
+    NoReturn,
+    Protocol,
+    cast,
+    get_args,
+    override,
+)
 
 import argparse
 import json
@@ -16,20 +25,21 @@ import math
 import sys
 import uuid
 
-from treekle import MutablePlainTree, PlainTree, from_plain, json_loads
+from treekle import from_plain
 
-from trackinizer.client.conversation import delivery_of
+from trackinizer.client.conversation import attested_delivery
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.agent.types.sessions import (
-    AgentToAgentMessage,
+from trackinizer.sagent.session.types import (
+    AgentMessage,
     AssistantMessage,
     ToolCall,
-    ToolResult,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.trax import render
-from trackinizer.trax.commands import Command, HelpPage
-from trackinizer.trax.context import cwd, env, workspace_from_env
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
+from trackinizer.trax.context import check_local_input, cwd, env
+from trackinizer.trax.forward import RUN_CLIS, moved
 from trackinizer.trax.grammar import (
     COST_FIELDS,
     EDGE_ALIASES,
@@ -78,18 +88,6 @@ from trackinizer.trax.render import (
     table_cell,
     table_width,
 )
-
-# EAGER, unlike the functions below: an exception must be a real class to be
-# caught, and a proxy in an ``except`` raises ``TypeError: catching classes
-# that do not inherit from BaseException`` -- on the error path only, so the
-# handler's diagnostic becomes a traceback exactly when a user made an
-# ordinary mistake. ``run.errors`` imports nothing, so this costs no PTY,
-# tail, or adapter machinery.
-from trackinizer.trax.run.errors import (
-    CiphertextDroppedError,
-    LossyConversionError,
-    NotResumableError,
-)
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
@@ -97,21 +95,12 @@ from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
+from trackinizer.wire.wire_sessions import SearchMode, SessionAgent
 
 
 if TYPE_CHECKING:
     from trackinizer.client.client import Client
-    from trackinizer.trax.run import session
-    from trackinizer.trax.run.resume import prepare_resume
     from trackinizer.wire.wire_session_ir import PartBody, RecordBody
-else:
-    from wrapt import lazy_import
-
-    # The resume tail is the only path needing the PTY/tail/adapter machinery
-    # (importing ``trax.run.session`` costs ~324ms), so the WORK is bound
-    # lazily -- mirroring ``cli.py``, which does the same for ``run``.
-    prepare_resume = lazy_import("trackinizer.trax.run.resume", "prepare_resume")
-    session = lazy_import("trackinizer.trax.run.session")
 
 if TYPE_CHECKING:
     from trackinizer.wire.wire_metrics import MetricPoint
@@ -204,7 +193,7 @@ class Kind(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax <kind>",
             description=(
                 "List, show, edit, or add an outbound edge on an inquiry. "
@@ -273,9 +262,7 @@ class Kind(Command):
 
         """
         if verb == "agentsession" and (split := _split_run_tail(rest)) is not None:
-            args = cls.make_parser().parse_args(split[0])
-            cls.run_resume(split[0], split[1], args, client_factory)
-            return
+            cls.run_resume(split[1], cls.make_parser().parse_args(split[0]))
         # Split before the kind's parser, which would refuse the tail's own flags.
         if verb == "agentsession" and (split := _split_records_tail(rest)) is not None:
             cls.run_records(split[0], split[1], client_factory)
@@ -303,7 +290,7 @@ class Kind(Command):
         # generic dispatch below does not know the word, and would read it as
         # a field to show.
         if kind == "AgentSession" and (split := _split_run_tail(rest)) is not None:
-            return cls.run_resume(split[0], split[1], args, client_factory)
+            cls.run_resume(split[1], args)
         if not rest:
             return run_list_query(
                 ListQuery(kinds=(kind,), ranges={}, filters=()),
@@ -322,10 +309,9 @@ class Kind(Command):
             actions = _resolve_stdin_actions(parse_actions(rest))
             cls.run_create(kind, actions, args, client_factory)
             return None
+        # Tokens follow the ref: a ref alone is a subject list, shown above.
         ref, consumed = consume_ref(rest, 0, kind_hint=kind)
         after = rest[consumed:]
-        if not after:
-            return run_show(ref, args, client_factory)
         return run_actions(
             ref,
             _resolve_stdin_actions(parse_actions(after)),
@@ -343,23 +329,19 @@ class Kind(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
         *,
-        against: bool = False,
+        against: bool,
     ) -> None:
         """Run relation.
 
         Args:
           ref: Row identifier.
           relation: Edge kind and inbound flag (reverse direction).
-          tokens: Row-specific suffix (edge index if any).
+          tokens: The edge index, when one was named; empty lists every row.
           args: CLI namespace (sort, format, width).
           client_factory: Callable that creates a client.
           against: Select citations with negative valence.
 
         """
-        if len(tokens) > 1:
-            raise ClientError(
-                f"unexpected positional after relation index: {tokens[1:]!r}",
-            )
         client = client_factory()
         _kind, _target_id, payload = client.get_inquiry(ref)
         edge_kind, _inbound = relation
@@ -412,70 +394,35 @@ class Kind(Command):
     @classmethod
     def run_resume(
         cls,
-        before: Sequence[str],
         tail: Sequence[str],
         args: argparse.Namespace,
-        client_factory: Callable[[], Client],
-    ) -> None:
-        """Dispatch ``agentsession 42 run claude [--lossy] [runner args]``.
+    ) -> NoReturn:
+        """Refuse ``agentsession 42 run claude [--lossy] [runner args]``: it moved.
 
-        ``before`` names the session; ``tail`` is the target CLI followed by
-        whatever the runner should receive. The target is chosen HERE rather
-        than by whatever captured the session -- that is what lets a
-        codex-captured session resume as claude.
-
-        The tail takes its own ``--lossy`` (it gates the CONVERSION, which
-        happens before any runner exists) and passes everything else through:
-        ``run claude --as bob -- --model opus`` re-emits as
-        ``session.main(["claude", "--as", "bob", "--", "--model", "opus"])``.
-
-        The run writes into the session it resumes, as a new part, and uploads only
-        what the CLI writes after the history it was loaded with.
+        Resuming a stored session runs an agent CLI, which moved out of trax. A
+        malformed request is still named as such first, so the refusal is about the
+        one thing that changed. The session is one ref: ``_split_run_tail`` splits
+        only right after one.
 
         Args:
-          before: Session identifier.
           tail: Target CLI followed by runner args.
           args: CLI namespace (lossy conversion flag).
-          client_factory: Callable that creates a client.
+
+        Raises:
+          ClientError: The tail names no resumable CLI.
+          SystemExit: The request was well formed; it says it moved, with status 2.
 
         """
         _require_creation(args)
         if not tail:
             raise ClientError("run needs a target CLI: trax agentsession 42 run claude")
-        if not starts_with_ref(before):
-            raise ClientError("run needs one session: trax agentsession 42 run claude")
-        target, *runner_args = tail
-        boundary = runner_args.index("--") if "--" in runner_args else len(runner_args)
-        options, native = runner_args[:boundary], runner_args[boundary:]
-        lossy = bool(_arg_values(args).get("lossy", False)) or "--lossy" in options
-        forwarded = [arg for arg in options if arg != "--lossy"] + native
-        ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
-        if before[consumed:]:
+        if tail[0] not in RUN_CLIS:
             raise ClientError(
-                f"unexpected tokens before 'run': {list(before[consumed:])}",
+                f"{tail[0]!r} cannot resume a stored session: it has no stable "
+                "per-session id to re-enter with. "
+                f"Resumable: {', '.join(sorted(RUN_CLIS))}.",
             )
-        client = client_factory()
-        _kind, session_id = client.resolve_id(ref)
-        try:
-            written = prepare_resume(client, session_id, target, lossy=lossy)
-        except NotResumableError as err:
-            raise ClientError(str(err)) from err
-        except LossyConversionError as err:
-            raise ClientError(str(err)) from err
-        except CiphertextDroppedError as err:
-            raise ClientError(
-                f"{err} (its records remain searchable; only the replay is lost)",
-            ) from err
-        del args
-        echo(f"resuming {ref} as {target} from {written.path}")
-        session.main(
-            [target, *forwarded],
-            client_factory=client_factory,
-            resume_path=written.path,
-            cli_session_id=str(written.cli_session_id),
-            attach=written.attach,
-            prefix_bytes=written.prefix_bytes,
-        )
+        moved("agentsession run")
 
     @classmethod
     def run_records(
@@ -499,13 +446,8 @@ class Kind(Command):
           ClientError: The session or a flag is not one this reads.
 
         """
-        if not starts_with_ref(before):
-            raise ClientError("records needs one session: trax agentsession 42 records")
-        ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
-        if before[consumed:]:
-            raise ClientError(
-                f"unexpected tokens before 'records': {list(before[consumed:])}",
-            )
+        # One session ref: ``_split_records_tail`` splits only right after one.
+        ref, _consumed = consume_ref(before, kind_hint="AgentSession")
         try:
             options, extra = _records_parser().parse_known_args(list(tail))
         except argparse.ArgumentError as err:
@@ -545,11 +487,8 @@ class Kind(Command):
     ) -> None:
         """``experiment <ref> metric ...``: read or write one experiment's grid."""
         _require_creation(args)
-        ref, consumed = consume_ref(before, 0, kind_hint="Experiment")
-        if consumed != len(before):
-            raise ClientError(
-                f"unexpected tokens before metric: {list(before[consumed:])!r}",
-            )
+        # Whole: ``_metric_prefix`` split the tail only after a ref that was all of it.
+        ref, _consumed = consume_ref(before, kind_hint="Experiment")
         client = client_factory()
         _kind, exp_id = client.resolve_id(ref)
         if action.write is not None:
@@ -557,7 +496,7 @@ class Kind(Command):
                 client,
                 exp_id,
                 action,
-                bulk_ok=bool(_arg_values(args).get("makeitso", False)),
+                bulk_ok=bool(_arg_values(args).get("makeitso")),
             )
             echo(f"written: {written}")
             return
@@ -626,7 +565,7 @@ class Kind(Command):
             client,
             exp_id,
             action,
-            bulk_ok=bool(_arg_values(args).get("makeitso", False)),
+            bulk_ok=bool(_arg_values(args).get("makeitso")),
         )
         echo(f"written: {written}")
 
@@ -721,11 +660,15 @@ class Kind(Command):
         edge_kind, inbound = relation
         bucket = "backlinks" if inbound else "edges"
         rows = from_plain(
-            from_plain(payload.get(bucket), dict[str, object], default={}).get(
+            from_plain(
+                payload.get(bucket),
+                dict[str, object],
+                default=dict[str, object](),
+            ).get(
                 edge_kind,
             ),
             list[dict[str, object]],
-            default=[],
+            default=list[dict[str, object]](),
         )
         if against:
             # A ``dis*`` spelling selects the negative-valence (against) subset of
@@ -798,14 +741,22 @@ class Kind(Command):
             for change in from_plain(
                 source_payload.get("changes"),
                 list[dict[str, object]],
-                default=[],
+                default=list[dict[str, object]](),
             )
             if any(
                 from_plain(snapshot.get("peer_edge_kind"), str, default="") == edge_kind
                 and from_plain(snapshot.get("peer_id"), str, default="") == target_id
                 for snapshot in (
-                    from_plain(change.get("old"), dict[str, object], default={}),
-                    from_plain(change.get("new"), dict[str, object], default={}),
+                    from_plain(
+                        change.get("old"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ),
+                    from_plain(
+                        change.get("new"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ),
                 )
             )
         ]
@@ -1026,7 +977,7 @@ class Kind(Command):
         # arg". ``None`` threads the clear through ``add_edge`` to the labels
         # route that writes NULL; ``()`` leaves stored labels untouched
         # (TRAX-CLI-004).
-        labels = from_plain(metadata.get("labels"), list[str], default=[])
+        labels = from_plain(metadata.get("labels"), list[str], default=list[str]())
         edge_labels: Sequence[str] | None = labels
         if "labels" in metadata and not labels:
             edge_labels = None
@@ -1578,9 +1529,8 @@ class Kind(Command):
           client_factory: Callable that creates a client.
 
         """
-        spec = FIELDS_BY_NAME.get(action.field)
-        if spec is None or spec.shape != "list":
-            raise ClientError(f"unknown list field {action.field!r}")
+        # The parser builds an ``AddList`` / ``RemoveList`` for a list field alone.
+        spec = FIELDS_BY_NAME[action.field]
         include = isinstance(action, AddList)
         client = client_factory()
         actor = resolve_actor(_arg_str(args, "actor"), client)
@@ -1603,7 +1553,7 @@ class Kind(Command):
 
     @classmethod
     @override
-    def help_text_for(cls, verb: str) -> str:
+    def verb_help_text(cls, verb: str) -> str:
         """Help text for one kind verb."""
         return inquiry_help_text(verb)
 
@@ -1611,7 +1561,7 @@ class Kind(Command):
     @override
     def help_with_context(cls, verb: str, prefix: list[str]) -> str:
         """Per-kind help specialized to the tokens typed before ``help``."""
-        return kind_help_for(KIND_LOWER[verb], prefix)
+        return kind_help(KIND_LOWER[verb], prefix)
 
 
 def resolve_actor(actor: str, client: Client) -> Inquiry.Actor:
@@ -1632,7 +1582,7 @@ def resolve_actor(actor: str, client: Client) -> Inquiry.Actor:
     return actor or client.author or env("USER") or env("USERNAME") or "user"
 
 
-def kind_help_for(kind: Inquiry.InquiryKind, tokens: Sequence[str]) -> str:
+def kind_help(kind: Inquiry.InquiryKind, tokens: Sequence[str]) -> str:
     """Help for one kind, narrowing to a row or field as the tokens get longer.
 
     Args:
@@ -1790,7 +1740,7 @@ def run_bulk_apply(
     # The guard is keyed on match count, not command shape: a single-row match
     # is as safe as a seq-targeted edit, so only a genuinely multi-row write
     # demands explicit confirmation. This is intentional (reviewed).
-    if len(rows) > 1 and not bool(_arg_values(args).get("makeitso", False)):
+    if len(rows) > 1 and not bool(_arg_values(args).get("makeitso")):
         echo(f"would apply to {len(rows)} rows; pass --makeitso to proceed:")
         print_rows(rows, _arg_str(args, "format_"), width=_arg_width(args))
         return
@@ -1872,8 +1822,8 @@ def run_cost_field(
     del args
     client = client_factory()
     _kind, target_id = client.resolve_id(ref)
-    payload = client.cost_for(target_id)
-    # ``cost_for`` keys by axis (``agent_usd`` / ``resource_usd``), not by
+    payload = client.inquiry_cost(target_id)
+    # ``inquiry_cost`` keys by axis (``agent_usd`` / ``resource_usd``), not by
     # the ``marginal_cost_*`` column ``cost_key`` returns; strip the prefix.
     axis = cost_key(field).removeprefix("marginal_cost_")
     echo(f"{payload.get(axis, 0):.6f}")
@@ -2043,7 +1993,7 @@ class Recent(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax recent", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax recent", description=cls.__doc__)
         parser.add_argument("--limit", type=_positive_int, default=50)
         parser.add_argument(
             "--format",
@@ -2072,50 +2022,48 @@ class Recent(Command):
 
 
 class Search(Command):
-    """Search captured sessions: embeddings + full text, RRF-merged."""
+    """Search by meaning and by keyword: embeddings + full text, RRF-merged.
 
-    # NOT ``search``: that verb was retired (the filter grammar subsumed
-    # inquiry search; ``cli_test.test_search_verb_is_gone`` pins its removal).
-    # Session search is a distinct surface over ``session_records``, so it takes
-    # its own, previously-unused name rather than resurrecting the retired one.
-    names = ("search-sessions",)
+    Inquiry texts and edge notes, or with ``--kind agentsession`` session
+    transcripts. The filter grammar matches fields by pattern; this ranks by both
+    arms, which no filter spells.
+    """
+
+    names = ("search",)
     help = HelpPage(
-        usage='trax search-sessions "QUERY" [OPTIONS]',
-        summary="Search captured agent sessions by meaning and by keyword.",
+        usage='trax search "QUERY" [OPTIONS]',
+        summary="Search inquiries and edge notes, or session transcripts, by meaning "
+        "and by keyword.",
         arguments=(("QUERY", "The search text (quote multi-word queries)."),),
         options=(
-            ("--limit INT", "Maximum hits to return (default 20)."),
+            ("--kind KIND", "One kind; --kind agentsession searches transcripts."),
             (
-                "--no-semantic",
-                "Full-text only; skip the embedding arm even if available.",
+                "--mode TEXT",
+                "fused|keyword|vector: both arms (default), or one alone.",
             ),
+            ("--limit INT", "Maximum hits to return (default 20)."),
             ("--format TEXT", "text|json."),
         ),
         examples=(
-            'trax search-sessions "advisory lock deadlock"',
-            'trax search-sessions "retry backoff" --limit 5',
-            'trax search-sessions "postgres" --no-semantic',
-            'trax search-sessions "deploy" --format json',
+            'trax search "retry backoff"',
+            'trax search "lock order" --kind belief --mode vector',
+            'trax search "advisory lock deadlock" --kind agentsession',
+            'trax search "deploy" --kind agentsession --format json',
         ),
     )
 
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
-            prog="trax search-sessions",
-            description=cls.__doc__,
-        )
+        parser = TraxArgumentParser(prog="trax search", description=cls.__doc__)
         parser.add_argument("query", metavar="QUERY", help="search text")
         parser.add_argument("--limit", type=_positive_int, default=20)
-        # Semantic on by default; the server degrades to full-text-only when no
-        # session embedder is configured, so this flag is a caller opt-OUT.
         parser.add_argument(
-            "--semantic",
-            dest="semantic",
-            default=True,
-            action=argparse.BooleanOptionalAction,
+            "--mode",
+            default="fused",
+            choices=get_args(cast(object, SearchMode.__value__)),
         )
+        parser.add_argument("--kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument(
             "--format",
             dest="format_",
@@ -2133,15 +2081,22 @@ class Search(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        body = client_factory().search_sessions(
-            _arg_str(args, "query"),
-            semantic=bool(getattr(args, "semantic", True)),
-            limit=from_plain(_arg_values(args).get("limit"), int, default=0),
-        )
-        if _arg_str(args, "format_") == "json":
-            echo(render.format_json(body), nl=False)
+        query = _arg_str(args, "query")
+        mode = cast("SearchMode", _arg_str(args, "mode"))
+        limit = from_plain(_arg_values(args).get("limit"), int, default=0)
+        word = _arg_str(args, "kind")
+        kind = KIND_LOWER[word] if word else None
+        client = client_factory()
+        if kind == "AgentSession":
+            body = client.search_sessions(query, mode=mode, limit=limit)
+            text = render.format_session_hits(body)
         else:
-            echo(render.format_session_hits(body), nl=False)
+            body = client.search_inquiries(query, mode=mode, kind=kind, limit=limit)
+            text = render.format_inquiry_hits(body)
+        echo(
+            render.format_json(body) if _arg_str(args, "format_") == "json" else text,
+            nl=False,
+        )
 
 
 class Id(Command):
@@ -2174,7 +2129,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax id", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax id", description=cls.__doc__)
         parser.add_argument("uuid", metavar="UUID", help="the row's global id")
         parser.add_argument(
             "--format",
@@ -2230,7 +2185,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax next", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax next", description=cls.__doc__)
         parser.add_argument(
             "--format",
             dest="format_",
@@ -2308,7 +2263,7 @@ Examples:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        return argparse.ArgumentParser(prog="trax blocked", description=cls.__doc__)
+        return TraxArgumentParser(prog="trax blocked", description=cls.__doc__)
 
     @classmethod
     @override
@@ -2353,7 +2308,7 @@ Examples:
                 for ref in from_plain(
                     row.get("requires"),
                     list[dict[str, object]],
-                    default=[],
+                    default=list[dict[str, object]](),
                 )
                 if (pid := str(ref.get("id")))
                 and status_by_id.get(pid, "active") == "active"
@@ -2397,7 +2352,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax graph", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax graph", description=cls.__doc__)
         parser.add_argument("--open-only", dest="open_only", action="store_true")
         return parser
 
@@ -2529,7 +2484,7 @@ Examples:
   trax issue 7 status to complete              move issue to complete
 
 Values:
-  status: active complete abandoned invalid
+  status: active complete stopped abandoned invalid
 
 Options:
   --width INT                                  truncate rows to this width
@@ -2538,7 +2493,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax board", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax board", description=cls.__doc__)
         parser.add_argument("--width", type=int, default=None)
         return parser
 
@@ -2578,7 +2533,7 @@ Options:
             groups.setdefault(str(row.get("status") or "?"), []).append(row)
         for status in cast(
             tuple[Inquiry.Status, ...],
-            get_args(Inquiry.Status.__value__),
+            get_args(cast(object, Inquiry.Status.__value__)),
         ):
             bucket = groups.get(status, [])
             if not bucket:
@@ -2622,7 +2577,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax cost", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax cost", description=cls.__doc__)
         parser.add_argument("kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument("seq", type=int)
         parser.add_argument("--deep", action="store_true")
@@ -2649,7 +2604,7 @@ Options:
             seq=from_plain(_arg_values(args).get("seq"), int, default=0),
         )
         _, target_id = client.resolve_id(ref)
-        payload = client.cost_for(
+        payload = client.inquiry_cost(
             target_id,
             deep=bool(_arg_values(args).get("deep", False)),
         )
@@ -2688,7 +2643,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax confidence",
             description=cls.__doc__,
         )
@@ -2717,7 +2672,7 @@ Options:
             seq=from_plain(_arg_values(args).get("seq"), int, default=0),
         )
         _, target_id = client.resolve_id(ref)
-        confidence = client.confidence_for(target_id)
+        confidence = client.derived_confidence(target_id)
         if _arg_str(args, "format_") == "json":
             echo(render.format_json({"confidence": confidence}), nl=False)
             return
@@ -2747,7 +2702,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax authority", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax authority", description=cls.__doc__)
         parser.add_argument("kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument("seq", type=int)
         parser.add_argument(
@@ -2773,7 +2728,7 @@ Options:
             seq=from_plain(_arg_values(args).get("seq"), int, default=0),
         )
         _, target_id = client.resolve_id(ref)
-        scores = client.authority_for(target_id)
+        scores = client.derived_authority(target_id)
         if _arg_str(args, "format_") == "json":
             echo(render.format_json(scores), nl=False)
             return
@@ -2785,28 +2740,35 @@ Options:
 
 
 class Send(Command):
-    """Send a message into a live agent session by routing name."""
+    """Send a message to one agent of a live session, or to sessions by routing name."""
 
     names = ("send",)
     help = """\
-Usage: trax send @ACTOR[:ROOM] TEXT...
+Usage: trax send LABEL#SESSION TEXT...
+       trax send @ACTOR[:ROOM] TEXT...
 
 Examples:
-  trax send @scientist "check the logs"         message a live session
+  trax send lead#412 "status?"                  the agent lead of session 412
+  trax send lead#0b1c...-uuid "status?"         the same session, by its UUID
+  trax send @scientist "check the logs"         every live session of a name
   trax send @scientist:sear "status?"           scope to a room
   trax send scientist hello                      the @ is optional
 
 Notes:
-  The target is an AgentSession's routing name (its --as owner). The message
-  is injected into the live CLI's input. Delivery is drop-if-absent: if no
-  live session matches, nothing is sent and the receipt says so.
+  LABEL#SESSION names one agent by its label in a session, the session by
+  its number or its UUID: what follows the last #. A bare name#N is
+  always a session's number; write @name#N for the routing name name#N.
+  @ACTOR is an AgentSession's routing name (its --as owner). The message
+  goes to the agent process serving each session, or into its live CLI's
+  input. Delivery is drop-if-absent: if no live session takes it, nothing
+  is sent and the receipt says so.
 """
 
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax send", description=cls.__doc__)
-        parser.add_argument("target", help="@actor or @actor:room")
+        parser = TraxArgumentParser(prog="trax send", description=cls.__doc__)
+        parser.add_argument("target", help="label#session, @actor or @actor:room")
         parser.add_argument("text", nargs="+", help="message body")
         return parser
 
@@ -2819,15 +2781,17 @@ Notes:
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        actor, room = _parse_target(_arg_str(args, "target"))
-        delivered = client_factory().send_message(
-            actor,
-            " ".join(_arg_text(args)),
-            room=room,
-        )
+        target, room = _parse_target(_arg_str(args, "target"))
+        text = " ".join(_arg_text(args))
+        client = client_factory()
+        if isinstance(target, SessionAgent):
+            delivered = client.message_agent(target, text)
+            scope = str(target)
+        else:
+            delivered = client.send_message(target, text, room=room)
+            scope = f"@{target}" if room is None else f"@{target}:{room}"
         if not delivered:
-            scope = f"@{actor}:{room}" if room is not None else f"@{actor}"
-            echo(f"undelivered: no live session matches {scope}")
+            echo(f"undelivered: no agent is connected to a live session {scope} names")
             return
         echo(f"sent to {len(delivered)} session(s)")
 
@@ -2851,7 +2815,7 @@ Notes:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        return argparse.ArgumentParser(prog="trax version", description=cls.__doc__)
+        return TraxArgumentParser(prog="trax version", description=cls.__doc__)
 
     @classmethod
     @override
@@ -2875,7 +2839,7 @@ Usage: trax export [labels <op> <value> ...]
 Examples:
   trax export > graph.jsonl                     back up the whole graph
   trax export labels is org:rekursiv            one org's subgraph
-  trax export labels is org:rekursiv labels nre '^machine:'
+  trax export labels is org:rekursiv labels nre '^host:'
                                                 that org, minus device rows
 
 Notes:
@@ -2896,7 +2860,7 @@ Notes:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax export",
             description=cls.__doc__,
         )
@@ -2917,454 +2881,16 @@ Notes:
             echo(line)
 
 
-class Workspace(Command):
-    """Read or operate the visual workspace paired with an agent."""
-
-    names = ("workspace",)
-    help = HelpPage(
-        usage="trax workspace WORKSPACE_UUID [show TYPE | navigate ROUTE | highlight UUID[,UUID...] | hide UUID | focus UUID | place UUID PLACEMENT | mark X1,Y1 X2,Y2 | mark remove MARK_ID | mark clear]",
-        summary="Read a workspace, change its visible modules, move its page, or mark records.",
-        options=(
-            (
-                "--record UUID",
-                "Record target for a shown visual; a box's, UUID[,UUID...].",
-            ),
-            (
-                "--page HASH",
-                "With `mark clear`, clear only the boxes shown on page HASH.",
-            ),
-            (
-                "--param KEY=VALUE",
-                (
-                    "Parameter of a shown visual, repeatable; its value is read as "
-                    "the type the visual catalog gives that parameter."
-                ),
-            ),
-        ),
-        examples=(
-            "trax workspace 11111111-1111-1111-1111-111111111111",
-            "trax workspace UUID show trax.subgraph --record RECORD_UUID --placement side",
-            "trax workspace UUID show trax.timeline --record RECORD_UUID --param direction_limit=5",
-            "trax workspace UUID navigate '#/list/Issue'",
-            "trax workspace UUID highlight RECORD_UUID,RECORD_UUID",
-            "trax workspace UUID hide chat",
-            "trax workspace UUID hide INSTANCE_UUID",
-            "trax workspace UUID mark 0.1,0.2 0.4,0.5 --record RECORD_UUID",
-            "trax workspace UUID mark remove MARK_UUID",
-            "trax workspace UUID mark clear",
-            "trax workspace UUID mark clear --page '#/graph'",
-            "trax workspace UUID theme to light",
-            "trax workspace UUID chat_side to right",
-            "trax workspace UUID theme to null",
-        ),
-        notes=(
-            "Mutations fetch the current revision before applying one operation.",
-            (
-                "mark draws a red box on the canvas, which people see and draw on too, "
-                "and which stays until someone clicks it away; its corners are X,Y "
-                "fractions (0 to 1) of the stage. It shows on the page the station is on. "
-                "`trax workspace UUID` lists the boxes with their ids and what each covers."
-            ),
-            (
-                "KEY to VALUE sets the station owner's preference KEY (VALUE read as JSON "
-                "when it parses, else as text; null puts it back to its default)."
-            ),
-        ),
-    )
-
-    @classmethod
-    @override
-    def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax workspace", description=cls.__doc__)
-        parser.add_argument("workspace_id", nargs="?")
-        parser.add_argument(
-            "action",
-            nargs="?",
-            metavar="|".join((*_WORKSPACE_ACTIONS, "KEY")),
-            help=f"one of {', '.join(_WORKSPACE_ACTIONS)}, or a preference KEY followed by: to VALUE",
-        )
-        parser.add_argument("subject", nargs="*")
-        parser.add_argument("--record")
-        parser.add_argument(
-            "--placement",
-            choices=("main", "left", "side", "floating"),
-        )
-        parser.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
-        parser.add_argument("--page")
-        return parser
-
-    @classmethod
-    @override
-    def run(
-        cls,
-        verb: str,
-        args: argparse.Namespace,
-        client_factory: Callable[[], Client],
-    ) -> None:
-        del verb
-        flags = _with_default_workspace(cast(_WorkspaceArgs, args))
-        workspace_id = _workspace_uuid(flags.workspace_id or "", "workspace")
-        client = client_factory()
-        if flags.action is None:
-            record = flags.record or ""
-            if (
-                flags.subject
-                or record
-                or flags.placement is not None
-                or flags.param
-                or flags.page is not None
-            ):
-                raise ClientError("workspace read does not accept operation arguments")
-            _print_workspace(client.read_workspace(workspace_id))
-            return
-        if _is_preference(flags):
-            updated = client.set_preferences(
-                workspace_id,
-                change={flags.action or "": _preference_value(flags.subject[1])},
-            )
-            _print_workspace(updated)
-            return
-        if flags.action not in _WORKSPACE_ACTIONS:
-            raise ClientError(
-                f"unknown workspace action {flags.action!r}: use one of "
-                f"{', '.join(_WORKSPACE_ACTIONS)}, or KEY to VALUE",
-            )
-        if flags.action == "highlight":
-            updated = client.highlight(workspace_id, ids=_highlight_ids(flags))
-            _print_workspace(updated)
-            return
-        if flags.action == "mark":
-            _print_workspace(_mark(client, workspace_id=workspace_id, args=flags))
-            return
-        if _is_chat(flags):
-            updated = client.chat_window(workspace_id, hidden=flags.action == "hide")
-            _print_workspace(updated)
-            return
-        parameters = (
-            _visual_parameters(client, visual_type=flags.subject[0])
-            if flags.action == "show" and flags.param and len(flags.subject) == 1
-            else {}
-        )
-        operation = _workspace_operation(flags, parameters=parameters)
-        if operation["kind"] == "navigate":
-            updated = client.navigate(workspace_id, route=str(operation["route"]))
-        else:
-            updated = client.apply_workspace_operation(
-                workspace_id,
-                operation=operation,
-            )
-        _print_workspace(updated)
-
-
-def _workspace_operation(
-    args: _WorkspaceArgs,
-    *,
-    parameters: Mapping[str, str],
-) -> dict[str, object]:
-    """Build one validated workspace operation from CLI arguments."""
-    subject = list(args.subject)
-    operation: dict[str, object]
-    if args.param and args.action != "show":
-        raise ClientError("--param is accepted only with show")
-    if args.action == "show":
-        if len(subject) != 1:
-            raise ClientError("show requires one visual type")
-        operation = {"kind": "show", "visual_type": subject[0]}
-        if args.placement is not None:
-            operation["placement"] = args.placement
-        if args.record is not None:
-            operation["record_id"] = str(_workspace_uuid(args.record, "record"))
-        if args.param:
-            operation["params"] = _workspace_params(args.param, parameters=parameters)
-    elif args.action == "navigate":
-        if len(subject) != 1 or args.record is not None or args.placement is not None:
-            raise ClientError("navigate requires one route")
-        operation = {"kind": "navigate", "route": subject[0]}
-    elif args.action in {"hide", "focus"}:
-        if len(subject) != 1 or args.record is not None or args.placement is not None:
-            raise ClientError(f"{args.action} requires one instance UUID")
-        operation = {
-            "kind": args.action,
-            "instance_id": str(_workspace_uuid(subject[0], "instance")),
-        }
-    else:
-        if (
-            len(subject) != 2
-            or args.record is not None
-            or args.placement is not None
-            or subject[1] not in {"main", "left", "side", "floating"}
-        ):
-            raise ClientError("place requires an instance UUID and placement")
-        operation = {
-            "kind": "place",
-            "instance_id": str(_workspace_uuid(subject[0], "instance")),
-            "placement": subject[1],
-        }
-    return operation
-
-
-def _mark(
-    client: Client,
-    *,
-    workspace_id: uuid.UUID,
-    args: _WorkspaceArgs,
-) -> dict[str, PlainTree]:
-    """Draw, remove or clear red boxes: ``mark X1,Y1 X2,Y2``, ``mark remove ID``, ``mark clear``."""
-    subject = args.subject
-    if args.placement is not None or args.param:
-        raise ClientError("mark takes no --placement or --param")
-    if subject == ["clear"] and args.record is None:
-        return client.apply_workspace_operation(
-            workspace_id,
-            operation={"kind": "clear_marks"}
-            | ({} if args.page is None else {"page": args.page}),
-        )
-    if args.page is not None:
-        raise ClientError("--page goes with mark clear only")
-    if subject[:1] == ["remove"] and args.record is None:
-        if len(subject) != 2:
-            raise ClientError("mark remove takes one MARK_ID")
-        return client.apply_workspace_operation(
-            workspace_id,
-            operation={
-                "kind": "remove_mark",
-                "id": str(_workspace_uuid(subject[1], "mark")),
-            },
-        )
-    if len(subject) != 2 or subject[0] in {"clear", "remove"}:
-        raise ClientError("mark takes X1,Y1 X2,Y2, or remove MARK_ID, or clear")
-    mark: dict[str, object] = {"points": [_mark_point(point) for point in subject]}
-    if args.record is not None:
-        mark["covers"] = {
-            "records": [
-                str(_workspace_uuid(item, "record"))
-                for item in args.record.split(",")
-                if item
-            ],
-        }
-    return client.apply_workspace_operation(
-        workspace_id,
-        operation={"kind": "mark", "mark": mark},
-    )
-
-
-def _mark_point(text: str) -> dict[str, float]:
-    """Read ``X,Y`` as fractions of the stage."""
-    try:
-        x, y = text.split(",")
-        return {"x": float(x), "y": float(y)}
-    except ValueError as error:
-        raise ClientError(
-            f"a point is X,Y fractions of the stage, not {text!r}",
-        ) from error
-
-
-def _is_preference(args: _WorkspaceArgs) -> bool:
-    """Whether the words are ``KEY to VALUE``: set the station owner's preference KEY."""
-    if args.action in _WORKSPACE_ACTIONS or args.subject[:1] != ["to"]:
-        return False
-    if (
-        len(args.subject) != 2
-        or args.record is not None
-        or args.placement is not None
-        or args.param
-    ):
-        raise ClientError(f"{args.action} to takes one VALUE and no other argument")
-    return True
-
-
-def _preference_value(text: str) -> MutablePlainTree:
-    """Read a preference's value: as JSON when it parses (``true``, ``null``), else as text."""
-    try:
-        return json_loads(text)
-    except json.JSONDecodeError:
-        return text
-
-
-def _is_chat(args: _WorkspaceArgs) -> bool:
-    """Whether the action is `hide chat` or `show chat`: the tab's Chat window."""
-    if args.action not in {"hide", "show"} or args.subject != ["chat"]:
-        return False
-    if args.record is not None or args.placement is not None or args.param:
-        raise ClientError(f"{args.action} chat takes no other argument")
-    return True
-
-
-def _highlight_ids(args: _WorkspaceArgs) -> list[uuid.UUID]:
-    """Read ``highlight``'s one comma-separated UUID list; an empty one clears."""
-    if len(args.subject) != 1 or args.record is not None or args.placement is not None:
-        raise ClientError("highlight requires UUID[,UUID...] ('' clears)")
-    return [
-        _workspace_uuid(item, "record") for item in args.subject[0].split(",") if item
-    ]
-
-
-def _workspace_params(
-    pairs: list[str],
-    *,
-    parameters: Mapping[str, str],
-) -> dict[str, str | int | bool]:
-    """Read ``KEY=VALUE`` pairs, each value as the type the catalog gives its key."""
-    params: dict[str, str | int | bool] = {}
-    for pair in pairs:
-        key, equals, value = pair.partition("=")
-        if not equals or not key.isidentifier():
-            raise ClientError(
-                f"--param needs KEY=VALUE with a plain name, got {pair!r}",
-            )
-        if key in params:
-            raise ClientError(f"--param {key} was given more than once")
-        if key not in parameters:
-            raise ClientError(
-                f"--param {key} is not a parameter of this visual; it takes: "
-                f"{', '.join(parameters) or 'none'}",
-            )
-        params[key] = _workspace_param_value(key=key, value=value, kind=parameters[key])
-    return params
-
-
-def _workspace_param_value(*, key: str, value: str, kind: str) -> str | int | bool:
-    """Read ``value`` as a catalog parameter ``kind``: string, integer or boolean."""
-    if kind == "integer":
-        if not (value.isascii() and value.removeprefix("-").isdecimal()):
-            raise ClientError(f"--param {key} needs an integer, got {value!r}")
-        return int(value)
-    if kind == "boolean":
-        if value not in {"true", "false"}:
-            raise ClientError(f"--param {key} needs true or false, got {value!r}")
-        return value == "true"
-    return value
-
-
-def _visual_parameters(client: Client, *, visual_type: str) -> dict[str, str]:
-    """Return the parameters a visual takes, by name, with their catalog types."""
-    catalog = from_plain(client.get("/api/visuals"), dict[str, object])
-    visuals = from_plain(catalog.get("visuals"), list[dict[str, object]], default=[])
-    for visual in visuals:
-        if visual.get("type") == visual_type:
-            schemas = from_plain(
-                visual.get("parameter_schema"),
-                dict[str, dict[str, object]],
-                default={},
-            )
-            return {
-                name: from_plain(schema.get("type"), str, default="")
-                for name, schema in schemas.items()
-            }
-    raise ClientError(f"{visual_type!r} is not a visual in the catalog")
-
-
-def _print_workspace(payload: object) -> None:
-    """Print workspace and visual identifiers in a compact readable form."""
-    state = from_plain(payload, dict[str, object])
-    workspace_id = from_plain(state.get("id"), str, default="unknown")
-    revision = from_plain(state.get("revision"), int, default=0)
-    focused = from_plain(state.get("focused_instance"), str, default="none")
-    echo(f"workspace {workspace_id} revision {revision} focused {focused}")
-    preferences = from_plain(state.get("preferences"), dict[str, object], default={})
-    if preferences:
-        echo(
-            "  preferences "
-            + " ".join(
-                f"{key}={json.dumps(value)}"
-                for key, value in sorted(preferences.items())
-            ),
-        )
-    visuals = from_plain(state.get("visuals"), list[dict[str, object]], default=[])
-    if not visuals:
-        echo("  (no visuals)")
-    for visual in visuals:
-        instance_id = from_plain(visual.get("id"), str, default="unknown")
-        visual_type = from_plain(visual.get("type"), str, default="unknown")
-        placement = from_plain(visual.get("placement"), str, default="main")
-        record_id = from_plain(visual.get("record_id"), str, default="")
-        target = f" record={record_id}" if record_id else ""
-        echo(f"  {visual_type} {instance_id} {placement}{target}")
-    _print_marks(state)
-
-
-def _print_marks(state: Mapping[str, object]) -> None:
-    """Print every box with its id, page and what it covers."""
-    labels = from_plain(state.get("record_labels"), dict[str, str], default={})
-    for mark in from_plain(state.get("marks"), list[dict[str, object]], default=[]):
-        covers = from_plain(mark.get("covers"), dict[str, list[str]], default={})
-        named = [labels.get(each, each) for each in covers.get("records", [])]
-        named += covers.get("instances", [])
-        echo(
-            f"  box {mark.get('id')} by {mark.get('author')} "
-            f"on {mark.get('page') or 'no page'} covers: {', '.join(named) or 'nothing'}",
-        )
-
-
-def _workspace_uuid(value: str, label: str) -> uuid.UUID:
-    """Parse one UUID and report malformed command-line identifiers clearly."""
-    try:
-        return uuid.UUID(value)
-    except ValueError as error:
-        raise ClientError(f"{label} is not a valid UUID: {value!r}") from error
-
-
-_WORKSPACE_ACTIONS: Final = (
-    "show",
-    "navigate",
-    "highlight",
-    "hide",
-    "focus",
-    "place",
-    "mark",
-)
-"""The operations a workspace takes by name; any other word starts ``KEY to VALUE``."""
-
-
-class _WorkspaceArgs(Protocol):
-    workspace_id: str | None
-    action: str | None
-    subject: list[str]
-    record: str | None
-    placement: str | None
-    param: list[str]
-    page: str | None
-
-
-# ``trax workspace show trax.subgraph`` parses ``show`` as the id; when that is not a
-# UUID and ``$TRAX_WORKSPACE`` (or ``$LC_TRAX_WORKSPACE``) names a station, the words
-# shift right by one and the station is the id.
-def _with_default_workspace(args: _WorkspaceArgs) -> _WorkspaceArgs:
-    """Fill in the id a `trax run` session was placed on when the command names none."""
-    named = args.workspace_id
-    if named is not None:
+# Without ``@``, a ``#`` makes the target an agent of a session; with it, or with no
+# ``#``, a routing name, which may itself hold ``#`` (``scientist#2``). A single ``:``
+# separates a routing name's optional room.
+def _parse_target(target: str) -> tuple[str | SessionAgent, str | None]:
+    """Split a target into an agent of a session, or an actor and its room."""
+    if not target.startswith("@") and "#" in target:
         try:
-            _ = uuid.UUID(named)
-        except ValueError:
-            pass
-        else:
-            return args
-    station = workspace_from_env(
-        {
-            name: value
-            for name in ("TRAX_WORKSPACE", "LC_TRAX_WORKSPACE")
-            if (value := env(name)) is not None
-        },
-    )
-    if station is None:
-        if named is None:
-            raise ClientError(
-                "no workspace: give its UUID, or run inside a `trax run` session "
-                "placed on a station ($TRAX_WORKSPACE)",
-            )
-        return args
-    if named is not None:
-        args.action, args.subject = (
-            named,
-            [word for word in (args.action, *args.subject) if word is not None],
-        )
-    args.workspace_id = str(station)
-    return args
-
-
-# The leading ``@`` is optional; a single ``:`` separates an optional room.
-def _parse_target(target: str) -> tuple[str, str | None]:
-    """Split a ``@actor[:room]`` target into ``(actor, room)``."""
+            return SessionAgent.parse(target), None
+        except ValueError as error:
+            raise ClientError(str(error)) from None
     spec = target.removeprefix("@")
     actor, sep, room = spec.partition(":")
     if not actor:
@@ -3504,6 +3030,7 @@ def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField
     """Resolve one field value: ``-`` is stdin, ``@path`` a file, else verbatim."""
     if not isinstance(field.value, str):
         return field, False
+    check_local_input(field.value)
     if field.value == "-":
         if used_stdin:
             raise ClientError("stdin value can only be used once per command")
@@ -3706,18 +3233,13 @@ def _split_records_tail(
 
 def _records_parser() -> argparse.ArgumentParser:
     """Return the parser of the ``records`` action's own flags."""
-    parser = argparse.ArgumentParser(
+    parser = TraxArgumentParser(
         prog="trax agentsession SEQ records",
-        exit_on_error=False,
+        exit_on_error=False,  # pragma: no mutate[truthiness]
     )
-    parser.add_argument("--part", type=int, default=None)
-    parser.add_argument("--to", default="", metavar="PART:IDX")
-    parser.add_argument(
-        "--format",
-        dest="format_",
-        choices=("text", "json"),
-        default="text",
-    )
+    parser.add_argument("--part", type=int)
+    parser.add_argument("--to", metavar="PART:IDX")
+    parser.add_argument("--format", dest="format_", choices=("text", "json"))
     return parser
 
 
@@ -3739,17 +3261,18 @@ def _record_line(session_id: uuid.UUID, part: PartBody, body: RecordBody) -> str
     record = body.row(session_id, part.part).record()
     provider = {"sagent": "bot"}.get(part.format, part.format) or "terminal"
     role, author, text = body.kind, provider, body.text
-    if isinstance(record, AgentToAgentMessage):
+    if isinstance(record, AgentMessage):
         role, author, text = "user", record.sender or "unknown", record.content or ""
     elif isinstance(record, UserMessage):
-        delivery = delivery_of(record.extra)
-        role, author = "user", "terminal" if delivery is None else delivery.source
+        delivery = attested_delivery(record.extra)
+        role = "user"
+        author = record.sender or "terminal" if delivery is None else delivery.source
         text = record.content or ""
     elif isinstance(record, AssistantMessage):
         role, text = "assistant", record.content or ""
     elif isinstance(record, ToolCall):
         role, text = "call", record.name
-    elif isinstance(record, ToolResult):
+    elif isinstance(record, ToolMessage):
         role, text = "result", body.text[:200]
     stamp = "-" if body.timestamp is None else body.timestamp.isoformat()
     return f"p{part.part}#{body.idx} {stamp} {role} {author}: {' '.join(text.split())}"
@@ -3773,8 +3296,7 @@ def _mask_clauses(masks: Sequence[MetricMask]) -> list[MetricMaskClause]:
 
 def _metric_write(action: MetricAction) -> tuple[float, list[MetricMaskClause]]:
     """Validate a metric write before any create or metric request."""
-    if action.write is None:
-        raise ValueError("Expected action.write is not None.")
+    assert isinstance(action.write, str)
     value = _finite_float(action.write)
     masks = _mask_clauses(action.masks)
     if not any(mask.axis == "step" for mask in masks):
@@ -3873,7 +3395,11 @@ def _arg_values(args: argparse.Namespace) -> Mapping[str, object]:
 
 
 def _arg_text(args: argparse.Namespace) -> list[str]:
-    value = from_plain(_arg_values(args).get("text"), list[object], default=[])
+    value = from_plain(
+        _arg_values(args).get("text"),
+        list[object],
+        default=list[object](),
+    )
     return [str(item) for item in value]
 
 

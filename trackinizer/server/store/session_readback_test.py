@@ -6,7 +6,7 @@ file (phase 6's resume) rather than merely rendered for a human.
 
 Real corpus fixtures rather than synthetic lines, and the whole pipeline
 rather than a store call: the fixtures carry the shapes that break a
-round-trip -- a claude ``TurnContext`` naming its own index, sealed thinking
+round-trip -- a claude ``SessionContext`` naming its own index, sealed thinking
 whose ciphertext is split into another table, provider-native fields no IR
 member has a home for -- and every one of those is a chance for capture to
 lose a byte that a hand-written line would not have.
@@ -28,26 +28,23 @@ from uuid import UUID, uuid4
 from treekle import immutable
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.agent.sessions import claude, codex
-from trackinizer.lib.agent.sessions.tail import Tail
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.scripts.convert_session import claude, codex
+from trackinizer.sagent.scripts.convert_session.tail import Tail
+from trackinizer.sagent.session.types import (
+    SessionContext,
     SessionRecord,
     Thinking,
-    TurnContext,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
-    from trackinizer.lib.agent.sessions.convert import _Adapter
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.sagent.scripts.convert_session.convert import _Adapter
+    from trackinizer.server.store.core import Store
 
 
 # Asked of the MODULE that owns it, not counted in parents from here: the
@@ -56,12 +53,10 @@ if TYPE_CHECKING:
 _TESTDATA: Final = Path(claude.__file__).resolve().parent / "testdata"
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store on the shared integration database."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session_row(store: Store) -> UUID:
@@ -78,17 +73,17 @@ async def _session_row(store: Store) -> UUID:
     return session_id
 
 
-def _adapter_for(name: str) -> _Adapter:
+def _dialect_adapter(name: str) -> _Adapter:
     """Return the IR module whose dialect ``name`` is in."""
     return codex if name.startswith("codex") else claude
 
 
 # Feeds the file one line at a time through the same ``Tail`` the runner uses, so what
-# reaches the database is what a live ``trax run`` would have stored -- not a whole-file
+# reaches the database is what a live agent run would have stored -- not a whole-file
 # drain the tailer never performs.
 async def _ingest(store: Store, path: Path, session_id: UUID) -> int:
     """Drive the real capture path over ``path``; return the part it landed in."""
-    reader = Tail(_adapter_for(path.name).normalize)
+    reader = Tail(_dialect_adapter(path.name).normalize)
     records: list[TraxRecord] = []
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -153,8 +148,8 @@ async def _materialize(store: Store, session_id: UUID, part: int) -> str:
     # file then differs while every record matches. A stored part's records
     # begin at its own ``idx`` 0, so nothing else carries it.
     out = StringIO()
-    _adapter_for(manifest.name).denormalize(
-        [TurnContext(encoding=manifest.metadata), *records],
+    _dialect_adapter(manifest.name).denormalize(
+        [SessionContext(encoding=manifest.metadata), *records],
         out,
     )
     return out.getvalue()
@@ -286,19 +281,19 @@ async def test_two_parts_each_denormalize_to_their_own_file(store: Store) -> Non
 async def test_the_manifest_metadata_survives_storage(store: Store) -> None:
     """Rewriting needs how the file SPELLED its bytes, not just its records.
 
-    Claude's ascii-escaping convention rides on the ``TurnContext`` in force (a
-    majority flag plus its exception bitmap); without it the rewrite escapes
-    the wrong characters and the file differs while every record matches.
+    Which claude lines escaped their Unicode rides on the ``SessionContext`` in
+    force; without it the rewrite escapes the wrong lines and the file differs
+    while every record matches.
     """
     path = _TESTDATA / "claude_main.jsonl"
     session_id = await _session_row(store)
     with path.open(encoding="utf-8") as handle:
-        # The LAST context to state one: the majority moves as the file grows,
-        # so the reader restates it and the final statement is what holds.
+        # The LAST context to state one: the reader restates it as escaped
+        # lines arrive, and the final statement is what holds.
         stated = [
             record.encoding
             for record in claude.normalize(handle)
-            if isinstance(record, TurnContext) and record.encoding
+            if isinstance(record, SessionContext) and record.encoding
         ]
     expected = stated[-1]
 

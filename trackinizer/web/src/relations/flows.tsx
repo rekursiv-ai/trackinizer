@@ -38,7 +38,13 @@ export function useRelationActions(): readonly RelationAction[] {
  * superseded: by an existing inquiry, one edge `POST`; by a new one, one batch,
  * for a kind a person creates.
  */
-export function RelationFlows({ detail, children }: { detail: Detail; children: ReactNode }) {
+export function RelationFlows({
+  detail,
+  children,
+}: {
+  detail: Detail;
+  children: ReactNode;
+}) {
   const { edges } = useMeta();
   const mode = useWriteMode();
   const [open, setOpen] = useState<Open | null>(null);
@@ -48,12 +54,23 @@ export function RelationFlows({ detail, children }: { detail: Detail; children: 
   );
   const [creatable] = creatableKinds([self.kind]);
   const show = (flow: Flow) => (returnTo?: HTMLElement | null) =>
-    setOpen({ flow, returnTo: returnTo ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null) });
+    setOpen({
+      flow,
+      returnTo:
+        returnTo ??
+        (document.activeElement instanceof HTMLElement ? document.activeElement : null),
+    });
   const actions: RelationAction[] =
     mode === "hidden"
       ? []
       : [
-          { id: "relation.add", title: "Add relation…", icon: "plus", keys: ["r"], run: show({ type: "link", preset: null }) },
+          {
+            id: "relation.add",
+            title: "Add relation…",
+            icon: "plus",
+            keys: ["r"],
+            run: show({ type: "link", preset: null }),
+          },
           ...(supersede
             ? [
                 {
@@ -77,7 +94,13 @@ export function RelationFlows({ detail, children }: { detail: Detail; children: 
         ];
   useCommands(
     mode === "enabled"
-      ? actions.map(({ id, title, keys, run }) => ({ id, title, keys, section: `${self.kind}#${self.seq}`, run: () => run() }))
+      ? actions.map(({ id, title, keys, run }) => ({
+          id,
+          title,
+          keys,
+          section: `${self.kind}#${self.seq}`,
+          run: () => run(),
+        }))
       : [],
   );
   const close = () => setOpen(null);
@@ -85,17 +108,29 @@ export function RelationFlows({ detail, children }: { detail: Detail; children: 
     <ActionsContext value={actions}>
       {children}
       {open?.flow.type === "link" ? (
-        <LinkDialog detail={detail} preset={open.flow.preset} returnTo={open.returnTo} onClose={close} />
+        <LinkDialog
+          detail={detail}
+          preset={open.flow.preset}
+          returnTo={open.returnTo}
+          onClose={close}
+        />
       ) : null}
       {open?.flow.type === "new" ? (
-        <SupersedeDialog detail={detail} kind={open.flow.kind} returnTo={open.returnTo} onClose={close} />
+        <SupersedeDialog
+          detail={detail}
+          kind={open.flow.kind}
+          returnTo={open.returnTo}
+          onClose={close}
+        />
       ) : null}
     </ActionsContext>
   );
 }
 
 /** Which dialog is open: the link picker, from its first step or at a preset relation, or a new superseding inquiry. */
-type Flow = { readonly type: "link"; readonly preset: RelationChoice | null } | { readonly type: "new"; readonly kind: CreatableKind };
+type Flow =
+  | { readonly type: "link"; readonly preset: RelationChoice | null }
+  | { readonly type: "new"; readonly kind: CreatableKind };
 
 type Open = { readonly flow: Flow; readonly returnTo: HTMLElement | null };
 

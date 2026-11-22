@@ -1,4 +1,13 @@
-import { type MouseEvent, type ReactNode, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  type ReactNode,
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { type Meta, useMeta, useProfile } from "../app/boot";
 import { CodePane } from "../code/CodePane";
 import { codeScope } from "../code/scope";
@@ -33,7 +42,14 @@ import { useMe } from "../state/me";
 import { StreamsRows, useStreams } from "../streams";
 import { Bar } from "../ui/bars";
 import { ReadFailure } from "../ui/failure";
-import { Avatar, capitalize, JudgementGlyph, PRIORITY_NAMES, PriorityGlyph, StatusGlyph } from "../ui/glyphs";
+import {
+  Avatar,
+  capitalize,
+  JudgementGlyph,
+  PRIORITY_NAMES,
+  PriorityGlyph,
+  StatusGlyph,
+} from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
 import { panelCommand, usePanel } from "../ui/panel";
@@ -56,14 +72,27 @@ import { Menu } from "./Menu";
 import { useListPages } from "./pages";
 import { useDetailWarmer } from "./prefetch";
 import { Row } from "./Row";
-import { isStoredView, offeredViews, type StoredView, type View, ViewSwitch } from "./views";
+import {
+  isStoredView,
+  offeredViews,
+  type StoredView,
+  type View,
+  ViewSwitch,
+} from "./views";
+import { must } from "../must";
 
 /** One kind's list: `#/list/<kind>`. */
 export function ListView({ kind }: { kind: string }) {
   const kinds = useMemo(() => [kind], [kind]);
   // Keyed, so another kind's list starts from its own state, not this one's.
   return (
-    <InquiryList key={kind} id={kind} kinds={kinds} title={kindLook(kind).plural} icon={<KindIcon kind={kind} />} />
+    <InquiryList
+      key={kind}
+      id={kind}
+      kinds={kinds}
+      title={kindLook(kind).plural}
+      icon={<KindIcon kind={kind} />}
+    />
   );
 }
 
@@ -90,15 +119,22 @@ export function InquiryList({
   const meta = useMeta();
   const me = useMe();
   const { navigate, route } = useRouter();
-  const [state, update] = useTabState(`trackinizer.v2.list.${id}`, readListState, () => initialState(kinds, meta));
+  const [state, update] = useTabState(`trackinizer.v2.list.${id}`, readListState, () =>
+    initialState(kinds, meta),
+  );
   const views = offeredViews(kinds);
   // Code files a tree against the chat session, so it needs the station that names it.
   // Asked for only on the list that offers Code, so no other list makes the request.
   const station = useStation({ enabled: views.includes("code") });
   const profile = useProfile();
   // Columns lives in the hash, with the Issues selected column by column.
-  const path = route.name === "list" && views.includes("columns") ? (route.columns ?? null) : null;
-  const view: View = path ? "columns" : views.includes(state.view) ? state.view : "list";
+  const path =
+    route.name === "list" && views.includes("columns") ? (route.columns ?? null) : null;
+  const view: View = path
+    ? "columns"
+    : views.includes(state.view)
+      ? state.view
+      : "list";
   const query: ListQuery = useMemo(
     () => ({ kinds, tab: state.tab, choices: state.choices }),
     [kinds, state.tab, state.choices],
@@ -107,7 +143,15 @@ export function InquiryList({
   const roots = view === "columns";
   const request = useMemo(() => {
     const compiled = compileQuery(query, meta.fieldOwners, me);
-    return roots ? { ...compiled, filters: [...compiled.filters, { field: "narrows", op: "isnull", value: "" } as const] } : compiled;
+    return roots
+      ? {
+          ...compiled,
+          filters: [
+            ...compiled.filters,
+            { field: "narrows", op: "isnull", value: "" } as const,
+          ],
+        }
+      : compiled;
   }, [query, meta.fieldOwners, me, roots]);
   const mixed = kinds.length > 1;
   const pageSize = mixed ? 20 : 50;
@@ -120,15 +164,20 @@ export function InquiryList({
   // draw at once.
   const [drawn, setDrawn] = useState(loaded.pending ? 0 : Infinity);
   useEffect(() => {
-    if (!loaded.pending && drawn < Infinity) startTransition(() => setDrawn(drawn ? Infinity : screenRows()));
+    if (!loaded.pending && drawn < Infinity)
+      startTransition(() => setDrawn(drawn ? Infinity : screenRows()));
   }, [loaded.pending, drawn]);
   const scroller = useRef<HTMLDivElement>(null);
   const { live, rows } = useLiveList(request, pageSize, scroller, loaded.rows);
   const offeredGroupings = groupings(kinds, meta.fieldOwners);
   const offeredOrderings = orderings(kinds, meta.fieldOwners);
   const fallback = defaultDisplay(kinds, meta.fieldOwners);
-  const grouping = offeredGroupings.includes(state.grouping) ? state.grouping : fallback.grouping;
-  const ordering = offeredOrderings.includes(state.ordering) ? state.ordering : fallback.ordering;
+  const grouping = offeredGroupings.includes(state.grouping)
+    ? state.grouping
+    : fallback.grouping;
+  const ordering = offeredOrderings.includes(state.ordering)
+    ? state.ordering
+    : fallback.ordering;
   // A tab or filter the user picks lays the rows out afresh, even when its
   // cached pages hold the same rows, and again once those pages have loaded:
   // only the user's actions load pages, and live updates read apart from them.
@@ -136,7 +185,11 @@ export function InquiryList({
   // Streams and Outline are groupings of their own, over the rows in their steady
   // order; Streams take them newest first.
   const groups = useSteadyLayout(
-    groupRows(sortRows(rows, view === "streams" ? "created" : ordering), view === "list" ? grouping : "none", meta),
+    groupRows(
+      sortRows(rows, view === "streams" ? "created" : ordering),
+      view === "list" ? grouping : "none",
+      meta,
+    ),
     layout,
   );
   const laidOut = view === "list" ? null : (groups[0]?.rows ?? []);
@@ -145,17 +198,25 @@ export function InquiryList({
   const collapsed = new Set(state.collapsed);
   // How many of each group's rows to draw: `drawn` in all, the first groups' first.
   const drawnPerGroup = fillInOrder(
-    groups.map((group) => (collapsed.has(groupKey(grouping, group)) ? 0 : group.rows.length)),
+    groups.map((group) =>
+      collapsed.has(groupKey(grouping, group)) ? 0 : group.rows.length,
+    ),
     drawn,
   );
   // Columns select by their path, and leave the list's focus and selection alone.
   const visible =
     view === "columns"
       ? []
-      : ((outline ?? streams)?.rows ?? groups.flatMap((group) => (collapsed.has(groupKey(grouping, group)) ? [] : group.rows)));
+      : ((outline ?? streams)?.rows ??
+        groups.flatMap((group) =>
+          collapsed.has(groupKey(grouping, group)) ? [] : group.rows,
+        ));
   // What j and k move through: the rows, and an outline's parents outside the page.
-  const order: readonly { readonly id: string; readonly kind: string; readonly seq: number }[] =
-    (outline ?? streams)?.order ?? visible;
+  const order: readonly {
+    readonly id: string;
+    readonly kind: string;
+    readonly seq: number;
+  }[] = (outline ?? streams)?.order ?? visible;
   const focused = order.find((line) => line.id === state.focus) ?? order[0] ?? null;
   const selection = useSelection(
     visible.map((row) => row.id),
@@ -167,9 +228,18 @@ export function InquiryList({
 
   const setQuery = (next: ListQuery) => {
     selection.clear();
-    update((s) => ({ ...s, tab: next.tab, choices: next.choices, pages: {}, focus: null }));
+    update((s) => ({
+      ...s,
+      tab: next.tab,
+      choices: next.choices,
+      pages: {},
+      focus: null,
+    }));
   };
-  const focus = useCallback((rowId: string) => update((s) => ({ ...s, focus: rowId })), [update]);
+  const focus = useCallback(
+    (rowId: string) => update((s) => ({ ...s, focus: rowId })),
+    [update],
+  );
   // A row the keys move to, or the pointer rests on, may be opened next: its
   // detail is read ahead. The row a list opens on is no such sign.
   const warm = useDetailWarmer();
@@ -180,11 +250,13 @@ export function InquiryList({
     focus(next.id);
     warm(next.id);
   };
-  const toggle = (key: string) => update((s) => ({ ...s, collapsed: toggled(s.collapsed, key) }));
+  const toggle = (key: string) =>
+    update((s) => ({ ...s, collapsed: toggled(s.collapsed, key) }));
   const pickView = (next: View) => {
-    if (next === "columns") return navigate({ name: "list", kind: kinds[0]!, columns: [] });
+    if (next === "columns")
+      return navigate({ name: "list", kind: must(kinds[0]), columns: [] });
     update((s) => ({ ...s, view: next }));
-    if (path) navigate({ name: "list", kind: kinds[0]! });
+    if (path) navigate({ name: "list", kind: must(kinds[0]) });
   };
   useCommands(
     // Columns bind j, k and Enter to their own path; the list's, mounted after, would win.
@@ -194,7 +266,9 @@ export function InquiryList({
           ...listCommands({
             next: () => move(1),
             previous: () => move(-1),
-            open: () => focused && navigate({ name: "ref", kind: focused.kind, seq: focused.seq }),
+            open: () =>
+              focused &&
+              navigate({ name: "ref", kind: focused.kind, seq: focused.seq }),
             close: () => (peeking ? setPeeking(false) : selection.clear()),
             // Space shows the focused row's detail: it closes Peek only when Peek shows it.
             peek: () => {
@@ -212,14 +286,19 @@ export function InquiryList({
   const focusedId = focused?.id ?? null;
   // Whether the focused row is drawn yet: a List draws its first `drawn` rows first.
   const focusDrawn =
-    drawn > 0 && (view !== "list" || drawn === Infinity || visible.slice(0, drawn).some((line) => line.id === focusedId));
+    drawn > 0 &&
+    (view !== "list" ||
+      drawn === Infinity ||
+      visible.slice(0, drawn).some((line) => line.id === focusedId));
   useEffect(() => {
     if (!focusedId || !focusDrawn) return;
     // In the next frame, which lays the rows out anyway: React runs this effect
     // in the task that rendered them, and scrolling there forced their layout
     // inside it, 13 of its 42 ms with the CPU slowed 4x.
     const frame = requestAnimationFrame(() =>
-      scroller.current?.querySelector(`[data-row="${focusedId}"]`)?.scrollIntoView({ block: "nearest" }),
+      scroller.current
+        ?.querySelector(`[data-row="${focusedId}"]`)
+        ?.scrollIntoView({ block: "nearest" }),
     );
     return () => cancelAnimationFrame(frame);
   }, [focusedId, focusDrawn]);
@@ -258,10 +337,16 @@ export function InquiryList({
         title={title}
         beside={switchInHeader ? <ViewSwitch offered={views} view={view} onChange={pickView} /> : undefined}
       />
+      <ViewHeader icon={icon} title={title} />
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: keeps focus in the list on a press; keys reach the list itself */}
       <div className="view-tools" onMouseDown={keepFocus}>
         <Tabs tab={state.tab} onChange={(tab) => setQuery(withTab(query, tab))} />
         <div className="spacer" />
-        <FilterMenu query={query} rows={rows} onToggle={(f, v) => setQuery(toggleChoice(query, f, v))} />
+        <FilterMenu
+          query={query}
+          rows={rows}
+          onToggle={(f, v) => setQuery(toggleChoice(query, f, v))}
+        />
         {view === "list" && (
           <Menu
             label="Group loaded rows by…"
@@ -271,9 +356,17 @@ export function InquiryList({
                 <span className="hide-sm">Group: {GROUPING_NAMES[grouping]}</span>
               </button>
             }
-            options={offeredGroupings.map((g) => ({ value: g, label: GROUPING_NAMES[g], checked: g === grouping }))}
+            options={offeredGroupings.map((g) => ({
+              value: g,
+              label: GROUPING_NAMES[g],
+              checked: g === grouping,
+            }))}
             onPick={(value) =>
-              update((s) => ({ ...s, grouping: offeredGroupings.find((g) => g === value) ?? grouping, collapsed: [] }))
+              update((s) => ({
+                ...s,
+                grouping: offeredGroupings.find((g) => g === value) ?? grouping,
+                collapsed: [],
+              }))
             }
           />
         )}
@@ -286,8 +379,17 @@ export function InquiryList({
                 <span className="hide-sm">Sort: {ORDERING_NAMES[ordering]}</span>
               </button>
             }
-            options={offeredOrderings.map((o) => ({ value: o, label: ORDERING_NAMES[o], checked: o === ordering }))}
-            onPick={(value) => update((s) => ({ ...s, ordering: offeredOrderings.find((o) => o === value) ?? ordering }))}
+            options={offeredOrderings.map((o) => ({
+              value: o,
+              label: ORDERING_NAMES[o],
+              checked: o === ordering,
+            }))}
+            onPick={(value) =>
+              update((s) => ({
+                ...s,
+                ordering: offeredOrderings.find((o) => o === value) ?? ordering,
+              }))
+            }
           />
         )}
         {switchInHeader ? null : <ViewSwitch offered={views} view={view} onChange={pickView} />}
@@ -307,25 +409,44 @@ export function InquiryList({
           </button>
         </Bar>
       ) : null}
+      {/* biome-ignore lint/a11y/useKeyWithMouseEvents: keeps focus in the list on a press; keys reach the list itself */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: keeps focus in the list on a press; keys reach the list itself */}
       <div
         className="scroll"
         ref={scroller}
         aria-busy={loaded.loading.length > 0}
         onMouseDown={keepFocus}
-        onMouseOver={(event) => warm((event.target as Element).closest("[data-row]")?.getAttribute("data-row") ?? null)}
+        onMouseOver={(event) =>
+          warm(
+            (event.target as Element).closest("[data-row]")?.getAttribute("data-row") ??
+              null,
+          )
+        }
         onMouseLeave={() => warm(null)}
       >
         <LiveRows
           live={live}
           scroller={scroller}
           reveal={(joined) => {
-            const keys = new Set(groupRows(joined, grouping, meta).map((group) => groupKey(grouping, group)));
-            update((s) => ({ ...s, collapsed: s.collapsed.filter((key) => !keys.has(key)) }));
+            const keys = new Set(
+              groupRows(joined, grouping, meta).map((group) =>
+                groupKey(grouping, group),
+              ),
+            );
+            update((s) => ({
+              ...s,
+              collapsed: s.collapsed.filter((key) => !keys.has(key)),
+            }));
           }}
         />
-        {loaded.error && rows.length === 0 ? <ReadFailure error={loaded.error} retry={loaded.retry} /> : null}
+        {loaded.error && rows.length === 0 ? (
+          <ReadFailure error={loaded.error} retry={loaded.retry} />
+        ) : null}
         {request.kinds.length === 0 ? (
-          <EmptyState icon={<Icon name="filter" size={24} />} title="Nothing to ask for">
+          <EmptyState
+            icon={<Icon name="filter" size={24} />}
+            title="Nothing to ask for"
+          >
             <p>No kind in this list has every filtered field.</p>
           </EmptyState>
         ) : loaded.pending || !drawn ? (
@@ -339,7 +460,7 @@ export function InquiryList({
         ) : (
           <>
             {path ? (
-              <ColumnsView kind={kinds[0]!} roots={rows} path={path} />
+              <ColumnsView kind={must(kinds[0])} roots={rows} path={path} />
             ) : outline ? (
               <OutlineRows
                 outline={outline}
@@ -364,9 +485,13 @@ export function InquiryList({
                   key={groupKey(grouping, group)}
                   grouping={grouping}
                   group={group}
-                  drawn={drawnPerGroup[k]!}
+                  drawn={must(drawnPerGroup[k])}
                   collapsed={collapsed.has(groupKey(grouping, group))}
-                  more={grouping === "kind" ? loaded.more.includes(group.value ?? "") : loaded.more.length > 0}
+                  more={
+                    grouping === "kind"
+                      ? loaded.more.includes(group.value ?? "")
+                      : loaded.more.length > 0
+                  }
                   onToggle={() => toggle(groupKey(grouping, group))}
                   mixed={mixed}
                   focusedId={focusedId}
@@ -383,15 +508,25 @@ export function InquiryList({
               loading={loaded.loading}
               mixed={mixed}
               view={view}
-              onMore={(kind) => update((s) => ({ ...s, pages: { ...s.pages, [kind]: (s.pages[kind] ?? 1) + 1 } }))}
+              onMore={(kind) =>
+                update((s) => ({
+                  ...s,
+                  pages: { ...s.pages, [kind]: (s.pages[kind] ?? 1) + 1 },
+                }))
+              }
             />
           </>
         )}
       </div>
       {selection.enabled && (
-        <BulkBar rows={rows.filter((row) => selection.ids.has(row.id))} onClear={selection.clear} />
+        <BulkBar
+          rows={rows.filter((row) => selection.ids.has(row.id))}
+          onClear={selection.clear}
+        />
       )}
-      {peeking && focused && <Peek row={focused} panel={peek} onClose={() => setPeeking(false)} />}
+      {peeking && focused && (
+        <Peek row={focused} panel={peek} onClose={() => setPeeking(false)} />
+      )}
     </div>
   );
 }
@@ -435,7 +570,16 @@ function initialState(kinds: readonly string[], meta: Meta): ListState {
 function readListState(saved: unknown): ListState | null {
   if (typeof saved !== "object" || saved === null) return null;
   // A state stored before lists had views is a List's: the tab keeps it across a deploy.
-  const { tab, choices, view = "list", grouping, ordering, pages, collapsed, focus } = saved as { [field: string]: unknown };
+  const {
+    tab,
+    choices,
+    view = "list",
+    grouping,
+    ordering,
+    pages,
+    collapsed,
+    focus,
+  } = saved as { [field: string]: unknown };
   const valid =
     isListTab(tab) &&
     isChoices(choices) &&
@@ -446,7 +590,16 @@ function readListState(saved: unknown): ListState | null {
     isStrings(collapsed) &&
     (focus === null || typeof focus === "string");
   return valid
-    ? { tab, choices, view, grouping: grouping as Grouping, ordering: ordering as Ordering, pages, collapsed, focus }
+    ? {
+        tab,
+        choices,
+        view,
+        grouping: grouping as Grouping,
+        ordering: ordering as Ordering,
+        pages,
+        collapsed,
+        focus,
+      }
     : null;
 }
 
@@ -469,13 +622,22 @@ function Tabs({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
 }
 
 /** Says which kinds a filter left out of the request (S8); only lists of several kinds have any. */
-function LeftOut({ query, requested }: { query: ListQuery; requested: readonly string[] }) {
+function LeftOut({
+  query,
+  requested,
+}: {
+  query: ListQuery;
+  requested: readonly string[];
+}) {
   const only = query.choices.find((choice) => choice.field === "kind")?.values;
-  const left = query.kinds.filter((kind) => (!only || only.includes(kind)) && !requested.includes(kind));
+  const left = query.kinds.filter(
+    (kind) => (!only || only.includes(kind)) && !requested.includes(kind),
+  );
   if (left.length === 0) return null;
   return (
     <p className="list-note">
-      Not shown: {left.map((kind) => kindLook(kind).plural).join(", ")}. They lack a filtered field.
+      Not shown: {left.map((kind) => kindLook(kind).plural).join(", ")}. They lack a
+      filtered field.
     </p>
   );
 }
@@ -484,6 +646,7 @@ function LeftOut({ query, requested }: { query: ListQuery; requested: readonly s
 function TraxLine({ line }: { line: string }) {
   const copy = useCopy();
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: keeps focus in the list on a press; keys reach the list itself
     <div className="qline" onMouseDown={keepFocus}>
       <code title="The same query from the CLI">{line}</code>
       <button
@@ -527,7 +690,9 @@ function GroupRows({
   selection: Selection;
 }) {
   return (
-    <section aria-label={grouping === "none" ? undefined : groupName(grouping, group.value)}>
+    <section
+      aria-label={grouping === "none" ? undefined : groupName(grouping, group.value)}
+    >
       {grouping !== "none" && (
         <button
           type="button"
@@ -538,25 +703,30 @@ function GroupRows({
           <Icon name="chevD" size={14} className="chev" />
           {groupIcon(grouping, group.value)}
           <span>{groupName(grouping, group.value)}</span>
-          <span className="count" title={more ? "Loaded so far: Load more may find more" : undefined}>
+          <span
+            className="count"
+            title={more ? "Loaded so far: Load more may find more" : undefined}
+          >
             {group.rows.length}
             {more && "+"}
           </span>
         </button>
       )}
       {!collapsed &&
-        group.rows.slice(0, drawn).map((row) => (
-          <Row
-            key={row.id}
-            row={row}
-            mixed={mixed}
-            focused={row.id === focusedId}
-            now={now}
-            onFocus={onFocus}
-            selected={selection.ids.has(row.id)}
-            onSelect={selection.enabled ? selection.select : undefined}
-          />
-        ))}
+        group.rows
+          .slice(0, drawn)
+          .map((row) => (
+            <Row
+              key={row.id}
+              row={row}
+              mixed={mixed}
+              focused={row.id === focusedId}
+              now={now}
+              onFocus={onFocus}
+              selected={selection.ids.has(row.id)}
+              onSelect={selection.enabled ? selection.select : undefined}
+            />
+          ))}
     </section>
   );
 }
@@ -581,8 +751,18 @@ function ListFoot({
   return (
     <div className="list-foot">
       {more.map((kind) => (
-        <button key={kind} type="button" className="btn" disabled={loading.includes(kind)} onClick={() => onMore(kind)}>
-          {loading.includes(kind) ? "Loading…" : mixed ? `Load more ${kindLook(kind).plural.toLowerCase()}` : "Load more"}
+        <button
+          key={kind}
+          type="button"
+          className="btn"
+          disabled={loading.includes(kind)}
+          onClick={() => onMore(kind)}
+        >
+          {loading.includes(kind)
+            ? "Loading…"
+            : mixed
+              ? `Load more ${kindLook(kind).plural.toLowerCase()}`
+              : "Load more"}
         </button>
       ))}
       <span>{loaded} loaded</span>
@@ -641,7 +821,9 @@ function groupName(grouping: Grouping, value: string | null): string {
     case "owner":
       return value ?? "No owner";
     case "priority":
-      return value === null ? "No priority" : PRIORITY_NAMES[Number(value)]!;
+      return value === null
+        ? "No priority"
+        : (PRIORITY_NAMES[Number(value)] ?? `Priority ${value}`);
     case "status":
     case "judgement":
       return value === null ? `No ${grouping}` : capitalize(value);
@@ -649,7 +831,8 @@ function groupName(grouping: Grouping, value: string | null): string {
 }
 
 function groupIcon(grouping: Grouping, value: string | null): ReactNode {
-  if (grouping === "priority") return <PriorityGlyph priority={value === null ? null : Number(value) * 10} />;
+  if (grouping === "priority")
+    return <PriorityGlyph priority={value === null ? null : Number(value) * 10} />;
   if (value === null) return null;
   if (grouping === "kind") return <KindIcon kind={value} size={14} />;
   if (grouping === "status") return <StatusGlyph status={value} />;
@@ -659,7 +842,9 @@ function groupIcon(grouping: Grouping, value: string | null): ReactNode {
 }
 
 function toggled(values: readonly string[], value: string): string[] {
-  return values.includes(value) ? values.filter((v) => v !== value) : [...values, value];
+  return values.includes(value)
+    ? values.filter((v) => v !== value)
+    : [...values, value];
 }
 
 const TABS: readonly [Tab, string][] = [

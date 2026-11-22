@@ -2,13 +2,13 @@
 # ruff: noqa: EXE003, D300, D205 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Measure the per-tick session-file discovery scan cost, per adapter.
 
 Reproduces the table in ``design_agent_session_logging.md``'s addendum.
-Numbers are machine- and history-dependent: the claude figure scales with
+Numbers are host- and history-dependent: the claude figure scales with
 how many project directories that CLI has ever created on THIS host, so a
-fresh machine shows a small number and a long-lived one a large one.
+fresh host shows a small number and a long-lived one a large one.
 
 Run:  uv --quiet run --frozen python trackinizer/docs/probes/scan_cost.py
 '''
@@ -24,13 +24,13 @@ import time
 
 from treekle import from_plain
 
-from trackinizer.trax.run.adapters.claude import ClaudeAdapter
-from trackinizer.trax.run.adapters.codex import CodexAdapter
-from trackinizer.trax.run.adapters.gemini import GeminiAdapter
+from trackinizer.runs.adapters.claude import ClaudeAdapter
+from trackinizer.runs.adapters.codex import CodexAdapter
+from trackinizer.runs.adapters.gemini import GeminiAdapter
 
 
 if TYPE_CHECKING:
-    from trackinizer.trax.run.adapters.custom_types import Adapter
+    from trackinizer.runs.adapters.custom_types import Adapter
 
 
 def scan_once(adapter: Adapter) -> tuple[int, int]:

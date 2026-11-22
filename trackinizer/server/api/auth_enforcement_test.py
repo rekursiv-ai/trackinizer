@@ -18,8 +18,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fastapi.routing import _IncludedRouter
 from treekle import from_plain
 
+import pytest
+
+from trackinizer.server.api import meta_routes, query, submit
+from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -66,6 +71,20 @@ def _inquiry_column(engine: FakeEngine, name: str) -> object:
                 bind_index -= 1
             return call.args[1 + bind_index]
     raise AssertionError("no INSERT INTO inquiries in executed SQL")
+
+
+@pytest.fixture(autouse=True)
+def auth_routes_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep installed route branches without materializing unrelated FastAPI schemas."""
+    routers = (meta_routes.router, query.router, submit.router)
+    routes = [
+        route
+        for route in app.router.routes
+        if not isinstance(route, _IncludedRouter)
+        or any(route.original_router is router for router in routers)
+    ]
+    assert sum(isinstance(route, _IncludedRouter) for route in routes) == len(routers)
+    monkeypatch.setattr(app.router, "routes", routes)
 
 
 class TestUnauthenticatedReturns401:

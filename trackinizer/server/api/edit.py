@@ -28,10 +28,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.api.locks import require_writable
 from trackinizer.server.api.session_access import (
     require_attributable,
     require_row_account,
+    require_row_write,
     require_session_id_change,
     require_session_row_write,
 )
@@ -67,7 +68,7 @@ router = APIRouter()
 type _CostAxis = Literal["agent_usd", "resource_usd"]
 
 
-def _actor_of(body: ActorMixin, identity: AuthIdentity) -> str:
+def _audit_actor(body: ActorMixin, identity: AuthIdentity) -> str:
     """Pick the audit actor: the body override, else the caller's email."""
     return body.actor or identity.email
 
@@ -94,7 +95,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
-        await require_unlocked(request, identity, [target_id])
+        await require_writable(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
         if route.column == "account":
             await require_row_account(request, identity, target_id)
@@ -106,6 +107,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
                 target_id,
                 value=from_plain(body.value, str, default=None),
             )
+        await require_row_write(request, identity, target_id)
         store = get_store(request)
         if body.mode == "cas":
             change_id = await _run_compare_and_set(
@@ -141,8 +143,9 @@ def _make_patch(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
-        await require_unlocked(request, identity, [target_id])
+        await require_writable(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
+        await require_row_write(request, identity, target_id)
         store = get_store(request)
         change_id = await _run_patch(route, target_id, body, store, identity)
         return _mutation_response(target_id, change_id)
@@ -162,10 +165,17 @@ def _make_delete(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSO
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
-        await require_unlocked(request, identity, [target_id])
+        await require_writable(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
         if route.column == "cli_session_id":
-            await require_session_id_change(request, identity, target_id, value=None)
+            # A delete clears it, so there is no id it would take.
+            await require_session_id_change(
+                request,
+                identity,
+                target_id,
+                value=None,
+            )
+        await require_row_write(request, identity, target_id)
         store = get_store(request)
         change_id = await _clear_value(route, target_id, body, store, identity)
         return _mutation_response(target_id, change_id)
@@ -199,7 +209,7 @@ async def _set_value(
     identity: AuthIdentity,
 ) -> uuid.UUID | None:
     """Execute a blind ``PUT`` overwrite; return the change id, or ``None``."""
-    actor = _actor_of(body, identity)
+    actor = _audit_actor(body, identity)
     reason = cast(FieldSet[object], body).reason
     # ``account`` is the one column whose value must name an active user; the
     # active-user rule is an auth concern enforced here at the route, mirroring
@@ -234,7 +244,7 @@ async def _run_patch(
     identity: AuthIdentity,
 ) -> uuid.UUID | None:
     """Execute a ``PATCH``: a numeric cost delta or a list add/sub."""
-    actor = _actor_of(body, identity)
+    actor = _audit_actor(body, identity)
     # Cost axes route through add_cost as a signed Cost delta, not a named
     # add_<stem> setter, so they carry no add_method/sub_method; handle
     # them before the list-method dispatch.
@@ -248,11 +258,8 @@ async def _run_patch(
             reason=body.reason,
         )
     method_name = route.add_method if body.op == "add" else route.sub_method
-    if method_name is None:
-        raise HTTPException(
-            status_code=405,
-            detail=f"PATCH op={body.op!r} is not valid for field {route.column!r}",
-        )
+    # Every non-cost PATCH route carries both methods (pinned by ``edit_test``).
+    assert isinstance(method_name, str)
     element = cast(_ElementMethod, getattr(store, method_name))
     return await element(
         target_id,
@@ -277,7 +284,7 @@ async def _clear_value(
             cast(_CostAxis, route.cost_axis),
             0.0,
             api_key_id=identity.api_key_id,
-            actor=_actor_of(body, identity),
+            actor=_audit_actor(body, identity),
             reason=body.reason,
         )
     return await _set_value(route, target_id, None, body, store, identity=identity)
@@ -296,7 +303,7 @@ async def _run_compare_and_set(
             status_code=400,
             detail=f"expected is not valid for field {route.column!r}",
         )
-    actor = _actor_of(body, identity)
+    actor = _audit_actor(body, identity)
     if route.column == "owner":
         return await store.transition_owner(
             target_id,

@@ -12,19 +12,28 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
+import { must } from "../src/must.ts";
 
 /** One chunk as Vite's manifest describes it; imports are other manifest keys. */
-type Chunk = { readonly file: string; readonly imports?: readonly string[]; readonly dynamicImports?: readonly string[] };
+type Chunk = {
+  readonly file: string;
+  readonly imports?: readonly string[];
+  readonly dynamicImports?: readonly string[];
+};
 
 const BUDGET_KB = 250;
-const dist = process.argv[2] ? pathToFileURL(`${resolve(process.argv[2])}/`) : new URL("../dist/", import.meta.url);
-const manifest = JSON.parse(readFileSync(new URL(".vite/manifest.json", dist), "utf8")) as { [key: string]: Chunk };
+const dist = process.argv[2]
+  ? pathToFileURL(`${resolve(process.argv[2])}/`)
+  : new URL("../dist/", import.meta.url);
+const manifest = JSON.parse(
+  readFileSync(new URL(".vite/manifest.json", dist), "utf8"),
+) as { [key: string]: Chunk };
 const entry = manifest["index.html"];
 if (!entry) throw new Error("The build's manifest has no index.html entry.");
 
 const files = new Set<string>();
 const load = (key: string) => {
-  const chunk = manifest[key]!;
+  const chunk = must(manifest[key]);
   if (files.has(chunk.file)) return;
   files.add(chunk.file);
   chunk.imports?.forEach(load);
@@ -38,7 +47,9 @@ for (const path of files) {
   totalKb += kb;
   console.log(`${kb.toFixed(1).padStart(7)} KB  ${path}`);
 }
-console.log(`${totalKb.toFixed(1).padStart(7)} KB  first-load JS, gzip (budget ${BUDGET_KB} KB)`);
+console.log(
+  `${totalKb.toFixed(1).padStart(7)} KB  first-load JS, gzip (budget ${BUDGET_KB} KB)`,
+);
 if (totalKb > BUDGET_KB) {
   console.error(`First-load JavaScript exceeds the ${BUDGET_KB} KB budget.`);
   process.exitCode = 1;

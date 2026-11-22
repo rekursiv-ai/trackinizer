@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import json
 import uuid
 
+import asyncpg
 import pytest
 
 from trackinizer.conftest import (
@@ -18,12 +19,18 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
+from trackinizer.server.store import cascade
+from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from trackinizer.mock_test_support import MockConnection
     from trackinizer.server.store.core import Store
+    from trackinizer.types.change_log import Change
 
 
 # Returns the list each invocation appends to, so a test asserts the cascade fired
@@ -391,6 +398,189 @@ class TestEdgeCascadeSymmetry:
         # coerces that to "" for its peer-present CHECK -- never the raw
         # "   ". An empty note yields the same "".
         assert new_edge_note == ""
+
+
+class TestEmitChangeEdges:
+    @pytest.mark.asyncio
+    async def test_a_subject_already_gone_is_audited_with_no_cost_or_subscribers(
+        self,
+    ) -> None:
+        """A tombstone at the statement's snapshot audits with zero deltas."""
+        conn = make_conn()
+        conn.fetchrow = AsyncMock(return_value=None)
+        store, _engine = make_store(conn)
+
+        async with store.engine.acquire() as acquired:
+            change_id, subscribers = await store.emit_change(
+                acquired,
+                subject_id=new_uuid(),
+                subject_kind="Issue",
+                kind="marginal_cost",
+                cost_delta=Cost(agent_usd=0.5),
+                cascade=False,
+            )
+
+        assert subscribers == ()
+        insert = next(
+            c
+            for c in conn.execute.call_args_list
+            if "INSERT INTO change_log" in _sql(c.args[0])
+        )
+        assert insert.args[1] == change_id
+
+    @pytest.mark.asyncio
+    async def test_extra_subscribers_join_once_each_after_the_rows_own(self) -> None:
+        """A just-removed subscriber still hears of the change that removed them."""
+        conn = make_conn()
+        store, _engine = make_store(conn)
+
+        async with store.engine.acquire() as acquired:
+            _, subscribers = await store.emit_change(
+                acquired,
+                subject_id=new_uuid(),
+                subject_kind="Issue",
+                kind="subscribers",
+                extra_subscribers=("ann", "bob", "ann"),
+                cascade=False,
+            )
+
+        assert subscribers == ("ann", "bob")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "existing", "outcome"),
+        [
+            ("issue_priority", {"actor": "alice", "kind": "issue_priority"}, "replay"),
+            (
+                "issue_priority",
+                {"actor": "bob", "kind": "issue_priority"},
+                ConflictError,
+            ),
+            ("issue_priority", {"actor": "alice", "kind": "labels"}, ConflictError),
+            (
+                "created",
+                {"actor": "alice", "kind": "created"},
+                asyncpg.UniqueViolationError,
+            ),
+        ],
+        ids=["same-edit", "other-actor", "other-kind", "submit"],
+    )
+    async def test_a_key_already_spent_replays_only_the_same_edit(
+        self,
+        kind: Change.Kind,
+        existing: dict[str, object],
+        outcome: str | type[Exception],
+    ) -> None:
+        """An edit's retry returns the original change; a submit re-raises to re-probe."""
+        subject, key = new_uuid(), new_uuid()
+        conn = _colliding_conn(
+            {**existing, "subject_id": subject, "subscribers_snapshot": ["ann"]},
+        )
+        store, _engine = make_store(conn)
+        set_client_change_id(key)
+
+        async with store.engine.acquire() as acquired:
+            if outcome == "replay":
+                replayed = await store.emit_change(
+                    acquired,
+                    subject_id=subject,
+                    subject_kind="Issue",
+                    kind=kind,
+                    actor="alice",
+                )
+                assert replayed == (key, ("ann",))
+            else:
+                assert isinstance(outcome, type)
+                with pytest.raises(outcome):
+                    await store.emit_change(
+                        acquired,
+                        subject_id=subject,
+                        subject_kind="Issue",
+                        kind=kind,
+                        actor="alice",
+                    )
+
+        assert "ROLLBACK TO SAVEPOINT emit_change" in executed_sql(conn)
+
+    @pytest.mark.asyncio
+    async def test_a_key_collision_with_no_row_behind_it_reraises(self) -> None:
+        """A collision the re-read cannot explain is not a replay to return."""
+        conn = make_conn()
+
+        async def execute(sql: str, *args: object) -> str:
+            del args
+            if "INSERT INTO change_log" in sql:
+                raise asyncpg.UniqueViolationError("duplicate key value")
+            return "OK"
+
+        conn.execute.side_effect = execute
+        store, _engine = make_store(conn)
+        set_client_change_id(new_uuid())
+
+        async with store.engine.acquire() as acquired:
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await store.emit_change(
+                    acquired,
+                    subject_id=new_uuid(),
+                    subject_kind="Issue",
+                    kind="issue_priority",
+                )
+
+        assert "ROLLBACK TO SAVEPOINT emit_change" in executed_sql(conn)
+
+
+def _colliding_conn(existing: dict[str, object]) -> MockConnection:
+    """Return a connection whose change_log INSERT collides with ``existing``'s key."""
+    conn = make_conn()
+
+    async def execute(sql: str, *args: object) -> str:
+        del args
+        if "INSERT INTO change_log" in sql:
+            raise asyncpg.UniqueViolationError("duplicate key value")
+        return "OK"
+
+    conn.execute.side_effect = execute
+    queue_field_rows(conn, existing)
+    return conn
+
+
+class TestPurgeRefusals:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("row", "message"),
+        [
+            ({"kind": "Issue", "owner": "alice"}, "owned by 'alice'"),
+            ({"kind": "AccessGroup", "owner": None}, "never purged"),
+        ],
+        ids=["owned", "access-group"],
+    )
+    async def test_a_row_that_may_not_go_is_kept(
+        self,
+        row: dict[str, object],
+        message: str,
+    ) -> None:
+        conn = make_conn()
+        set_field_row(conn, row)
+        store, _engine = make_store(conn)
+
+        with pytest.raises(ConflictError, match=message):
+            await store.purge(new_uuid(), actor="bob")
+
+        assert not [s for s in executed_sql(conn) if "DELETE FROM inquiries" in s]
+
+
+@pytest.mark.parametrize(
+    ("convert", "value"),
+    [(cascade._optional_str, 5), (cascade._optional_float, "0.5")],
+    ids=["note", "valence"],
+)
+def test_a_stored_edge_annotation_of_the_wrong_type_is_refused(
+    convert: Callable[[object], object],
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="Expected value is None"):
+        _ = convert(value)
+    assert convert(None) is None
 
 
 def _sql(value: object) -> str:

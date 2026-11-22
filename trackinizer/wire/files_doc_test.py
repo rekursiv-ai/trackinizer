@@ -52,10 +52,10 @@ def test_copied_trees_read_back_as_written() -> None:
 
 
 def test_a_document_without_copied_trees_reads_them_as_none() -> None:
-    tree = json_loads(dump_files(_doc()), dict[str, object])
-    del tree["copied"]
+    text = dump_files(_doc())
 
-    assert load_files(json.dumps(tree)).copied == ()
+    assert "copied" not in json_loads(text, dict[str, object])
+    assert load_files(text).copied == ()
 
 
 @pytest.mark.parametrize("files", [0, -1])
@@ -75,13 +75,10 @@ def test_the_json_holds_exactly_the_contract_keys() -> None:
         "changed",
         "more_changes",
         "hidden",
-        "copied",
-        "version",
-        "kind",
     ]
     changed = from_plain(tree["changed"], list[dict[str, object]])
     assert [list(c) for c in changed] == [["path", "change", "diff", "note"]] * 2
-    assert (tree["base"], tree["version"], tree["kind"]) == ("origin/main", 1, "files")
+    assert tree["base"] == "origin/main"
     assert ", " not in text
     assert ": " not in text
 

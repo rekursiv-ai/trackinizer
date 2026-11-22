@@ -15,6 +15,7 @@ from configgle import Fig, Makes
 
 import pytest
 
+from trackinizer.addons import runner
 from trackinizer.addons.addon import AddonManifest, StandaloneContext
 from trackinizer.addons.deployment import Deployment, DeploymentError
 from trackinizer.addons.runner import main, run_standalone, serve_standalone
@@ -218,6 +219,28 @@ def test_bad_input_exits_with_a_message_not_a_traceback(
     monkeypatch.setattr(sys, "argv", ["addons", *argv])
     with pytest.raises(SystemExit, match=message):
         main()
+
+
+def test_a_cancel_of_the_runner_itself_is_not_swallowed() -> None:
+    """Only the service's own cancellation (a signal) is a clean stop.
+
+    The runner is cancelled after its service already returned, so the
+    cancellation is the caller's, and it must reach the caller.
+    """
+    outer: list[asyncio.Task[None]] = []
+
+    async def serve() -> None:
+        # Runs once the service has ended but before the runner resumes.
+        asyncio.get_running_loop().call_soon(outer[0].cancel)
+
+    async def scenario() -> None:
+        outer.append(asyncio.create_task(runner._until_signalled(serve())))
+        with pytest.raises(asyncio.CancelledError):
+            await outer[0]
+
+    asyncio.run(scenario())
+
+    assert outer[0].cancelled()
 
 
 def test_the_module_entry_point_dispatches_to_main() -> None:

@@ -11,19 +11,16 @@ not the audience.
 An API key narrows its owner and never widens it: ``open_into`` pins the one audience
 it opens sessions into. It reads what its owner reads.
 
-The server's organisation mode (``TRACKINIZER_CHAT_ORGS``) says who reads what, as a
-chat workspace does. ``single``: the server is one organisation, so every caller reads
-every ``open`` session and every person every open chat. ``domain``: a person's
-organisation is their email's domain when Google's ``hd`` claim names it, as a staff
-domain pattern asks, and they read the open sessions and chats of their
-organisation. ``individual``: each person is an
-organisation of one. Whatever the mode, a session's owner (its ``account``) reads it,
-and a person who holds ``staff`` or is an admin reads every session that is not a
-chat; no role reads another person's chat. A ``private`` session is its owner's and
-those people's; a private chat its starter's and the people it is shared with. A
-``staff`` session or chat also needs the reader to hold ``staff``.
-:class:`SessionReader` carries what the test asks of the caller, and
-:func:`reader_for` derives it.
+The server's organisation mode (``TRACKINIZER_CHAT_ORGS``) says who reads what.
+``single``: the server is one organisation, so every caller reads every ``open``
+session. ``domain``: a person's organisation is their email's domain when Google's
+``hd`` claim names it, as a staff domain pattern asks, and they read the open sessions
+of their organisation. ``individual``: each person is an organisation of one.
+Whatever the mode, a session's owner (its ``account``) reads it, and a person who
+holds ``staff`` or is an admin reads every session. A ``private`` session is its
+owner's and those people's. A ``staff`` session also needs the reader to hold
+``staff``. :class:`SessionReader` carries what the test asks of the caller, and
+:func:`caller_reader` derives it.
 
 A query that returns session content narrows itself to what its caller reads with the
 SQL fragments here, so the rule is spelled once: :func:`visible_sql` for a query that
@@ -61,14 +58,12 @@ __all__ = [
     "Audiences",
     "SessionReader",
     "TranscriptPings",
-    "audiences_for",
-    "chat_beginnings_sql",
+    "caller_reader",
+    "email_org",
     "hidden_exists_sql",
     "key_audiences",
     "may_hide",
-    "members_reader",
-    "org_of",
-    "reader_for",
+    "person_audiences",
     "reads_session",
     "visible_sql",
 ]
@@ -97,16 +92,15 @@ class SessionReader:
     Attributes:
       audiences: The audiences the caller holds; a session outside them is hidden.
         Empty reads nothing.
-      email: The caller's lowercase email: the sessions it owns, and the chats it
-        began or that are shared with it. Empty matches none.
-      org: The caller's organisation, whose open sessions and chats it reads;
-        ``None`` for none.
-      every_session: Read every ``open`` session that is not a chat, as anyone on a
-        server that is one organisation does.
+      email: The caller's lowercase email: the sessions it owns. Empty matches none.
+      org: The caller's organisation, whose open sessions it reads; ``None`` for
+        none.
+      every_session: Read every ``open`` session, as anyone on a server that is one
+        organisation does.
       every_chat: Read every chat that is not private, as a person or the assistant
         on a server that is one organisation does.
-      oversight: Read every session that is not a chat, a private one included, as a
-        person who holds ``staff`` or is an admin does.
+      oversight: Read every session, a private one included, as a person who holds
+        ``staff`` or is an admin does.
       hidden: Keep private sessions. A listing passes False unless asked to show
         them; a read by id keeps them for whoever may read them.
       assistant: The configured assistant's email, empty when none: a chat's first
@@ -145,7 +139,7 @@ CONSUMER_DOMAINS: Final = frozenset(
 organisation, so an organisation of one has no members."""
 
 
-def org_of(email: str, *, hosted_domain: str | None) -> str | None:
+def email_org(email: str, *, hosted_domain: str | None) -> str | None:
     """Return the organisation a person belongs to: their email's domain, if Google says.
 
     Google verifies a consumer account's address on any domain, and names the domain
@@ -165,7 +159,7 @@ def org_of(email: str, *, hosted_domain: str | None) -> str | None:
     return domain if domain and domain == (hosted_domain or "").lower() else None
 
 
-def audiences_for(
+def person_audiences(
     email: str,
     *,
     hosted_domain: str | None,
@@ -216,7 +210,7 @@ def key_audiences(
     return Audiences(read=owner, opening=opening, pinned=open_into)
 
 
-def reader_for(
+def caller_reader(
     email: str,
     *,
     audiences: frozenset[str],
@@ -231,8 +225,8 @@ def reader_for(
 
     A person is any caller but the assistant and a service account. Only a person has
     an organisation, and only on a ``domain`` server, and only a person oversees. A
-    read the assistant makes for a person (``delegated``) is that person's, less what
-    no chat may copy out: their oversight and the every-chat grant.
+    read the assistant makes for a person (``delegated``) is that person's, less their
+    oversight.
 
     Args:
       email: The caller's email.
@@ -241,7 +235,7 @@ def reader_for(
       orgs: The server's organisation mode.
       assistant: The configured assistant's email; empty when none.
       hosted_domain: Google's ``hd`` claim from the caller's last login, which
-        makes them a member of their email domain's organisation (:func:`org_of`).
+        makes them a member of their email domain's organisation (:func:`email_org`).
       delegated: The assistant reads for this caller.
       hidden: Keep private sessions.
 
@@ -256,7 +250,7 @@ def reader_for(
         audiences=audiences,
         email=email,
         org=(
-            org_of(email, hosted_domain=hosted_domain)
+            email_org(email, hosted_domain=hosted_domain)
             if person and orgs == "domain"
             else None
         ),
@@ -264,43 +258,6 @@ def reader_for(
         every_chat=orgs == "single" and (person or the_assistant) and not delegated,
         oversight=person and not delegated and (STAFF in audiences or admin),
         hidden=hidden,
-        assistant=assistant,
-    )
-
-
-def members_reader(
-    starter: str,
-    *,
-    orgs: ChatOrgs,
-    assistant: str,
-) -> SessionReader | None:
-    """Describe, as one reader, everyone an open chat ``starter`` begins is open to.
-
-    Besides its starter and the people it is shared with: every person on a
-    ``single`` server; on a ``domain`` one, each member of the organisation of the
-    starter's email domain, whether or not Google names the starter a member of it,
-    and none for a consumer one, of which Google names no one a member. A copy into
-    the chat is read by all of them, so it may hold only what this reader reads. It
-    is no person, so it owns nothing and oversees nothing.
-
-    Args:
-      starter: The email of the chat's starter.
-      orgs: The server's organisation mode.
-      assistant: The configured assistant's email; empty when none.
-
-    Returns:
-      reader: Any of them; ``None`` where an open chat is open to no one else: on an
-        ``individual`` server, and on a ``domain`` one for a consumer domain.
-
-    """
-    domain = starter.lower().rpartition("@")[2]
-    if orgs == "individual" or (orgs == "domain" and domain in CONSUMER_DOMAINS):
-        return None
-    return SessionReader(
-        audiences=frozenset({OPEN, PRIVATE}),
-        org=domain if orgs == "domain" else None,
-        every_session=orgs == "single",
-        every_chat=orgs == "single",
         assistant=assistant,
     )
 
@@ -437,11 +394,11 @@ def hidden_exists_sql(
 
     Args:
       session_column: The column holding the session id, such as ``e.session_id``.
-      params: The query's bound values so far; the reader's eight are appended.
+      params: The query's bound values so far; the reader's are appended.
       reader: Who reads.
 
     Returns:
-      clause: A boolean expression binding the next eight parameters.
+      clause: A boolean expression binding the parameters it appended.
 
     """
     return vetted_sql(
@@ -471,7 +428,11 @@ async def reads_session(
 
     """
     params: list[object] = [session_id]
-    clause = visible_sql("target", params=params, reader=reader, single=True)
+    clause = visible_sql(
+        "target",
+        params=params,
+        reader=reader,
+    )
     return bool(
         await conn.fetchval(
             vetted_sql(
@@ -481,37 +442,6 @@ async def reads_session(
             ),
             *params,
         ),
-    )
-
-
-def chat_beginnings_sql(*, assistant: str) -> str:
-    """Return the ``FROM`` and ``WHERE`` of the sessions that may begin a science chat.
-
-    A chat is begun by the oldest session under its id that the assistant opened, or
-    that a key of the session's own account opened. Any writer's key may open a
-    session under a ``chat:`` id, but only as its own account and after the chat's
-    first session, so neither that nor a session a rotated assistant key opens later
-    for a poster begins it. The caller adds the id test and orders by
-    ``began.created, began.id``: oldest is by ``created``, which no route writes, never
-    by ``started``, which one does.
-
-    Args:
-      assistant: SQL naming the assistant's email, such as ``$2``; a NULL or empty
-        one lets only a session's own account's key begin it.
-
-    Returns:
-      sql: ``FROM inquiries AS began`` joined to the opening key (``began_key``)
-        and its user (``began_by``), and a ``WHERE`` the caller extends with
-        ``AND``.
-
-    """
-    return vetted_sql(
-        "FROM inquiries AS began JOIN api_keys AS began_key "
-        "ON began_key.id = began.agentsession_opened_by_api_key_id "
-        "JOIN users AS began_by ON began_by.id = began_key.user_id "
-        "WHERE began.kind = 'AgentSession' AND (began_by.email = ",
-        assistant,
-        " OR lower(began_by.email) = lower(began.account))",
     )
 
 
@@ -585,3 +515,129 @@ class TranscriptPings:
             self._kept.clear()
         self._kept[(session_id, audience)] = (now, heard)
         return heard
+
+
+def _bound(params: list[object], value: object) -> str:
+    """Append ``value`` to a query's bound values; return its placeholder."""
+    params.append(value)
+    return f"${len(params)}"
+
+
+def chat_beginnings_sql(*, assistant: str) -> str:
+    """Return the ``FROM`` and ``WHERE`` of the sessions that may begin a science chat.
+
+    A chat is begun by the oldest session under its id that the assistant opened, or
+    that a key of the session's own account opened. Any writer's key may open a
+    session under a ``chat:`` id, but only as its own account and after the chat's
+    first session, so neither that nor a session a rotated assistant key opens later
+    for a poster begins it. The caller adds the id test and orders by
+    ``began.created, began.id``: oldest is by ``created``, which no route writes, never
+    by ``started``, which one does.
+
+    Args:
+      assistant: SQL naming the assistant's email, such as ``$2``; a NULL or empty
+        one lets only a session's own account's key begin it.
+
+    Returns:
+      sql: ``FROM inquiries AS began`` joined to the opening key (``began_key``)
+        and its user (``began_by``), and a ``WHERE`` the caller extends with
+        ``AND``.
+
+    """
+    return vetted_sql(
+        "FROM inquiries AS began JOIN api_keys AS began_key "
+        "ON began_key.id = began.agentsession_opened_by_api_key_id "
+        "JOIN users AS began_by ON began_by.id = began_key.user_id "
+        "WHERE began.kind = 'AgentSession' AND (began_by.email = ",
+        assistant,
+        " OR lower(began_by.email) = lower(began.account))",
+    )
+
+
+def members_reader(
+    starter: str,
+    *,
+    orgs: ChatOrgs,
+    assistant: str,
+) -> SessionReader | None:
+    """Describe, as one reader, everyone an open chat ``starter`` begins is open to.
+
+    Besides its starter and the people it is shared with: every person on a
+    ``single`` server; on a ``domain`` one, each member of the organisation of the
+    starter's email domain, whether or not Google names the starter a member of it,
+    and none for a consumer one, of which Google names no one a member. A copy into
+    the chat is read by all of them, so it may hold only what this reader reads. It
+    is no person, so it owns nothing and oversees nothing.
+
+    Args:
+      starter: The email of the chat's starter.
+      orgs: The server's organisation mode.
+      assistant: The configured assistant's email; empty when none.
+
+    Returns:
+      reader: Any of them; ``None`` where an open chat is open to no one else: on an
+        ``individual`` server, and on a ``domain`` one for a consumer domain.
+
+    """
+    domain = starter.lower().rpartition("@")[2]
+    if orgs == "individual" or (orgs == "domain" and domain in CONSUMER_DOMAINS):
+        return None
+    return SessionReader(
+        audiences=frozenset({OPEN, PRIVATE}),
+        org=domain if orgs == "domain" else None,
+        every_session=orgs == "single",
+        every_chat=orgs == "single",
+        assistant=assistant,
+    )
+
+
+def reader_for(
+    email: str,
+    *,
+    audiences: frozenset[str],
+    admin: bool,
+    orgs: ChatOrgs,
+    assistant: str,
+    hosted_domain: str | None,
+    delegated: bool = False,
+    hidden: bool = True,
+) -> SessionReader:
+    """Describe a caller as the transcript test reads it on a server in ``orgs`` mode.
+
+    A person is any caller but the assistant and a service account. Only a person has
+    an organisation, and only on a ``domain`` server, and only a person oversees. A
+    read the assistant makes for a person (``delegated``) is that person's, less what
+    no chat may copy out: their oversight and the every-chat grant.
+
+    Args:
+      email: The caller's email.
+      audiences: The audiences the caller holds.
+      admin: Whether the caller is an admin.
+      orgs: The server's organisation mode.
+      assistant: The configured assistant's email; empty when none.
+      hosted_domain: Google's ``hd`` claim from the caller's last login, which
+        makes them a member of their email domain's organisation (:func:`org_of`).
+      delegated: The assistant reads for this caller.
+      hidden: Keep private sessions.
+
+    Returns:
+      reader: The caller, as :func:`visible_sql` tests it.
+
+    """
+    email = email.lower()
+    the_assistant = bool(assistant) and email == assistant
+    person = not the_assistant and not is_service_address(email)
+    return SessionReader(
+        audiences=audiences,
+        email=email,
+        org=(
+            org_of(email, hosted_domain=hosted_domain)
+            if person and orgs == "domain"
+            else None
+        ),
+        every_session=orgs == "single",
+        every_chat=orgs == "single" and (person or the_assistant) and not delegated,
+        oversight=person and not delegated and (STAFF in audiences or admin),
+        hidden=hidden,
+        assistant=assistant,
+    )

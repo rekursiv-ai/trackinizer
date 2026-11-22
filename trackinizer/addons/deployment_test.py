@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import field
 from functools import partial
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import asyncio
@@ -14,6 +15,7 @@ from fastapi import APIRouter
 
 import pytest
 
+from trackinizer.addons import deployment
 from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import (
     Deployment,
@@ -21,11 +23,19 @@ from trackinizer.addons.deployment import (
     deployment_config,
     supervise,
 )
-from trackinizer.server.visuals.catalog import StaticVisual, Workspace
+from trackinizer.server.access_policy import DefaultPolicy
+from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from uuid import UUID
+
     from trackinizer.addons.addon import ServerContext, StandaloneContext
+    from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.agent_policy import AgentWork, Halt, Refusal
+    from trackinizer.server.store.search import Kept, VectorHit
+    from trackinizer.wire.wire_session_ir import RecordBody
 
 
 class NamedAddon:
@@ -65,6 +75,165 @@ class SocketAddon:
         return AddonManifest(title="Socket", description="Bad.", routers=[router])
 
 
+class GoverningAddon:
+    """A test addon that sets the deployment's access policy."""
+
+    class Config(Fig["GoverningAddon"]):
+        pass
+
+    def __init__(self, config: Config) -> None:
+        del config
+        self.policy = DefaultPolicy()
+
+    def manifest(self) -> AddonManifest:
+        return AddonManifest(
+            title="Governing",
+            description="Decides access.",
+            access_policy=self.policy,
+        )
+
+
+class Governed(Makes["Deployment"], Deployment.Config):
+    """A deployment with one access-policy addon and one plain addon."""
+
+    access: GoverningAddon.Config = field(default_factory=GoverningAddon.Config)
+    """The addon whose policy the server asks."""
+
+    plain: NamedAddon.Config = field(default_factory=NamedAddon.Config)
+    """An addon that sets no policy."""
+
+
+class Overgoverned(Makes["Deployment"], Deployment.Config):
+    """A deployment with two addons that each set an access policy."""
+
+    access: GoverningAddon.Config = field(default_factory=GoverningAddon.Config)
+    """The first policy."""
+
+    rival: GoverningAddon.Config = field(default_factory=GoverningAddon.Config)
+    """The second policy."""
+
+
+class _AgentPolicy:
+    """An agent policy that serves no one beyond admits, refuses nothing, halts none."""
+
+    def serves(self, asker: str) -> bool:
+        del asker
+        return False
+
+    async def refusal(
+        self,
+        engine: DatabaseEngine,
+        *,
+        asker: str,
+        session_id: UUID,
+        work: AgentWork,
+    ) -> Refusal | None:
+        del engine, asker, session_id, work
+        return None
+
+    async def stored(
+        self,
+        engine: DatabaseEngine,
+        *,
+        session_id: UUID,
+        part: int,
+        records: Sequence[RecordBody],
+        live: Sequence[UUID],
+    ) -> Halt | None:
+        del engine, session_id, part, records, live
+        return None
+
+
+class DecidingAddon:
+    """A test addon that sets the deployment's agent policy."""
+
+    class Config(Fig["DecidingAddon"]):
+        pass
+
+    def __init__(self, config: Config) -> None:
+        del config
+
+    def manifest(self) -> AddonManifest:
+        return AddonManifest(
+            title="Deciding",
+            description="Decides remote agents' work.",
+            agent_policy=_AgentPolicy(),
+        )
+
+
+class Decided(Makes["Deployment"], Deployment.Config):
+    """A deployment with one agent-policy addon and one plain addon."""
+
+    agents: DecidingAddon.Config = field(default_factory=DecidingAddon.Config)
+    """The addon whose policy the server asks about its remote agents."""
+
+    plain: NamedAddon.Config = field(default_factory=NamedAddon.Config)
+    """An addon that sets no policy."""
+
+
+class Overdecided(Makes["Deployment"], Deployment.Config):
+    """A deployment with two addons that each set an agent policy."""
+
+    agents: DecidingAddon.Config = field(default_factory=DecidingAddon.Config)
+    """The first policy."""
+
+    rival: DecidingAddon.Config = field(default_factory=DecidingAddon.Config)
+    """The second policy."""
+
+
+class _Nearest:
+    """A vector search that finds nothing."""
+
+    async def nearest(
+        self,
+        engine: DatabaseEngine,
+        *,
+        query: str | UUID,
+        kept: Kept,
+        filtered: bool,
+        limit: int,
+    ) -> list[VectorHit] | None:
+        del engine, query, kept, filtered, limit
+        return []
+
+
+class SearchingAddon:
+    """A test addon that sets the deployment's vector search."""
+
+    class Config(Fig["SearchingAddon"]):
+        pass
+
+    def __init__(self, config: Config) -> None:
+        del config
+
+    def manifest(self) -> AddonManifest:
+        return AddonManifest(
+            title="Searching",
+            description="Finds by meaning.",
+            vector_search=_Nearest(),
+        )
+
+
+class Searched(Makes["Deployment"], Deployment.Config):
+    """A deployment with one vector-search addon and one plain addon."""
+
+    vectors: SearchingAddon.Config = field(default_factory=SearchingAddon.Config)
+    """The addon whose search the server asks."""
+
+    plain: NamedAddon.Config = field(default_factory=NamedAddon.Config)
+    """An addon that sets no search."""
+
+
+class Oversearched(Makes["Deployment"], Deployment.Config):
+    """A deployment with two addons that each set a vector search."""
+
+    vectors: SearchingAddon.Config = field(default_factory=SearchingAddon.Config)
+    """The first search."""
+
+    rival: SearchingAddon.Config = field(default_factory=SearchingAddon.Config)
+    """The second search."""
+
+
 class Site(Makes["Deployment"], Deployment.Config):
     """A site deployment: one field per addon, typed with the addon's config."""
 
@@ -73,6 +242,44 @@ class Site(Makes["Deployment"], Deployment.Config):
 
     second: NamedAddon.Config | None = field(default_factory=NamedAddon.Config)
     """The second addon; ``None`` switches it off."""
+
+
+class MigratingAddon:
+    """A test addon that ships two migrations named for its config."""
+
+    class Config(Fig["MigratingAddon"]):
+        prefix: str = "m"
+        """What its migrations' names start with."""
+
+    def __init__(self, config: Config) -> None:
+        self.prefix = config.prefix
+
+    def manifest(self) -> AddonManifest:
+        return AddonManifest(
+            title="Migrating",
+            description="Has tables.",
+            migrations=[
+                (f"{self.prefix}.1", "SELECT 1"),
+                (f"{self.prefix}.2", "SELECT 2"),
+            ],
+        )
+
+
+class Migrated(Makes["Deployment"], Deployment.Config):
+    """A deployment of two migrating addons, one optional, and one plain addon."""
+
+    first: MigratingAddon.Config = field(
+        default_factory=partial(MigratingAddon.Config, prefix="a"),
+    )
+    """Its migrations come first."""
+
+    plain: NamedAddon.Config = field(default_factory=NamedAddon.Config)
+    """Ships none."""
+
+    second: MigratingAddon.Config | None = field(
+        default_factory=partial(MigratingAddon.Config, prefix="b"),
+    )
+    """``None`` switches it off."""
 
 
 class Broken(Makes["Deployment"], Deployment.Config):
@@ -114,7 +321,7 @@ def two_addons() -> Site:
 def notes_site() -> Site:
     """Return a deployment of two test addons whose catalog can open on notes."""
     site = Site()
-    site.visuals = Workspace.Config(
+    site.visuals = Canvas.Config(
         visuals=[
             StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
         ],
@@ -139,27 +346,51 @@ def test_the_catalog_describes_each_addon_by_placement() -> None:
     assert first.routes == ["/api/addons/first/ping"]
 
 
+def test_migrations_are_every_switched_on_addons_in_field_order() -> None:
+    site = Migrated()
+    off = Migrated()
+    off.second = None
+
+    assert site.make().migrations() == [
+        ("a.1", "SELECT 1"),
+        ("a.2", "SELECT 2"),
+        ("b.1", "SELECT 1"),
+        ("b.2", "SELECT 2"),
+    ]
+    assert off.make().migrations() == [("a.1", "SELECT 1"), ("a.2", "SELECT 2")]
+
+
 def test_the_visual_catalog_is_part_of_the_deployment() -> None:
     cfg = Deployment.Config()
-    cfg.visuals = Workspace.Config(
+    cfg.visuals = Canvas.Config(
         visuals=[
             StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
         ],
         default_visual="x.notes",
     )
     deployment = cfg.make()
-    assert isinstance(deployment.visuals, Workspace)
+    assert isinstance(deployment.visuals, Canvas)
     assert deployment.visuals.default_visual == "x.notes"
 
 
 def test_a_field_that_is_not_an_addon_config_is_refused() -> None:
-    with pytest.raises(DeploymentError, match=r"Field 'stray' holds a int"):
+    with pytest.raises(DeploymentError) as refused:
         Broken().make()
+
+    assert str(refused.value) == (
+        "Field 'stray' holds a int, not an addon config; every field of a "
+        "deployment but 'visuals' is an addon config or None."
+    )
 
 
 def test_an_addon_config_that_builds_no_addon_is_refused() -> None:
-    with pytest.raises(DeploymentError, match=r"Field 'first' builds a ChildOnly"):
+    with pytest.raises(DeploymentError) as refused:
         Odd().make()
+
+    assert str(refused.value) == (
+        "Field 'first' builds a ChildOnly, which has no manifest(); every field of a "
+        "deployment but 'visuals' is an addon config or None."
+    )
 
 
 def test_a_websocket_route_is_refused_naming_the_addon() -> None:
@@ -176,6 +407,66 @@ def test_manifest_lookup_names_what_exists() -> None:
 
 def test_an_empty_factory_runs_no_addons() -> None:
     assert deployment_config("", overrides=[]).make().manifests == {}
+
+
+def test_a_deployment_without_a_policy_addon_keeps_todays_rules() -> None:
+    assert two_addons().make().access_policy == DefaultPolicy()
+
+
+def test_the_one_addon_that_sets_a_policy_governs_the_deployment() -> None:
+    deployment = Governed().make()
+    assert deployment.access_policy is deployment.manifest("access").access_policy
+
+
+def test_two_addons_that_each_set_a_policy_are_refused() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Addons access, rival each set an access policy; a deployment takes at "
+            r"most one\.$"
+        ),
+    ):
+        Overgoverned().make()
+
+
+def test_the_one_addon_that_sets_an_agent_policy_decides_the_deployments_agents() -> (
+    None
+):
+    deployment = Decided().make()
+
+    assert deployment.agent_policy is deployment.manifest("agents").agent_policy
+    assert isinstance(deployment.agent_policy, _AgentPolicy)
+    assert two_addons().make().agent_policy is None
+
+
+def test_two_addons_that_each_set_an_agent_policy_are_refused() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Addons agents, rival each set an agent policy; a deployment takes at "
+            r"most one\.$"
+        ),
+    ):
+        Overdecided().make()
+
+
+def test_the_one_vector_search_is_picked() -> None:
+    deployment = Searched().make()
+
+    assert deployment.vector_search is deployment.manifest("vectors").vector_search
+    assert isinstance(deployment.vector_search, _Nearest)
+    assert two_addons().make().vector_search is None
+
+
+def test_two_vector_searches_are_refused() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Addons rival, vectors each set a vector search; a deployment takes at "
+            r"most one\.$"
+        ),
+    ):
+        Oversearched().make()
 
 
 def test_a_factory_path_resolves_and_takes_overrides() -> None:
@@ -249,15 +540,21 @@ async def test_supervise_restarts_a_crashed_service_until_it_finishes(
     assert attempts == [0, 1, 2]
     messages = [record.getMessage() for record in caplog.records]
     assert sum("crashed" in message for message in messages) == 2
+    # Each attempt says it began: what a box check reads as the service being up.
+    assert messages.count("addon service test.flaky started") == 3
+    assert messages[0] == "addon service test.flaky started"
     assert messages[-1] == "addon service test.flaky finished"
 
 
 @pytest.mark.asyncio
 async def test_supervise_resets_the_delay_after_a_long_run(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts: list[int] = []
     fifth_attempt = asyncio.Event()
+    clock = _Clock()
+    monkeypatch.setattr(deployment, "time", SimpleNamespace(monotonic=clock))
 
     with caplog.at_level(logging.INFO):
         task = asyncio.create_task(
@@ -267,6 +564,7 @@ async def test_supervise_resets_the_delay_after_a_long_run(
                     _crash_late,
                     attempts=attempts,
                     fifth_attempt=fifth_attempt,
+                    clock=clock,
                 ),
                 backoff_sec=0.001,
                 max_backoff_sec=0.02,
@@ -331,14 +629,29 @@ class _IdleStandalone:
         await asyncio.Event().wait()
 
 
-async def _crash_late(*, attempts: list[int], fifth_attempt: asyncio.Event) -> None:
+async def _crash_late(
+    *,
+    attempts: list[int],
+    fifth_attempt: asyncio.Event,
+    clock: _Clock,
+) -> None:
     """Crash every attempt; attempt 3 runs long enough to reset the backoff."""
     attempts.append(len(attempts))
     if len(attempts) == 3:
-        await asyncio.sleep(0.03)
+        clock.now += 0.03
     if len(attempts) == 5:
         fifth_attempt.set()
     raise RuntimeError("boom")
+
+
+class _Clock:
+    """A monotonic clock that moves only when a test moves it."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 if __name__ == "__main__":

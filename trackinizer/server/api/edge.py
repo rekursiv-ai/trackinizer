@@ -19,7 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.api.locks import require_writable
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.types.edges import Edge
 from trackinizer.types.errors import ConflictError, ValidationError
@@ -67,11 +68,11 @@ async def get_edge_route(
       result: The MutableJSON | None.
 
     """
-    del identity
     edge = await get_store(request).get_edge(
         from_id=from_id,
         to_id=to_id,
         edge_kind=edge_kind,
+        principal=await request_principal(request, identity),
     )
     if edge is None:
         raise HTTPException(status_code=404, detail="edge not found")
@@ -95,7 +96,7 @@ async def create_edge_batch_route(
       response: JSON with "ok" flag and per-item success/error list.
 
     """
-    await require_unlocked(
+    await require_writable(
         request,
         identity,
         [row for item in req.items for row in (item.from_id, item.to_id)],
@@ -114,7 +115,7 @@ async def create_edge_batch_route(
                 labels=item.labels or (),
                 reason=item.reason,
                 api_key_id=identity.api_key_id,
-                actor=_actor_of(item, identity),
+                actor=_audit_actor(item, identity),
             )
         except Exception as err:  # noqa: BLE001 -- batch response preserves partial success context.
             items.append(_EdgeBatchFailure(index=index, error=_safe_batch_error(err)))
@@ -151,7 +152,7 @@ async def create_edge_route(
       response: JSON with edge mutation result (change_id, created flag).
 
     """
-    await require_unlocked(request, identity, [from_id, to_id])
+    await require_writable(request, identity, [from_id, to_id])
     store = get_store(request)
     change_id, created = await store.add_edge(
         from_id=from_id,
@@ -163,7 +164,7 @@ async def create_edge_route(
         labels=req.labels or (),
         reason=req.reason,
         api_key_id=identity.api_key_id,
-        actor=_actor_of(req, identity),
+        actor=_audit_actor(req, identity),
     )
     return _edge_response(change_id, created=created)
 
@@ -192,7 +193,7 @@ async def delete_edge_route(
       response: JSON with edge mutation result (change_id, created flag).
 
     """
-    await require_unlocked(request, identity, [from_id, to_id])
+    await require_writable(request, identity, [from_id, to_id])
     store = get_store(request)
     change_id = await store.remove_edge(
         from_id=from_id,
@@ -200,7 +201,7 @@ async def delete_edge_route(
         edge_kind=edge_kind,
         reason=req.reason,
         api_key_id=identity.api_key_id,
-        actor=_actor_of(req, identity),
+        actor=_audit_actor(req, identity),
     )
     return _edge_response(change_id)
 
@@ -229,7 +230,7 @@ async def patch_edge_labels_route(
       response: JSON with edge mutation result (change_id, created flag).
 
     """
-    await require_unlocked(request, identity, [from_id, to_id])
+    await require_writable(request, identity, [from_id, to_id])
     store = get_store(request)
     method = store.add_edge_label if req.op == "add" else store.remove_edge_label
     change_id = await method(
@@ -239,7 +240,7 @@ async def patch_edge_labels_route(
         label=req.value,
         reason=req.reason,
         api_key_id=identity.api_key_id,
-        actor=_actor_of(req, identity),
+        actor=_audit_actor(req, identity),
     )
     return _edge_response(change_id)
 
@@ -349,7 +350,7 @@ class _EdgeBatchFailure(BaseModel):
     error: str
 
 
-def _actor_of(body: ActorMixin, identity: AuthIdentity) -> str:
+def _audit_actor(body: ActorMixin, identity: AuthIdentity) -> str:
     return body.actor or identity.email
 
 
@@ -378,7 +379,7 @@ def _make_edge_put(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJSON
         *,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
-        await require_unlocked(request, identity, [from_id, to_id])
+        await require_writable(request, identity, [from_id, to_id])
         store = get_store(request)
         change_id = await _set_edge_annotation(
             store,
@@ -389,7 +390,7 @@ def _make_edge_put(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJSON
             edge_kind=edge_kind,
             reason=body.reason,
             api_key_id=identity.api_key_id,
-            actor=_actor_of(body, identity),
+            actor=_audit_actor(body, identity),
         )
         return _edge_response(change_id)
 
@@ -411,7 +412,7 @@ def _make_edge_delete(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJ
         *,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
-        await require_unlocked(request, identity, [from_id, to_id])
+        await require_writable(request, identity, [from_id, to_id])
         store = get_store(request)
         change_id = await _set_edge_annotation(
             store,
@@ -422,7 +423,7 @@ def _make_edge_delete(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJ
             edge_kind=edge_kind,
             reason=body.reason,
             api_key_id=identity.api_key_id,
-            actor=_actor_of(body, identity),
+            actor=_audit_actor(body, identity),
         )
         return _edge_response(change_id)
 

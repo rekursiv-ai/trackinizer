@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import field, fields
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import asyncio
 import logging
@@ -19,11 +19,15 @@ from trackinizer.addons.addon import (
     AddonDescription,
     AddonManifest,
 )
-from trackinizer.server.visuals.catalog import Workspace
+from trackinizer.server.access_policy import AccessPolicy, DefaultPolicy
+from trackinizer.server.visuals.catalog import Canvas
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator, Mapping
+
+    from trackinizer.server.agent_policy import AgentPolicy
+    from trackinizer.server.store.search import VectorSearch
 
 
 __all__ = [
@@ -53,11 +57,19 @@ class Deployment:
     """
 
     class Config(Fig["Deployment"]):
-        visuals: Workspace.Config = field(default_factory=Workspace.Config)
+        visuals: Canvas.Config = field(default_factory=Canvas.Config)
         """The visual modules the browser offers, and the one a new canvas opens."""
 
     def __init__(self, config: Config) -> None:
-        """Build the visual catalog and every addon's manifest; validate both."""
+        """Build the visual catalog and every addon's manifest; validate both.
+
+        Raises:
+          DeploymentError: A field is no addon config, or an addon's router holds a
+            WebSocket route.
+          ValueError: Two addons each set an access policy, an agent policy, or a
+            vector search; a server asks one.
+
+        """
         self.visuals = config.visuals.make()
         self.manifests: dict[str, AddonManifest] = {}
         descriptions: list[AddonDescription] = []
@@ -75,6 +87,21 @@ class Deployment:
             except TypeError as err:
                 raise DeploymentError(f"Addon {name!r}: {err}") from err
         self._catalog = AddonCatalogBody(addons=descriptions)
+        governing = _one(
+            "an access policy",
+            {name: manifest.access_policy for name, manifest in self.manifests.items()},
+        )
+        self.access_policy: AccessPolicy = (
+            DefaultPolicy() if governing is None else governing
+        )
+        self.agent_policy: AgentPolicy | None = _one(
+            "an agent policy",
+            {name: manifest.agent_policy for name, manifest in self.manifests.items()},
+        )
+        self.vector_search: VectorSearch | None = _one(
+            "a vector search",
+            {name: manifest.vector_search for name, manifest in self.manifests.items()},
+        )
 
     def catalog(self) -> AddonCatalogBody:
         """Describe every addon without starting any of them."""
@@ -98,6 +125,22 @@ class Deployment:
                 f"Deployment has no addon {name!r}; it runs {list(self.manifests)}.",
             )
         return self.manifests[name]
+
+    def migrations(self) -> list[tuple[str, str]]:
+        """Return every addon's migrations, addon by addon in field order.
+
+        The server runs them at start (``Store.bootstrap``); a tool that must build
+        a database's tables without serving runs the same list.
+
+        Returns:
+          migrations: ``(name, SQL)`` pairs, each addon's in its own order.
+
+        """
+        return [
+            migration
+            for manifest in self.manifests.values()
+            for migration in manifest.migrations
+        ]
 
 
 def deployment_config(factory: str, *, overrides: list[str]) -> Deployment.Config:
@@ -161,6 +204,7 @@ async def supervise(
     delay_sec = backoff_sec
     while True:
         started_sec = time.monotonic()
+        _logger.info("addon service %s started", name)
         try:
             await run()
         except Exception:
@@ -174,14 +218,15 @@ async def supervise(
             return
         if time.monotonic() - started_sec > max_backoff_sec:
             delay_sec = backoff_sec
-        await asyncio.sleep(delay_sec)
+        # Restart backoff for a crashing service.
+        await asyncio.sleep(delay_sec)  # house-ignore[sleep] -- See above.
         delay_sec = min(delay_sec * 2, max_backoff_sec)
 
 
 def _addon_configs(config: Deployment.Config) -> Iterator[tuple[str, Makeable[object]]]:
     """Yield ``(name, config)`` for every addon field that is switched on."""
     for config_field in fields(config):
-        value: object = getattr(config, config_field.name, None)
+        value = cast(object, getattr(config, config_field.name))
         if config_field.name == "visuals" or value is None:
             continue
         if not isinstance(value, Makeable):
@@ -191,3 +236,14 @@ def _addon_configs(config: Deployment.Config) -> Iterator[tuple[str, Makeable[ob
                 "addon config or None.",
             )
         yield config_field.name, value
+
+
+def _one[T](part: str, by_addon: Mapping[str, T | None]) -> T | None:
+    """Return the ``part`` the one addon that sets it sets; ``None`` when none does."""
+    setting = {name: each for name, each in by_addon.items() if each is not None}
+    if len(setting) > 1:
+        raise ValueError(
+            f"Addons {', '.join(sorted(setting))} each set {part}; a deployment "
+            "takes at most one.",
+        )
+    return next(iter(setting.values()), None)

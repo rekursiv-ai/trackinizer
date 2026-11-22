@@ -20,13 +20,13 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,
     clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.auth import AuthIdentity, Role, generate_token
 from trackinizer.server.config import Config, parse_assistant
@@ -97,7 +97,7 @@ def _admin(*, staff: bool = False, key: bool = True) -> AuthIdentity:
 
 def _staff_setting(monkeypatch: pytest.MonkeyPatch, *patterns: str) -> None:
     """Serve the app with this staff setting."""
-    monkeypatch.setattr(app.state, "config", Config(staff=patterns), raising=False)
+    patch_state(monkeypatch, "config", Config(staff=patterns))
 
 
 def _touched_nothing(engine: FakeEngine) -> bool:
@@ -203,7 +203,8 @@ class TestCreate:
     ) -> None:
         client, _store, engine = route_client
         _admin()
-        engine.conn.fetchrow = AsyncMock(return_value=_account_row())
+        engine.conn.fetchrow.side_effect = None
+        engine.conn.fetchrow.return_value = _account_row()
         response = client.post(_ACCOUNTS, json={"name": "campaign", "role": "writer"})
         assert response.status_code == 201, response.text
         assert from_plain(response.json(), dict[str, object]) == {
@@ -217,7 +218,10 @@ class TestCreate:
             "staff": False,
         }
         call = engine.conn.fetchrow.call_args
-        sql = " ".join(str(call.args[0]).split())
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        sql = " ".join(sql.split())
         assert "INSERT INTO users" in sql
         assert "ON CONFLICT (email) DO NOTHING" in sql
         assert call.args[2:] == ("campaign@service.invalid", "campaign", "writer")
@@ -373,7 +377,11 @@ class TestMint:
         assert body["role"] == "writer"
         assert body["name"] == "host"
         assert body["open_into"] is None
-        key_id, user_id, name, secret_hash, prefix, role, pin = _api_key_insert(engine)
+        key_id, user_id, name, secret_hash, prefix, role, pin, host = _api_key_insert(
+            engine,
+        )
+        # A service account's token names no host: only a device login's key does.
+        assert host is None
         assert body["id"] == str(key_id)
         assert user_id == _ACCOUNT_ID
         assert (name, role, pin) == ("host", "writer", None)
@@ -389,9 +397,13 @@ class TestMint:
         _admin()
         _script_mint(engine, account=_account_row())
         client.post(_TOKENS, json={"name": "host"})
-        sql = " ".join(str(engine.conn.fetchrow.call_args.args[0]).split())
+        call = engine.conn.fetchrow.call_args
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        sql = " ".join(sql.split())
         assert sql.endswith("FROM users WHERE id = $1 FOR SHARE")
-        assert engine.conn.fetchrow.call_args.args[1] == _ACCOUNT_ID
+        assert call.args[1] == _ACCOUNT_ID
         sqls = executed_sql(engine.conn)
         assert sqls[0] == "BEGIN"
         assert sqls[-1] == "COMMIT"
@@ -482,7 +494,7 @@ class TestMint:
         assert response.status_code == 201, response.text
         body = from_plain(response.json(), dict[str, object])
         assert body["open_into"] == "staff"
-        assert _api_key_insert(engine)[6:] == ("staff",)
+        assert _api_key_insert(engine)[6:] == ("staff", None)
 
     def test_a_domain_pattern_gives_the_account_no_staff_to_hand_a_token(
         self,
@@ -530,7 +542,7 @@ class TestMint:
         _script_mint(engine, account=_account_row())
         response = client.post(_TOKENS, json={"name": "host"})
         assert response.status_code == 201, response.text
-        assert _api_key_insert(engine)[6:] == ("open",)
+        assert _api_key_insert(engine)[6:] == ("open", None)
         wider = client.post(_TOKENS, json={"name": "wider", "open_into": "staff"})
         assert wider.status_code == 403, wider.text
 
@@ -640,7 +652,7 @@ class TestRevoke:
         _admin()
         secret, _prefix = generate_token()
         engine.conn.fetchrow = AsyncMock(return_value=_account_row())
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         store.remember_bearer_identity(
             secret,
             AuthIdentity(
@@ -811,7 +823,7 @@ class TestAssistantAccount:
             staff=("*@example.com",),
             assistant=parse_assistant("chat=chat@service.invalid"),
         )
-        monkeypatch.setattr(app.state, "config", config, raising=False)
+        patch_state(monkeypatch, "config", config)
 
     def test_a_mint_for_the_assistant_by_a_non_staff_admin_is_403_and_stores_nothing(
         self,

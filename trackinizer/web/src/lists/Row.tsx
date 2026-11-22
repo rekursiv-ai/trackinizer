@@ -1,10 +1,9 @@
 import { memo, type ReactNode } from "react";
 import type { InquiryRow } from "../api/inquiries";
-import { useIsHighlighted } from "../app/highlights";
 import { Selectable } from "../bulk/Selectable";
 import { usd } from "../detail/fields";
 import { dateTime } from "../detail/time";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { Avatar, LabelChip, PriorityGlyph, StateGlyphs } from "../ui/glyphs";
 import { KindIcon } from "../ui/kinds";
 
@@ -42,11 +41,10 @@ export const Row = memo(function Row({
   /** What the view says of the row besides its fields, before them: an outline's "also under". */
   note?: ReactNode;
 }) {
-  const highlighted = useIsHighlighted(row.id);
   const link = (
     <a
-      className={["row", focused ? "is-focused" : "", highlighted ? "is-highlighted" : ""].filter(Boolean).join(" ")}
-      href={formatRoute({ name: "ref", kind: row.kind, seq: row.seq })}
+      className={focused ? "row is-focused" : "row"}
+      href={routeHref({ name: "ref", kind: row.kind, seq: row.seq })}
       data-row={row.id}
       aria-current={focused ? "true" : undefined}
       onClick={(event) => {
@@ -58,7 +56,6 @@ export const Row = memo(function Row({
         }
       }}
     >
-      {highlighted && <span className="row-mark" role="img" aria-label="Pointed out" />}
       {"priority" in row && <PriorityGlyph priority={row.priority ?? null} />}
       {row.priority != null && <span className="row-pri">{row.priority}</span>}
       <span className={mixed ? "row-ref wide" : "row-ref"}>
@@ -96,7 +93,12 @@ export const Row = memo(function Row({
   );
   if (!onSelect) return link;
   return (
-    <Selectable id={row.id} name={`${row.kind}#${row.seq}`} selected={selected} onSelect={onSelect}>
+    <Selectable
+      id={row.id}
+      name={`${row.kind}#${row.seq}`}
+      selected={selected}
+      onSelect={onSelect}
+    >
       {link}
     </Selectable>
   );
@@ -106,7 +108,11 @@ export const Row = memo(function Row({
 function RowMeta({ row, now }: { row: InquiryRow; now: number }) {
   const bits: ReactNode[] = [];
   for (const kind of row.issue_kind ?? []) {
-    bits.push(<span key={`kind-${kind}`} className="kind-tag hide-sm">{kind}</span>);
+    bits.push(
+      <span key={`kind-${kind}`} className="kind-tag hide-sm">
+        {kind}
+      </span>,
+    );
   }
   const evidence = [...(row.proved_by ?? []), ...(row.favored_by ?? [])];
   if (evidence.length) {
@@ -128,10 +134,30 @@ function RowMeta({ row, now }: { row: InquiryRow; now: number }) {
     );
   }
   const paper = paperLine(row);
-  if (paper) bits.push(<span key="paper" className="hide-sm">{paper}</span>);
-  if (row.sha) bits.push(<span key="sha" className="mono">{row.sha.slice(0, 10)}</span>);
-  if (row.url) bits.push(<span key="url" className="hide-sm">{host(row.url)}</span>);
-  if (row.provider) bits.push(<span key="provider" className="kind-tag">{row.provider}</span>);
+  if (paper)
+    bits.push(
+      <span key="paper" className="hide-sm">
+        {paper}
+      </span>,
+    );
+  if (row.sha)
+    bits.push(
+      <span key="sha" className="mono">
+        {row.sha.slice(0, 10)}
+      </span>,
+    );
+  if (row.url)
+    bits.push(
+      <span key="url" className="hide-sm">
+        {host(row.url)}
+      </span>,
+    );
+  if (row.provider)
+    bits.push(
+      <span key="provider" className="kind-tag">
+        {row.provider}
+      </span>,
+    );
   if ("cli" in row) {
     bits.push(
       row.ended ? (
@@ -143,11 +169,24 @@ function RowMeta({ row, now }: { row: InquiryRow; now: number }) {
         </span>
       ),
     );
-    if (row.cli) bits.push(<span key="cli" className="kind-tag hide-sm">{row.cli}</span>);
+    if (row.cli)
+      bits.push(
+        <span key="cli" className="kind-tag hide-sm">
+          {row.cli}
+        </span>,
+      );
     const cost = row.marginal_cost.agent_usd + row.marginal_cost.resource_usd;
-    bits.push(<span key="cost" className="num hide-sm">{usd(cost)}</span>);
+    bits.push(
+      <span key="cost" className="num hide-sm">
+        {usd(cost)}
+      </span>,
+    );
   }
-  bits.push(...(row.labels ?? []).map((label) => <LabelChip key={`label-${label}`} label={label} />));
+  bits.push(
+    ...(row.labels ?? []).map((label) => (
+      <LabelChip key={`label-${label}`} label={label} />
+    )),
+  );
   return bits;
 }
 

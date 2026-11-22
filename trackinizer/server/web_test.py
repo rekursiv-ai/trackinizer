@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast, override
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
+import asyncio
 import json
 import os
+import re
 import struct
 import time
 import uuid
@@ -20,14 +23,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
+from starlette.datastructures import State
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
     import asyncpg
 
-    from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.mock_test_support import MockCall
+    from trackinizer.server.store.core import Store
+    from trackinizer.wire.bodies import SubmitBase
 else:
     from wrapt import lazy_import
 
@@ -36,28 +40,28 @@ else:
 from treekle import from_plain, json_loads
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
 from trackinizer.lib.postgres import Conn
-from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.mock_test_support import AsyncMockProtocol
+from trackinizer.sagent.session.types import AgentMessage, stored_names
 from trackinizer.server import web
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.api import auth_routes
+from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import (
     iter_routes,
     registered_paths,
 )
-from trackinizer.server.store.core import Store
+from trackinizer.server.store.search import SessionSearchHit
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
+    CanvasAgents,
     FeedScope,
-    StationAgents,
 )
 from trackinizer.types.columns import column_specs, storage_name
 from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
@@ -72,16 +76,19 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+from trackinizer.wire.refs import SeqRef
 from trackinizer.wire.wire_sessions import (
     FeedActorFacet,
     FeedBucket,
     FeedEvent,
     FeedFacetsResponse,
     FeedHistogramResponse,
+    FeedKindFacet,
+    WorkedOn,
 )
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # Tests in this module call the FastAPI route functions directly (not
@@ -125,6 +132,26 @@ _EDGE_RELATIONS: Final = frozenset(
 
 
 @dataclass(slots=True, kw_only=True)
+class _FeedStore:
+    engine: FakeEngine = field(default_factory=FakeEngine)
+    read_feed: AsyncMockProtocol[list[FeedEvent]] = field(
+        default_factory=lambda: cast(AsyncMockProtocol[list[FeedEvent]], AsyncMock()),
+    )
+    read_feed_facets: AsyncMockProtocol[FeedFacetsResponse] = field(
+        default_factory=lambda: cast(
+            AsyncMockProtocol[FeedFacetsResponse],
+            AsyncMock(),
+        ),
+    )
+    read_feed_histogram: AsyncMockProtocol[FeedHistogramResponse] = field(
+        default_factory=lambda: cast(
+            AsyncMockProtocol[FeedHistogramResponse],
+            AsyncMock(),
+        ),
+    )
+
+
+@dataclass(slots=True, kw_only=True)
 class _State:
     store: object
     engine: object
@@ -138,15 +165,19 @@ class _App:
 @dataclass(slots=True, kw_only=True)
 class _Request:
     app: _App
+    state: State
 
 
 def _request(store: object, engine: object) -> _Request:
-    return _Request(app=_App(state=_State(store=store, engine=engine)))
+    return _Request(
+        app=_App(state=_State(store=store, engine=engine)),
+        state=State(),
+    )
 
 
-@dataclass(slots=True, kw_only=True)
-class _Store:
-    engine: FakeEngine
+def _store(engine: FakeEngine) -> Store:
+    store, _ = make_store(engine.conn)
+    return store
 
 
 def _inquiry_row(**overrides: object) -> dict[str, object]:
@@ -274,6 +305,24 @@ class TestQueryHelpers:
             web._parse_query("title:")
         with pytest.raises(ValueError, match="empty"):
             web._parse_query("description:")
+
+    def test_parse_query_skips_an_empty_quoted_token(self) -> None:
+        assert web._parse_query('"" hello') == [(None, "hello")]
+
+    def test_a_snapshot_reads_only_the_columns_its_row_carries(self) -> None:
+        row = {
+            "new_marginal_cost_agent_usd": 1.5,
+            "new_marginal_cost_resource_usd": 0.0,
+            "new_title": "Kept",
+            "new_owner": None,
+        }
+        assert web._snapshot_to_dict(
+            cast("asyncpg.Record", row),
+            prefix="new_",
+        ) == {
+            "marginal_cost": {"agent_usd": 1.5, "resource_usd": 0.0},
+            "title": "Kept",
+        }
 
     def test_build_term_clause(self) -> None:
         clause, params = web._build_term_clause(
@@ -462,6 +511,7 @@ class TestSerialization:
             "peer_judgement": "proven",
             "peer_created": created,
             "peer_priority": None,
+            "peer_cli_session_id": None,
         }
         assert web._peer_ref(cast("asyncpg.Record", row), peer_id) == {
             "id": str(peer_id),
@@ -481,6 +531,17 @@ class TestSerialization:
         # Priority 0 is the most urgent, not an absent one.
         assert (
             web._peer_ref(cast("asyncpg.Record", issue), peer_id)["peer_priority"] == 0
+        )
+        # A session names the agent it holds as its parent's records do.
+        session = {
+            **row,
+            "peer_kind": "AgentSession",
+            "peer_judgement": None,
+            "peer_cli_session_id": "agent-a4e92ea6a0f453a03",
+        }
+        assert (
+            web._peer_ref(cast("asyncpg.Record", session), peer_id)["cli_session_id"]
+            == "agent-a4e92ea6a0f453a03"
         )
         assert web._isoformat(datetime(2026, 5, 18, tzinfo=UTC)).startswith("2026")
         assert web._isoformat("x") == "x"
@@ -509,6 +570,7 @@ class TestEdgeHelpers:
                         "peer_judgement": None,
                         "peer_created": datetime(2026, 5, 18, tzinfo=UTC),
                         "peer_priority": 20,
+                        "peer_cli_session_id": None,
                     },
                 ],
                 [
@@ -526,12 +588,17 @@ class TestEdgeHelpers:
                         "peer_judgement": None,
                         "peer_created": datetime(2026, 5, 19, tzinfo=UTC),
                         "peer_priority": None,
+                        "peer_cli_session_id": None,
                     },
                 ],
             ],
         )
-        edges = await web._edges_for(cast(Conn, conn), target_id, direction="outbound")
-        backlinks = await web._edges_for(
+        edges = await web._grouped_edges(
+            cast(Conn, conn),
+            target_id,
+            direction="outbound",
+        )
+        backlinks = await web._grouped_edges(
             cast(Conn, conn),
             target_id,
             direction="inbound",
@@ -549,7 +616,7 @@ class TestRoutes:
     @pytest.mark.asyncio
     async def test_web_search_empty_and_with_kind(self) -> None:
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         assert (
             await web.web_search(
@@ -560,7 +627,7 @@ class TestRoutes:
             == []
         )
 
-        engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
+        engine.conn.fetch.return_value = [_inquiry_row()]
         rows = await web.web_search(
             cast(Request, request),
             q="hello",
@@ -584,7 +651,7 @@ class TestRoutes:
         # (which requires the query to run inside a transaction) so a viewer
         # cannot DoS the cluster with one expensive regex.
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
         await web.web_search(
@@ -617,7 +684,7 @@ class TestRoutes:
         # The two classes are unrelated, so a guard written against the
         # plausible one never fires and the caller gets a 500.
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         # Only the SEARCH query fails. ``tx`` rolls back through ``fetch`` as
         # well, so a blanket ``side_effect`` would break the cleanup too and
@@ -643,7 +710,7 @@ class TestRoutes:
         # A generated-SQL defect is our bug. Relabelling it 400 would hide a
         # server fault behind a client error.
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(
             side_effect=[
@@ -658,15 +725,70 @@ class TestRoutes:
                 identity=_TEST_IDENTITY,
             )
 
+    def test_more_foci_than_a_read_takes_are_refused_before_it_runs(self) -> None:
+        engine = FakeEngine()
+        app = FastAPI()
+        app.state.engine = engine
+        app.state.store = _store(engine)
+        web.attach(app)
+        app.dependency_overrides[current_user] = _viewer
+        client = TestClient(app)
+
+        response = client.get(
+            "/api/web/graph",
+            params=tuple(("focus", "Issue/1") for _ in range(web.MOST_FOCI + 1)),
+        )
+
+        assert response.status_code == 422, response.text
+        engine.conn.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_worked_on_reads_the_readers_own_changes_through_its_access(
+        self,
+    ) -> None:
+        engine = FakeEngine()
+        request = _request(_store(engine), engine)
+        engine.conn.fetch.return_value = []
+
+        await web.web_worked_on(
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
+            limit=7,
+        )
+
+        call = engine.conn.fetch.call_args
+        assert call is not None
+        sql = str(call.args[0])
+        # The reader's access gates every change it counts.
+        assert "@> ARRAY['workspace']::text[] AND (" in sql
+        assert call.args[1:4] == (7, _TEST_IDENTITY.email, list(web._NOT_WORK))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, 101])
+    async def test_worked_on_refuses_a_limit_outside_1_to_100(self, limit: int) -> None:
+        engine = FakeEngine()
+        request = _request(_store(engine), engine)
+
+        with pytest.raises(HTTPException) as caught:
+            await web.web_worked_on(
+                cast(Request, request),
+                identity=_TEST_IDENTITY,
+                limit=limit,
+            )
+
+        assert (caught.value.status_code, caught.value.detail) == (
+            400,
+            "limit must be in [1, 100]",
+        )
+        engine.conn.fetch.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_recent_lookup_and_get_routes(self) -> None:
         target_id = new_uuid()
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
-        engine.conn.fetch = AsyncMock(
-            return_value=[_change_row(principal="api@example.com")],
-        )
+        engine.conn.fetch.return_value = [_change_row(principal="api@example.com")]
         recent = await web.web_recent_changes(
             cast(Request, request),
             identity=_TEST_IDENTITY,
@@ -674,6 +796,7 @@ class TestRoutes:
         )
         assert recent[0]["actor"] == "alice"
         assert recent[0]["principal"] == "api@example.com"
+        assert engine.conn.fetch.call_args is not None
         sql = engine.conn.fetch.call_args.args[0]
         assert isinstance(sql, str)
         assert "LEFT JOIN api_keys" in sql
@@ -720,9 +843,9 @@ class TestRoutes:
         # and which of them made the 50-row page, to the planner (R21).
         target_id = new_uuid()
         engine = FakeEngine()
-        request = _request(_Store(engine=engine), engine)
+        request = _request(_store(engine), engine)
         engine.conn.fetchrow = AsyncMock(return_value=_inquiry_row(id=target_id))
-        engine.conn.fetch = AsyncMock(return_value=[])
+        engine.conn.fetch.return_value = []
         await web.web_get(target_id, cast(Request, request), identity=_TEST_IDENTITY)
         changes_sql = engine.conn.fetch.call_args_list[-1].args[0]
         assert isinstance(changes_sql, str)
@@ -739,7 +862,7 @@ class TestRoutes:
         late = datetime(2026, 5, 18, 9, tzinfo=UTC)
         root_id, child_id = new_uuid(), new_uuid()
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         edge_rows = [
             {
@@ -749,33 +872,31 @@ class TestRoutes:
                 "valence": 0.4,
             },
         ]
-        engine.conn.fetch = AsyncMock(
-            side_effect=[
-                [
-                    {
-                        "id": root_id,
-                        "kind": "Belief",
-                        "seq": 1,
-                        "title": "root",
-                        "status": "active",
-                        "created": early,
-                        "belief_judgement": "proven",
-                        "belief_confidence": 0.8,
-                    },
-                    {
-                        "id": child_id,
-                        "kind": "WebSearch",
-                        "seq": 2,
-                        "title": "child",
-                        "status": "complete",
-                        "created": late,
-                        "belief_judgement": None,
-                        "belief_confidence": None,
-                    },
-                ],
-                edge_rows,
+        engine.conn.fetch.side_effect = [
+            [
+                {
+                    "id": root_id,
+                    "kind": "Belief",
+                    "seq": 1,
+                    "title": "root",
+                    "status": "active",
+                    "created": early,
+                    "belief_judgement": "proven",
+                    "belief_confidence": 0.8,
+                },
+                {
+                    "id": child_id,
+                    "kind": "WebSearch",
+                    "seq": 2,
+                    "title": "child",
+                    "status": "complete",
+                    "created": late,
+                    "belief_judgement": None,
+                    "belief_confidence": None,
+                },
             ],
-        )
+            edge_rows,
+        ]
         graph = await web.web_graph(
             cast(Request, request),
             identity=_TEST_IDENTITY,
@@ -820,7 +941,7 @@ class TestRoutes:
         # rather than carry a null the SPA would have to special-case.
         a, b = new_uuid(), new_uuid()
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(
             side_effect=[
@@ -850,7 +971,7 @@ class TestRoutes:
         # below 1 is refused. Above it there is no top: the graph view lets a
         # person type any count, and the answer is still at most ``limit`` nodes.
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(return_value=[])
         for bad in (-1, 0):
@@ -922,7 +1043,7 @@ class TestRoutes:
         ]
 
     def test_without_the_app_the_old_paths_serve_nothing(self, tmp_path: Path) -> None:
-        # The old pages are gone. Without ``--app-dir`` there is no ``/app/`` to
+        # The old pages are gone. Without ``--app-dir`` there is no ``/trax/`` to
         # send their paths to, so each answers 404, even where an old build's
         # files still lie in the assets directory; the read API stays.
         for name in ("index", "graph", "console", "me", "admin"):
@@ -932,7 +1053,15 @@ class TestRoutes:
         app = FastAPI()
         web.attach(app, assets_dir=tmp_path)
         client = TestClient(app, follow_redirects=False)
-        for path in ("/", "/me", "/admin", "/graph", "/console", "/static/app.js"):
+        for path in (
+            "/",
+            "/me",
+            "/admin",
+            "/graph",
+            "/console",
+            "/app/",
+            "/static/app.js",
+        ):
             assert client.get(path).status_code == 404, path
         paths = registered_paths(app)
         for path in ("/api/web/search", "/api/web/graph", "/api/web/feed"):
@@ -1084,8 +1213,8 @@ class TestFeedReads:
     """The feed, its facets and its histogram take one set of repeatable filters."""
 
     def test_backward_feed_cursor_reaches_the_store_whole(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
         session = new_uuid()
         created = datetime(2026, 6, 1, tzinfo=UTC)
@@ -1100,7 +1229,7 @@ class TestFeedReads:
             },
         )
         assert response.status_code == 200
-        assert store.read_feed.call_args.kwargs.get("before") == (
+        assert store.read_feed.call_args_list[-1].kwargs.get("before") == (
             created,
             session,
             1,
@@ -1108,7 +1237,7 @@ class TestFeedReads:
         )
 
     def test_backward_feed_cursor_requires_every_component(self) -> None:
-        store = AsyncMock()
+        store = _FeedStore()
         client = self._client(store)
         cursor = {
             "before_created": "2026-06-01T00:00:00Z",
@@ -1126,7 +1255,7 @@ class TestFeedReads:
         store.read_feed.assert_not_called()
 
     @classmethod
-    def _client(cls, store: AsyncMock) -> TestClient:
+    def _client(cls, store: _FeedStore) -> TestClient:
         app = FastAPI()
         app.state.engine = FakeEngine()
         app.state.store = store
@@ -1135,16 +1264,18 @@ class TestFeedReads:
         return TestClient(app)
 
     def test_each_filter_repeats_and_one_room_or_actor_still_filters(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
 
-        def scope_of(*params: tuple[str, str]) -> object:
+        def fake_scope(*params: tuple[str, str]) -> FeedScope:
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
-            return store.read_feed.call_args.kwargs["scope"]
+            scope = store.read_feed.call_args_list[-1].kwargs["scope"]
+            assert isinstance(scope, FeedScope)
+            return scope
 
-        assert scope_of(
+        assert fake_scope(
             ("actor", "a"),
             ("actor", "b"),
             ("room", "lab"),
@@ -1158,18 +1289,20 @@ class TestFeedReads:
             kinds=("ToolCall", "UserMessage"),
             reader=_TEST_READER,
         )
-        assert scope_of(("room", "lab"), ("actor", "eng")) == FeedScope(
+        assert fake_scope(("room", "lab"), ("actor", "eng")) == FeedScope(
             actors=("eng",),
             rooms=("lab",),
             reader=_TEST_READER,
         )
-        assert scope_of() == replace(WHOLE_FEED, reader=_TEST_READER)
+        assert fake_scope() == replace(WHOLE_FEED, reader=_TEST_READER)
 
     def test_each_read_is_scoped_to_the_reader_its_caller_is(self) -> None:
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         reads = {
             "/api/web/feed": store.read_feed,
@@ -1194,7 +1327,8 @@ class TestFeedReads:
             app.dependency_overrides[current_user] = identity
             for path, read in reads.items():
                 assert client.get(path).status_code == 200, path
-                scope = cast(FeedScope, read.call_args.kwargs["scope"])
+                scope = read.call_args_list[-1].kwargs["scope"]
+                assert isinstance(scope, FeedScope)
                 assert scope.reader == SessionReader(
                     audiences=audiences,
                     email=_TEST_IDENTITY.email,
@@ -1229,29 +1363,44 @@ class TestFeedReads:
 
     def test_feed_whose_everyone_is_the_default(self) -> None:
         """Everyone is every session the caller reads; ``hidden`` keeps private ones."""
-        named = self._scopes({"whose": "everyone"})
-        hidden = self._scopes({"hidden": "true"})
-
-        assert named == self._scopes({}) == [FeedScope(reader=_TEST_READER)] * 3
-        assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
-        assert (
-            self._client(AsyncMock())
-            .get(
-                "/api/web/feed",
-                params={"whose": "theirs"},
-            )
-            .status_code
-            == 422
+        store = self._histogram_store()
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
+        with self._client(store) as client:
+            named = self._read_scopes(client, store, params={"whose": "everyone"})
+            hidden = self._read_scopes(client, store, params={"hidden": "true"})
+            default = self._read_scopes(client, store, params={})
+            assert named == default == [FeedScope(reader=_TEST_READER)] * 3
+            assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
+            assert (
+                client.get("/api/web/feed", params={"whose": "theirs"}).status_code
+                == 422
+            )
 
     def _scopes(self, params: dict[str, str]) -> list[FeedScope]:
         """Return the scope each of the feed, its facets and histogram was read with."""
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
-        client = self._client(store)
+        with self._client(store) as client:
+            return self._read_scopes(client, store, params=params)
+
+    def _read_scopes(
+        self,
+        client: TestClient,
+        store: _FeedStore,
+        *,
+        params: dict[str, str],
+    ) -> list[FeedScope]:
+        """Read all three endpoints through the same app and client."""
         scopes: list[FeedScope] = []
         for path, read in (
             ("/api/web/feed", store.read_feed),
@@ -1259,12 +1408,14 @@ class TestFeedReads:
             ("/api/web/feed/histogram", store.read_feed_histogram),
         ):
             assert client.get(path, params=params).status_code == 200, path
-            scopes.append(cast(FeedScope, read.call_args.kwargs["scope"]))
+            scope = read.call_args_list[-1].kwargs["scope"]
+            assert isinstance(scope, FeedScope)
+            scopes.append(scope)
         return scopes
 
     def test_the_feed_keeps_only_conversation_when_asked(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
 
         for params, conversation in (
@@ -1273,18 +1424,23 @@ class TestFeedReads:
         ):
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
-            assert store.read_feed.call_args.kwargs["conversation"] is conversation
+            assert (
+                store.read_feed.call_args_list[-1].kwargs["conversation"]
+                is conversation
+            )
 
-    def test_a_station_filters_all_three_reads_to_its_callers_agents(self) -> None:
+    def test_a_canvas_filters_all_three_reads_to_its_callers_agents(self) -> None:
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
-        station = uuid.uuid4()
+        canvas = uuid.uuid4()
         wanted = FeedScope(
-            station=StationAgents(workspace_id=station, user_id=_TEST_IDENTITY.user_id),
+            canvas=CanvasAgents(canvas_id=canvas, user_id=_TEST_IDENTITY.user_id),
             kinds=("ToolCall",),
             reader=_TEST_READER,
         )
@@ -1296,16 +1452,18 @@ class TestFeedReads:
         ):
             response = client.get(
                 path,
-                params={"station": str(station), "kind": "ToolCall"},
+                params={"canvas": str(canvas), "kind": "ToolCall"},
             )
             assert response.status_code == 200, response.text
-            assert read.call_args.kwargs["scope"] == wanted
-        assert client.get("/api/web/feed", params={"station": "x"}).status_code == 422
+            assert read.call_args_list[-1].kwargs["scope"] == wanted
+        assert client.get("/api/web/feed", params={"canvas": "x"}).status_code == 422
 
     def test_facets_count_a_window_under_the_filters(self) -> None:
-        store = AsyncMock()
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store = _FeedStore()
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
         window = (("since", "2026-10-01T00:00:00Z"), ("until", "2026-10-02T00:00:00Z"))
@@ -1317,7 +1475,7 @@ class TestFeedReads:
 
         assert response.status_code == 200, response.text
         assert response.json() == {"actors": [], "rooms": [], "kinds": []}
-        assert store.read_feed_facets.call_args.kwargs == {
+        assert store.read_feed_facets.call_args_list[-1].kwargs == {
             "since": datetime(2026, 10, 1, tzinfo=UTC),
             "until": datetime(2026, 10, 2, tzinfo=UTC),
             "scope": FeedScope(clis=("codex",), reader=_TEST_READER),
@@ -1325,65 +1483,65 @@ class TestFeedReads:
         backwards = (("since", window[1][1]), ("until", window[0][1]))
         assert client.get("/api/web/feed/facets", params=backwards).status_code == 400
 
-    def test_an_agent_with_a_live_run_says_what_the_run_is_doing(self) -> None:
-        """The console's Reattach button is for the agent whose run was taken over."""
-        taken, waiting, quiet, ended = (new_uuid() for _ in range(4))
-        run = "a" * 32
-        inbound = InboundQueue()
-        for session in (taken, waiting, ended):
-            inbound.mark_poller(session, cli="claude", instance=run)
-        assert inbound.report_state(taken, instance=run, state="taken_over")
-        store = AsyncMock()
-        store.engine = FakeEngine()
-        store.engine.conn.fetch.return_value = [
-            {"session_id": waiting, "opened": "a1", "closed": None},
-        ]
-        last = datetime(2026, 10, 1, tzinfo=UTC)
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(
-                actors=[
-                    FeedActorFacet(
-                        actor=name,
-                        session_id=session,
-                        cli="claude",
-                        rooms=[],
-                        count=1,
-                        conversation=1,
-                        last=last,
-                        ended=last if session == ended else None,
-                    )
-                    for name, session in (
-                        ("taken", taken),
-                        ("waiting", waiting),
-                        ("quiet", quiet),
-                        ("ended", ended),
-                    )
-                ],
-                rooms=[],
-                kinds=[],
-            ),
+    def test_facets_answer_the_stores_counts_as_they_are(self) -> None:
+        store = _FeedStore()
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[
+                FeedActorFacet(
+                    actor="quiet",
+                    session_id=new_uuid(),
+                    cli="claude",
+                    rooms=[],
+                    count=1,
+                    conversation=1,
+                    last=datetime(2026, 10, 1, tzinfo=UTC),
+                    ended=None,
+                ),
+            ],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
-        cast("FastAPI", client.app).state.inbound = inbound
 
         response = client.get("/api/web/feed/facets")
 
         assert response.status_code == 200, response.text
-        actors = from_plain(response.json(), dict[str, object])["actors"]
-        assert {
-            each["actor"]: each["state"]
-            for each in from_plain(actors, list[dict[str, object]])
-        } == {
-            "taken": "taken_over",
-            "waiting": "requires_action",
-            "quiet": "idle",
-            "ended": "idle",
-        }
-        asked = from_plain(
-            store.engine.conn.fetch.call_args.args[1],
-            list[uuid.UUID],
+        assert response.json() == store.read_feed_facets.return_value.model_dump(
+            mode="json",
         )
-        assert set(asked) == {taken, waiting}
+        store.engine.conn.fetch.assert_not_awaited()
+
+    def test_a_renamed_class_is_one_kind_to_the_feed_whichever_its_rows_are_under(
+        self,
+    ) -> None:
+        """Asked for by one name, it is read under both; counted under both, it is told as one."""
+        name, other = stored_names(AgentMessage.__name__)
+        store = _FeedStore()
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[
+                FeedKindFacet(kind="ToolCall", count=4),
+                FeedKindFacet(kind=name, count=2),
+                FeedKindFacet(kind=other, count=3),
+            ],
+        )
+        client = self._client(store)
+
+        response = client.get(
+            "/api/web/feed/facets",
+            params=(("kind", name), ("kind", "ToolCall")),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "actors": [],
+            "rooms": [],
+            "kinds": [{"kind": name, "count": 5}, {"kind": "ToolCall", "count": 4}],
+        }
+        scope = store.read_feed_facets.call_args_list[-1].kwargs["scope"]
+        assert isinstance(scope, FeedScope)
+        assert scope.kinds == (name, other, "ToolCall")
 
     def test_a_histogram_has_2_to_1000_buckets_and_120_unless_asked(self) -> None:
         store = self._histogram_store()
@@ -1395,7 +1553,7 @@ class TestFeedReads:
         assert from_plain(response.json(), dict[str, object])["counts"] == [
             {"start": "2026-10-01T00:00:00Z", "count": 3},
         ]
-        kwargs = store.read_feed_histogram.call_args.kwargs
+        kwargs = store.read_feed_histogram.call_args_list[-1].kwargs
         assert {name: kwargs[name] for name in kwargs if name != "earliest"} == {
             "since": None,
             "until": None,
@@ -1428,7 +1586,7 @@ class TestFeedReads:
         after = datetime.now(UTC)
 
         assert response.status_code == 200, response.text
-        earliest = store.read_feed_histogram.call_args.kwargs["earliest"]
+        earliest = store.read_feed_histogram.call_args_list[-1].kwargs["earliest"]
         assert isinstance(earliest, datetime)
         assert before - week <= earliest <= after - week
         for days, status in ((8, 400), (6, 200)):
@@ -1440,16 +1598,14 @@ class TestFeedReads:
             assert response.status_code == status, days
 
     @classmethod
-    def _histogram_store(cls) -> AsyncMock:
+    def _histogram_store(cls) -> _FeedStore:
         """Return a store whose histogram read answers one bucket."""
-        store = AsyncMock()
-        store.read_feed_histogram = AsyncMock(
-            return_value=FeedHistogramResponse(
-                start=datetime(2026, 10, 1, tzinfo=UTC),
-                end=datetime(2026, 10, 2, tzinfo=UTC),
-                bucket_seconds=86_400,
-                counts=[FeedBucket(start=datetime(2026, 10, 1, tzinfo=UTC), count=3)],
-            ),
+        store = _FeedStore()
+        store.read_feed_histogram.return_value = FeedHistogramResponse(
+            start=datetime(2026, 10, 1, tzinfo=UTC),
+            end=datetime(2026, 10, 2, tzinfo=UTC),
+            bucket_seconds=86_400,
+            counts=[FeedBucket(start=datetime(2026, 10, 1, tzinfo=UTC), count=3)],
         )
         return store
 
@@ -1499,9 +1655,9 @@ class TestRouteBounds:
         zone: str,
     ) -> None:
         """Read a naive ``since`` and ``until`` as UTC whatever the zone is."""
-        store = AsyncMock()
-        read_feed = AsyncMock(return_value=[])
-        store.read_feed = read_feed
+        store = _FeedStore()
+        read_feed = store.read_feed
+        read_feed.return_value = []
         app = FastAPI()
         app.state.engine = FakeEngine()
         app.state.store = store
@@ -1517,11 +1673,14 @@ class TestRouteBounds:
         finally:
             monkeypatch.undo()
             time.tzset()
-        kwargs = cast("dict[str, datetime]", read_feed.call_args.kwargs)
-        assert kwargs["since"].tzinfo is not None
-        assert kwargs["until"].tzinfo is not None
-        assert kwargs["since"] == datetime(2024, 12, 10, tzinfo=UTC)
-        assert kwargs["until"] == datetime(2024, 12, 11, tzinfo=UTC)
+        kwargs = read_feed.call_args_list[-1].kwargs
+        since, until = kwargs["since"], kwargs["until"]
+        assert isinstance(since, datetime)
+        assert isinstance(until, datetime)
+        assert since.tzinfo is not None
+        assert until.tzinfo is not None
+        assert since == datetime(2024, 12, 10, tzinfo=UTC)
+        assert until == datetime(2024, 12, 11, tzinfo=UTC)
 
     def test_search_rejects_invalid_regex(self) -> None:
         engine = FakeEngine()
@@ -1579,7 +1738,7 @@ class TestRouteBounds:
         engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
         app = FastAPI()
         app.state.engine = engine
-        app.state.store = _Store(engine=engine)
+        app.state.store = _store(engine)
         web.attach(app)
         c = self._client(app)
         query = [("q", "title"), ("kind", "Issue")]
@@ -1741,7 +1900,7 @@ class TestLoginPage:
         assert all(url.startswith(("data:", "/auth/")) for url in urls), urls
 
 
-# ---- A separately built web app at /app/ ----------------------------------
+# ---- A separately built web app at /trax/ ---------------------------------
 
 
 def _write_build(root: Path, *, marker: str) -> Path:
@@ -1764,7 +1923,7 @@ def _build_pages_and_app(tmp_path: Path) -> FastAPI:
 
 
 def _build_app_dir_app(tmp_path: Path, app_dir: Path) -> FastAPI:
-    """Build a fresh FastAPI serving ``app_dir`` at ``/app/``, no sign-in page."""
+    """Build a fresh FastAPI serving ``app_dir`` at ``/trax/``, no sign-in page."""
     assets = tmp_path / "no-pages"
     assets.mkdir()
     app = FastAPI()
@@ -1790,6 +1949,7 @@ class TestAttachedRoutes:
             if isinstance(r, APIRoute) and not r.path.startswith("/api/web")
         }
         assert set(routes) == {
+            "/trax/{path:path}",
             "/app/{path:path}",
             "/",
             "/me",
@@ -1819,6 +1979,27 @@ class TestAttachedRoutes:
         monkeypatch.setattr(web, "StaticFiles", Spy)
         web._app_files(tmp_path / "missing")
         assert seen == [False]
+
+    def test_without_an_assets_dir_the_shipped_pages_serve(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # macOS's file system ignores case, so a misspelt name would serve there
+        # too; only the mounted paths show the server reads the files it ships.
+        app = FastAPI()
+        web.attach(app, app_dir=_write_build(tmp_path / "b", marker="a"))
+        shipped = Path(web.__file__).parent / "assets"
+        pages = {
+            r.path: r.endpoint.page_path
+            for r in app.routes
+            if isinstance(r, APIRoute)
+            and isinstance(r.endpoint, web._LoginPageRoute | web._DevicePageRoute)
+        }
+        assert pages == {
+            "/auth/login_page": shipped / "login.html",
+            "/auth/device": shipped / "device.html",
+        }
+        assert TestClient(app).get("/auth/login_page").status_code == 200
 
 
 class TestDevicePage:
@@ -1897,6 +2078,17 @@ class TestDevicePage:
         for path in ("lookup", "approve", "deny"):
             assert f'"/auth/device/{path}"' in page
 
+    def test_the_shipped_page_shows_the_computer_and_the_host_each_in_its_own_row(
+        self,
+    ) -> None:
+        """Two rows sharing an id left one blank and put the other's text in the first."""
+        page = (Path(web.__file__).parent / "assets" / "device.html").read_text()
+        ids = re.findall(r'\bid="([^"]+)"', page)
+
+        assert len(ids) == len(set(ids))
+        assert 'el("r-hostname").textContent = view.hostname' in page
+        assert 'el("r-host").textContent = view.host ?' in page
+
 
 class TestAppDir:
     def test_signed_out_page_redirects_to_login_with_next(
@@ -1908,7 +2100,11 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, None)
         client = TestClient(app, follow_redirects=False)
-        for path in ("/app/", "/app/index.html?tab=x"):
+        for path in (
+            "/trax/",
+            "/trax/index.html?tab=x",
+            "/trax/graph?focus=Issue/7&hops=2",
+        ):
             r = client.get(path)
             assert r.status_code == 302, path
             location = urlparse(r.headers["location"])
@@ -1923,7 +2119,7 @@ class TestAppDir:
         schema = from_plain(app.openapi(), dict[str, object])
         paths = set(from_plain(schema["paths"], dict[str, object]))
         assert paths.isdisjoint(
-            {"/", "/me", "/admin", "/graph", "/console", "/app/{path}"},
+            {"/", "/me", "/admin", "/graph", "/console", "/trax/{path}", "/app/{path}"},
         )
         assert "/api/web/get/{target_id}" in paths
 
@@ -1934,7 +2130,7 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, None)
         client = TestClient(app, follow_redirects=False)
-        for path in ("/app/assets/app.js", "/app/assets/missing.js"):
+        for path in ("/trax/assets/app.js", "/trax/assets/missing.js"):
             r = client.get(path)
             assert r.status_code == 401, path
             assert "// a" not in r.text
@@ -1944,7 +2140,7 @@ class TestAppDir:
         [
             pytest.param(
                 Config(),
-                (401, 302, "/auth/login_page?next=%2Fapp%2F", 401),
+                (401, 302, "/auth/login_page?next=%2Ftrax%2F", 401),
                 id="default",
             ),
             pytest.param(
@@ -1956,7 +2152,7 @@ class TestAppDir:
             # reads its settings, so this stands for a server with it too.
             pytest.param(
                 Config(session_secret=uuid.uuid4().hex),
-                (401, 302, "/auth/login_page?next=%2Fapp%2F", 401),
+                (401, 302, "/auth/login_page?next=%2Ftrax%2F", 401),
                 id="session-login",
             ),
         ],
@@ -1967,7 +2163,7 @@ class TestAppDir:
         config: Config,
         answers: tuple[int, int, str | None, int],
     ) -> None:
-        # The app's source is public, so ``/app/`` keeps nothing back on its own
+        # The app's source is public, so ``/trax/`` keeps nothing back on its own
         # account: an anonymous caller gets it where the API answers them and is
         # refused where the API refuses them, whatever the mode. A browser opens
         # the entry page, so its refusal is the sign-in page.
@@ -1976,19 +2172,19 @@ class TestAppDir:
         app.state.store, app.state.engine = make_store()
         app.include_router(auth_routes.router)
         client = TestClient(app, follow_redirects=False)
-        page = client.get("/app/")
+        page = client.get("/trax/")
         assert (
             client.get("/api/me/profile").status_code,
             page.status_code,
             page.headers.get("location"),
-            client.get("/app/assets/app.js").status_code,
+            client.get("/trax/assets/app.js").status_code,
         ) == answers
 
     def test_signed_in_viewer_loads_assets(self, tmp_path: Path) -> None:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        r = client.get("/app/assets/app.js")
+        r = client.get("/trax/assets/app.js")
         assert r.status_code == 200
         assert r.text == "// a"
 
@@ -1996,10 +2192,32 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        for path in ("/app/", "/app/index.html", "/app"):
+        for path in ("/trax/", "/trax/index.html", "/trax"):
             r = client.get(path)
             assert r.status_code == 200, path
             assert r.text == "INDEX-a"
+
+    def test_each_route_serves_the_entry_page_and_a_missing_asset_stays_404(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The app reads its route from the address (``/trax/ref/Issue/7``), which
+        # names no file of the build. A hashed asset an old page asks for after a
+        # deploy is not a route: the entry page in its place would fail as a script.
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        _install_identity(app, _viewer_identity())
+        client = TestClient(app)
+        for path in (
+            "/trax/ref/Issue/7",
+            "/trax/graph?focus=Issue/7&hops=2",
+            "/trax/search/a%2Fb.c",
+        ):
+            r = client.get(path)
+            assert (r.status_code, r.text) == (200, "INDEX-a"), path
+            assert r.headers.get("cache-control") == "private, no-cache", path
+        r = client.get("/trax/assets/missing.js")
+        assert r.status_code == 404
+        assert r.headers.get("cache-control") == "private, no-cache"
 
     def test_missing_directory_answers_404_until_a_build_lands(
         self,
@@ -2012,9 +2230,9 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, build)
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        assert client.get("/app/").status_code == 404
+        assert client.get("/trax/").status_code == 404
         _write_build(build, marker="late")
-        r = client.get("/app/")
+        r = client.get("/trax/")
         assert r.status_code == 200
         assert r.text == "INDEX-late"
 
@@ -2031,7 +2249,7 @@ class TestAppDir:
         try:
             app = _build_app_dir_app(tmp_path, build)
             _install_identity(app, _viewer_identity())
-            r = TestClient(app).get("/app/assets/app.js")
+            r = TestClient(app).get("/trax/assets/app.js")
         finally:
             (build / "assets").chmod(0o755)
         assert r.status_code == 500
@@ -2050,12 +2268,12 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, current)
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        assert client.get("/app/").text == "INDEX-old"
+        assert client.get("/trax/").text == "INDEX-old"
         staged = tmp_path / "current.next"
         staged.symlink_to(new)
         staged.replace(current)
-        assert client.get("/app/").text == "INDEX-new"
-        assert client.get("/app/assets/app.js").text == "// new"
+        assert client.get("/trax/").text == "INDEX-new"
+        assert client.get("/trax/assets/app.js").text == "// new"
 
     def test_path_traversal_is_refused(self, tmp_path: Path) -> None:
         build = _write_build(tmp_path / "b", marker="a")
@@ -2066,11 +2284,11 @@ class TestAppDir:
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
         for path in (
-            "/app/%2e%2e/secret.txt",
-            "/app/..%2fsecret.txt",
-            "/app/assets/..%2f..%2fsecret.txt",
-            f"/app/{secret}",
-            "/app/escape.txt",
+            "/trax/%2e%2e/secret.txt",
+            "/trax/..%2fsecret.txt",
+            "/trax/assets/..%2f..%2fsecret.txt",
+            f"/trax/{secret}",
+            "/trax/escape.txt",
         ):
             r = client.get(path)
             assert r.status_code == 404, path
@@ -2092,11 +2310,11 @@ class TestAppDir:
         r = client.get("/static/report.html")
         assert r.status_code == 200
         assert r.text == "REPORT"
-        assert client.get("/app/assets/app.js").status_code == 401
+        assert client.get("/trax/assets/app.js").status_code == 401
 
     def test_every_response_forbids_shared_caches(self, tmp_path: Path) -> None:
         # A shared cache in front of the server (Cloudflare stores ``.js`` by
-        # extension there, 404s included) must never store an /app/ response:
+        # extension there, 404s included) must never store a /trax/ response:
         # a signed-in user's copy would be served to anyone, and a cached 401 or
         # 404 would break the app for everyone. ``private`` keeps shared caches
         # out. A file under ``assets/`` is named by its content's hash, so the
@@ -2109,12 +2327,12 @@ class TestAppDir:
         immutable = "private, max-age=31536000, immutable"
         revalidated = "private, no-cache"
         cases: tuple[tuple[AuthIdentity | None, str, int, str], ...] = (
-            (_viewer_identity(), "/app/", 200, revalidated),
-            (_viewer_identity(), "/app/favicon.svg", 200, revalidated),
-            (_viewer_identity(), "/app/assets/app.js", 200, immutable),
-            (_viewer_identity(), "/app/assets/missing.js", 404, revalidated),
-            (None, "/app/", 302, revalidated),
-            (None, "/app/assets/app.js", 401, revalidated),
+            (_viewer_identity(), "/trax/", 200, revalidated),
+            (_viewer_identity(), "/trax/favicon.svg", 200, revalidated),
+            (_viewer_identity(), "/trax/assets/app.js", 200, immutable),
+            (_viewer_identity(), "/trax/assets/missing.js", 404, revalidated),
+            (None, "/trax/", 302, revalidated),
+            (None, "/trax/assets/app.js", 401, revalidated),
         )
         for identity, path, status, cache_control in cases:
             _install_identity(app, identity)
@@ -2126,8 +2344,8 @@ class TestAppDir:
         # ``no-cache`` for as long as its hash does not change.
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        etag = client.get("/app/assets/app.js").headers["etag"]
-        r = client.get("/app/assets/app.js", headers={"if-none-match": etag})
+        etag = client.get("/trax/assets/app.js").headers["etag"]
+        r = client.get("/trax/assets/app.js", headers={"if-none-match": etag})
         assert r.status_code == 304
         assert r.headers.get("cache-control") == immutable
 
@@ -2146,11 +2364,11 @@ class TestAppDir:
         _install_identity(app, None)
         client = TestClient(app, follow_redirects=False)
         paths = (
-            "/app/manifest.webmanifest",
-            "/app/icon-192.png",
-            "/app/icon-512.png",
-            "/app/favicon.svg",
-            "/app/assets/app.js",
+            "/trax/manifest.webmanifest",
+            "/trax/icon-192.png",
+            "/trax/icon-512.png",
+            "/trax/favicon.svg",
+            "/trax/assets/app.js",
         )
         answers = [client.get(path) for path in paths]
         served = {
@@ -2158,17 +2376,19 @@ class TestAppDir:
             for path, r in zip(paths, answers, strict=True)
         }
         assert served == {
-            "/app/manifest.webmanifest": (200, "application/manifest+json"),
-            "/app/icon-192.png": (200, "image/png"),
-            "/app/icon-512.png": (200, "image/png"),
-            "/app/favicon.svg": (401, "application/json"),
-            "/app/assets/app.js": (401, "application/json"),
+            "/trax/manifest.webmanifest": (200, "application/manifest+json"),
+            "/trax/icon-192.png": (200, "image/png"),
+            "/trax/icon-512.png": (200, "image/png"),
+            "/trax/favicon.svg": (401, "application/json"),
+            "/trax/assets/app.js": (401, "application/json"),
         }
 
     def test_app_is_off_unless_a_directory_is_given(self, tmp_path: Path) -> None:
         app = FastAPI()
         web.attach(app, assets_dir=tmp_path)
-        assert not any(path.startswith("/app") for path in registered_paths(app))
+        assert not any(
+            path.startswith(("/trax", "/app")) for path in registered_paths(app)
+        )
 
 
 # ---- The old UI's paths, once the app is served ---------------------------
@@ -2176,14 +2396,13 @@ class TestAppDir:
 
 # Each old page's path and where the app shows the same thing. Stored links point at
 # ``/`` with a hash naming the view, which the browser keeps across a redirect whose
-# ``Location`` has none, and the app's router reads v1's hashes; a ``Location`` that
-# has a hash replaces the request's.
+# ``Location`` has none, and the app's router moves v1's hashes onto their paths.
 _OLD_PATHS: Final = (
-    ("/", "/app/"),
-    ("/me", "/app/#/settings"),
-    ("/admin", "/app/#/admin"),
-    ("/graph", "/app/#/graph"),
-    ("/console", "/app/#/console"),
+    ("/", "/trax/"),
+    ("/me", "/trax/settings"),
+    ("/admin", "/trax/admin"),
+    ("/graph", "/trax/graph"),
+    ("/console", "/trax/console"),
 )
 
 
@@ -2199,12 +2418,40 @@ class TestOldPathsWithTheApp:
         identity: AuthIdentity | None,
     ) -> None:
         # With the app served, each of the old UI's paths answers 302, signed in
-        # or not, and ``/app/`` decides sign-in. 302 rather than 301, which a
-        # browser keeps for good; ``no-cache`` as on ``/app/``.
+        # or not, and ``/trax/`` decides sign-in. 302 rather than 301, which a
+        # browser keeps for good; ``no-cache`` as on ``/trax/``.
         app = _build_pages_and_app(tmp_path)
         _install_identity(app, identity)
         client = TestClient(app, follow_redirects=False)
         for path, location in _OLD_PATHS:
+            r = client.get(path)
+            assert (r.status_code, r.headers.get("location")) == (302, location), path
+            assert r.headers.get("cache-control") == "private, no-cache", path
+
+    @pytest.mark.parametrize(
+        "identity",
+        [None, _viewer_identity()],
+        ids=["signed-out", "viewer"],
+    )
+    def test_the_old_address_redirects_to_the_same_place_under_trax(
+        self,
+        tmp_path: Path,
+        identity: AuthIdentity | None,
+    ) -> None:
+        # The app was served at ``/app/`` before ``/trax/``, and links to it are
+        # stored in records, chats and docs. Each answers 302 to the same path and
+        # query under ``/trax/``, signed in or not, and the browser keeps the hash.
+        # 302, not 301: a browser keeps a 301 for good, and another app takes
+        # ``/app/`` next.
+        app = _build_pages_and_app(tmp_path)
+        _install_identity(app, identity)
+        client = TestClient(app, follow_redirects=False)
+        for path, location in (
+            ("/app/", "/trax/"),
+            ("/app/?x=1", "/trax/?x=1"),
+            ("/app/index.html?tab=x&q=%2Fa%3Fb", "/trax/index.html?tab=x&q=%2Fa%3Fb"),
+            ("/app/assets/app.js", "/trax/assets/app.js"),
+        ):
             r = client.get(path)
             assert (r.status_code, r.headers.get("location")) == (302, location), path
             assert r.headers.get("cache-control") == "private, no-cache", path
@@ -2214,114 +2461,140 @@ class TestOldPathsWithTheApp:
         tmp_path: Path,
     ) -> None:
         # The server never sees a link's hash: ``#/ref/Issue/7`` stays in the
-        # browser for the app's router. So each link walks to the app signed
-        # in, and to the login page signed out, whose ``next`` is the app.
+        # browser for the app's router. So each link walks to the app's page for
+        # it signed in, and to the login page signed out, whose ``next`` is that
+        # page.
         app = _build_pages_and_app(tmp_path)
         links = (
-            "/#/ref/Issue/7",
-            f"/#/inquiry/{new_uuid()}",
-            "/#/recent",
-            "/#/search?q=x",
-            "/me",
-            "/admin",
-            "/graph",
-            "/console",
+            ("/#/ref/Issue/7", "/trax/"),
+            (f"/#/inquiry/{new_uuid()}", "/trax/"),
+            ("/#/recent", "/trax/"),
+            ("/#/search?q=x", "/trax/"),
+            ("/me", "/trax/settings"),
+            ("/admin", "/trax/admin"),
+            ("/graph", "/trax/graph"),
+            ("/console", "/trax/console"),
+            ("/app/#/ref/Issue/7", "/trax/"),
+            ("/app", "/trax/"),
+            ("/app/ref/Issue/7", "/trax/ref/Issue/7"),
+            ("/trax/ref/Issue/7", "/trax/ref/Issue/7"),
         )
-        walks: tuple[
-            tuple[AuthIdentity | None, tuple[str, dict[str, list[str]]], str],
-            ...,
-        ] = (
-            (_viewer_identity(), ("/app/", {}), "INDEX-a"),
-            (None, ("/auth/login_page", {"next": ["/app/"]}), "LOGIN"),
-        )
-        for identity, landing, page in walks:
-            _install_identity(app, identity)
-            client = TestClient(app)
-            for link in links:
-                r = client.get(link)
-                assert r.status_code == 200, link
-                assert (r.url.path, parse_qs(r.url.query.decode())) == landing, link
-                assert r.text == page, link
+        with TestClient(app) as client:
+            for identity in (_viewer_identity(), None):
+                _install_identity(app, identity)
+                for link, page in links:
+                    r = client.get(link)
+                    assert r.status_code == 200, link
+                    landing = (r.url.path, parse_qs(r.url.query.decode()), r.text)
+                    if identity is None:
+                        assert landing == (
+                            "/auth/login_page",
+                            {"next": [page]},
+                            "LOGIN",
+                        ), link
+                    else:
+                        assert landing == (page, {}, "INDEX-a"), link
 
 
 # ---- Read routes on a real engine ----------------------------------------
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def pglite_store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    yield store
+_ACCOUNT: Final = "alice@example.com"
+_STARTED: Final = datetime(2026, 5, 18, 9, tzinfo=UTC)
+_FILLED_EXPERIMENT: Final = SubmitExperiment(
+    account=_ACCOUNT,
+    title="filled",
+    outcome="ok",
+    config={"lr": 0.1, "nested": {"warmup": 100}},
+    app={"tracker": {"verdict": "works"}},
+)
+_EVERY_KIND_BARE_AND_FILLED: Final = (
+    *(
+        pytest.param(body(account=_ACCOUNT, title="bare"), id=f"{body.__name__}-bare")
+        for body in (
+            SubmitIssue,
+            SubmitArtifact,
+            SubmitExperiment,
+            SubmitPaper,
+            SubmitBelief,
+            SubmitCodeChange,
+            SubmitWebResult,
+            SubmitWebSearch,
+            SubmitAgentSession,
+        )
+    ),
+    pytest.param(
+        SubmitIssue(
+            account=_ACCOUNT,
+            title="filled",
+            owner="bob",
+            description="d",
+            labels=["x"],
+            issue_kind=["bug"],
+            priority=10,
+        ),
+        id="SubmitIssue-filled",
+    ),
+    pytest.param(_FILLED_EXPERIMENT, id="SubmitExperiment-filled"),
+    pytest.param(
+        SubmitPaper(
+            account=_ACCOUNT,
+            title="filled",
+            authors=["a", "b"],
+            publish_date=_STARTED,
+            source="doi:10.1/x",
+        ),
+        id="SubmitPaper-filled",
+    ),
+    pytest.param(
+        SubmitAgentSession(
+            account=_ACCOUNT,
+            title="filled",
+            cli="claude",
+            started=_STARTED,
+            rooms=["lab"],
+        ),
+        id="SubmitAgentSession-filled",
+    ),
+)
+"""Every kind, bare, and four of them filled."""
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -> None:
+@pytest.mark.parametrize("submitted", _EVERY_KIND_BARE_AND_FILLED)
+async def test_self_is_the_inquiry_route_on_a_real_engine(
+    store: Store,
+    submitted: SubmitBase,
+) -> None:
     """Every kind, bare and filled, reads the same through both routes (R17).
 
     asyncpg decodes each column type its own way, so the agreement is checked
     here as well as against the mock rows.
     """
-    account = "alice@example.com"
-    started = datetime(2026, 5, 18, 9, tzinfo=UTC)
-    ids = await pglite_store.submit_batch(
-        [
-            SubmitIssue(account=account, title="bare"),
-            SubmitArtifact(account=account, title="bare"),
-            SubmitExperiment(account=account, title="bare"),
-            SubmitPaper(account=account, title="bare"),
-            SubmitBelief(account=account, title="bare"),
-            SubmitCodeChange(account=account, title="bare"),
-            SubmitWebResult(account=account, title="bare"),
-            SubmitWebSearch(account=account, title="bare"),
-            SubmitAgentSession(account=account, title="bare"),
-            SubmitIssue(
-                account=account,
-                title="filled",
-                owner="bob",
-                description="d",
-                labels=["x"],
-                issue_kind=["bug"],
-                priority=10,
-            ),
-            SubmitExperiment(
-                account=account,
-                title="filled",
-                outcome="ok",
-                config={"lr": 0.1, "nested": {"warmup": 100}},
-                app={"tracker": {"verdict": "works"}},
-            ),
-            SubmitPaper(
-                account=account,
-                title="filled",
-                authors=["a", "b"],
-                publish_date=started,
-                source="doi:10.1/x",
-            ),
-            SubmitAgentSession(
-                account=account,
-                title="filled",
-                cli="claude",
-                started=started,
-                rooms=["lab"],
-            ),
-        ],
+    (target_id,) = await store.submit_batch([submitted], session_audience="open")
+    request = cast(Request, _request(store, store.engine))
+
+    canonical = await get_inquiry_route(target_id, request, identity=_TEST_IDENTITY)
+    detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+
+    assert detail["self"] == {
+        key: value for key, value in canonical.items() if key not in _EDGE_RELATIONS
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_self_carries_an_experiments_app_on_a_real_engine(store: Store) -> None:
+    """A filled Experiment's ``app`` comes back as it was submitted."""
+    (target_id,) = await store.submit_batch(
+        [_FILLED_EXPERIMENT],
         session_audience="open",
     )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
-    for target_id in ids:
-        canonical = await get_inquiry_route(
-            target_id,
-            request,
-            identity=_TEST_IDENTITY,
-        )
-        detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
-        assert detail["self"] == {
-            key: value for key, value in canonical.items() if key not in _EDGE_RELATIONS
-        }
-    filled = await web.web_get(ids[10], request, identity=_TEST_IDENTITY)
+    request = cast(Request, _request(store, store.engine))
+
+    filled = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+
     assert from_plain(filled["self"], dict[str, object])["app"] == {
         "tracker": {"verdict": "works"},
     }
@@ -2330,7 +2603,7 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     """Each peer carries its own ``created`` and priority beside the edge's.
 
@@ -2339,17 +2612,17 @@ async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
     reached the peer refs, so each cost a request per neighbour.
     """
     account = "alice@example.com"
-    parent = await pglite_store.submit_issue(
+    parent = await store.submit_issue(
         SubmitIssue(account=account, title="parent", priority=10),
     )
-    child = await pglite_store.submit_issue(SubmitIssue(account=account, title="child"))
-    await pglite_store.add_edge(
+    child = await store.submit_issue(SubmitIssue(account=account, title="child"))
+    await store.add_edge(
         from_id=child,
         to_id=parent,
         edge_kind="narrows",
         actor="alice",
     )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     parent_view = await web.web_get(parent, request, identity=_TEST_IDENTITY)
     child_view = await web.web_get(child, request, identity=_TEST_IDENTITY)
     (child_ref,) = from_plain(
@@ -2381,21 +2654,21 @@ async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_web_get_breaks_change_time_ties_by_id_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     """Changes stamped with one ``created`` come back in id order (R21)."""
-    target_id = await pglite_store.submit_issue(
+    target_id = await store.submit_issue(
         SubmitIssue(account="alice@example.com", title="t0"),
     )
     for step in range(1, 5):
-        await pglite_store.set_title(target_id, f"t{step}", actor="alice")
-    async with pglite_store.engine.acquire() as conn:
+        await store.set_title(target_id, f"t{step}", actor="alice")
+    async with store.engine.acquire() as conn:
         await conn.execute(
             "UPDATE change_log SET created = $1 WHERE subject_id = $2",
             datetime(2026, 5, 18, tzinfo=UTC),
             target_id,
         )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
     change_ids = [
         from_plain(from_plain(change, dict[str, object])["id"], str)
@@ -2428,15 +2701,15 @@ def test_graph_node_keeps_an_empty_title_empty_and_a_belief_verdict() -> None:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_web_get_reports_whether_the_row_is_locked(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     """The detail view carries ``locked`` beside ``self``, true only once set."""
-    target_id = await pglite_store.submit_issue(
+    target_id = await store.submit_issue(
         SubmitIssue(account="alice@example.com", title="rules"),
     )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     before = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
-    async with pglite_store.engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         await conn.execute(
             "UPDATE inquiries SET locked = TRUE WHERE id = $1",
             target_id,
@@ -2449,14 +2722,14 @@ async def test_web_get_reports_whether_the_row_is_locked(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_search_keeps_backslashes_and_apostrophes_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     r"""``\d`` reaches Postgres as a digit class, and ``'`` is a letter (R30)."""
     for title in ("build 42 passes", "don't panic", "plain words"):
-        await pglite_store.submit_issue(
+        await store.submit_issue(
             SubmitIssue(account="alice@example.com", title=title),
         )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     for q, titles in (
         (r"title:\d+", ["build 42 passes"]),
         (r'title:"\d+"', ["build 42 passes"]),
@@ -2467,10 +2740,143 @@ async def test_search_keeps_backslashes_and_apostrophes_on_a_real_engine(
         assert [row["title"] for row in rows] == titles, q
 
 
+# Written as rows, as the 1,000-node test writes them: the graph reads rows and edges,
+# and filing each through the store cost a test ~0.1 s.
+async def _linked_issues(
+    store: Store,
+    titles: tuple[str, ...],
+    links: tuple[tuple[int, int], ...],
+) -> list[uuid.UUID]:
+    """Insert an Issue per title, a minute apart in order, and link each pair by index."""
+    ids = [uuid.uuid4() for _ in titles]
+    async with store.engine.acquire() as conn:
+        # One ``created`` per node, in ``titles`` order, so no order is a tie.
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, account, title, created)"
+            " SELECT id, 'Issue', n, $3, title,"
+            " $4::timestamptz + make_interval(mins => n::int)"
+            " FROM unnest($1::uuid[], $2::text[]) WITH ORDINALITY AS t(id, title, n)",
+            ids,
+            list(titles),
+            _ACCOUNT,
+            datetime(2026, 5, 18, tzinfo=UTC),
+        )
+        await conn.execute(
+            "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind)"
+            " SELECT f, 'Issue', t, 'Issue', 'requires'"
+            " FROM unnest($1::uuid[], $2::uuid[]) AS e(f, t)",
+            [ids[from_index] for from_index, _ in links],
+            [ids[to_index] for _, to_index in links],
+        )
+    return ids
+
+
+_AGENT: Final = "claude-opus"
+"""The actor of a change the reader's agent made through one of the reader's keys."""
+
+# (title, actor, change kind, days ago) of each change the reader's records list reads;
+# ``session`` is an AgentSession and ``workspace`` a workspace's Issue.
+_WORK: Final = (
+    ("agents", _AGENT, "created", 0),
+    ("older", _TEST_IDENTITY.email, "created", 3),
+    ("older", _TEST_IDENTITY.email, "title", 2),
+    ("newer", _TEST_IDENTITY.email, "created", 1),
+    # The server's cost roll-up on ``older`` is not work, so ``newer`` stays first.
+    ("older", _TEST_IDENTITY.email, "marginal_cost", 0),
+    ("stale", _TEST_IDENTITY.email, "created", 31),
+    ("theirs", _ACCOUNT, "created", 0),
+    ("session", _TEST_IDENTITY.email, "created", 0),
+    ("workspace", _TEST_IDENTITY.email, "created", 0),
+)
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("limit", "listed"),
+    [
+        pytest.param(10, ["agents", "newer", "older"], id="10"),
+        pytest.param(1, ["agents"], id="1"),
+    ],
+)
+async def test_worked_on_lists_what_the_reader_changed_last_each_once(
+    store: Store,
+    limit: int,
+    listed: list[str],
+) -> None:
+    """Its agents' count; another's, old, cost, session, workspace or hidden do not."""
+    titles = sorted({title for title, *_ in _WORK} - {"session"})
+    ids = dict(zip(titles, await _linked_issues(store, tuple(titles), ()), strict=True))
+    (ids["session"],) = await store.submit_batch(
+        [SubmitAgentSession(account=_ACCOUNT, title="session")],
+        session_audience="open",
+    )
+    now = datetime.now(UTC)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status)"
+            " VALUES ($1, $2, 'Web', 'viewer', 'active')",
+            _TEST_IDENTITY.user_id,
+            _TEST_IDENTITY.email,
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role)"
+            " VALUES ($1, $2, 'agent', '', 'tk_', 'writer')",
+            _TEST_IDENTITY.api_key_id,
+            _TEST_IDENTITY.user_id,
+        )
+        await conn.execute(
+            "UPDATE inquiries SET labels = ARRAY['workspace'] WHERE id = $1",
+            ids["workspace"],
+        )
+        seqs = {
+            from_plain(row["id"], uuid.UUID): from_plain(row["seq"], int)
+            for row in await conn.fetch("SELECT id, seq FROM inquiries")
+        }
+        for title, actor, kind, days in _WORK:
+            await conn.execute(
+                "INSERT INTO change_log (id, created, actor, api_key_id, subject_id,"
+                " subject_kind, kind, old_title, new_title)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)",
+                uuid.uuid4(),
+                now - timedelta(days=days, minutes=1),
+                actor,
+                _TEST_IDENTITY.api_key_id if actor == _AGENT else None,
+                ids[title],
+                "AgentSession" if title == "session" else "Issue",
+                kind,
+                title if kind == "title" else None,
+            )
+    request = cast(Request, _request(store, store.engine))
+
+    worked = await web.web_worked_on(request, identity=_TEST_IDENTITY, limit=limit)
+
+    assert worked == [
+        WorkedOn(id=ids[title], kind="Issue", seq=seqs[ids[title]]) for title in listed
+    ]
+
+
+_CITED: Final = ("cited 0", "cited 1", "cited 2", "unlinked", "newest")
+# Links in both directions: ``cited 0`` points at ``newest``.
+_CITED_LINKS: Final = ((0, 4), (4, 1), (4, 2))
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("limit", "kept"),
+    [
+        pytest.param(1, (4,), id="1"),
+        pytest.param(2, (2, 4), id="2"),
+        # The three nodes ``newest`` links to outrank ``unlinked``, a newer node.
+        pytest.param(4, (0, 1, 2, 4), id="4"),
+        pytest.param(5_000, (0, 1, 2, 3, 4), id="5000"),
+    ],
+)
 async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
+    limit: int,
+    kept: tuple[int, ...],
 ) -> None:
     """``limit`` bounds the nodes, neighbours included, and edges join them (R3-02).
 
@@ -2478,58 +2884,45 @@ async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
     to many returned them all: ``limit=1`` measured 5,002 nodes. Now the newest
     node comes first, followed by the older nodes it links to, until ``limit``.
     """
-    account = "alice@example.com"
-    titles = ("cited 0", "cited 1", "cited 2", "unlinked", "newest")
-    ids = [
-        await pglite_store.submit_issue(SubmitIssue(account=account, title=title))
-        for title in titles
-    ]
-    c0, c1, c2, _, newest = ids
-    # Links in both directions: ``c0`` points at ``newest``.
-    for from_id, to_id in ((c0, newest), (newest, c1), (newest, c2)):
-        await pglite_store.add_edge(
-            from_id=from_id,
-            to_id=to_id,
-            edge_kind="requires",
-            actor="alice",
-        )
-    # One ``created`` per node, in ``titles`` order, so no order below is a tie.
-    async with pglite_store.engine.acquire() as conn:
-        for minute, node in enumerate(ids):
-            await conn.execute(
-                "UPDATE inquiries SET created = $1 WHERE id = $2",
-                datetime(2026, 5, 18, 0, minute, tzinfo=UTC),
-                node,
-            )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    ids = await _linked_issues(store, _CITED, _CITED_LINKS)
+    request = cast(Request, _request(store, store.engine))
     # Each first link also stamps an inferred ``produced_by`` edge, so the
     # expected edges come from the whole graph.
     whole = _edge_ids(
         await web.web_graph(request, identity=_TEST_IDENTITY, limit=5_000),
     )
-    assert (str(c0), str(newest)) in whole
-    for limit, kept in (
-        (1, [newest]),
-        (2, [c2, newest]),
-        # The three nodes ``newest`` links to outrank ``unlinked``, a newer node.
-        (4, [c0, c1, c2, newest]),
-        (5_000, ids),
-    ):
-        graph = await web.web_graph(request, identity=_TEST_IDENTITY, limit=limit)
-        nodes = [
-            from_plain(n, dict[str, object])["id"]
-            for n in from_plain(graph["nodes"], list[object])
-        ]
-        assert nodes == [str(n) for n in kept], limit
-        assert _edge_ids(graph) == {
-            (a, b) for a, b in whole if a in nodes and b in nodes
-        }, limit
+
+    graph = await web.web_graph(request, identity=_TEST_IDENTITY, limit=limit)
+
+    nodes = [
+        from_plain(n, dict[str, object])["id"]
+        for n in from_plain(graph["nodes"], list[object])
+    ]
+    assert (str(ids[0]), str(ids[4])) in whole
+    assert nodes == [str(ids[index]) for index in kept]
+    assert _edge_ids(graph) == {(a, b) for a, b in whole if a in nodes and b in nodes}
+
+
+_NEIGHBOURS: Final = ("far", "near", "focus", "near 2", "far 2")
+_NEIGHBOUR_LINKS: Final = ((1, 2), (3, 2), (0, 1), (4, 3), (0, 4))
+_FOCUS: Final = 2
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("limit", "hops", "kept"),
+    [
+        pytest.param(None, 2, {0: 2, 1: 1, 2: 0, 3: 1, 4: 2}, id="2-hops"),
+        pytest.param(4, 2, {1: 1, 2: 0, 3: 1, 4: 2}, id="2-hops-limit-4"),
+        pytest.param(None, 1, {1: 1, 2: 0, 3: 1}, id="1-hop"),
+    ],
+)
 async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
+    limit: int | None,
+    hops: int,
+    kept: dict[int, int],
 ) -> None:
     """``focus`` keeps its nearest nodes, each with its ``hops``, and their edges.
 
@@ -2537,84 +2930,154 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
     hop-2 nodes. ``limit=4`` keeps ``far_2``, the newer of them, and so drops both
     of ``far``'s edges.
     """
-    account = "alice@example.com"
-    titles = ("far", "near", "focus", "near 2", "far 2")
-    ids = [
-        await pglite_store.submit_issue(SubmitIssue(account=account, title=title))
-        for title in titles
-    ]
-    far, near, focus, near_2, far_2 = ids
-    for from_id, to_id in (
-        (near, focus),
-        (near_2, focus),
-        (far, near),
-        (far_2, near_2),
-        (far, far_2),
-    ):
-        await pglite_store.add_edge(
-            from_id=from_id,
-            to_id=to_id,
-            edge_kind="requires",
-            actor="alice",
-        )
-    async with pglite_store.engine.acquire() as conn:
-        for minute, node in enumerate(ids):
-            await conn.execute(
-                "UPDATE inquiries SET created = $1 WHERE id = $2",
-                datetime(2026, 5, 18, 0, minute, tzinfo=UTC),
-                node,
-            )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
     whole = _edge_ids(await web.web_graph(request, identity=_TEST_IDENTITY))
-    assert (str(far), str(far_2)) in whole
-    for limit, hops, kept in (
-        (None, 2, {far: 2, near: 1, focus: 0, near_2: 1, far_2: 2}),
-        (4, 2, {near: 1, focus: 0, near_2: 1, far_2: 2}),
-        (None, 1, {near: 1, focus: 0, near_2: 1}),
-    ):
-        graph = await web.web_graph(
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        limit=limit,
+        focus=[str(ids[_FOCUS])],
+        hops=hops,
+    )
+
+    nodes = [
+        from_plain(n, dict[str, object])
+        for n in from_plain(graph["nodes"], list[object])
+    ]
+    assert (str(ids[0]), str(ids[4])) in whole
+    # Oldest first, as without a focus.
+    assert [(n["id"], n["hops"]) for n in nodes] == [
+        (str(ids[index]), distance) for index, distance in kept.items()
+    ]
+    kept_ids = {str(ids[index]) for index in kept}
+    assert _edge_ids(graph) == {
+        (a, b) for a, b in whole if a in kept_ids and b in kept_ids
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("known", "hops", "status"),
+    [
+        pytest.param(False, 2, 404, id="unknown-focus"),
+        pytest.param(True, 0, 400, id="0-hops"),
+        pytest.param(True, 4, 400, id="4-hops"),
+    ],
+)
+async def test_web_graph_refuses_an_unknown_focus_and_hops_outside_1_to_3(
+    store: Store,
+    known: bool,
+    hops: int,
+    status: int,
+) -> None:
+    """A focus no row has is a 404; ``hops`` below 1 or above 3 is a 400."""
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(
             request,
             identity=_TEST_IDENTITY,
-            limit=limit,
-            focus=focus,
+            focus=[str(ids[_FOCUS] if known else uuid.uuid4())],
             hops=hops,
         )
-        nodes = [
-            from_plain(n, dict[str, object])
-            for n in from_plain(graph["nodes"], list[object])
-        ]
-        # Oldest first, as without a focus.
-        assert [(n["id"], n["hops"]) for n in nodes] == [
-            (str(node), distance) for node, distance in kept.items()
-        ], (limit, hops)
-        kept_ids = {str(node) for node in kept}
-        assert _edge_ids(graph) == {
-            (a, b) for a, b in whole if a in kept_ids and b in kept_ids
-        }, (limit, hops)
-    for target, hops, status in (
-        (uuid.uuid4(), 2, 404),
-        (focus, 0, 400),
-        (focus, 4, 400),
-    ):
-        with pytest.raises(HTTPException) as caught:
-            await web.web_graph(
-                request,
-                identity=_TEST_IDENTITY,
-                focus=target,
-                hops=hops,
-            )
-        assert caught.value.status_code == status, (target, hops)
+
+    assert caught.value.status_code == status
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_walks_from_every_focus_named_by_id_or_by_number(
+    store: Store,
+) -> None:
+    """Each focus, a UUID or ``Kind/seq``, is at hop 0; one no row has is left out."""
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        # ``far``, Issue#1, by number; ``far 2`` by id; and two that name nothing.
+        focus=["issue/1", str(ids[4]), str(uuid.uuid4()), "Issue/99"],
+        hops=1,
+    )
+
+    nodes = {
+        n["id"]: n["hops"]
+        for n in (
+            from_plain(each, dict[str, object])
+            for each in from_plain(graph["nodes"], list[object])
+        )
+    }
+    assert nodes == {
+        str(ids[0]): 0,
+        str(ids[4]): 0,
+        str(ids[1]): 1,
+        str(ids[3]): 1,
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_reads_one_record_named_both_ways_as_one_focus(
+    store: Store,
+) -> None:
+    """``focus``, Issue#3, by number and by id is one node at hop 0, not two."""
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        focus=["Issue/3", str(ids[_FOCUS])],
+        hops=1,
+    )
+
+    assert [
+        (n["id"], n["hops"])
+        for n in (
+            from_plain(each, dict[str, object])
+            for each in from_plain(graph["nodes"], list[object])
+        )
+    ] == [(str(ids[1]), 1), (str(ids[2]), 0), (str(ids[3]), 1)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("focus", "status"),
+    [
+        pytest.param(["Issue/99", str(uuid.UUID(int=1))], 404, id="none-known"),
+        pytest.param(["not a record"], 400, id="malformed"),
+    ],
+)
+async def test_web_graph_refuses_a_focus_list_naming_nothing_or_too_much(
+    store: Store,
+    focus: list[str],
+    status: int,
+) -> None:
+    """No known focus is 404, as one unknown focus is; a value of neither form, 400."""
+    await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(request, identity=_TEST_IDENTITY, focus=focus)
+
+    assert caught.value.status_code == status
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
-    hub = await pglite_store.submit_issue(
+    hub = await store.submit_issue(
         SubmitIssue(account="alice@example.com", title="hub"),
     )
-    async with pglite_store.engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO inquiries (id, kind, seq, account, title)"
             " SELECT gen_random_uuid(), 'Issue', 1000 + n, 'alice@example.com', 'leaf'"
@@ -2626,8 +3089,8 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
             " WHERE title = 'leaf'",
             hub,
         )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
-    around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=hub)
+    request = cast(Request, _request(store, store.engine))
+    around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=[str(hub)])
     assert len(from_plain(around["nodes"], list[object])) == 60
     whole = from_plain(
         (await web.web_graph(request, identity=_TEST_IDENTITY))["nodes"],
@@ -2638,8 +3101,38 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
     assert not any("hops" in node for node in whole)
 
 
+@dataclass(slots=True, kw_only=True)
+class _ProbeClock:
+    """A clock the probe's own sleeps advance: a sleep takes no time and is never late."""
+
+    now: float = 1000.0
+    """Not 0: a probe that took the clock itself for the time since it began would pass."""
+
+    slept: list[float] = field(default_factory=list[float])
+    """Each delay the probe asked to sleep, in order."""
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.slept.append(round(delay, 6))
+        self.now += max(delay, 0.0)
+        # Yield as a real sleep does: the response is watching for a client that left.
+        await asyncio.sleep(0)
+
+
 class TestSubscribeProbe:
     """The stream probe sends frames on the caller's schedule, then ends cleanly."""
+
+    # On the machine's clock a busy runner sent the last frame at 0.111 s of a 0.045 s
+    # schedule: the frames' times said how loaded the machine was, not what was asked.
+    @pytest.fixture(autouse=True)
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> _ProbeClock:
+        """Give the probe a clock its sleeps advance, so no test waits or races one."""
+        clock = _ProbeClock()
+        monkeypatch.setattr(web, "time", SimpleNamespace(monotonic=clock.monotonic))
+        monkeypatch.setattr(web, "asyncio", SimpleNamespace(sleep=clock.sleep))
+        return clock
 
     @classmethod
     def _get(
@@ -2667,32 +3160,39 @@ class TestSubscribeProbe:
         ]
         return status, headers, frames
 
-    def test_frames_follow_the_schedule_then_the_stream_ends(self) -> None:
+    def test_frames_follow_the_schedule_then_the_stream_ends(
+        self,
+        clock: _ProbeClock,
+    ) -> None:
         status, headers, frames = self._get(
-            first_after_sec=0.02,
-            every_sec=0.02,
-            for_sec=0.09,
+            first_after_sec=0.01,
+            every_sec=0.01,
+            for_sec=0.045,
         )
         assert status == 200
         assert headers["content-type"].startswith("text/event-stream")
         assert "no-transform" not in headers.get("cache-control", "")
-        # Frames at 0.02, 0.04, 0.06 and 0.08 s; none at or after for_sec.
+        # Frames at 0.01, 0.02, 0.03 and 0.04 s; none at or after for_sec.
         assert [from_plain(f["seq"], int) for f in frames] == [0, 1, 2, 3]
-        elapsed = [from_plain(f["t"], float) for f in frames]
-        assert elapsed[0] >= 0.02
-        assert elapsed == sorted(elapsed)
-        assert elapsed[-1] < 0.09
+        assert [from_plain(f["t"], float) for f in frames] == [0.01, 0.02, 0.03, 0.04]
+        # One sleep to each frame, then one to for_sec, where the stream ends.
+        assert clock.slept == [0.01, 0.01, 0.01, 0.01, 0.005]
 
-    def test_one_frame_without_an_interval(self) -> None:
+    def test_one_frame_without_an_interval(self, clock: _ProbeClock) -> None:
         # One byte, then silence until for_sec: the idle-cut experiment.
         _, _, frames = self._get(first_after_sec=0, for_sec=0.05)
         assert [from_plain(f["seq"], int) for f in frames] == [0]
+        assert clock.slept == [0, 0.05]
 
-    def test_no_bytes_when_the_first_is_due_after_the_end(self) -> None:
+    def test_no_bytes_when_the_first_is_due_after_the_end(
+        self,
+        clock: _ProbeClock,
+    ) -> None:
         # Headers only: the experiment for a proxy that holds them.
         status, _, frames = self._get(first_after_sec=0.05, for_sec=0.05)
         assert status == 200
         assert frames == []
+        assert clock.slept == [0.05]
 
     def test_forbid_transform_marks_the_response(self) -> None:
         _, headers, _ = self._get(for_sec=0.01, forbid_transform=True)
@@ -2754,93 +3254,28 @@ class _StartTags(HTMLParser):
         self.tags.append((tag, {name: value or "" for name, value in attrs}))
 
 
-class TestSearchEmbedder:
-    """Which embedder a session search uses: none, the A/B model, or the default."""
+class TestOptionalIdentity:
+    @pytest.mark.asyncio
+    async def test_an_app_without_its_lifespan_has_no_identity(self) -> None:
+        request = Request({"type": "http", "app": FastAPI(), "headers": []})
+        assert await web.optional_identity(request) is None
 
-    @classmethod
-    def _request(cls) -> Request:
-        return Request({"type": "http", "app": FastAPI()})
-
-    @classmethod
-    def _stub(
-        cls,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> tuple[object, object, list[tuple[object, ...]]]:
-        override, default = object(), object()
-        calls: list[tuple[object, ...]] = []
-
-        def fake_override(request: Request, name: str, dim: int | None) -> object:
-            calls.append(("override", request, name, dim))
-            return override
-
-        def fake_default(request: Request) -> object:
-            calls.append(("default", request))
-            return default
-
-        monkeypatch.setattr(web, "_override_embedder", fake_override)
-        monkeypatch.setattr(web, "_session_embedder", fake_default)
-        return override, default, calls
-
-    @pytest.mark.parametrize("semantic", [False, True])
-    def test_a_dimension_without_a_model_is_refused_with_its_reason(
+    @pytest.mark.asyncio
+    async def test_a_refusal_other_than_401_is_not_swallowed(
         self,
-        semantic: bool,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        async def forbidden(request: Request) -> AuthIdentity:
+            del request
+            raise HTTPException(status_code=403, detail="not yours")
+
+        monkeypatch.setattr(web, "current_user", forbidden)
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        request = Request({"type": "http", "app": app, "headers": []})
         with pytest.raises(HTTPException) as caught:
-            web._search_embedder(
-                self._request(),
-                semantic=semantic,
-                model="",
-                dim=256,
-            )
-        assert (caught.value.status_code, caught.value.detail) == (
-            400,
-            "dim requires model",
-        )
-
-    def test_a_search_that_is_not_semantic_uses_no_embedder(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        self._stub(monkeypatch)
-        for model in ("", "qwen3-embedding-4b"):
-            found = web._search_embedder(
-                self._request(),
-                semantic=False,
-                model=model,
-                dim=None,
-            )
-            assert found is None
-
-    def test_a_model_selects_the_override_with_its_dimension(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        override, _, calls = self._stub(monkeypatch)
-        request = self._request()
-        found = web._search_embedder(
-            request,
-            semantic=True,
-            model="m",
-            dim=512,
-        )
-        assert found is override
-        assert calls == [("override", request, "m", 512)]
-
-    def test_no_model_selects_the_default(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _, default, calls = self._stub(monkeypatch)
-        request = self._request()
-        found = web._search_embedder(
-            request,
-            semantic=True,
-            model="",
-            dim=None,
-        )
-        assert found is default
-        assert calls == [("default", request)]
+            await web.optional_identity(request)
+        assert caught.value.status_code == 403
 
 
 def test_the_install_icons_served_signed_out_are_192_and_512_pixel_pngs() -> None:
@@ -2864,6 +3299,193 @@ def _png_size(path: Path) -> tuple[int, int]:
     assert data[:8] == b"\x89PNG\r\n\x1a\n", path
     width, height = struct.unpack(">II", data[16:24])
     return width, height
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "limit", "detail"),
+    [
+        ("x", 0, "limit must be in [1, 200]"),
+        ("x", 201, "limit must be in [1, 200]"),
+        (" \t", 1, "q must be non-empty"),
+    ],
+)
+async def test_session_search_validates_before_reading_dependencies(
+    query: str,
+    limit: int,
+    detail: str,
+) -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    with pytest.raises(HTTPException) as caught:
+        await web.web_search_sessions(
+            request,
+            q=query,
+            identity=_TEST_IDENTITY,
+            limit=limit,
+        )
+    assert (caught.value.status_code, caught.value.detail) == (400, detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [None, 2])
+async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int | None,
+) -> None:
+    focus, peer = new_uuid(), new_uuid()
+    distances = {focus: 0, peer: 1}
+    neighbourhood: AsyncMockProtocol[dict[uuid.UUID, int]] = AsyncMock(
+        return_value=distances,
+    )
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    engine.conn.fetch.side_effect = [
+        [
+            {
+                "id": node_id,
+                "kind": "Issue",
+                "seq": seq,
+                "title": title,
+                "status": "active",
+                "created": datetime(2026, 5, 18, tzinfo=UTC),
+                "belief_judgement": None,
+                "belief_confidence": None,
+            }
+            for node_id, seq, title in ((peer, 1, "Peer"), (focus, 2, "Focus"))
+        ],
+        [{"from_id": peer, "to_id": focus, "edge_kind": "narrows", "valence": None}],
+    ]
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        focus=[str(focus)],
+        limit=limit,
+    )
+
+    assert graph == {
+        "nodes": [
+            {
+                "id": str(node_id),
+                "kind": "Issue",
+                "seq": seq,
+                "title": title,
+                "status": "active",
+                "created": "2026-05-18T00:00:00+00:00",
+                "hops": distances[node_id],
+            }
+            for node_id, seq, title in ((peer, 1, "Peer"), (focus, 2, "Focus"))
+        ],
+        "edges": [{"from_id": str(peer), "to_id": str(focus), "edge_kind": "narrows"}],
+    }
+    call = _neighbourhood_call(neighbourhood)
+    assert call.args == (engine.conn,)
+    assert call.kwargs["focus"] == [focus]
+    assert call.kwargs["limit"] == (60 if limit is None else limit)
+    assert call.kwargs["hops"] == 2
+    assert call.kwargs["policy"] is get_store(request).access_policy
+    principal = call.kwargs["principal"]
+    assert isinstance(principal, Principal)
+    assert principal.email == _TEST_IDENTITY.email
+    assert principal.role == _TEST_IDENTITY.role
+    assert engine.conn.fetch.await_args_list[0].args[1:] == ([focus, peer],)
+    assert engine.conn.fetch.await_args_list[1].args[1:] == ([peer, focus],)
+
+
+@pytest.mark.asyncio
+async def test_a_focus_by_number_the_reader_may_not_read_is_left_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``read_named`` reads numbers through the reader's access; one it hides drops."""
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    named = AsyncMock(return_value={})
+    neighbourhood = AsyncMock(return_value={})
+    monkeypatch.setattr(web, "read_named", named)
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    shown = new_uuid()
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(
+            request,
+            identity=_TEST_IDENTITY,
+            focus=["Issue/7", str(shown)],
+        )
+
+    assert caught.value.status_code == 404
+    call = named.await_args
+    assert call is not None
+    assert call.args == (engine.conn,)
+    assert call.kwargs["wanted"] == [SeqRef(kind="Issue", seq=7)]
+    assert call.kwargs["policy"] is get_store(request).access_policy
+    assert isinstance(call.kwargs["principal"], Principal)
+    assert _neighbourhood_call(neighbourhood).kwargs["focus"] == [shown]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hops", "status", "detail"),
+    [
+        (0, 400, "hops must be in [1, 3]"),
+        (4, 400, "hops must be in [1, 3]"),
+        (2, 404, "focus not found"),
+    ],
+)
+async def test_focused_graph_rejects_bad_hops_and_missing_focus_without_fetching_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+    hops: int,
+    status: int,
+    detail: str,
+) -> None:
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    neighbourhood = AsyncMock(return_value={})
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(
+            request,
+            identity=_TEST_IDENTITY,
+            focus=[str(new_uuid())],
+            hops=hops,
+        )
+    assert (caught.value.status_code, caught.value.detail) == (status, detail)
+    engine.conn.fetch.assert_not_awaited()
+    assert neighbourhood.await_count == (1 if status == 404 else 0)
+
+
+def test_session_search_hit_keeps_every_record_coordinate_and_display_field() -> None:
+    session_id = new_uuid()
+    hit = SessionSearchHit(
+        session_id=session_id,
+        part=2,
+        idx=3,
+        field="content",
+        chunk=4,
+        score=0.25,
+        source="both",
+        snippet="Found text",
+        title="Deploy",
+    )
+    assert web._session_hit_to_dict(hit) == {
+        "session_id": str(session_id),
+        "part": 2,
+        "idx": 3,
+        "field": "content",
+        "chunk": 4,
+        "score": 0.25,
+        "source": "both",
+        "snippet": "Found text",
+        "title": "Deploy",
+    }
+
+
+def _neighbourhood_call(
+    mock: AsyncMockProtocol[dict[uuid.UUID, int]],
+) -> MockCall:
+    mock.assert_awaited_once()
+    assert mock.await_args is not None
+    return mock.await_args
 
 
 if __name__ == "__main__":

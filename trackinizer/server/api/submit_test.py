@@ -44,6 +44,33 @@ class TestRoutes:
         body = from_plain(r.json(), dict[str, object])
         assert "id" in body
 
+    def test_an_unknown_kind_token_is_404(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        r = client.post("/api/inquiries/widget", json={"title": "t"})
+        assert r.status_code == 404
+        assert from_plain(r.json(), dict[str, str])["detail"] == (
+            "unknown inquiry kind 'widget'"
+        )
+
+    def test_a_session_opens_into_the_audience_the_caller_is_granted(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        submit = AsyncMock(return_value=uuid.uuid4())
+        monkeypatch.setattr(store, "submit", submit)
+        r = client.post("/api/inquiries/agentsession", json={"title": "run"})
+        issue = client.post("/api/inquiries/issue", json={"title": "t"})
+        assert (r.status_code, issue.status_code) == (201, 201), r.text
+        assert [c.kwargs["session_audience"] for c in submit.await_args_list] == [
+            "open",
+            None,
+        ]
+
     def test_submit_codechange_allows_unset_sha(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -117,7 +144,7 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200, r.text
-        forwarded_items = captured.call_args.args[0]
+        forwarded_items = cast(object, captured.call_args.args[0])
         assert isinstance(forwarded_items, list)
         assert isinstance(forwarded_items[0], SubmitBase)
         assert isinstance(forwarded_items[1], SubmitBase)
@@ -181,6 +208,66 @@ class TestRoutes:
         )
 
         assert (single.status_code, batch.status_code) == (403, 403)
+
+    def test_a_writer_cannot_set_modified(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Refused, never silently dropped: a dropped time would store a row the
+        # importer believes is backdated. The store is never reached. A writer's
+        # ``created`` alone is a backfill, which the session backfill tests cover.
+        client, store, _engine = route_client
+        submit = AsyncMock(return_value=uuid.uuid4())
+        submit_batch = AsyncMock(return_value=[uuid.uuid4()])
+        monkeypatch.setattr(store, "submit", submit)
+        monkeypatch.setattr(store, "submit_batch", submit_batch)
+        times = {
+            "created": "2024-03-01T12:00:00+00:00",
+            "modified": "2024-03-02T12:00:00+00:00",
+        }
+
+        single = client.post("/api/inquiries/issue", json={"title": "t", **times})
+        batch = client.post(
+            "/api/inquiries/batch",
+            json={
+                "items": [
+                    {
+                        "kind": "Issue",
+                        "title": "plain",
+                        "idempotency_key": str(uuid.uuid4()),
+                    },
+                    {
+                        "kind": "Issue",
+                        "title": "t",
+                        "idempotency_key": str(uuid.uuid4()),
+                        **times,
+                    },
+                ],
+            },
+        )
+
+        assert (single.status_code, batch.status_code) == (403, 403)
+        for response in (single, batch):
+            detail = from_plain(response.json(), dict[str, object])["detail"]
+            assert "admin" in from_plain(detail, str)
+        assert (submit.await_count, submit_batch.await_count) == (0, 0)
+
+    def test_modified_before_created_is_a_422(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        r = client.post(
+            "/api/inquiries/issue",
+            json={
+                "title": "t",
+                "created": "2024-03-02T12:00:00+00:00",
+                "modified": "2024-03-01T12:00:00+00:00",
+            },
+        )
+        assert r.status_code == 422
+        assert "modified must not precede created" in r.text
 
     def test_submit_batch_route_validates_discriminator(
         self,

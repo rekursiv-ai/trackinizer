@@ -48,31 +48,38 @@ AUDIENCE_SHAPE: Final[str] = "^[a-z][a-z0-9_-]{0,31}$"
 
 SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
     {
+        # The caller's own sessions with each one's first line and goal, kept to the
+        # sessions the transcript test lets the caller read.
+        ("GET", "/api/sessions"),
         ("POST", "/api/sessions/start"),
         ("POST", "/api/sessions/{session_id}/audience"),
         ("POST", "/api/sessions/{session_id}/end"),
-        ("POST", "/api/sessions/{session_id}/inbound"),
-        ("GET", "/api/sessions/{session_id}/inbound"),
-        # A run's word on what it is doing, kept on its lease in memory: it reads and
-        # writes no record, and is held to the rules of the session's drain.
-        ("POST", "/api/sessions/{session_id}/run-state"),
-        # Reopening a chat's run reads and writes no record: it starts a run, which
-        # attaches to the session by the key its own machine holds, as any run does.
-        ("POST", "/api/sessions/{session_id}/reattach"),
-        # Placement reads and writes a session's envelope alone (its labels and one
-        # edge), never its transcript, and only for the session's own account.
-        ("POST", "/api/sessions/{session_id}/place"),
-        ("PUT", "/api/sessions/{session_id}/workstream"),
-        # A science chat's answer in writing, held in memory: a read takes the
-        # records' read test, and again after it was held; a put or a delete is
-        # taken only from the assistant's key that opened the chat.
-        ("PUT", "/api/sessions/{session_id}/partial"),
-        ("GET", "/api/sessions/{session_id}/partial"),
-        ("DELETE", "/api/sessions/{session_id}/partial/{turn}"),
+        # A live session, relayed in memory: its lines take the records' read test;
+        # an input, and starting or stopping the process, take the test of who may
+        # send the session an input. Declared ahead of the relay: each answers 501
+        # until it is built, and reads nothing.
+        ("GET", "/api/sessions/{session_id}/lines"),
+        ("POST", "/api/sessions/{session_id}/inputs"),
+        ("PUT", "/api/sessions/{session_id}/process"),
+        ("GET", "/api/sessions/{session_id}/process"),
+        ("DELETE", "/api/sessions/{session_id}/process"),
         ("GET", "/api/sessions/{session_id}/parts"),
         ("GET", "/api/sessions/{session_id}/records"),
         ("POST", "/api/sessions/{session_id}/records"),
         ("GET", "/api/sessions/{session_id}/turns"),
+        # Every part's records as one file, bodies whole: the records' read test.
+        ("GET", "/api/sessions/{session_id}/download"),
+        # What a session's model calls used and cost, totalled from its records: it
+        # returns no transcript, but tells how much a session did, so a read takes the
+        # records' read test.
+        ("GET", "/api/sessions/{session_id}/usage"),
+        # A canvas's Chat. The inbound queue is the line a run drains and the line a
+        # person sends it, so both take the input test; a science chat's queue is
+        # narrowed further to the one key its provider's run holds. A run's reported
+        # state is written under the same test.
+        ("GET", "/api/sessions/{session_id}/inbound"),
+        ("POST", "/api/sessions/{session_id}/inbound"),
+        ("POST", "/api/sessions/{session_id}/run-state"),
         ("POST", "/api/messages"),
         ("GET", "/api/web/feed"),
         ("GET", "/api/web/feed/facets"),
@@ -85,15 +92,15 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
 """Every route that reads, writes or sends into a session's transcript, as
 ``(method, path)``.
 
-A route belongs here when its path is under ``/api/sessions/``, ``/api/web/feed``,
-``/api/messages`` or is ``/api/web/search_sessions``, ``/api/inquiries`` (whose record
-filters match transcript text) or ``/api/export``. The audit test lists the routes
-the app registers under those and fails on any this set lacks, so a new route that
-reads a session cannot ship without being placed here, where a review asks which
-check it carries. Each one that reads takes the server's one transcript test, which
-holds a session to its audience and to who the server's organisation rule lets read
-it. Generic by-id writes (a field edit, a purge) have no path of their own; they look
-up the row's kind before they act."""
+A route belongs here when its path is ``/api/sessions`` or under ``/api/sessions/``,
+``/api/web/feed`` or ``/api/messages``, or is ``/api/web/search_sessions``,
+``/api/inquiries`` (whose record filters match transcript text) or ``/api/export``.
+The audit test lists the routes the app registers under those and fails on any this
+set lacks, so a new route that reads a session cannot ship without being placed
+here, where a review asks which check it carries. Each one that reads takes the
+server's one transcript test, which holds a session to its audience and to who the
+server's organisation rule lets read it. Generic by-id writes (a field edit, a
+purge) have no path of their own; they look up the row's kind before they act."""
 
 
 def validate_audience(value: str) -> str:

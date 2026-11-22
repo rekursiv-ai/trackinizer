@@ -95,6 +95,7 @@ def test_relation_index_rejects_non_decimal_digits(
             [index],
             argparse.Namespace(sort="", format_="table"),
             lambda: cast("Client", client),
+            against=False,
         )
 
 
@@ -106,6 +107,7 @@ def test_relation_index_reports_overlong_decimal(client: FakeClient) -> None:
             ["9" * 4301],
             argparse.Namespace(sort="", format_="table"),
             lambda: cast("Client", client),
+            against=False,
         )
 
 

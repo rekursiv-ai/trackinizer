@@ -12,10 +12,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import cast
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import asyncio
 import dataclasses
 import decimal
+import logging
 import types
 import typing
 
@@ -25,18 +28,43 @@ from starlette.requests import Request
 
 import pytest
 
+from trackinizer.conftest import make_conn, make_store
+from trackinizer.server.api import _deps
 from trackinizer.server.api._deps import (
+    Later,
+    auth_is_disabled,
+    get_agent_policy,
     get_assistant,
     get_chat_orgs,
-    get_chat_streaming,
-    get_hub,
-    get_partials,
+    get_default_remote_agent_service,
+    get_host_changes,
+    get_later,
+    get_relay,
+    get_remote_agent_services,
+    get_replays,
+    get_secrets,
+    get_session_relay,
+    get_staff,
+    get_store,
+    get_terminal_relay,
+    get_tool_line_bytes,
+    get_tool_relay,
+    host_changes,
+    host_closed,
+    host_idle_sec,
+    hosts_changed,
     tag_kind,
     tag_row,
+    terminal_relay,
+    tool_relay,
 )
-from trackinizer.server.chat_hub import ChatHub
-from trackinizer.server.chat_partials import ChatPartials
-from trackinizer.server.config import Assistant, Config
+from trackinizer.server.api.tool_access import ToolAccess
+from trackinizer.server.config import Assistant, Config, RemoteAgentService
+from trackinizer.server.session_relay import SessionRelay
+from trackinizer.server.store.core import Store
+from trackinizer.server.terminals import Terminal, TerminalRelay
+from trackinizer.server.tool_lines import ResultIds
+from trackinizer.server.tool_relay import ToolConnection, ToolRelay
 from trackinizer.types import inquiries
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import (
@@ -52,6 +80,13 @@ from trackinizer.types.inquiries import (
     WebResult,
     WebSearch,
 )
+from trackinizer.wire.wire_tools import ToolMux
+
+
+if typing.TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockConnection
+    from trackinizer.server.api.tool_access import Check
+    from trackinizer.server.tool_relay import ToolSocket
 
 
 _INQUIRIES_NS: dict[str, object] = dict(vars(inquiries))
@@ -67,8 +102,7 @@ def _resolve(annotation: object) -> object:
     if isinstance(annotation, typing.TypeAliasType):
         # PEP 695 aliases (``type Actor = str``, ``type Status = Literal[...]``)
         # are values rather than types; unwrap to whatever they name.
-        value: object = annotation.__value__
-        return _resolve(value)
+        return _resolve(cast(object, annotation.__value__))
     return annotation
 
 
@@ -148,7 +182,7 @@ def _sample(annotation: object) -> object:
 # by ``test_every_field_is_populated``.
 def _populated[T: Inquiry](subclass: type[T]) -> T:
     """One instance of ``subclass`` with every field set to a real value."""
-    hints = typing.get_type_hints(subclass, _INQUIRIES_NS)
+    hints = cast(dict[str, object], typing.get_type_hints(subclass, _INQUIRIES_NS))
     return subclass(
         **{  # pyright: ignore[reportArgumentType] -- Dynamic dataclass fields are validated by the runtime oracle.  # ty: ignore[invalid-argument-type] -- Dynamic dataclass fields are validated by the runtime oracle.  # pyrefly: ignore[bad-argument-type] -- Dynamic dataclass fields are validated by the runtime oracle.
             field.name: _sample(hints[field.name])
@@ -195,57 +229,6 @@ def _request(app: FastAPI) -> Request:
     return Request({"type": "http", "app": app, "headers": []})
 
 
-class TestGetHub:
-    def test_an_app_built_by_hand_gets_one_hub_on_first_use(self) -> None:
-        app = FastAPI()
-        first = get_hub(_request(app))
-        assert get_hub(_request(app)) is first
-        assert get_hub(_request(FastAPI())) is not first
-
-    def test_an_app_keeps_the_hub_it_was_given(self) -> None:
-        app = FastAPI()
-        given = ChatHub()
-        app.state.hub = given
-        assert get_hub(_request(app)) is given
-
-    def test_something_that_is_not_a_hub_is_replaced(self) -> None:
-        app = FastAPI()
-        app.state.hub = "not a hub"
-        replaced = get_hub(_request(app))
-        assert get_hub(_request(app)) is replaced
-
-
-class TestGetPartials:
-    def test_an_app_gets_one_store_of_partials_on_first_use(self) -> None:
-        app = FastAPI()
-        first = get_partials(_request(app))
-        assert get_partials(_request(app)) is first
-        assert get_partials(_request(FastAPI())) is not first
-
-    def test_an_app_keeps_the_partials_it_was_given_and_replaces_anything_else(
-        self,
-    ) -> None:
-        app = FastAPI()
-        given = ChatPartials()
-        app.state.partials = given
-        kept = get_partials(_request(app))
-        app.state.partials = "not partials"
-        assert kept is given
-        assert isinstance(get_partials(_request(app)), ChatPartials)
-
-
-class TestGetChatStreaming:
-    def test_a_server_streams_unless_its_config_turns_it_off(self) -> None:
-        app = FastAPI()
-        assert get_chat_streaming(_request(app)) is True
-        app.state.config = "not a config"
-        assert get_chat_streaming(_request(app)) is True
-        app.state.config = Config()
-        assert get_chat_streaming(_request(app)) is True
-        app.state.config = Config(chat_streaming=False)
-        assert get_chat_streaming(_request(app)) is False
-
-
 class TestGetAssistant:
     def test_the_assistant_is_the_configs(self) -> None:
         app = FastAPI()
@@ -274,6 +257,553 @@ class TestGetChatOrgs:
         assert get_chat_orgs(_request(app)) == "individual"
         app.state.config = Config(chat_orgs="single")
         assert get_chat_orgs(_request(app)) == "single"
+
+
+def test_get_relay_makes_one_relay_and_keeps_it() -> None:
+    app = FastAPI()
+
+    relay = get_relay(_request(app))
+
+    assert get_relay(_request(app)) is relay
+
+
+def test_get_session_relay_makes_one_relay_keeps_it_and_replaces_a_stranger() -> None:
+    app = FastAPI()
+
+    relay = get_session_relay(_request(app))
+    kept = get_session_relay(_request(app))
+    app.state.session_relay = object()
+    replaced = get_session_relay(_request(app))
+
+    assert type(relay) is SessionRelay
+    assert kept is relay
+    assert type(replaced) is SessionRelay
+    assert replaced is not relay
+
+
+def test_get_secrets_is_the_apps_backend_or_none() -> None:
+    app = FastAPI()
+    app.state.secrets = None
+    assert get_secrets(_request(app)) is None
+
+
+def test_get_store_is_the_apps() -> None:
+    app = FastAPI()
+    store, _engine = make_store(make_conn())
+    app.state.store = store
+
+    assert get_store(_request(app)) is store
+
+
+def test_get_replays_makes_one_and_replaces_a_stranger() -> None:
+    app = FastAPI()
+    app.state.replays = "not replays"
+
+    replays = get_replays(_request(app))
+
+    assert get_replays(_request(app)) is replays
+
+
+class TestTerminalHub:
+    def test_one_relay_per_app_with_the_configs_stun(self) -> None:
+        app = FastAPI()
+        app.state.store, _engine = make_store(make_conn())
+        app.state.config = Config(terminal_stun=("stun:stun.example.com:3478",))
+
+        relay = get_terminal_relay(_request(app))
+
+        assert relay.ice_servers == ("stun:stun.example.com:3478",)
+        assert terminal_relay(app) is relay
+
+    def test_no_stun_without_a_config(self) -> None:
+        app = FastAPI()
+        app.state.store, _engine = make_store(make_conn())
+
+        assert terminal_relay(app).ice_servers == ()
+
+    @pytest.mark.asyncio
+    async def test_liveness_asks_the_apps_store(self) -> None:
+        conn = make_conn()
+        conn.fetchval.return_value = False
+        app = FastAPI()
+        app.state.store, _engine = make_store(conn)
+        term = Terminal(
+            id=uuid4(),
+            user="ada@example.com",
+            host_id=uuid4(),
+            host="gx10",
+            rows=24,
+            cols=80,
+            opened_at=0.0,
+        )
+
+        assert await terminal_relay(app)._still_alive(term) is False
+
+        assert conn.fetchval.await_args is not None
+        assert conn.fetchval.await_args.args[1] == term.host_id
+
+
+def test_auth_is_disabled_only_when_the_config_says_so() -> None:
+    app = FastAPI()
+    assert auth_is_disabled(_request(app)) is False
+    app.state.config = Config()
+    assert auth_is_disabled(_request(app)) is False
+    app.state.config = Config(auth_disabled=True)
+    assert auth_is_disabled(_request(app)) is True
+
+
+def test_the_tool_line_cap_is_the_configs_or_its_default() -> None:
+    """An agent's ``Write`` of 8 MiB fits the default, as JSON."""
+    app = FastAPI()
+    assert get_tool_line_bytes(_request(app)) == 16 << 20
+    app.state.config = Config(tool_line_bytes=1024)
+    assert get_tool_line_bytes(_request(app)) == 1024
+
+
+def test_get_staff_is_the_configs_patterns_or_nobody() -> None:
+    app = FastAPI()
+    assert get_staff(_request(app)) == ()
+    app.state.config = Config(staff=("*@example.com",))
+    assert get_staff(_request(app)) == ("*@example.com",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [True, False])
+async def test_a_terminal_is_alive_while_its_host_and_owner_are(
+    *,
+    live: bool,
+) -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = live
+    store, _engine = make_store(conn)
+    term = Terminal(
+        id=uuid4(),
+        user="ada@example.com",
+        host_id=uuid4(),
+        host="gx10",
+        rows=24,
+        cols=80,
+        opened_at=0.0,
+    )
+
+    assert await _deps._alive(term, store=store) is live
+
+    assert conn.fetchval.await_args is not None
+    sql, host_id = conn.fetchval.await_args.args
+    assert host_id == term.host_id
+    assert isinstance(sql, str)
+    assert "c.revoked_at IS NULL" in sql
+    assert "u.status = 'active'" in sql
+
+
+def test_replays_are_made_once_and_kept() -> None:
+    app = FastAPI()
+
+    replays = get_replays(_request(app))
+
+    assert get_replays(_request(app)) is replays
+    app.state.replays = "not replays"
+    assert get_replays(_request(app)) is not replays
+
+
+def test_host_changes_are_made_once_and_a_write_bumps_its_owner() -> None:
+    app = FastAPI()
+    changes = host_changes(app)
+    assert host_changes(app) is changes
+    assert get_host_changes(_request(app)) is changes
+    before = changes.version("ada@example.com")
+
+    hosts_changed(_request(app), owner="ada@example.com")
+    hosts_changed(_request(app), owner=None)
+
+    assert changes.version("ada@example.com") == before + 1
+
+
+class TestTheTerminalHub:
+    def test_it_is_made_once_and_kept(self) -> None:
+        app = FastAPI()
+        app.state.store, _engine = make_store()
+
+        relay = terminal_relay(app)
+
+        assert terminal_relay(app) is relay
+        assert get_terminal_relay(_request(app)) is relay
+
+    def test_it_hands_out_the_configured_stun_servers_or_none(self) -> None:
+        app = FastAPI()
+        app.state.store, _engine = make_store()
+        assert terminal_relay(app).ice_servers == ()
+
+        other = FastAPI()
+        other.state.store, _engine = make_store()
+        other.state.config = Config(terminal_stun=("stun:stun.example.org:3478",))
+        assert terminal_relay(other).ice_servers == ("stun:stun.example.org:3478",)
+
+
+async def _pass_through(
+    connection: ToolConnection,
+    frame: bytes,
+) -> tuple[bytes, bytes]:
+    """Let every frame through to the host, and answer the agent nothing."""
+    del connection
+    return frame, b""
+
+
+def _pipe(*, instance: UUID | None = None) -> ToolConnection:
+    return ToolConnection(
+        id=uuid4(),
+        host_id=uuid4(),
+        agent=cast("ToolSocket", AsyncMock()),
+        asker="ada@example.com",
+        api_key_id=uuid4(),
+        inbound=_pass_through,
+        opened=0.0,
+        mux=(instance or uuid4(), ToolMux(AsyncMock())),
+        results=ResultIds(line_bytes=1 << 10),
+    )
+
+
+_KB = Assistant(actor="scout", email="kb@example.com")
+
+
+def _app_with_assistant(
+    monkeypatch: pytest.MonkeyPatch,
+    failed: Check | None = None,
+    *,
+    conn: MockConnection | None = None,
+) -> tuple[FastAPI, AsyncMock]:
+    """Return an app on ``conn`` whose rule fails ``failed``, and the rule as asked."""
+    app = FastAPI()
+    app.state.store, _engine = make_store(conn)
+    app.state.config = Config(assistant=_KB)
+    rule = AsyncMock(return_value=ToolAccess(host_id=uuid4(), failed=failed))
+    monkeypatch.setattr(_deps, "tool_access", rule)
+    return app, rule
+
+
+@pytest.mark.asyncio
+async def test_the_connection_relay_is_made_once_and_asks_if_a_connection_still_qualifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, rule = _app_with_assistant(monkeypatch)
+
+    relay = tool_relay(app)
+
+    assert tool_relay(app) is relay
+    assert get_tool_relay(_request(app)) is relay
+    assert await relay._alive(_pipe()) is True
+    rule.assert_awaited_once()
+
+
+def test_the_connection_relay_uses_the_configured_line_limit() -> None:
+    app = FastAPI()
+    app.state.config = Config(tool_line_bytes=4_096)
+
+    assert tool_relay(app)._line_bytes == 4_096
+
+
+@pytest.mark.asyncio
+async def test_a_hosts_idle_time_is_the_shorter_of_its_connections_and_its_terminals() -> (
+    None
+):
+    app = FastAPI()
+    now = [100.0]
+    connections = app.state.tool_relay = ToolRelay(
+        alive=AsyncMock(),
+        line_bytes=1 << 10,
+        clock=lambda: now[0],
+    )
+    app.state.terminals = TerminalRelay(alive=AsyncMock(), clock=lambda: now[0])
+    host_id = uuid4()
+    now[0] += 40
+    assert host_idle_sec(app, host_id) == 40
+
+    connection = _join(connections, host_id)
+    connections.called(connection, "c1")
+    now[0] += 3_600
+    assert host_idle_sec(app, host_id) == 0
+    connections.acked(connection, "c1")
+    now[0] += 9
+
+    assert host_idle_sec(app, host_id) == 9
+    assert host_idle_sec(app, uuid4()) == 3_649
+
+
+@pytest.mark.asyncio
+async def test_a_host_closed_ends_its_connections_terminals_and_agent_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    closed: list[tuple[str, UUID]] = []
+
+    def connections_closed(relay: ToolRelay, host_id: UUID) -> None:
+        del relay
+        closed.append(("tool connections", host_id))
+
+    async def terminals_closed(relay: TerminalRelay, host_id: UUID) -> None:
+        del relay
+        closed.append(("terminals", host_id))
+
+    async def processes_stopped(relay: SessionRelay, host_id: UUID) -> None:
+        del relay
+        closed.append(("agent processes", host_id))
+
+    def keys_forgotten(store: Store, host_id: UUID) -> None:
+        del store
+        closed.append(("process keys", host_id))
+
+    monkeypatch.setattr(ToolRelay, "close_host", connections_closed)
+    monkeypatch.setattr(TerminalRelay, "close_host", terminals_closed)
+    monkeypatch.setattr(SessionRelay, "stop_host", processes_stopped)
+    monkeypatch.setattr(Store, "forget_bearer_identities_for_host", keys_forgotten)
+    app.state.tool_relay = ToolRelay(
+        alive=AsyncMock(),
+        line_bytes=1 << 10,
+    )
+    app.state.terminals = TerminalRelay(alive=AsyncMock())
+    app.state.store, _engine = make_store()
+    host_id = uuid4()
+
+    await host_closed(app, host_id)
+
+    # Its processes' keys were revoked with it: none is honoured from the cache now.
+    assert closed == [
+        ("process keys", host_id),
+        ("tool connections", host_id),
+        ("terminals", host_id),
+        ("agent processes", host_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_later_runs_its_work_after_the_delay_on_its_sleep_and_logs_a_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    asked: list[float] = []
+    go = asyncio.Event()
+
+    async def sleep(seconds: float) -> None:
+        asked.append(seconds)
+        _ = await go.wait()
+
+    later = Later(sleep=sleep)
+    ran: list[str] = []
+
+    async def work() -> None:
+        ran.append("work")
+
+    async def fails() -> None:
+        raise RuntimeError("database gone")
+
+    tasks = [later.run(60.0, work), later.run(60.0, fails)]
+    await asyncio.sleep(0)
+    assert (asked, ran) == ([60.0, 60.0], [])
+    # Held while it waits, so none is collected before it runs; let go once done.
+    assert later._waiting == set(tasks)
+
+    go.set()
+    _ = await asyncio.gather(*tasks)
+
+    assert later._waiting == set()
+    assert ran == ["work"]
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR] == [
+        "delayed work failed",
+    ]
+
+
+def test_the_remote_agent_services_and_the_default_are_the_configs_or_none() -> None:
+    app = FastAPI()
+    request = _request(app)
+    assert (
+        get_remote_agent_services(request),
+        get_default_remote_agent_service(request),
+    ) == ((), "")
+    service = RemoteAgentService(name="remote-agents", account="a@service.invalid")
+    app.state.config = Config(
+        remote_agent_services=(service,),
+        default_remote_agent_service="remote-agents",
+    )
+
+    assert (
+        get_remote_agent_services(request),
+        get_default_remote_agent_service(request),
+    ) == ((service,), "remote-agents")
+
+
+class _Policy:
+    def serves(self, asker: str) -> bool:
+        del asker
+        return False
+
+    async def refusal(
+        self,
+        engine: object,
+        *,
+        asker: str,
+        session_id: object,
+        work: str,
+    ) -> None:
+        del engine, asker, session_id, work
+
+    async def stored(self, engine: object, **shown: object) -> None:
+        del engine, shown
+
+
+def test_the_agent_policy_is_the_one_the_lifespan_kept_or_none() -> None:
+    app = FastAPI()
+    request = _request(app)
+    assert get_agent_policy(request) is None
+    app.state.agent_policy = object()
+    assert get_agent_policy(request) is None
+    policy = _Policy()
+    app.state.agent_policy = policy
+
+    assert get_agent_policy(request) is policy
+
+
+def test_the_app_holds_one_later_made_on_first_use() -> None:
+    app = FastAPI()
+
+    later = get_later(_request(app))
+
+    assert get_later(_request(app)) is later
+    assert later.sleep is asyncio.sleep
+
+
+def _join(relay: ToolRelay, host_id: UUID) -> ToolConnection:
+    """Join an agent to a stand-in daemon mux."""
+    relay._mux[host_id] = (uuid4(), ToolMux(AsyncMock()))
+    return relay.join(
+        host_id,
+        agent=cast("ToolSocket", AsyncMock()),
+        asker="ada@example.com",
+        api_key_id=uuid4(),
+        inbound=_pass_through,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [None, "asker"])
+async def test_the_sweep_asks_the_browser_form_of_a_connection_a_browser_opened(
+    monkeypatch: pytest.MonkeyPatch,
+    failed: Check | None,
+) -> None:
+    app, rule = _app_with_assistant(monkeypatch, failed)
+    connection = dataclasses.replace(
+        _pipe(instance=uuid4()),
+        api_key_id=None,
+        signed_in=AsyncMock(return_value=True),
+    )
+
+    assert await _deps._connection_alive(connection, app=app) is (failed is None)
+
+    assert rule.await_args is not None
+    assert rule.await_args.kwargs["api_key_id"] == "browser"
+    assert rule.await_args.kwargs["asker"] == connection.asker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "signed_in",
+    [AsyncMock(return_value=False), None],
+    ids=["signed in no more", "no way to ask"],
+)
+async def test_the_sweep_asks_a_browser_no_longer_signed_in_as_one_with_no_key(
+    monkeypatch: pytest.MonkeyPatch,
+    signed_in: AsyncMock | None,
+) -> None:
+    """The rule then fails ``key``, as for a revoked key."""
+    app, rule = _app_with_assistant(monkeypatch, "key")
+    connection = dataclasses.replace(
+        _pipe(instance=uuid4()),
+        api_key_id=None,
+        signed_in=signed_in,
+    )
+
+    assert await _deps._connection_alive(connection, app=app) is False
+
+    assert rule.await_args is not None
+    assert rule.await_args.kwargs["api_key_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_without_an_assistant_the_sweep_asks_the_rule_of_the_keys_own_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, rule = _app_with_assistant(monkeypatch)
+    app.state.config = Config()
+
+    assert await _deps._connection_alive(_pipe(), app=app) is True
+
+    assert rule.await_args is not None
+    assert rule.await_args.kwargs["assistant"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_asks_the_rule_of_a_connections_key_asker_host_and_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = make_conn()
+    app, rule = _app_with_assistant(monkeypatch, conn=conn)
+    connection = _pipe(instance=uuid4())
+
+    assert await _deps._connection_alive(connection, app=app) is True
+
+    assert rule.await_args is not None
+    assert rule.await_args.args == (conn,)
+    assert rule.await_args.kwargs == {
+        "assistant": _KB,
+        "api_key_id": connection.api_key_id,
+        "asker": connection.asker,
+        "host": connection.host_id,
+        "instance": connection.instance,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [None, "key", "instance"])
+async def test_a_connection_no_longer_allowed_warns_once_naming_the_check_it_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failed: Check | None,
+) -> None:
+    app, _ = _app_with_assistant(monkeypatch, failed)
+    connection = _pipe()
+
+    assert await _deps._connection_alive(connection, app=app) is (failed is None)
+
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warned == (
+        []
+        if failed is None
+        else [
+            (
+                f"tool connection no longer allowed: connection={connection.id} "
+                f"host_id={connection.host_id} check={failed}"
+            ),
+        ]
+    )
+
+
+class TestAuthIsDisabled:
+    def test_only_a_config_that_says_so_disables_auth(self) -> None:
+        app = FastAPI()
+        assert auth_is_disabled(_request(app)) is False
+        app.state.config = "not a config"
+        assert auth_is_disabled(_request(app)) is False
+        app.state.config = Config()
+        assert auth_is_disabled(_request(app)) is False
+        app.state.config = Config(auth_disabled=True)
+        assert auth_is_disabled(_request(app)) is True
+
+
+def test_the_staff_are_the_configs_patterns_or_nobody() -> None:
+    app = FastAPI()
+    assert get_staff(_request(app)) == ()
+    app.state.config = "not a config"
+    assert get_staff(_request(app)) == ()
+    app.state.config = Config(staff=("*@example.com",))
+    assert get_staff(_request(app)) == ("*@example.com",)
 
 
 class TestTagRow:
@@ -410,6 +940,55 @@ class TestTagKind:
             if getattr(instance, field.name) is None
         ]
         assert not unset, f"{subclass.__name__} left unpopulated: {unset}"
+
+
+def test_replay_and_connection_dependencies_replace_invalid_state_then_reuse_it() -> (
+    None
+):
+    app = FastAPI()
+    request = _request(app)
+    app.state.replays = "invalid"
+    app.state.tool_relay = "invalid"
+    replays = _deps.get_replays(request)
+    connections = _deps.get_tool_relay(request)
+    assert _deps.get_replays(request) is replays
+    assert _deps.get_tool_relay(request) is connections
+    other = _request(FastAPI())
+    assert _deps.get_replays(other) is not replays
+    assert _deps.get_tool_relay(other) is not connections
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_terminal_dependency_retains_one_relay_with_the_configured_stun_servers(
+    *,
+    configured: bool,
+) -> None:
+    app = FastAPI()
+    app.state.store, _engine = make_store()
+    servers = ("stun:relay.example",) if configured else ()
+    app.state.config = Config(terminal_stun=servers) if configured else "invalid"
+    app.state.terminals = "invalid"
+    relay = _deps.terminal_relay(app)
+    assert relay.ice_servers == servers
+    assert _deps.terminal_relay(app) is relay
+    assert _deps.get_terminal_relay(_request(app)) is relay
+
+
+def test_auth_and_staff_dependencies_require_a_real_config() -> None:
+    app = FastAPI()
+    request = _request(app)
+    assert _deps.auth_is_disabled(request) is False
+    assert _deps.get_staff(request) == ()
+    app.state.config = "invalid"
+    assert _deps.auth_is_disabled(request) is False
+    assert _deps.get_staff(request) == ()
+    app.state.config = Config()
+    assert _deps.auth_is_disabled(request) is False
+    assert _deps.get_staff(request) == ()
+    staff = ("*@example.com",)
+    app.state.config = Config(auth_disabled=True, staff=staff)
+    assert _deps.auth_is_disabled(request) is True
+    assert _deps.get_staff(request) == staff
 
 
 if __name__ == "__main__":

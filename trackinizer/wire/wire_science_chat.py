@@ -5,8 +5,7 @@ A conversation is one open AgentSession whose ``cli_session_id`` is
 are the people's lines (each from its poster), the assistant's tool calls and results,
 and its answers. There is no second store: its members read the session's records and
 post lines (its starter, the people they share it with, and whoever else the server's
-setting lets), and the assistant opens the session when it first hears the
-conversation. The session's row, which every key reads, says only who started it and
+setting lets), and its starter opens the session when they start it. The session's row, which every key reads, says only who started it and
 who posted: its title is :data:`CHAT_TITLE`. A share names a person by email and
 follows the conversation, and the starter deletes the conversation while every
 person's line in it is theirs.
@@ -16,19 +15,12 @@ with a ``produced_by`` edge to the original, labelled :data:`FORK_EDGE_LABEL` an
 :func:`fork_point_label`, and it opens with copies of the original's lines up to and
 including the fork point, a record named by its part and position.
 
-A line goes to ``POST /api/chats``. Who answers it is the station's provider
-(:data:`ChatProvider`). For ``assistant`` the server queues it for the
-conversation's own session while the assistant keeps one open, and for the
-assistant's service session otherwise, which opens or resumes the conversation's
-session before it answers. For ``claude`` or ``codex`` it queues it for the
-conversation's session, which the person's own run on a machine of theirs drains.
-The answer to a post is the conversation id at once; ``GET /api/chats/{id}`` answers
-404 until some session carries the conversation.
-
-While a turn runs, the assistant puts the answer it is writing at
-:data:`CHAT_PARTIAL_PATH`, where the chat's readers wait for it to change. The server
-keeps it in memory alone, for a minute after its last change: it is no record, and
-the stored answer replaces it.
+A chat starts with ``POST /api/chats`` (:class:`ChatStart`), which binds a new
+conversation to the canvas, or forks one onto a new canvas, and opens its session at
+once under its starter's key, as a ``sagent`` session; the answer (:class:`ChatSent`)
+names it. Its agent is the session's agent process, which the starter brings up on
+``PUT /api/sessions/{id}/process``, and every line goes to that agent as an input on
+``POST /api/sessions/{id}/inputs`` (``wire_session_relay``).
 
 This package is part of the publishable client distribution, so it must not
 import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -36,28 +28,16 @@ import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from typing import Annotated, Final, Literal, Self
+from typing import Final, Literal, Annotated, Self
 
 import uuid
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    ValidationError,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator, model_validator
 
 
 __all__ = [
     "CHATS_PATH",
     "CHAT_ACTOR_PREFIX",
-    "CHAT_PARTIAL_CHARS",
-    "CHAT_PARTIAL_PATH",
-    "CHAT_PARTIAL_TURN_PATH",
-    "CHAT_PARTIAL_WAIT_SEC",
     "CHAT_PATH",
     "CHAT_SESSION_PREFIX",
     "CHAT_SHARE_PATH",
@@ -66,16 +46,11 @@ __all__ = [
     "FORK_POINT_PREFIX",
     "POSTER_LABEL_PREFIX",
     "SCIENCE_CHAT_LABEL",
-    "ChatAnswer",
+    "AssistantPrompt",
     "ChatForkAt",
     "ChatHead",
-    "ChatLineKind",
-    "ChatPartial",
-    "ChatPartialState",
-    "ChatProvider",
-    "ChatSend",
     "ChatSent",
-    "ChatSettings",
+    "ChatStart",
     "chat_actor",
     "chat_conversation_id",
     "chat_session_id",
@@ -87,14 +62,6 @@ __all__ = [
 CHATS_PATH: Final = "/api/chats"
 CHAT_PATH: Final = "/api/chats/{conversation_id}"
 CHAT_SHARE_PATH: Final = "/api/chats/{conversation_id}/shares/{email}"
-CHAT_PARTIAL_PATH: Final = "/api/sessions/{session_id}/partial"
-CHAT_PARTIAL_TURN_PATH: Final = "/api/sessions/{session_id}/partial/{turn}"
-
-CHAT_PARTIAL_CHARS: Final = 16_384
-"""The most text a partial carries; the assistant clips what it has written to it."""
-
-CHAT_PARTIAL_WAIT_SEC: Final = 25.0
-"""The longest a read of a partial is held for a change, under the edge's idle cutoff."""
 
 SCIENCE_CHAT_LABEL: Final = "science-chat"
 """The label every science chat session carries."""
@@ -118,72 +85,14 @@ CHAT_TITLE: Final = "Science chat"
 """The title of every science chat's session, whatever its opener asks for. Every key
 reads a session's row, while a chat's lines are its members' alone."""
 
-_ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
-"""A `#/...` hash with no space or control character."""
-
-
-type ChatProvider = Literal["assistant", "claude", "codex"]
-"""Who answers a station's Chat.
+type AssistantPrompt = Literal["lead", "sagent"]
+"""The assistant's system prompt in a conversation, as its poster chose it.
 
 Values:
-  assistant: The server's shared assistant.
-  claude: The person's own ``trax run claude`` on a machine of theirs, attached to
-    the chat's session.
-  codex: The same with ``trax run codex``.
+  lead: The assistant's own lead prompt.
+  sagent: sagent's system prompt, followed by a note of the canvas like the one a
+    claude or codex run is given, in place of the lead prompt.
 """
-
-
-# ``wire_sessions`` imports this module for ``ChatForkAt``, so this one cannot import
-# its ``InboundKind`` back; ``wire_science_chat_test`` holds the two equal.
-type ChatLineKind = Literal["line", "command", "answer", "settings", "interrupt"]
-"""What a Chat post is: the values of ``wire_sessions.InboundKind``, which a run
-delivers each its own way. Only ``line`` is a person's chat line."""
-
-
-class ChatAnswer(BaseModel):
-    """The payload of an ``answer`` post: a choice on an ask the run is showing.
-
-    It names the choice by ``option``, the id of one of the ask's own options, or in
-    the older form by ``decision``, which the run reads as the option of that kind.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    prompt_id: str = Field(min_length=1, max_length=200)
-    option: str = Field(default="", max_length=200)
-    """The id of the option taken, or a kind such as ``allow_once``; empty when
-    ``decision`` names the choice."""
-
-    decision: Literal["allow", "deny"] | None = None
-    """The older form of ``option``: ``allow`` is ``allow_once``, ``deny`` is ``deny``."""
-
-    updated_input: JsonValue = None
-    """The tool input the prompt's answer replaces, such as the answers to a
-    question; ``None`` leaves it as asked."""
-
-    message: str = Field(default="", max_length=16_384)
-    """Why, for a deny; the run passes it to the CLI."""
-
-    @model_validator(mode="after")
-    def _names_one_choice(self) -> Self:
-        if bool(self.option) == (self.decision is not None):
-            raise ValueError("an answer names exactly one of an option and a decision")
-        return self
-
-
-class ChatSettings(BaseModel):
-    """The payload of a ``settings`` post: a model or effort change, or both."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    model: str | None = Field(default=None, min_length=1, max_length=120)
-    effort: str | None = Field(default=None, min_length=1, max_length=20)
-
-    @model_validator(mode="after")
-    def _changes_something(self) -> Self:
-        if self.model is None and self.effort is None:
-            raise ValueError("a settings post names a model, an effort, or both")
-        return self
 
 
 def chat_session_id(conversation_id: uuid.UUID) -> str:
@@ -273,6 +182,168 @@ class ChatForkAt(BaseModel):
     idx: int = Field(ge=0)
     """The line's record: its part and its position in it. The fork holds the lines
     of the session up to and including this one."""
+
+
+class ChatStart(BaseModel):
+    """A chat to start on a canvas, or to fork from a line of another onto a new one.
+
+    The request's ``Idempotency-Key`` names a new conversation, so a retry starts the
+    same one.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    canvas_id: uuid.UUID
+    """The starter's own canvas: it holds the new chat, or a fork is copied from it."""
+
+    fork: ChatForkAt | None = None
+    """The line of another chat the new one starts from; ``None`` starts the canvas's
+    own chat, or answers the one it holds."""
+
+
+class ChatSent(BaseModel):
+    """A chat started, or the one its canvas already held: where it is and its session."""
+
+    conversation_id: uuid.UUID
+    canvas_id: uuid.UUID
+    """The canvas that holds it: the one it was started from, or for a fork the new
+    one made for it."""
+
+    session_id: uuid.UUID
+    """The conversation's session, opened by the start."""
+
+
+class ChatHead(BaseModel):
+    """A science chat's session and starter, for opening it by link or after a post."""
+
+    conversation_id: uuid.UUID
+    session_id: uuid.UUID
+    seq: int
+    """The session's number, as ``AgentSession#<seq>`` names it."""
+
+    title: str
+    cli: str | None
+    """The CLI the session says it runs, which a title its start minted names."""
+
+    goal: str | None
+    """The goal its CLI last reported, as its starter's session list reads it; None
+    for a caller who does not read the chat."""
+
+    first_line: str | None
+    """The first line a person wrote in it, as its starter's session list reads it;
+    None for a caller who does not read the chat."""
+
+    account: str
+    live: bool
+    """Whether the session is open: not ended."""
+
+    forks: int
+    """How many times the conversation has been forked."""
+
+    forked_from: uuid.UUID | None
+    """The conversation this one was forked from; ``None`` for one that was not."""
+
+    forks_on_typing: bool
+    """Whether the caller does not read the chat: not its starter, not one it is
+    shared with, and not one the server's setting lets in, or it is a ``private`` or
+    ``staff`` chat they may not read. They read none of its lines, and a line they
+    type is refused with 403 ``chat_not_shared``; they cannot fork it either, since a
+    fork copies lines its poster reads."""
+
+    audience: str
+    """Who reads the chat: ``open`` (its members), ``private`` (its starter and the
+    people it is shared with) or ``staff`` (its members who hold ``staff``, once its
+    assistant has read a staff session for one of them)."""
+
+    may_post: bool
+    """Whether the caller posts into the chat: its starter, a person it is shared
+    with or, on a ``domain`` server, a member of the starter's organisation, who
+    reads it. Any other reader's line is refused with 403 ``chat_not_shared``, and
+    they fork an ``open`` chat to continue instead."""
+
+    may_hide: bool
+    """Whether the caller may make the chat ``private`` or ``open`` again: its starter,
+    while it is not ``staff``."""
+
+    shared_with: list[str]
+    """The emails the chat is shared with, oldest share first: each reads it and posts
+    into it as its starter does. Empty for anyone but the starter and an admin."""
+
+    may_share: bool
+    """Whether the caller may share the chat and stop sharing it: its starter alone.
+    An admin may only stop sharing it, since a share lets its person read it."""
+
+    may_delete: bool
+    """Whether the caller may delete the chat: an admin, the key that opened it, or
+    its starter while every person's line in it is theirs."""
+
+
+type ChatProvider = Literal["assistant", "claude", "codex"]
+"""Who answers a chat: the shared assistant, or a CLI run on a machine of the user's."""
+
+
+CHAT_PARTIAL_PATH: Final = "/api/sessions/{session_id}/partial"
+
+
+CHAT_PARTIAL_TURN_PATH: Final = "/api/sessions/{session_id}/partial/{turn}"
+
+
+CHAT_PARTIAL_CHARS: Final = 16_384
+
+
+CHAT_PARTIAL_WAIT_SEC: Final = 25.0
+
+
+_ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
+
+
+type ChatLineKind = Literal["line", "command", "answer", "settings", "interrupt"]
+
+
+class ChatAnswer(BaseModel):
+    """The payload of an ``answer`` post: a choice on an ask the run is showing.
+
+    It names the choice by ``option``, the id of one of the ask's own options, or in
+    the older form by ``decision``, which the run reads as the option of that kind.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_id: str = Field(min_length=1, max_length=200)
+    option: str = Field(default="", max_length=200)
+    """The id of the option taken, or a kind such as ``allow_once``; empty when
+    ``decision`` names the choice."""
+
+    decision: Literal["allow", "deny"] | None = None
+    """The older form of ``option``: ``allow`` is ``allow_once``, ``deny`` is ``deny``."""
+
+    updated_input: JsonValue = None
+    """The tool input the prompt's answer replaces, such as the answers to a
+    question; ``None`` leaves it as asked."""
+
+    message: str = Field(default="", max_length=16_384)
+    """Why, for a deny; the run passes it to the CLI."""
+
+    @model_validator(mode="after")
+    def _names_one_choice(self) -> Self:
+        if bool(self.option) == (self.decision is not None):
+            raise ValueError("an answer names exactly one of an option and a decision")
+        return self
+
+
+class ChatSettings(BaseModel):
+    """The payload of a ``settings`` post: a model or effort change, or both."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = Field(default=None, min_length=1, max_length=120)
+    effort: str | None = Field(default=None, min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if self.model is None and self.effort is None:
+            raise ValueError("a settings post names a model, an effort, or both")
+        return self
 
 
 class ChatSend(BaseModel):
@@ -368,62 +439,3 @@ class ChatPartialState(BaseModel):
     passes the last it saw to wait for a change, and compares it for equality only."""
 
     partial: ChatPartial | None
-
-
-class ChatSent(BaseModel):
-    """What a posted line was queued for."""
-
-    conversation_id: uuid.UUID
-    workspace_id: uuid.UUID
-    """The station the line went to: the one it was sent from, or for a fork the new
-    one made for it."""
-
-    session_id: uuid.UUID | None
-    """The conversation's session when the line was queued on it: the assistant had it
-    open, or the station's provider is a CLI; otherwise ``None``, and the session
-    appears when the assistant opens it."""
-
-
-class ChatHead(BaseModel):
-    """A science chat's session and starter, for opening it by link or after a post."""
-
-    conversation_id: uuid.UUID
-    session_id: uuid.UUID
-    title: str
-    account: str
-    live: bool
-    """Whether the assistant still has the session open."""
-
-    forks: int
-    """How many times the conversation has been forked."""
-
-    forked_from: uuid.UUID | None
-    """The conversation this one was forked from; ``None`` for one that was not."""
-
-    forks_on_typing: bool
-    """Whether the caller does not read the chat: not its starter, not one it is
-    shared with, and not one the server's setting lets in, or it is a ``private`` or
-    ``staff`` chat they may not read. They read none of its lines, and a line they
-    type is refused with 403 ``chat_not_shared``; they cannot fork it either, since a
-    fork copies lines its poster reads."""
-
-    audience: str
-    """Who reads the chat: ``open`` (its members), ``private`` (its starter and the
-    people it is shared with) or ``staff`` (its members who hold ``staff``, once its
-    assistant has read a staff session for one of them)."""
-
-    may_hide: bool
-    """Whether the caller may make the chat ``private`` or ``open`` again: its starter,
-    while it is not ``staff``."""
-
-    shared_with: list[str]
-    """The emails the chat is shared with, oldest share first: each reads it and posts
-    into it as its starter does. Empty for anyone but the starter and an admin."""
-
-    may_share: bool
-    """Whether the caller may share the chat and stop sharing it: its starter alone.
-    An admin may only stop sharing it, since a share lets its person read it."""
-
-    may_delete: bool
-    """Whether the caller may delete the chat: an admin, the key that opened it, or
-    its starter while every person's line in it is theirs."""

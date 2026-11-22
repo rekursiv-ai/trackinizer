@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, TypedDict, TypeGuard, cast, override
 from urllib.parse import parse_qsl
 
 import argparse
+import ast
+import base64
 import inspect
 import json
 import logging
@@ -25,16 +27,45 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.trax import cli, profile
+from trackinizer.trax import connection, profile
 from trackinizer.trax.conftest import FakeClient
-from trackinizer.trax.grammar import parse_kind, parse_ref
 from trackinizer.trax.profile import Profile
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
-from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
+from trackinizer.wire.routes import (
+    DEFAULT_LIST_LIMIT,
+    MAX_LIST_LIMIT,
+    inquiry_field_path,
+)
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_code import CODE_BLOBS_PATH, CODE_MISSING_PATH
+from trackinizer.wire.wire_daemon import (
+    ENROLL_PATH,
+    HEARTBEAT_PATH,
+    JOIN_PATH,
+)
 from trackinizer.wire.wire_export import EXPORT_API_PATH
+from trackinizer.wire.wire_host_job import (
+    HOST_JOB_CANCEL_PATH,
+    HOST_JOB_FILE_PATH,
+    HOST_JOB_LOG_PATH,
+    HOST_JOB_MANIFEST_PATH,
+    HOST_JOB_PATH,
+    HOST_JOB_REPORT_PATH,
+    HOST_JOBS_PATH,
+    HOST_READ_REPLY_PATH,
+    HOST_WORK_PATH,
+    CancelWork,
+    HostJobSubmit,
+    JobReport,
+    ReadRefused,
+    ReadReply,
+)
+from trackinizer.wire.wire_hosts import (
+    HOST_PATH,
+    HOSTS_PATH,
+    MAX_HOW_CHARS,
+)
 from trackinizer.wire.wire_job import (
     JOB_CANCEL_PATH,
     JOB_GRANT_PATH,
@@ -49,34 +80,26 @@ from trackinizer.wire.wire_job import (
     StartBody,
     SubmitBody,
 )
-from trackinizer.wire.wire_machine_host import (
-    ENROLL_PATH,
-    HEARTBEAT_PATH,
-    JOIN_PATH,
-)
-from trackinizer.wire.wire_machines import (
-    MACHINE_PATH,
-    MACHINES_PATH,
-    MAX_HOW_CHARS,
-)
+from trackinizer.wire.wire_metrics import MetricPoint
+from trackinizer.wire.wire_metrics_query import MetricMaskClause
 from trackinizer.wire.wire_session_ir import (
     ManifestBody,
     RecordBody,
-    SlashCommandBody,
 )
-from trackinizer.wire.wire_sessions import SessionStart
+from trackinizer.wire.wire_sessions import SessionAgent, SessionStart
 from trackinizer.wire.wire_terminals import (
-    TERMINAL_MACHINES_PATH,
+    HOST_TERMINAL_WAIT_PATH,
+    TERMINAL_HOSTS_CHANGES_PATH,
+    TERMINAL_HOSTS_PATH,
     TERMINALS_PATH,
+    HostsVersion,
     OpenTerminal,
 )
 from trackinizer.wire.wire_variables import VARIABLES_PATH
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
-    from trackinizer.wire.wire_machines import Facts
+    from trackinizer.wire.wire_hosts import Facts
 
 
 # ``handler`` receives an ``httpx2.Request`` and returns an ``httpx2.Response``. The
@@ -107,7 +130,7 @@ class _ClientSpy(Client):
         get_results: list[PlainTree] | None = None,
         post_result: PlainTree | None = None,
     ) -> None:
-        super().__init__("http://server")
+        super().__init__("https://server")
         self.get_results: list[PlainTree] = list(get_results or [])
         self.post_result = post_result
         self.get_calls: list[tuple[str, dict[str, object] | None]] = []
@@ -135,7 +158,10 @@ class _ClientSpy(Client):
         path: str,
         *,
         body: object = None,
+        timeout: float | None = None,
+        retry_attempts: int = 3,
     ) -> PlainTree:
+        del timeout, retry_attempts
         self.post_calls.append((path, body))
         self.request_calls.append(("POST", path, body))
         return self.post_result
@@ -164,63 +190,18 @@ class _ClientSpy(Client):
         return self.post_result
 
 
-class TestParseRef:
-    def test_parse_seq_ref_case_insensitive(self) -> None:
-        ref = parse_ref(" issue#7 ")
-        assert ref == SeqRef(kind="Issue", seq=7)
-        assert str(ref) == "Issue#7"
-
-    def test_parse_uuid_ref(self) -> None:
-        value = uuid.uuid4()
-        ref = parse_ref(str(value))
-        assert ref == UuidRef(uuid=value)
-        assert str(ref) == str(value)
-
-    @pytest.mark.parametrize(
-        ("value", "message"),
-        [
-            ("", "empty reference"),
-            ("Nope#1", "unknown kind"),
-            ("Issue:not-a-seq", "cannot parse"),
-        ],
-    )
-    def test_rejects_empty_unknown_kind_and_bad_shape(
-        self,
-        value: str,
-        message: str,
-    ) -> None:
-        with pytest.raises(ValueError, match=message):
-            parse_ref(value)
-
-
-class TestParseKind:
-    def test_parse_kind_case_insensitive_and_plural(self) -> None:
-        assert parse_kind("belief") == "Belief"
-        assert parse_kind("Issues") == "Issue"
-
-    def test_parse_kind_rejects_unknown(self) -> None:
-        with pytest.raises(ValueError, match="unknown kind"):
-            parse_kind("widgets")
-
-
 class TestFlags:
     @pytest.fixture(autouse=True)
     def _isolated_config(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
     ) -> None:
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-        (tmp_path / "rekursiv-ai" / "trax" / "profiles").mkdir(
-            parents=True,
-            exist_ok=True,
-        )
         monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
         monkeypatch.delenv("TRACKINIZER_URL", raising=False)
 
     def test_flags_default_to_none(self) -> None:
         parser = argparse.ArgumentParser()
-        cli.connect_flags(parser)
+        connection.connect_flags(parser)
         args = parser.parse_args([])
         profile_arg = cast(str | None, args.profile)
         host_arg = cast(str | None, args.host)
@@ -231,7 +212,7 @@ class TestFlags:
 
     def test_flags_parse_user_values(self) -> None:
         parser = argparse.ArgumentParser()
-        cli.connect_flags(parser)
+        connection.connect_flags(parser)
         args = parser.parse_args(
             ["--profile", "prod", "--host", "1.2.3.4", "--port", "9000"],
         )
@@ -243,31 +224,37 @@ class TestFlags:
         assert port_arg == 9000
 
     def test_from_args_host_port_override_profile(self) -> None:
-        profile.save_profile("prod", Profile(url="http://prod:1000"))
-        client = cli.connect(argparse.Namespace(profile="prod", host="ex", port=9090))
-        assert client.base_url == "http://ex:9090"
+        profile.save_profile("prod", Profile(url="https://prod:1000"))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host="ex", port=9090),
+        )
+        assert client.base_url == "https://ex:9090"
 
     def test_from_args_selects_named_profile(self) -> None:
-        profile.save_profile("prod", Profile(url="http://prod:9000", author="alice"))
-        client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
-        assert client.base_url == "http://prod:9000"
+        profile.save_profile("prod", Profile(url="https://prod:9000", author="alice"))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host=None, port=None),
+        )
+        assert client.base_url == "https://prod:9000"
         assert client.author == "alice"
 
     def test_from_args_partial_flags_fill_from_profile(self) -> None:
-        profile.save_profile("default", Profile(url="http://defaulthost:8888"))
-        host_only = cli.connect(
+        profile.save_profile("default", Profile(url="https://defaulthost:8888"))
+        host_only = connection.connect(
             argparse.Namespace(profile=None, host="other", port=None),
         )
-        assert host_only.base_url == "http://other:8888"
-        port_only = cli.connect(argparse.Namespace(profile=None, host=None, port=4242))
-        assert port_only.base_url == "http://defaulthost:4242"
+        assert host_only.base_url == "https://other:8888"
+        port_only = connection.connect(
+            argparse.Namespace(profile=None, host=None, port=4242),
+        )
+        assert port_only.base_url == "https://defaulthost:4242"
 
     def test_from_args_without_flags_uses_trackinizer_url(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_URL", "http://127.0.0.1:8766/")
-        client = cli.connect(argparse.Namespace())
+        client = connection.connect(argparse.Namespace())
         assert client.base_url == "http://127.0.0.1:8766"
         assert client.author == ""
 
@@ -277,7 +264,7 @@ class TestFlags:
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_URL", "actor")
         with pytest.raises(ClientError, match="TRACKINIZER_URL has invalid URL"):
-            cli.connect(argparse.Namespace())
+            connection.connect(argparse.Namespace())
 
     def test_constructor_rejects_invalid_base_url(self) -> None:
         with pytest.raises(ClientError, match="base_url has invalid URL"):
@@ -285,19 +272,21 @@ class TestFlags:
 
     def test_from_args_raises_when_named_profile_missing(self) -> None:
         with pytest.raises(ClientError, match="profile 'typo' not found"):
-            cli.connect(argparse.Namespace(profile="typo", host=None, port=None))
+            connection.connect(argparse.Namespace(profile="typo", host=None, port=None))
 
     def test_bare_client_reads_author_from_profile(self) -> None:
         profile.save_profile(
             "default",
-            Profile(url="http://defaulthost:8888", author="alice"),
+            Profile(url="https://defaulthost:8888", author="alice"),
         )
-        client = cli.connect(argparse.Namespace(profile=None, host=None, port=None))
-        assert client.base_url == "http://defaulthost:8888"
+        client = connection.connect(
+            argparse.Namespace(profile=None, host=None, port=None),
+        )
+        assert client.base_url == "https://defaulthost:8888"
         assert client.author == "alice"
 
     def test_from_args_without_flags_uses_default_profile(self) -> None:
-        bare = cli.connect(argparse.Namespace())
+        bare = connection.connect(argparse.Namespace())
         assert bare.base_url == "http://127.0.0.1:8765"
         assert bare.author == ""
 
@@ -306,29 +295,68 @@ class TestFlags:
             "prod",
             Profile(url="https://example.com:443", author="alice"),
         )
-        client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host=None, port=None),
+        )
         assert client.base_url == "https://example.com:443"
         assert client.author == "alice"
 
     def test_from_args_preserves_portless_profile(self) -> None:
         profile.save_profile("prod", Profile(url="https://example.com"))
-        client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host=None, port=None),
+        )
         assert client.base_url == "https://example.com"
 
     def test_from_args_host_override_keeps_profile_scheme_and_port(self) -> None:
         profile.save_profile("prod", Profile(url="https://prod.example:8443"))
-        client = cli.connect(
+        client = connection.connect(
             argparse.Namespace(profile="prod", host="other", port=None),
         )
         assert client.base_url == "https://other:8443"
 
     def test_from_args_port_override_on_portless_profile(self) -> None:
         profile.save_profile("prod", Profile(url="https://example.com"))
-        client = cli.connect(argparse.Namespace(profile="prod", host=None, port=9000))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host=None, port=9000),
+        )
         assert client.base_url == "https://example.com:9000"
 
 
 class TestRequests:
+    def test_injected_transport_receives_the_base_url_and_client_headers(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"ok": True})
+
+        with Client(
+            "https://server/root/",
+            api_key="trax_fake",
+            transport=httpx2.MockTransport(handler),
+        ) as client:
+            assert (client.author, client.api_key, client.timeout_sec) == (
+                "",
+                "trax_fake",
+                30.0,
+            )
+            answer = client.get("/api/x")
+
+        assert answer == {"ok": True}
+        [request] = seen
+        assert str(request.url) == "https://server/root/api/x"
+        assert request.headers["Accept"] == "application/json"
+        assert request.headers["Authorization"] == "Bearer trax_fake"
+        assert (b"Accept", b"application/json") in request.headers.raw
+        assert (b"Authorization", b"Bearer trax_fake") in request.headers.raw
+        assert request.extensions["timeout"] == {
+            "connect": 5.0,
+            "read": 30.0,
+            "write": 10.0,
+            "pool": 5.0,
+        }
+
     def test_client_bounds_the_transport_connection_pool(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -337,6 +365,7 @@ class TestRequests:
         real_transport = httpx2.HTTPTransport
         observed: list[tuple[int, int, float]] = []
         transport_limits: list[httpx2.Limits] = []
+        transport_retries: list[int] = []
 
         def make_limits(
             *,
@@ -359,6 +388,7 @@ class TestRequests:
             limits: httpx2.Limits,
         ) -> httpx2.HTTPTransport:
             transport_limits.append(limits)
+            transport_retries.append(retries)
             return real_transport(retries=retries, limits=limits)
 
         monkeypatch.setattr(httpx2, "Limits", make_limits)
@@ -369,6 +399,7 @@ class TestRequests:
 
         assert observed == [(8, 8, 90.0)]
         assert len(transport_limits) == 1
+        assert transport_retries == [1]
 
     def test_request_builds_url_headers_and_body(self) -> None:
         seen: dict[str, httpx2.Request] = {}
@@ -377,12 +408,12 @@ class TestRequests:
             seen["req"] = request
             return httpx2.Response(200, json={"ok": True})
 
-        with Client("http://server/") as client:
+        with Client("https://server/") as client:
             _install_mock_transport(client, handler)
             result = client.post("/api/x", body={"a": 1})
         assert result == {"ok": True}
         req = seen["req"]
-        assert str(req.url) == "http://server/api/x"
+        assert str(req.url) == "https://server/api/x"
         assert req.method == "POST"
         assert json.loads(req.content) == {"a": 1}
         assert req.headers["Accept"] == "application/json"
@@ -396,7 +427,7 @@ class TestRequests:
             seen["req"] = request
             return httpx2.Response(200, content=b"")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             result = client.get(
                 "/api/search",
@@ -404,7 +435,7 @@ class TestRequests:
             )
         assert result is None
         req = seen["req"]
-        assert str(req.url) == "http://server/api/search?q=a+b"
+        assert str(req.url) == "https://server/api/search?q=a+b"
         # GETs do not carry Idempotency-Key (no mutation to dedup).
         assert "Idempotency-Key" not in req.headers
 
@@ -415,7 +446,7 @@ class TestRequests:
             seen["req"] = request
             return httpx2.Response(200, content=b"")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             client.get("/api/x")
         assert "Authorization" not in seen["req"].headers
@@ -427,7 +458,7 @@ class TestRequests:
             seen["req"] = request
             return httpx2.Response(200, content=b"")
 
-        with Client("http://server", api_key="trax_abcdef") as client:
+        with Client("https://server", api_key="trax_abcdef") as client:
             _install_mock_transport(client, handler)
             client.post("/api/x", body={"a": 1})
         assert seen["req"].headers["Authorization"] == "Bearer trax_abcdef"
@@ -437,7 +468,7 @@ class TestRequests:
             del request
             return httpx2.Response(409, content=b'{"detail":"bad"}')
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, http_error)
             with pytest.raises(ClientError, match="POST /x -> 409"):
                 client.post("/x")
@@ -450,7 +481,7 @@ class TestRequests:
                 json={"detail": "clash", "code": "conflict"},
             )
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             src = uuid.uuid4()
             dst = uuid.uuid4()
@@ -467,7 +498,7 @@ class TestRequests:
                 json={"detail": {"code": "chat_deleted", "message": "gone"}},
             )
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError) as exc_info:
                 client.get("/api/chats/x")
@@ -481,7 +512,7 @@ class TestRequests:
             del request
             raise httpx2.ConnectError("offline")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, connect_error)
             with pytest.raises(ClientError, match="GET /x failed: offline"):
                 client.get("/x")
@@ -524,6 +555,26 @@ class TestRequests:
         assert from_plain(fields.get("client_age_sec"), float, default=-1.0) >= 0
         assert len(from_plain(fields.get("client_id"), str, default="")) == 12
 
+    def test_post_timeout_and_single_attempt_are_forwarded(self) -> None:
+        attempts: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            attempts.append(request)
+            return httpx2.Response(503, content=b"down")
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="POST /x -> 503"):
+                client.post("/x", timeout=1.0, retry_attempts=1)
+
+        assert len(attempts) == 1
+        assert attempts[0].extensions["timeout"] == {
+            "connect": 1.0,
+            "read": 1.0,
+            "write": 1.0,
+            "pool": 1.0,
+        }
+
     def test_retries_5xx_with_same_change_id(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -542,7 +593,7 @@ class TestRequests:
                 return httpx2.Response(502, content=b"bad gateway")
             return httpx2.Response(200, json={"ok": True})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             result = client.post("/api/x", body={"a": 1})
         assert result == {"ok": True}
@@ -577,7 +628,7 @@ class TestRequests:
                 return httpx2.Response(500, content=b"internal server error")
             return httpx2.Response(200, json={"ok": True})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             result = client.post("/api/x", body={"a": 1})
         assert result == {"ok": True}
@@ -598,7 +649,7 @@ class TestRequests:
             attempts.append(request)
             return httpx2.Response(503, content=b"down")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="POST /x -> 503"):
                 client.post("/x")
@@ -629,7 +680,7 @@ class TestRequests:
             attempts.append(request)
             raise exc
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="POST /x failed:"):
                 client.post("/x")
@@ -649,7 +700,7 @@ def test_request_truncates_oversized_error_text() -> None:
         del request
         return httpx2.Response(400, content=big.encode())
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError) as exc_info:
             client.get("/x")
@@ -664,7 +715,7 @@ class TestVersion:
             del request
             return httpx2.Response(200, json={"sha": "deadbeef"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             assert client.version() == "deadbeef"
 
@@ -675,7 +726,7 @@ class TestVersion:
             del request
             return httpx2.Response(200, json={"sha": "unknown"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             assert client.version() == "unknown"
 
@@ -686,7 +737,7 @@ class TestVersion:
             del request
             return httpx2.Response(200, json={})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed payload"):
                 client.version()
@@ -708,7 +759,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"wrong": "shape"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.resolve_id(SeqRef(kind="Issue", seq=4))
@@ -720,7 +771,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json=[1, 2, 3])
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.resolve_id(UuidRef(uuid=uuid.uuid4()))
@@ -734,7 +785,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json=body)
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler=handler)
             with pytest.raises(ClientError) as missing_id:
                 client.resolve_id(SeqRef(kind="Issue", seq=4))
@@ -755,7 +806,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"kind": "Issue"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler=handler)
             with pytest.raises(ClientError) as err:
                 client.resolve_id(UuidRef(uuid=target, expected_kind="Belief"))
@@ -773,7 +824,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"nope": {}})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.resolve_ids([UuidRef(uuid=uuid.uuid4())])
@@ -785,7 +836,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"nope": "x"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.submit("Issue", {"title": "x"})
@@ -797,7 +848,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"id": "not-a-uuid"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.submit("Issue", {"title": "x"})
@@ -809,7 +860,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"nope": []})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.submit_batch([("Issue", {"title": "x"})])
@@ -821,7 +872,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json=[1, 2, 3])
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.next_issue()
@@ -833,10 +884,72 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"not": "a list"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.recent_changes()
+
+    @pytest.mark.parametrize("payload", [[], 7], ids=["list", "scalar"])
+    def test_resolve_seq_rejects_non_mapping_responses(
+        self,
+        payload: PlainTree,
+    ) -> None:
+        with _answering(payload) as client, pytest.raises(ClientError) as raised:
+            client.resolve_id(SeqRef(kind="Issue", seq=4))
+
+        assert str(raised.value).startswith("/api/inquiries/Issue/4 returned")
+
+    @pytest.mark.parametrize("payload", [[], 7], ids=["list", "scalar"])
+    def test_submit_rejects_non_mapping_responses(
+        self,
+        payload: PlainTree,
+    ) -> None:
+        with _answering(payload) as client, pytest.raises(ClientError) as raised:
+            client.submit("Issue", {"title": "x"})
+
+        assert str(raised.value).startswith("/api/inquiries/issue returned")
+
+    @pytest.mark.parametrize("found", [[], 7], ids=["list", "scalar"])
+    def test_resolve_ids_rejects_non_mapping_found(
+        self,
+        found: PlainTree,
+    ) -> None:
+        with _answering({"found": found}) as client, pytest.raises(ClientError):
+            client.resolve_ids([UuidRef(uuid=uuid.UUID(int=1))])
+
+    @pytest.mark.parametrize(
+        "ids",
+        [None, {}, "00000000-0000-0000-0000-000000000001"],
+        ids=["null", "mapping", "uuid-string"],
+    )
+    def test_submit_batch_rejects_non_list_ids(
+        self,
+        ids: PlainTree,
+    ) -> None:
+        with _answering({"ids": ids}) as client, pytest.raises(ClientError):
+            client.submit_batch([("Issue", {"title": "x"})])
+
+    @pytest.mark.parametrize("bad_id", [None, 7, "not-a-uuid"])
+    def test_submit_batch_rejects_a_bad_id_after_a_valid_id(
+        self,
+        bad_id: PlainTree,
+    ) -> None:
+        ids = [str(uuid.UUID(int=1)), bad_id]
+        with _answering({"ids": ids}) as client, pytest.raises(ClientError):
+            client.submit_batch(
+                [("Issue", {"title": "first"}), ("Issue", {"title": "second"})],
+            )
+
+    @pytest.mark.parametrize("bad_row", [None, [], 7], ids=["null", "list", "scalar"])
+    def test_recent_changes_rejects_a_bad_row_after_a_valid_row(
+        self,
+        bad_row: PlainTree,
+    ) -> None:
+        with (
+            _answering([{"id": "change"}, bad_row]) as client,
+            pytest.raises(ClientError),
+        ):
+            client.recent_changes()
 
     def test_session_start_malformed_wraps_validation_error(self) -> None:
         """A pydantic ``model_validate`` seam must wrap ``ValidationError``."""
@@ -845,7 +958,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(201, json={"bogus": True})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.session_start(SessionStart(cli="codex"))
@@ -880,6 +993,7 @@ class TestClientMethods:
                 {"id": str(target_id)},
                 [{"id": "c"}],
                 {"agent_usd": 1.0},
+                {"agent_usd": 0.5},
             ],
         )
         assert client.list_kind(
@@ -892,7 +1006,16 @@ class TestClientMethods:
         assert client.get_inquiry(UuidRef(uuid=target_id))[0] == "Issue"
         assert client.next_issue() == {"id": str(target_id)}
         assert client.recent_changes(limit=2) == [{"id": "c"}]
-        assert client.cost_for(target_id, deep=True) == {"agent_usd": 1.0}
+        assert client.inquiry_cost(target_id, deep=True) == {"agent_usd": 1.0}
+        assert client.inquiry_cost(target_id, deep=False) == {"agent_usd": 0.5}
+        assert client.get_calls[-3] == ("/api/web/recent_changes", {"limit": 2})
+        assert [
+            (path, str((params or {}).get("deep", False)).casefold())
+            for path, params in client.get_calls[-2:]
+        ] == [
+            (f"/api/inquiries/{target_id}/cost", "true"),
+            (f"/api/inquiries/{target_id}/cost", "false"),
+        ]
 
     def test_list_kind_serializes_filters_as_repeated_query_params(self) -> None:
         """Each filter rides the wire as a discrete ``filter`` query param.
@@ -908,7 +1031,7 @@ class TestClientMethods:
             captured["r"] = request
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         assert (
             client.list_kind(
@@ -937,7 +1060,7 @@ class TestClientMethods:
             seen.append(request)
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         client.list_kind("Issue")
         client.list_kind("Belief", status="active", limit=7, offset=3)
@@ -966,7 +1089,7 @@ class TestClientMethods:
             del request
             return httpx2.Response(200, json=payload)
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match="/api/inquiries returned a malformed"):
             client.list_kind("Issue")
@@ -984,7 +1107,7 @@ class TestClientMethods:
             captured["r"] = request
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         assert (
             client.list_kind(
@@ -1005,7 +1128,7 @@ class TestClientMethods:
             seen.append(request)
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         client.list_kind("Issue", fields=("id", "labels"))
         client.list_kind("Issue")
@@ -1025,6 +1148,7 @@ class TestClientMethods:
             offset = cast(object, request.url.params.get("offset"))
             assert offset is None or isinstance(offset, str)
             offsets.append(offset)
+            assert offset == str((len(offsets) - 1) * MAX_LIST_LIMIT)
             if offset == "0":
                 return httpx2.Response(
                     200,
@@ -1032,7 +1156,7 @@ class TestClientMethods:
                 )
             return httpx2.Response(200, json=[{"seq": MAX_LIST_LIMIT}])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         rows = client.list_kind_all("Issue")
         assert len(rows) == MAX_LIST_LIMIT + 1, "all rows across both pages"
@@ -1051,6 +1175,7 @@ class TestClientMethods:
         def handler(request: httpx2.Request) -> httpx2.Response:
             nonlocal calls
             calls += 1
+            assert request.url.params.get("offset") == str((calls - 1) * MAX_LIST_LIMIT)
             if request.url.params.get("offset") == "0":
                 return httpx2.Response(
                     200,
@@ -1058,7 +1183,7 @@ class TestClientMethods:
                 )
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         rows = client.list_kind_all("Issue")
         assert len(rows) == MAX_LIST_LIMIT
@@ -1066,11 +1191,16 @@ class TestClientMethods:
 
     def test_resolve_ids_posts_bare_array(self) -> None:
         target_id = uuid.uuid4()
+        seq_id = uuid.uuid4()
         client = _ClientSpy(
+            get_results=[{"id": str(seq_id)}],
             post_result={"found": {str(target_id): "Issue"}, "missing": []},
         )
-        result = client.resolve_ids([UuidRef(uuid=target_id)])
-        assert result == [("Issue", target_id)]
+        result = client.resolve_ids(
+            [SeqRef(kind="Belief", seq=4), UuidRef(uuid=target_id)],
+        )
+        assert result == [("Belief", seq_id), ("Issue", target_id)]
+        assert client.get_calls == [("/api/inquiries/Belief/4", None)]
         path, body = client.post_calls[0]
         assert path == "/api/inquiries/lookup"
         assert body == [str(target_id)]
@@ -1177,6 +1307,20 @@ class TestClientMethods:
             ("PUT", f"{base}/labels", {"value": None, "actor": "alice"}),
         ]
 
+    def test_a_fractional_cost_increase_sends_an_add_delta(self) -> None:
+        target_id = uuid.uuid4()
+        client = _ClientSpy(post_result={"ok": True})
+
+        client.add_cost(target_id, "marginal_cost_agent_usd", 0.5, actor="alice")
+
+        assert client.request_calls == [
+            (
+                "PATCH",
+                f"/api/inquiries/{target_id}/marginal_cost_agent_usd",
+                {"op": "add", "value": 0.5, "actor": "alice"},
+            ),
+        ]
+
     def test_atomic_list_primitives_dispatch(self) -> None:
         """Every new server primitive has a one-shot Client method."""
         target_id = uuid.uuid4()
@@ -1226,6 +1370,14 @@ class TestClientMethods:
             "value": "bob",
             "actor": "alice",
         }
+        assert [body for _, _, body in client.request_calls[2:8]] == [
+            {"op": "add", "value": "urgent", "actor": "alice"},
+            {"op": "sub", "value": "urgent", "actor": "alice"},
+            {"op": "add", "value": "bug", "actor": "alice"},
+            {"op": "sub", "value": "bug", "actor": "alice"},
+            {"op": "add", "value": str(codechange_id), "actor": "alice"},
+            {"op": "sub", "value": str(codechange_id), "actor": "alice"},
+        ]
         # compare-and-set status: PUT with mode='cas' + the ``value``/
         # ``expected`` pair.
         assert client.request_calls[-1][2] == {
@@ -1394,25 +1546,33 @@ class TestClientMethods:
 # Members on ``Client`` that the fake intentionally does not implement:
 # argparse-flag registration, the connection-resolution factory, and the
 # raw HTTP verbs. The fake bypasses HTTP entirely, so these would be dead
-# on the fake. The variable and machine methods are driven through stub clients in
-# ``trax/variables_test.py`` and ``trax/machines_test.py``, so the shared fake does
-# not carry them. No ``trax`` command files code, so the fake carries no code-store
-# method either. The canvas capture is an agent's alone, and no command takes one.
-# The exec calls are the assistant's and a machine host's, which no ``trax`` command is,
-# and ``client/client_exec_test.py`` drives them.
+# on the fake. The variable methods are driven through stub clients in
+# ``trax/variables_test.py``, and no ``trax`` command reads hosts or jobs, so the
+# shared fake carries none of them. No ``trax`` command files code, so it holds no
+# code-store method either. ``trax/canvas_test.py`` drives the canvas capture.
+# The tool and exec waits are a daemon's, which no ``trax`` command is, and
+# ``client/client_exec_test.py`` drives them. The session relay's calls are an agent
+# process's and a daemon's, and ``client/client_session_relay_test.py`` drives those.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
     {"flags", "from_args", "get", "post", "put", "patch", "delete"}
     | {"list_variables", "put_variable", "delete_variable"}
-    | {"list_machines", "get_machine", "put_machine"}
-    | {"change_machine_labels", "delete_machine"}
-    | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
-    | {"wait_terminals"}
-    | {"exec_command", "wait_exec", "post_exec_result"}
+    | {"list_hosts", "get_host", "put_host"}
+    | {"change_host_labels", "delete_host"}
+    | {"enroll_host", "join_host", "heartbeat_host", "revoke_host"}
+    | {"host_runs", "stop_host_run", "disconnect_host", "logout_host"}
+    | {"wait_terminals", "hosts_version"}
+    | {"wait_tools", "wait_exec", "post_exec_result"}
+    | {"start_process", "read_process", "stop_process", "send_input"}
+    | {"open_lines", "lines_stream", "wait_session", "report_process_ended"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
     | {"job_grant_serial", "job_start", "job_cancel", "job_secret_names"}
     | {"job_put_secret", "job_delete_secret"}
-    | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"}
-    | {"capture_workspace"},
+    | {"host_job_submit", "host_job_list", "host_job_view"}
+    | {"host_job_cancel", "host_job_log", "host_job_manifest"}
+    | {"host_job_file", "wait_host_work", "report_host_job"}
+    | {"post_host_read"}
+    | {"capture_canvas"}
+    | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"},
 )
 
 
@@ -1510,25 +1670,25 @@ def test_public_methods_ignores_mutmut_copies() -> None:
 
 def test_server_url_rejects_credentials() -> None:
     with pytest.raises(ClientError, match="must not embed credentials"):
-        server_url("http://alice:secret@example.com", "test")
+        server_url("https://alice:secret@example.com", "test")
 
 
 def test_server_url_rejects_query() -> None:
     with pytest.raises(ClientError, match="must not contain query"):
-        server_url("http://example.com?x=1", "test")
+        server_url("https://example.com?x=1", "test")
 
 
 def test_server_url_rejects_fragment() -> None:
     with pytest.raises(ClientError, match="must not contain query"):
-        server_url("http://example.com#section", "test")
+        server_url("https://example.com#section", "test")
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        "http://:8765",  # `missing` host.
-        "http://example.com:abc",  # non-numeric port.
-        "http://example.com:99999",  # out-of-range port.
+        "https://:8765",  # `missing` host.
+        "https://example.com:abc",  # non-numeric port.
+        "https://example.com:99999",  # out-of-range port.
     ],
 )
 def test_server_url_rejects_malformed_host_or_port(raw: str) -> None:
@@ -1544,11 +1704,86 @@ def test_server_url_rejects_malformed_host_or_port(raw: str) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    ["http://example.com:8765", "http://example.com"],
+    ["https://example.com:8765", "https://example.com"],
 )
 def test_server_url_accepts_valid_host_and_port(raw: str) -> None:
     """A well-formed host (with or without a port) still passes unchanged."""
     assert server_url(raw, "test") == raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "http://example.com",
+        "http://example.com:8446",
+        "http://10.0.0.5:8446",
+        "http://[2001:db8::1]:8446",
+        "http://localhost.example.com",
+        "HTTP://Example.com",
+    ],
+)
+def test_server_url_refuses_plain_http_beyond_this_computer(raw: str) -> None:
+    """A key sent over plain http to another computer can be read on the way."""
+    with pytest.raises(ClientError) as refused:
+        server_url(raw, "TRACKINIZER_URL")
+
+    assert str(refused.value) == (
+        f"TRACKINIZER_URL {raw!r} is plain http; a key or command sent over it can "
+        "be read or rewritten on the way. Use https."
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["https://alice@example.com", "https://:secret@example.com"],
+)
+def test_server_url_refuses_a_user_or_a_password_alone(raw: str) -> None:
+    with pytest.raises(ClientError, match="must not embed credentials"):
+        server_url(raw, "test")
+
+
+@pytest.mark.parametrize("raw", ["ftp://example.com", "https:///path"])
+def test_server_url_refuses_another_scheme_or_no_host(raw: str) -> None:
+    with pytest.raises(ClientError) as refused:
+        server_url(raw, "test")
+
+    assert str(refused.value) == f"test has invalid URL {raw!r}"
+
+
+def test_server_url_trims_trailing_slashes_and_nothing_else() -> None:
+    assert server_url("https://example.com/BOX//", "test") == "https://example.com/BOX"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "http://127.0.0.1:8446",
+        "http://127.0.0.2:8446",
+        "http://localhost:8765",
+        "http://LOCALHOST",
+        "http://[::1]:8446",
+    ],
+)
+def test_server_url_takes_plain_http_on_this_computer(raw: str) -> None:
+    """A local stack, and the hosted stack's own hops, use a loopback address."""
+    assert server_url(raw, "test") == raw
+
+
+def test_a_client_refuses_plain_http_before_it_sends_anything() -> None:
+    """Today's edge answers plain http with a 301; the key must not cross first."""
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(301, headers={"Location": "https://example.com/"})
+
+    with pytest.raises(ClientError, match="plain http"):
+        Client(
+            "http://example.com",
+            api_key="tk_secret",
+            transport=httpx2.MockTransport(handler),
+        )
+    assert sent == []
 
 
 def test_request_wraps_malformed_json_on_2xx() -> None:
@@ -1563,62 +1798,71 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
         del request
         return httpx2.Response(200, content=b"<html>oops")
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match="malformed JSON"):
             client.get("/x")
 
 
-def test_a_stale_workspace_operation_is_retried_once_on_the_live_revision() -> None:
+class _CanvasOperationBody(TypedDict):
+    revision: int
+    operation: dict[str, str]
+
+
+def test_a_stale_canvas_operation_is_retried_once_on_the_live_revision() -> None:
     """A 409 re-reads the revision and resends with a fresh ``Idempotency-Key``."""
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     revisions = iter([3, 5])
     sent: list[tuple[int, str]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":
+            assert request.url.path == f"/api/canvases/{canvas}"
             return httpx2.Response(
                 200,
-                json={"id": str(workspace), "revision": next(revisions)},
+                json={"id": str(canvas), "revision": next(revisions)},
             )
-        revision = from_plain(
-            json_loads(request.content, dict[str, object])["revision"],
-            int,
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/canvases/{canvas}/operations",
         )
+        body = json_loads(request.content, _CanvasOperationBody)
+        revision = body["revision"]
+        assert body["operation"] == {"kind": "hide"}
         sent.append((revision, request.headers["Idempotency-Key"]))
         if revision == 3:
-            return httpx2.Response(409, json={"detail": "stale workspace revision"})
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 6})
+            return httpx2.Response(409, json={"detail": "stale canvas revision"})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 6})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
-        state = client.apply_workspace_operation(workspace, operation={"kind": "hide"})
+        state = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
 
     assert state["revision"] == 6
     assert [revision for revision, _ in sent] == [3, 5]
     assert sent[0][1] != sent[1][1]
 
 
-def test_a_workspace_operation_refused_for_another_reason_is_not_retried() -> None:
-    workspace = uuid.uuid4()
+def test_a_canvas_operation_refused_for_another_reason_is_not_retried() -> None:
+    canvas = uuid.uuid4()
     posts: list[int] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":
-            return httpx2.Response(200, json={"id": str(workspace), "revision": 3})
+            return httpx2.Response(200, json={"id": str(canvas), "revision": 3})
         posts.append(1)
         return httpx2.Response(422, json={"detail": "Visual instance not found."})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match="422"):
-            _ = client.apply_workspace_operation(workspace, operation={"kind": "hide"})
+            _ = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
 
     assert posts == [1]
 
 
 def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     seen: list[tuple[str, str, dict[str, object]]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1629,24 +1873,24 @@ def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
                 json_loads(request.content, dict[str, object]),
             ),
         )
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
-        state = client.navigate(workspace, route="#/lookup/abc")
+        state = client.navigate(canvas, route="#/lookup/abc")
 
     assert state["revision"] == 4
     assert seen == [
         (
             "POST",
-            f"/api/workspaces/{workspace}/operations",
+            f"/api/canvases/{canvas}/operations",
             {"revision": 0, "operation": {"kind": "navigate", "route": "#/lookup/abc"}},
         ),
     ]
 
 
 def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     ids = [uuid.uuid4(), uuid.uuid4()]
     seen: list[tuple[str, str, dict[str, object]]] = []
 
@@ -1658,17 +1902,17 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
                 json_loads(request.content, dict[str, object]),
             ),
         )
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
-        state = client.highlight(workspace, ids=ids)
+        state = client.highlight(canvas, ids=ids)
 
     assert state["revision"] == 4
     assert seen == [
         (
             "POST",
-            f"/api/workspaces/{workspace}/operations",
+            f"/api/canvases/{canvas}/operations",
             {
                 "revision": 0,
                 "operation": {"kind": "highlight", "ids": [str(i) for i in ids]},
@@ -1678,7 +1922,7 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
 
 
 def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     seen: list[tuple[str, str, dict[str, object]]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1689,39 +1933,67 @@ def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
                 json_loads(request.content, dict[str, object]),
             ),
         )
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
-        state = client.chat_window(workspace, hidden=True)
+        state = client.chat_window(canvas, hidden=True)
 
     assert state["revision"] == 4
     assert seen == [
         (
             "POST",
-            f"/api/workspaces/{workspace}/operations",
+            f"/api/canvases/{canvas}/operations",
             {"revision": 0, "operation": {"kind": "chat", "hidden": True}},
         ),
     ]
 
 
 def test_a_capture_posts_once_and_returns_the_picture() -> None:
-    workspace = uuid.uuid4()
+    canvas, tile = uuid.uuid4(), uuid.uuid4()
     seen: list[tuple[str, str]] = []
+    sent = {
+        "width": 4,
+        "height": 3,
+        "mime": "image/png",
+        "data": base64.b64encode(b"\x89PNG\r\n\x1a\n-").decode(),
+        "tiles": [{"id": str(tile), "left": 0, "top": 0, "right": 1, "bottom": 1}],
+        "added_later": True,
+    }
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append((request.method, request.url.path))
+        return httpx2.Response(200, json=sent)
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        picture = client.capture_canvas(canvas)
+
+    assert picture.picture == b"\x89PNG\r\n\x1a\n-"
+    assert (picture.width, picture.height, picture.mime) == (4, 3, "image/png")
+    assert [each.id for each in picture.tiles] == [tile]
+    assert seen == [("POST", f"/api/canvases/{canvas}/captures")]
+
+
+def test_a_capture_that_is_not_the_picture_it_claims_is_refused() -> None:
+    canvas = uuid.uuid4()
+    lie = base64.b64encode(b"GIF89a").decode()
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             200,
-            json={"width": 4, "mime": "image/png", "tiles": [{"id": "t"}]},
+            json={"width": 4, "height": 3, "mime": "image/png", "data": lie},
         )
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
-        picture = client.capture_workspace(workspace)
+        with pytest.raises(ClientError) as raised:
+            client.capture_canvas(canvas)
 
-    assert picture == {"width": 4, "mime": "image/png", "tiles": [{"id": "t"}]}
-    assert seen == [("POST", f"/api/workspaces/{workspace}/captures")]
+    assert str(raised.value).startswith(
+        f"/api/canvases/{canvas}/captures returned a malformed payload: ",
+    )
 
 
 def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
@@ -1731,10 +2003,10 @@ def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
         calls.append(request.url.path)
         return httpx2.Response(424, json={"detail": "No open page answered."})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError) as raised:
-            client.capture_workspace(uuid.uuid4())
+            client.capture_canvas(uuid.uuid4())
 
     assert raised.value.status_code == 424
     assert "No open page answered" in str(raised.value)
@@ -1742,7 +2014,7 @@ def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
 
 
 def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     seen: list[tuple[str, str, dict[str, object]]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1753,12 +2025,12 @@ def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
                 json_loads(request.content, dict[str, object]),
             ),
         )
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         state = client.set_preferences(
-            workspace,
+            canvas,
             change={"theme": "light", "chat_side": None},
         )
 
@@ -1766,7 +2038,7 @@ def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
     assert seen == [
         (
             "POST",
-            f"/api/workspaces/{workspace}/operations",
+            f"/api/canvases/{canvas}/operations",
             {
                 "revision": 0,
                 "operation": {
@@ -1778,6 +2050,92 @@ def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
     ]
 
 
+def test_the_chats_are_listed_by_canvas_and_by_workspace_hidden_ones_too() -> None:
+    canvas, workspace = {"id": "c", "name": "tab"}, {"id": "w", "title": "Group"}
+    seen: list[tuple[str, str, list[tuple[str, str]]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (request.method, request.url.path, list(request.url.params.multi_items())),
+        )
+        listed = canvas if request.url.path == "/api/canvases" else workspace
+        return httpx2.Response(200, json=[listed])
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        canvases = client.list_canvases()
+        workspaces = client.list_workspaces()
+
+    assert (canvases, workspaces) == ([canvas], [workspace])
+    assert seen == [
+        ("GET", "/api/canvases", []),
+        ("GET", "/api/workspaces", [("hidden", "True")]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [({"id": "c"}, "{'id': 'c'}"), (["c"], "'c'")],
+    ids=["no-list", "no-object-in-it"],
+)
+def test_a_list_of_chats_that_is_no_list_of_objects_is_refused(
+    answer: PlainTree,
+    said: str,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(200, json=answer)
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        for listed, where in (
+            (client.list_canvases, "/api/canvases"),
+            (client.list_workspaces, "/api/workspaces"),
+        ):
+            with pytest.raises(ClientError) as raised:
+                _ = listed()
+            assert str(raised.value) == f"{where} returned a malformed payload: {said}"
+
+
+def test_a_canvas_is_renamed_by_its_name_and_a_workspace_by_its_title() -> None:
+    canvas, workspace = uuid.uuid4(), uuid.uuid4()
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json_loads(request.content, dict[str, object])
+        seen.append((request.method, request.url.path, body))
+        return httpx2.Response(200, json=body)
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        tab = client.rename_canvas(canvas, name="paper review")
+        group = client.rename_workspace(workspace, title="Papers")
+
+    assert (tab, group) == ({"name": "paper review"}, {"title": "Papers"})
+    assert seen == [
+        ("PUT", f"/api/canvases/{canvas}/name", {"name": "paper review"}),
+        ("PATCH", f"/api/workspaces/{workspace}", {"title": "Papers"}),
+    ]
+
+
+def test_a_rename_answered_with_no_object_is_refused() -> None:
+    canvas, workspace = uuid.uuid4(), uuid.uuid4()
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(200, json=[])
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError, match=r"malformed payload: \[\]$") as tab:
+            _ = client.rename_canvas(canvas, name="a")
+        with pytest.raises(ClientError, match=r"malformed payload: \[\]$") as group:
+            _ = client.rename_workspace(workspace, title="a")
+
+    assert str(tab.value).startswith(f"/api/canvases/{canvas}/name ")
+    assert str(group.value).startswith(f"/api/workspaces/{workspace} ")
+
+
 def _answering(payload: PlainTree) -> Client:
     """Return a client whose server answers every request with ``payload``."""
 
@@ -1785,7 +2143,7 @@ def _answering(payload: PlainTree) -> Client:
         del request
         return httpx2.Response(200, json=payload)
 
-    client = Client("http://server")
+    client = Client("https://server")
     _install_mock_transport(client, handler)
     return client
 
@@ -1833,16 +2191,14 @@ def test_resolve_id_accepts_the_expected_kind_and_refuses_another() -> None:
             _ = client.resolve_id(UuidRef(uuid=row, expected_kind="Issue"))
 
 
-def test_append_records_with_no_arguments_sends_a_bare_slash_command_free_body() -> (
-    None
-):
+def test_append_records_with_no_arguments_sends_a_bare_body() -> None:
     sent: list[dict[str, object]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         sent.append(json_loads(request.content, dict[str, object]))
         return httpx2.Response(200, json={"part": None, "written": 0, "skipped": 0})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         _ = client.append_records(uuid.uuid4())
 
@@ -1850,14 +2206,12 @@ def test_append_records_with_no_arguments_sends_a_bare_slash_command_free_body()
         {
             "name": "",
             "manifest": None,
-            "restart": False,
             "records": [],
-            "slash_commands": [],
         },
     ]
 
 
-def test_append_records_posts_the_file_its_manifest_records_and_flags() -> None:
+def test_append_records_posts_the_file_its_manifest_and_records() -> None:
     session = uuid.uuid4()
     sent: list[tuple[str, str, dict[str, object]]] = []
 
@@ -1872,33 +2226,24 @@ def test_append_records_posts_the_file_its_manifest_records_and_flags() -> None:
         return httpx2.Response(200, json={"part": 2, "written": 1, "skipped": 0})
 
     manifest = ManifestBody(name="a.jsonl", ir_id=uuid.uuid4(), records=1)
-    when = datetime(2026, 10, 3, tzinfo=UTC)
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         response = client.append_records(
             session,
             name="a.jsonl",
             manifest=manifest,
             records=[RecordBody(idx=0, kind="UserMessage")],
-            restart=True,
-            slash_commands=[SlashCommandBody(timestamp=when, command="exit")],
         )
 
     assert (response.part, response.written, response.skipped) == (2, 1, 0)
     [(method, path, body)] = sent
     assert (method, path) == ("POST", f"/api/sessions/{session}/records")
     assert body["name"] == "a.jsonl"
-    assert body["restart"] is True
     assert from_plain(body["manifest"], dict[str, object])["name"] == "a.jsonl"
     assert [
         row["idx"] for row in from_plain(body["records"], list[dict[str, object]])
     ] == [0]
-    assert [
-        row["command"]
-        for row in from_plain(body["slash_commands"], list[dict[str, object]])
-    ] == [
-        "exit",
-    ]
+    assert set(body) == {"name", "manifest", "records"}
 
 
 @pytest.mark.parametrize(
@@ -1917,10 +2262,84 @@ def test_append_records_names_the_verb_and_route_when_the_server_refuses_or_garb
         del request
         return httpx2.Response(status, json=payload)
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match=message):
             _ = client.append_records(uuid.uuid4())
+
+
+@pytest.mark.parametrize("plaintext_only", [False, True], ids=["sealed", "plaintext"])
+def test_read_session_records_pages_until_empty_and_preserves_controls(
+    plaintext_only: bool,
+) -> None:
+    session = uuid.UUID(int=1)
+    records = [
+        {
+            "idx": idx,
+            "kind": "Thinking",
+            "context_id": 2,
+            "timestamp": f"2026-11-06T12:00:{idx:02d}Z",
+            "model": f"model-{idx}",
+            "payload": {"summary": [f"thought-{idx}", {"complete": True}]},
+            "text": f"search-{idx}",
+            "ciphertext": None if plaintext_only else f"sealed-{idx}",
+        }
+        for idx in (2, 5, 9, 14)
+    ]
+    pages = iter([records[:3], records[3:], records[4:]])
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, json={"part": -1, "records": next(pages)})
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        found = client.read_session_records(
+            session,
+            part=-1,
+            after_idx=1,
+            limit=3,
+            plaintext_only=plaintext_only,
+        )
+
+    assert all(isinstance(record, RecordBody) for record in found)
+    assert [
+        (
+            record.idx,
+            record.kind,
+            record.context_id,
+            record.timestamp,
+            record.model,
+            record.payload,
+            record.text,
+            record.ciphertext,
+        )
+        for record in found
+    ] == [
+        (
+            idx,
+            "Thinking",
+            2,
+            datetime(2026, 11, 6, 12, 0, idx, tzinfo=UTC),
+            f"model-{idx}",
+            {"summary": [f"thought-{idx}", {"complete": True}]},
+            f"search-{idx}",
+            None if plaintext_only else f"sealed-{idx}",
+        )
+        for idx in (2, 5, 9, 14)
+    ]
+    assert [(request.method, request.url.path) for request in sent] == [
+        ("GET", f"/api/sessions/{session}/records"),
+    ] * 3
+    assert [dict(request.url.params) for request in sent] == [
+        {
+            "part": "-1",
+            "after_idx": str(cursor),
+            "limit": "3",
+            "plaintext_only": str(plaintext_only),
+        }
+        for cursor in (1, 9, 14)
+    ]
 
 
 def test_list_kind_sends_its_defaults_under_the_servers_parameter_names() -> None:
@@ -1930,7 +2349,7 @@ def test_list_kind_sends_its_defaults_under_the_servers_parameter_names() -> Non
         seen.append(dict(parse_qsl(request.url.query.decode())))
         return httpx2.Response(200, json=[{"id": "a"}])
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         rows = client.list_kind("Issue", status="active", limit=7)
 
@@ -1948,7 +2367,7 @@ def test_list_kind_names_the_route_when_the_reply_is_malformed(
         del request
         return httpx2.Response(200, json=payload)
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match=r"/api/inquiries returned a malformed"):
             _ = client.list_kind("Issue")
@@ -1974,7 +2393,7 @@ def test_publish_artifact_content_posts_html_and_reads_the_revision(
     previous: uuid.UUID | None,
 ) -> None:
     """The route gets an HTML body; ``previous_id`` is sent only when given."""
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     issue_id, artifact_id = uuid.uuid4(), uuid.uuid4()
     posted: list[tuple[str, object]] = []
 
@@ -2007,7 +2426,7 @@ def test_publish_artifact_content_posts_html_and_reads_the_revision(
 
 def test_add_edge_reports_created(monkeypatch: pytest.MonkeyPatch) -> None:
     """A brand-new edge -> ``EdgeWrite(created=True, changed=True)``."""
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     monkeypatch.setattr(
         client,
         "post",
@@ -2025,7 +2444,7 @@ def test_add_edge_existing_with_annotation_reports_changed_not_created(
     Creation is an upsert: the server applies the supplied annotation to the
     existing edge and emits a change. No 409, no error.
     """
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     monkeypatch.setattr(
         client,
         "post",
@@ -2045,7 +2464,7 @@ def test_add_edge_existing_no_op_reports_neither(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A bare re-create of an existing edge is a no-op: ``change_id`` is None."""
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     monkeypatch.setattr(client, "post", _edge_post(created=False, change_id=None))
     result = client.add_edge(uuid.uuid4(), uuid.uuid4(), "requires", actor="a")
     assert result == EdgeWrite(created=False, changed=False)
@@ -2061,7 +2480,7 @@ def test_add_edge_clear_labels_threads_through_labels_route(
     that writes NULL. The POST carries no ``labels`` key; the PUT carries the
     empty list (TRAX-CLI-004).
     """
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     monkeypatch.setattr(client, "post", _edge_post(created=False, change_id=None))
     puts: list[tuple[str, object]] = []
 
@@ -2080,7 +2499,7 @@ def test_add_edge_clear_labels_threads_through_labels_route(
 
 def test_add_edge_reraises_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     """``add_edge`` no longer special-cases any 409; transport errors raise."""
-    client = Client("http://example.com")
+    client = Client("https://example.com")
 
     def fake_post(path: str, *, body: object = None) -> None:
         del path, body
@@ -2133,7 +2552,7 @@ def test_annotate_edge_accepts_metadata_kwargs(
     kwargs out to a ``PUT`` carrying ``{"value": ..., "actor": ...}``
     for each field the caller actually supplied.
     """
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     captured: list[tuple[str, object]] = []
 
     def fake_put(path: str, *, body: object = None) -> None:
@@ -2172,7 +2591,7 @@ class TestSessionMethods:
             seen["body"] = json.loads(request.content)
             return httpx2.Response(201, json={"id": str(sid), "seq": 3})
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         resp = client.session_start(SessionStart(cli="codex"))
         assert seen["path"] == "/api/sessions/start"
@@ -2187,48 +2606,29 @@ class TestSessionMethods:
         sid = uuid.uuid4()
         ir_id = uuid.uuid4()
         client = _ClientSpy(
-            post_result={"part": 2, "written": 1, "skipped": 4, "slash_commands": 1},
+            post_result={"part": 2, "written": 1, "skipped": 4},
         )
         resp = client.append_records(
             sid,
             name="a.jsonl",
             manifest=ManifestBody(name="a.jsonl", ir_id=ir_id, records=1),
             records=[RecordBody(idx=0, kind="Turn")],
-            restart=True,
-            slash_commands=[
-                SlashCommandBody(
-                    timestamp=datetime(2026, 10, 6, tzinfo=UTC),
-                    command="model",
-                ),
-            ],
         )
         [(method, path, raw)] = client.request_calls
         assert (method, path) == ("POST", f"/api/sessions/{sid}/records")
         body = from_plain(raw, dict[str, PlainTree])
         assert body["name"] == "a.jsonl"
-        assert body["restart"] is True
         assert from_plain(body["manifest"], dict[str, PlainTree])["ir_id"] == str(ir_id)
         records = from_plain(body["records"], list[dict[str, PlainTree]])
         assert [r["idx"] for r in records] == [0]
-        commands = from_plain(body["slash_commands"], list[dict[str, PlainTree]])
-        assert [c["command"] for c in commands] == ["model"]
-        assert (resp.part, resp.written, resp.skipped, resp.slash_commands) == (
-            2,
-            1,
-            4,
-            1,
-        )
+        assert (resp.part, resp.written, resp.skipped) == (2, 1, 4)
 
-    def test_append_records_defaults_to_a_non_restarting_empty_batch(self) -> None:
+    def test_append_records_defaults_to_an_empty_batch(self) -> None:
         client = _ClientSpy(post_result={"written": 0, "skipped": 0})
         client.append_records(uuid.uuid4())
         [(_, _, raw)] = client.request_calls
         body = from_plain(raw, dict[str, PlainTree])
-        assert (body["restart"], body["records"], body["slash_commands"]) == (
-            False,
-            [],
-            [],
-        )
+        assert (body["name"], body["records"]) == ("", [])
 
     def test_append_records_names_the_route_for_a_malformed_answer(self) -> None:
         sid = uuid.uuid4()
@@ -2237,7 +2637,7 @@ class TestSessionMethods:
             del request
             return httpx2.Response(200, json={"part": 1})
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match=f"/api/sessions/{sid}/records returned"):
             client.append_records(sid)
@@ -2250,178 +2650,11 @@ class TestSessionMethods:
             seen["path"] = request.url.path
             return httpx2.Response(200, json={"id": str(sid)})
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         resp = client.session_end(sid)
         assert seen["path"] == f"/api/sessions/{sid}/end"
         assert resp.id == sid
-
-    def test_inbound_drain_preserves_workspace_context(self) -> None:
-        session_id = uuid.uuid4()
-        workspace_id = uuid.uuid4()
-        record_id = uuid.uuid4()
-        visual_id = uuid.uuid4()
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            assert request.url.path == f"/api/sessions/{session_id}/inbound"
-            return httpx2.Response(
-                200,
-                json={
-                    "messages": [
-                        {
-                            "text": "What led here?",
-                            "source": "viewer@example.com",
-                            "context": {
-                                "workspace_id": str(workspace_id),
-                                "agent_instructions": "Trace the evidence.",
-                                "continuation_record_id": str(record_id),
-                                "page": {
-                                    "route": f"#/lookup/{record_id}",
-                                    "record": {
-                                        "id": str(record_id),
-                                        "kind": "Issue",
-                                        "seq": 21_706,
-                                        "title": "ARC3 effort",
-                                    },
-                                },
-                                "visible_visuals": [
-                                    {"id": str(visual_id), "type": "trax.browse"},
-                                ],
-                            },
-                        },
-                    ],
-                },
-            )
-
-        with Client("http://server") as client:
-            _install_mock_transport(client, handler)
-            drained = client.drain_inbound(session_id)
-
-        [item] = drained
-        assert (item.text, item.source, item.room, item.kind) == (
-            "What led here?",
-            "viewer@example.com",
-            None,
-            "line",
-        )
-        context = item.context
-        assert context is not None
-        assert context.model_dump(mode="json") == {
-            "workspace_id": str(workspace_id),
-            "agent_instructions": "Trace the evidence.",
-            "continuation_record_id": str(record_id),
-            "visible_visuals": [
-                # A server from before params sends none; the drain must still read
-                # the visual, as one with no narrowing, not drop the whole context.
-                {
-                    "id": str(visual_id),
-                    "type": "trax.browse",
-                    "record": None,
-                    "params": {},
-                },
-            ],
-            "conversation_id": None,
-            "fork": None,
-            "page": {
-                "route": f"#/lookup/{record_id}",
-                "record": {
-                    "id": str(record_id),
-                    "kind": "Issue",
-                    "seq": 21_706,
-                    "title": "ARC3 effort",
-                },
-            },
-            "trail": [],
-            "marks": [],
-            "relay": None,
-        }
-
-    def test_inbound_drain_preserves_a_console_relay(self) -> None:
-        session_id = uuid.uuid4()
-        relay = {
-            "targets": [{"actor": "lead-2", "room": None}],
-            "text": "rerun the suite",
-        }
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            del request
-            context: dict[str, object] = {
-                "workspace_id": str(uuid.uuid4()),
-                "visible_visuals": [],
-                "relay": relay,
-            }
-            message: dict[str, object] = {"text": "rerun the suite", "context": context}
-            return httpx2.Response(200, json={"messages": [message]})
-
-        with Client("http://server") as client:
-            _install_mock_transport(client, handler)
-            [item] = client.drain_inbound(session_id)
-
-        context = item.context
-        assert context is not None
-        assert context.relay is not None
-        assert context.relay.model_dump(mode="json") == relay
-        assert context.relay.line() == "→ lead-2: rerun the suite"
-
-    @pytest.mark.parametrize("wait_sec", [0.0, 30.0])
-    def test_inbound_drain_read_timeout_outlasts_the_hold(
-        self,
-        wait_sec: float,
-    ) -> None:
-        reads: list[float | None] = []
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            reads.append(_read_timeout(request))
-            return httpx2.Response(200, json={"messages": []})
-
-        with Client("http://server", timeout_sec=5.0) as client:
-            _install_mock_transport(client, handler)
-            assert client.drain_inbound(uuid.uuid4(), wait_sec=wait_sec) == []
-
-        [read] = reads
-        assert (read is not None and read > wait_sec) if wait_sec else read == 5.0
-
-    def test_inbound_drain_says_where_the_run_is_only_when_it_knows(self) -> None:
-        queries: list[dict[str, str]] = []
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            queries.append(
-                {
-                    key: request.url.params.get_list(key)[0]
-                    for key in ("wait_sec", "run", "machine", "cwd", "cli", "instance")
-                    if request.url.params.get_list(key)
-                },
-            )
-            return httpx2.Response(200, json={"messages": []})
-
-        with Client("http://server") as client:
-            _install_mock_transport(client, handler)
-            _ = client.drain_inbound(
-                uuid.uuid4(),
-                wait_sec=25.0,
-                run="chat-1a2b3c4d",
-                machine="gx10",
-                cwd="~/work",
-                cli="codex",
-                instance="a" * 32,
-            )
-            _ = client.drain_inbound(uuid.uuid4(), machine="gx10")
-            _ = client.drain_inbound(uuid.uuid4(), cli="claude")
-            _ = client.drain_inbound(uuid.uuid4())
-
-        assert queries == [
-            {
-                "wait_sec": "25.0",
-                "run": "chat-1a2b3c4d",
-                "machine": "gx10",
-                "cwd": "~/work",
-                "cli": "codex",
-                "instance": "a" * 32,
-            },
-            {"machine": "gx10"},
-            {"cli": "claude"},
-            {},
-        ]
 
     def test_get_sends_the_timeout_it_is_given(self) -> None:
         reads: list[float | None] = []
@@ -2430,7 +2663,7 @@ class TestSessionMethods:
             reads.append(_read_timeout(request))
             return httpx2.Response(200, json={})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             _ = client.get("/api/x", timeout=42.0)
 
@@ -2444,7 +2677,7 @@ class TestSessionMethods:
             bodies.append(json_loads(request.content))
             return httpx2.Response(200, json={"delivered": []})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             _ = client.send_message("lead", "hi")
             _ = client.send_message("lead", "hi", room="ops")
@@ -2454,70 +2687,68 @@ class TestSessionMethods:
             {"actor": "lead", "room": "ops", "text": "hi"},
         ]
 
-    def test_enqueue_inbound_sends_the_body_an_older_server_accepts(self) -> None:
-        bodies: list[object] = []
+    def test_send_message_to_an_agent_names_its_session_and_the_sender_s_own(
+        self,
+    ) -> None:
+        """An agent process's send carries its key, so a retry is sent once."""
+        sent: list[tuple[object, str | None]] = []
+        own, key = uuid.UUID(int=415), uuid.UUID(int=7)
+        lead = SessionAgent(label="lead", session=412)
 
         def handler(request: httpx2.Request) -> httpx2.Response:
-            bodies.append(json_loads(request.content))
-            return httpx2.Response(200, json={"queued": 1})
-
-        with Client("http://server") as client:
-            _install_mock_transport(client, handler)
-            _ = client.enqueue_inbound(uuid.uuid4(), "hi")
-
-        assert bodies == [{"text": "hi"}]
-
-    def test_enqueue_inbound_names_a_kind_and_its_payload(self) -> None:
-        bodies: list[object] = []
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            bodies.append(json_loads(request.content))
-            return httpx2.Response(200, json={"queued": 1})
-
-        answer: dict[str, object] = {"prompt_id": "p1", "decision": "allow"}
-        with Client("http://server") as client:
-            _install_mock_transport(client, handler)
-            _ = client.enqueue_inbound(uuid.uuid4(), "/compact", kind="command")
-            _ = client.enqueue_inbound(
-                uuid.uuid4(),
-                "Yes",
-                kind="answer",
-                payload=answer,
+            assert (request.method, request.url.path) == ("POST", "/api/messages")
+            sent.append(
+                (json_loads(request.content), request.headers.get("Idempotency-Key")),
             )
+            return httpx2.Response(200, json={"delivered": [str(uuid.UUID(int=412))]})
 
-        assert bodies == [
-            {"text": "/compact", "kind": "command"},
-            {"text": "Yes", "kind": "answer", "payload": answer},
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            by_person = client.message_agent(lead, "hi")
+            _ = client.message_agent(
+                lead,
+                "hi",
+                from_session=own,
+                from_label="Agent",
+                booked="ask",
+                key=key,
+            )
+            # The label is the sender's own, never a default.
+            with pytest.raises(ValueError, match="from_label"):
+                _ = client.message_agent(lead, "hi", from_session=own, booked="ask")
+
+        assert by_person == [uuid.UUID(int=412)]
+        assert [body for body, _ in sent] == [
+            {"to": {"label": "lead", "session": 412}, "text": "hi"},
+            {
+                "to": {"label": "lead", "session": 412},
+                "text": "hi",
+                "from_session": str(own),
+                "from_label": "Agent",
+                "booked": "ask",
+            },
         ]
+        assert sent[1][1] == str(key)
 
-    def test_inbound_drain_returns_each_kind_and_payload(self) -> None:
+    def test_both_sends_post_to_the_messages_route(self) -> None:
+        lead = SessionAgent(label="lead", session=412)
+        with _ClientSpy(post_result={"delivered": []}) as client:
+            _ = client.send_message("lead", "hi")
+            _ = client.message_agent(lead, "hi")
+
+        assert [(method, path) for method, path, _ in client.request_calls] == [
+            ("POST", "/api/messages"),
+        ] * 2
+
+    def test_a_send_answered_with_no_receipt_says_where_it_went(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
-            return httpx2.Response(
-                200,
-                json={
-                    "messages": [
-                        {"text": "hello", "source": "ann@x"},
-                        {"text": "interrupt", "kind": "interrupt"},
-                        {
-                            "text": "model",
-                            "kind": "settings",
-                            "payload": {"model": "opus", "effort": None},
-                        },
-                    ],
-                },
-            )
+            return httpx2.Response(200, json={"sent": []})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            drained = client.drain_inbound(uuid.uuid4())
-
-        assert [(item.kind, item.payload) for item in drained] == [
-            ("line", None),
-            ("interrupt", None),
-            ("settings", {"model": "opus", "effort": None}),
-        ]
-        assert drained[0].source == "ann@x"
+            with pytest.raises(ClientError, match=r"^/api/messages returned"):
+                _ = client.message_agent(SessionAgent(label="lead", session=412), "hi")
 
 
 class TestExport:
@@ -2798,7 +3029,7 @@ class TestCodeMethods:
         assert err.value.status_code is None
 
 
-_MACHINE_ROW = {
+_HOST_ROW = {
     "name": "gpu-box",
     "role": "dev",
     "how": "ssh gpu-box",
@@ -2808,40 +3039,76 @@ _MACHINE_ROW = {
 }
 
 
-class TestMachineMethods:
-    """The machine methods build the right requests and parse the answers."""
+class TestHostMethods:
+    """The host methods build the right requests and parse the answers."""
 
-    def test_list_machines_parses_the_listing(self) -> None:
+    def test_list_hosts_parses_the_listing(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
-            return httpx2.Response(200, json={"machines": [_MACHINE_ROW]})
+            return httpx2.Response(200, json={"hosts": [_HOST_ROW]})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            machines = client.list_machines()
+            hosts = client.list_hosts()
 
-        assert [(r.method, r.url.path) for r in seen] == [("GET", MACHINES_PATH)]
-        assert [(m.name, m.role, m.labels) for m in machines] == [
+        assert [(r.method, r.url.path) for r in seen] == [("GET", HOSTS_PATH)]
+        assert [(m.name, m.role, m.labels) for m in hosts] == [
             ("gpu-box", "dev", ["gpu", "a100"]),
         ]
 
-    def test_list_machines_wraps_a_malformed_payload(self) -> None:
+    def test_list_hosts_wraps_a_malformed_payload(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
-            return httpx2.Response(200, json={"machines": [{"name": "x"}]})
+            return httpx2.Response(200, json={"hosts": [{"name": "x"}]})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed payload"):
-                client.list_machines()
+                client.list_hosts()
 
-    def test_get_machine_reads_one_and_reports_absence(self) -> None:
+    def test_a_field_a_newer_server_added_is_ignored_at_any_depth(self) -> None:
+        answer = {"hosts": [{**_HOST_ROW, "rack": "b3"}], "cursor": "c1"}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json=answer)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            hosts = client.list_hosts()
+
+        assert [(m.name, m.labels) for m in hosts] == [("gpu-box", ["gpu", "a100"])]
+
+    def test_a_credential_answer_with_an_added_field_still_parses(self) -> None:
+        answer = {
+            "host_id": str(_HOST_ID),
+            "credential": _CREDENTIAL,
+            "expires_at": None,
+        }
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(201, json=answer)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            joined = client.join_host(
+                "gpu-box",
+                token=_ENROLLMENT_TOKEN,
+                instance=_INSTANCE,
+                daemon_version="0.1",
+                facts={},
+            )
+
+        assert (joined.host_id, joined.credential) == (_HOST_ID, _CREDENTIAL)
+
+    def test_get_host_reads_one_and_reports_absence(self) -> None:
         answers = iter(
             (
-                httpx2.Response(200, json=_MACHINE_ROW),
-                httpx2.Response(404, json={"detail": "no such machine"}),
+                httpx2.Response(200, json=_HOST_ROW),
+                httpx2.Response(404, json={"detail": "no such host"}),
             ),
         )
         seen: list[httpx2.Request] = []
@@ -2852,17 +3119,17 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            machine = client.get_machine("gpu-box")
+            host = client.get_host("gpu-box")
             with pytest.raises(ClientError) as err:
-                client.get_machine("gpu-box")
+                client.get_host("gpu-box")
 
-        assert (machine.name, machine.how) == ("gpu-box", "ssh gpu-box")
+        assert (host.name, host.how) == ("gpu-box", "ssh gpu-box")
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", MACHINE_PATH.format(name="gpu-box")),
+            ("GET", HOST_PATH.format(name="gpu-box")),
         ] * 2
         assert err.value.status_code == 404
 
-    def test_put_machine_sends_only_the_fields_it_names(self) -> None:
+    def test_put_host_sends_only_the_fields_it_names(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -2871,12 +3138,12 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.put_machine("gpu-box", role="dev") is None
-            client.put_machine("gpu-box", how="")
-            client.put_machine("gpu-box", role="", how="ssh gpu-box")
+            assert client.put_host("gpu-box", role="dev") is None
+            client.put_host("gpu-box", how="")
+            client.put_host("gpu-box", role="", how="ssh gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("PUT", "/api/machines/gpu-box"),
+            ("PUT", "/api/hosts/gpu-box"),
         ] * 3
         assert [json_loads(r.content) for r in seen] == [
             {"role": "dev"},
@@ -2884,7 +3151,7 @@ class TestMachineMethods:
             {"role": "", "how": "ssh gpu-box"},
         ]
 
-    def test_put_machine_escapes_the_name_in_the_path(self) -> None:
+    def test_put_host_escapes_the_name_in_the_path(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -2893,9 +3160,9 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            client.put_machine("a/b", role="dev")
+            client.put_host("a/b", role="dev")
 
-        assert str(seen[0].url).endswith("/api/machines/a%2Fb")
+        assert str(seen[0].url).endswith("/api/hosts/a%2Fb")
 
     @pytest.mark.parametrize(
         ("role", "how", "expected"),
@@ -2906,7 +3173,7 @@ class TestMachineMethods:
         ],
         ids=["role-pattern", "how-too-long", "how-nul"],
     )
-    def test_put_machine_refuses_a_bad_field_before_any_request(
+    def test_put_host_refuses_a_bad_field_before_any_request(
         self,
         role: str | None,
         how: str | None,
@@ -2920,12 +3187,12 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            with pytest.raises(ClientError, match=f"^machine 'gpu-box' {expected}: "):
-                client.put_machine("gpu-box", role=role, how=how)
+            with pytest.raises(ClientError, match=f"^host 'gpu-box' {expected}: "):
+                client.put_host("gpu-box", role=role, how=how)
 
         assert seen == []
 
-    def test_change_machine_labels_patches_both_lists(self) -> None:
+    def test_change_host_labels_patches_both_lists(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -2934,47 +3201,47 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.change_machine_labels("gpu-box", add=["gpu"]) is None
-            client.change_machine_labels("gpu-box", remove=("a100",))
+            assert client.change_host_labels("gpu-box", add=["gpu"]) is None
+            client.change_host_labels("gpu-box", remove=("a100",))
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("PATCH", "/api/machines/gpu-box/labels"),
+            ("PATCH", "/api/hosts/gpu-box/labels"),
         ] * 2
         assert [json_loads(r.content) for r in seen] == [
             {"add": ["gpu"], "remove": []},
             {"add": [], "remove": ["a100"]},
         ]
 
-    def test_delete_machine_deletes_and_reports_absence(self) -> None:
+    def test_delete_host_deletes_and_reports_absence(self) -> None:
         statuses = iter((204, 404))
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
-            return httpx2.Response(next(statuses), json={"detail": "no such machine"})
+            return httpx2.Response(next(statuses), json={"detail": "no such host"})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.delete_machine("gpu-box") is None
+            assert client.delete_host("gpu-box") is None
             with pytest.raises(ClientError) as err:
-                client.delete_machine("gpu-box")
+                client.delete_host("gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("DELETE", "/api/machines/gpu-box"),
+            ("DELETE", "/api/hosts/gpu-box"),
         ] * 2
         assert err.value.status_code == 404
 
 
 _INSTANCE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-_MACHINE_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_HOST_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _ENROLLMENT_TOKEN = "enr_" + "0" * 32 + "_" + "S" * 43
 _CREDENTIAL = "trax_machine_" + "1" * 32 + "_" + "C" * 43
 
 
-class TestMachineHostMethods:
+class TestHostHostMethods:
     """Enroll, join, heartbeat and revoke build the right requests."""
 
-    def test_enroll_machine_posts_the_name_and_parses_the_token(self) -> None:
+    def test_enroll_host_posts_the_name_and_parses_the_token(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -2990,14 +3257,14 @@ class TestMachineHostMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            enrolled = client.enroll_machine("gpu-box")
+            enrolled = client.enroll_host("gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [("POST", ENROLL_PATH)]
         assert json_loads(seen[0].content) == {"name": "gpu-box"}
         assert enrolled.token == _ENROLLMENT_TOKEN
         assert enrolled.owner == "ada@x.y"
 
-    def test_join_machine_sends_once_and_parses_the_credential(self) -> None:
+    def test_join_host_sends_once_and_parses_the_credential(self) -> None:
         seen: list[httpx2.Request] = []
         statuses = iter((503, 201))
 
@@ -3006,17 +3273,17 @@ class TestMachineHostMethods:
             status = next(statuses)
             return httpx2.Response(
                 status,
-                json={"machine_id": str(_MACHINE_ID), "credential": _CREDENTIAL},
+                json={"host_id": str(_HOST_ID), "credential": _CREDENTIAL},
             )
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError) as err:
-                client.join_machine(
+                client.join_host(
                     "gpu-box",
                     token=_ENROLLMENT_TOKEN,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                     facts={"os": "linux", "cpus": 8},
                 )
 
@@ -3028,70 +3295,70 @@ class TestMachineHostMethods:
             "name": "gpu-box",
             "token": _ENROLLMENT_TOKEN,
             "instance": str(_INSTANCE),
-            "host_version": "0.1",
+            "daemon_version": "0.1",
             "facts": {"os": "linux", "cpus": 8},
         }
 
-    def test_join_machine_parses_the_machine_id_and_credential(self) -> None:
+    def test_join_host_parses_the_host_id_and_credential(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
             return httpx2.Response(
                 201,
-                json={"machine_id": str(_MACHINE_ID), "credential": _CREDENTIAL},
+                json={"host_id": str(_HOST_ID), "credential": _CREDENTIAL},
             )
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            joined = client.join_machine(
+            joined = client.join_host(
                 "gpu-box",
                 token=_ENROLLMENT_TOKEN,
                 instance=_INSTANCE,
-                host_version="0.1",
+                daemon_version="0.1",
                 facts={},
             )
 
-        assert (joined.machine_id, joined.credential) == (_MACHINE_ID, _CREDENTIAL)
+        assert (joined.host_id, joined.credential) == (_HOST_ID, _CREDENTIAL)
 
-    def test_join_machine_refuses_a_bad_field_without_quoting_the_token(self) -> None:
+    def test_join_host_refuses_a_bad_field_without_quoting_the_token(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError(f"no request expected, got {request.url}")
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="facts") as err:
-                client.join_machine(
+                client.join_host(
                     "gpu-box",
                     token=_ENROLLMENT_TOKEN,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                     facts={"Bad Key": "x"},
                 )
 
         assert _ENROLLMENT_TOKEN not in str(err.value)
         assert "S" * 43 not in repr(err.value.__cause__)
 
-    def test_join_machine_never_quotes_a_malformed_answer(self) -> None:
+    def test_join_host_never_quotes_a_malformed_answer(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
             return httpx2.Response(
                 201,
-                json={"machine_id": "x", "credential": _CREDENTIAL},
+                json={"host_id": "x", "credential": _CREDENTIAL},
             )
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed payload") as err:
-                client.join_machine(
+                client.join_host(
                     "gpu-box",
                     token=_ENROLLMENT_TOKEN,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                     facts={},
                 )
 
         assert "C" * 43 not in str(err.value)
 
-    def test_heartbeat_machine_posts_to_the_machines_path_with_the_credential(
+    def test_heartbeat_host_posts_to_the_hosts_path_with_the_credential(
         self,
     ) -> None:
         seen: list[httpx2.Request] = []
@@ -3102,33 +3369,33 @@ class TestMachineHostMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            beat = client.heartbeat_machine(
-                _MACHINE_ID,
+            beat = client.heartbeat_host(
+                _HOST_ID,
                 instance=_INSTANCE,
-                host_version="0.1",
+                daemon_version="0.1",
             )
-            client.heartbeat_machine(
-                _MACHINE_ID,
+            client.heartbeat_host(
+                _HOST_ID,
                 instance=_INSTANCE,
-                host_version="0.1",
+                daemon_version="0.1",
                 facts={"cpus": 4},
             )
-            client.heartbeat_machine(
-                _MACHINE_ID,
+            client.heartbeat_host(
+                _HOST_ID,
                 instance=_INSTANCE,
-                host_version="",
+                daemon_version="",
                 claim="take",
             )
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("POST", HEARTBEAT_PATH.format(machine_id=_MACHINE_ID)),
+            ("POST", HEARTBEAT_PATH.format(host_id=_HOST_ID)),
         ] * 3
         assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
         # ``keep`` is the default and stays off the wire; an empty version does not.
         assert [json_loads(r.content) for r in seen] == [
-            {"instance": str(_INSTANCE), "host_version": "0.1"},
-            {"instance": str(_INSTANCE), "host_version": "0.1", "facts": {"cpus": 4}},
-            {"instance": str(_INSTANCE), "host_version": "", "claim": "take"},
+            {"instance": str(_INSTANCE), "daemon_version": "0.1"},
+            {"instance": str(_INSTANCE), "daemon_version": "0.1", "facts": {"cpus": 4}},
+            {"instance": str(_INSTANCE), "daemon_version": "", "claim": "take"},
         ]
         assert beat.server_time.year == 2026
 
@@ -3139,7 +3406,7 @@ class TestMachineHostMethods:
         answers: list[object] = [
             None,
             {
-                "terminal_id": str(_MACHINE_ID),
+                "terminal_id": str(_HOST_ID),
                 "opener": "ada@x.y",
                 "rows": 24,
                 "cols": 80,
@@ -3152,63 +3419,136 @@ class TestMachineHostMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            none = client.wait_terminals(_MACHINE_ID, instance=_INSTANCE, wait_sec=25)
-            found = client.wait_terminals(_MACHINE_ID, instance=_INSTANCE, wait_sec=25)
+            none = client.wait_terminals(_HOST_ID, instance=_INSTANCE, wait_sec=25)
+            found = client.wait_terminals(_HOST_ID, instance=_INSTANCE, wait_sec=25)
 
         assert none is None
         assert found is not None
-        assert (found.opener, found.rows, found.workspace) == ("ada@x.y", 24, None)
-        assert seen[0].url.path == (f"/api/machines/{_MACHINE_ID}/terminals/wait")
+        assert (found.opener, found.rows, found.canvas) == ("ada@x.y", 24, None)
+        assert seen[0].url.path == (f"/api/hosts/{_HOST_ID}/terminals/wait")
         assert seen[0].url.params["instance"] == str(_INSTANCE)
         assert seen[0].url.params["wait_sec"] == "25"
         assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
 
-    def test_heartbeat_machine_surfaces_a_revoked_credential_as_410(self) -> None:
+    def test_a_terminal_wait_naming_a_field_the_host_does_not_know_still_opens(
+        self,
+    ) -> None:
+        # Trackinizer 0.1.8 refused every wait once the server added ``canvas``.
+        answer = {
+            "terminal_id": str(_HOST_ID),
+            "opener": "ada@x.y",
+            "rows": 24,
+            "cols": 80,
+            "lane": "chat",
+        }
+
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
-            return httpx2.Response(410, json={"detail": "machine_revoked"})
+            return httpx2.Response(200, json=answer)
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            found = client.wait_terminals(_HOST_ID, instance=_INSTANCE, wait_sec=25)
+
+        assert found is not None
+        assert (found.terminal_id, found.opener) == (_HOST_ID, "ada@x.y")
+
+    def test_heartbeat_host_surfaces_a_revoked_credential_as_410(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(410, json={"detail": "host_revoked"})
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError) as err:
-                client.heartbeat_machine(
-                    _MACHINE_ID,
+                client.heartbeat_host(
+                    _HOST_ID,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                 )
 
         assert err.value.status_code == 410
 
-    def test_heartbeat_machine_refuses_bad_facts_before_any_request(self) -> None:
+    def test_heartbeat_host_refuses_bad_facts_before_any_request(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError(f"no request expected, got {request.url}")
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="facts"):
-                client.heartbeat_machine(
-                    _MACHINE_ID,
+                client.heartbeat_host(
+                    _HOST_ID,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                     facts=cast("Facts", cast("object", {"a": 1.5})),
                 )
 
-    def test_revoke_machine_posts_to_the_name_and_reports_absence(self) -> None:
+    def test_revoke_host_posts_to_the_name_and_reports_absence(self) -> None:
         statuses = iter((204, 404))
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
-            return httpx2.Response(next(statuses), json={"detail": "no such machine"})
+            return httpx2.Response(next(statuses), json={"detail": "no such host"})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.revoke_machine("gpu-box") is None
+            assert client.revoke_host("gpu-box") is None
             with pytest.raises(ClientError) as err:
-                client.revoke_machine("gpu-box")
+                client.revoke_host("gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("POST", "/api/machines/gpu-box/revoke"),
+            ("POST", "/api/hosts/gpu-box/revoke"),
+        ] * 2
+        assert err.value.status_code == 404
+
+    def test_a_hosts_runs_are_read_and_disconnect_returns_those_it_stopped(
+        self,
+    ) -> None:
+        run = {
+            "session_id": "11111111-1111-1111-1111-111111111111",
+            "cli": "claude",
+            "run": "chat-11111111",
+            "cwd": "~/w",
+            "state": "idle",
+        }
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"runs": [run]})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            listed = client.host_runs("gpu-box")
+            stopped = client.disconnect_host("gpu-box")
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", "/api/hosts/gpu-box/runs"),
+            ("POST", "/api/hosts/gpu-box/disconnect"),
+        ]
+        assert [each.run for each in listed] == [each.run for each in stopped]
+        assert listed[0].run == "chat-11111111"
+
+    def test_stopping_a_run_posts_to_its_host_and_session_and_reports_absence(
+        self,
+    ) -> None:
+        session = uuid.UUID("11111111-1111-1111-1111-111111111111")
+        statuses = iter((204, 404))
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(next(statuses), json={"detail": "no live session"})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            assert client.stop_host_run("gpu-box", session) is None
+            with pytest.raises(ClientError) as err:
+                client.stop_host_run("gpu-box", session)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", f"/api/hosts/gpu-box/runs/{session}/stop"),
         ] * 2
         assert err.value.status_code == 404
 
@@ -3216,11 +3556,11 @@ class TestMachineHostMethods:
 class TestTerminalMethods:
     """The terminal methods build the right requests and parse the answers."""
 
-    def test_terminal_machines_asks_for_a_station_only_when_named(self) -> None:
+    def test_terminal_hosts_asks_for_a_canvas_only_when_named(self) -> None:
         seen: list[httpx2.Request] = []
-        station = uuid.UUID("22222222-2222-2222-2222-222222222222")
+        canvas = uuid.UUID("22222222-2222-2222-2222-222222222222")
         listing = {
-            "machines": [
+            "hosts": [
                 {
                     "name": "gx10",
                     "status": "online",
@@ -3238,69 +3578,87 @@ class TestTerminalMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            named = client.terminal_machines(workspace=station)
-            bare = client.terminal_machines()
+            named = client.terminal_hosts(canvas=canvas)
+            bare = client.terminal_hosts()
+            asked = client.terminal_hosts(owner="ada@x.y")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", TERMINAL_MACHINES_PATH),
-        ] * 2
-        assert seen[0].url.params["workspace"] == str(station)
-        assert "workspace" not in seen[1].url.params
-        assert [(m.name, m.terminal_ready, m.clis) for m in named.machines] == [
+            ("GET", TERMINAL_HOSTS_PATH),
+        ] * 3
+        assert seen[0].url.params["canvas"] == str(canvas)
+        assert "canvas" not in seen[1].url.params
+        assert "owner" not in seen[1].url.params
+        assert seen[2].url.params["owner"] == "ada@x.y"
+        assert asked.hosts[0].tools is False
+        assert [(m.name, m.terminal_ready, m.clis) for m in named.hosts] == [
             ("gx10", True, ["claude", "codex"]),
         ]
         assert bare.terminals == []
 
-    def test_terminal_machines_wraps_a_malformed_payload(self) -> None:
+    def test_hosts_version_holds_past_its_wait_and_names_what_it_holds(
+        self,
+    ) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"version": 8})
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            first = client.hosts_version(owner="ada@x.y", since=None, wait_sec=25)
+            held = client.hosts_version(since=7, wait_sec=25)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", TERMINAL_HOSTS_CHANGES_PATH),
+        ] * 2
+        assert dict(seen[0].url.params) == {"owner": "ada@x.y", "wait_sec": "25"}
+        assert dict(seen[1].url.params) == {"since": "7", "wait_sec": "25"}
+        assert (_read_timeout(seen[1]) or 0) > 25
+        assert (first, held) == (HostsVersion(version=8), HostsVersion(version=8))
+
+    def test_terminal_hosts_wraps_a_malformed_payload(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
-            return httpx2.Response(200, json={"machines": [{"name": "gx10"}]})
+            return httpx2.Response(200, json={"hosts": [{"name": "gx10"}]})
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed payload"):
-                client.terminal_machines()
+                client.terminal_hosts()
 
-    def test_open_terminal_sends_the_run_fields_and_reads_the_ticket(self) -> None:
+    def test_open_terminal_sends_the_fields_given_and_reads_the_ticket(self) -> None:
         seen: list[httpx2.Request] = []
-        station = uuid.UUID("22222222-2222-2222-2222-222222222222")
+        canvas = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
             return httpx2.Response(
                 201,
-                json={"terminal_id": str(_MACHINE_ID), "ticket": "ticket-1"},
+                json={"terminal_id": str(_HOST_ID), "ticket": "ticket-1"},
             )
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             opened = client.open_terminal(
                 OpenTerminal(
-                    machine="gx10",
+                    host="gx10",
                     rows=40,
                     cols=120,
-                    workspace=station,
-                    command="claude",
-                    attach=_INSTANCE,
-                    run_name="campaign-issue-7",
+                    canvas=canvas,
                     cwd="~/work",
                 ),
             )
 
         assert [(r.method, r.url.path) for r in seen] == [("POST", TERMINALS_PATH)]
         assert json_loads(seen[0].content) == {
-            "machine": "gx10",
+            "host": "gx10",
             "rows": 40,
             "cols": 120,
-            "workspace": str(station),
-            "requested_by": None,
-            "surface": None,
-            "command": "claude",
-            "attach": str(_INSTANCE),
-            "run_name": "campaign-issue-7",
+            "canvas": str(canvas),
             "cwd": "~/work",
         }
-        assert (opened.terminal_id, opened.ticket) == (_MACHINE_ID, "ticket-1")
+        assert (opened.terminal_id, opened.ticket) == (_HOST_ID, "ticket-1")
 
     def test_open_terminal_surfaces_a_refusal_with_its_status_and_code(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -3313,7 +3671,7 @@ class TestTerminalMethods:
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError) as err:
-                client.open_terminal(OpenTerminal(machine="gx10", rows=40, cols=120))
+                client.open_terminal(OpenTerminal(host="gx10", rows=40, cols=120))
 
         assert (err.value.status_code, err.value.code) == (
             403,
@@ -3322,26 +3680,45 @@ class TestTerminalMethods:
 
 
 class TestMetricQueries:
-    def test_query_metrics_sends_offset(self) -> None:
-        """The query route pages by ``offset``; the client must carry it."""
-        sent: list[dict[str, object]] = []
+    def test_query_metrics_preserves_the_mask_page_and_returned_points(self) -> None:
+        experiment = uuid.UUID(int=7)
+        sent: list[httpx2.Request] = []
+        points = [
+            {"key": "loss", "step": 3, "value": 0.25},
+            {"key": "loss", "step": 7, "value": 0.5},
+        ]
 
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            sent.append(json_loads(request.content, dict[str, object]))
-            return httpx2.Response(200, json={"points": []})
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            client.query_metrics(
-                uuid.uuid4(),
-                masks=[],
+        with _recording(sent, httpx2.Response(200, json={"points": points})) as client:
+            found = client.query_metrics(
+                experiment,
+                masks=[
+                    MetricMaskClause(axis="key", op="is", value="loss"),
+                    MetricMaskClause(axis="step", op="ge", value="3"),
+                ],
                 sort="asc",
-                limit=1,
+                limit=2,
                 offset=1,
             )
-        assert [(body["sort"], body["limit"], body["offset"]) for body in sent] == [
-            ("asc", 1, 1),
+
+        assert [(point.key, point.step, point.value) for point in found] == [
+            ("loss", 3, 0.25),
+            ("loss", 7, 0.5),
         ]
+        [request] = sent
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/experiments/{experiment}/metrics/query",
+        )
+        assert json_loads(request.content) == {
+            "masks": [
+                {"axis": "key", "op": "is", "value": "loss"},
+                {"axis": "step", "op": "ge", "value": "3"},
+            ],
+            "write": None,
+            "sort": "asc",
+            "limit": 2,
+            "offset": 1,
+        }
 
     @pytest.mark.parametrize(
         "experiments",
@@ -3387,7 +3764,7 @@ _JOB_VIEW: dict[str, object] = {
     "created_at": "2026-10-21T12:00:00Z",
     "started_at": None,
     "ended_at": None,
-    "gpu_minutes": None,
+    "gpu_seconds": None,
     "usd": None,
     "reason": "",
     "upload_serial": 3,
@@ -3400,7 +3777,7 @@ _JOB_GRANT: dict[str, object] = {
         "name": "gpu-node-b",
         "host": "203.0.113.7",
         "port": 22,
-        "user": "gj7",
+        "user": "rai-ext-job-7",
         "host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtWmP3ce7m3hrwpxvm9x5s3WnCClGsA5R5nJ9J25ir1",
     },
     "certificate": _JOB_CERT,
@@ -3456,8 +3833,34 @@ class TestJobMethods:
             "label": "t",
             "argv": ["python", "x.py"],
             "commit": _JOB_COMMIT,
+            "node": None,
         }
         assert (job.id, job.state, job.upload_serial) == (7, "queued", 3)
+
+    def test_submit_sends_the_campaign_it_names(self) -> None:
+        seen: list[httpx2.Request] = []
+        body = SubmitBody(
+            public_key=_JOB_KEY,
+            gpus=1,
+            minutes=5,
+            argv=["python", "x.py"],
+            commit=_JOB_COMMIT,
+            node="gpu-node-b",
+            campaign="Issue#7",
+        )
+        with _job_client(seen, httpx2.Response(201, json=_JOB_VIEW)) as client:
+            _ = client.job_submit(body)
+
+        assert json_loads(seen[0].content) == {
+            "public_key": _JOB_KEY,
+            "gpus": 1,
+            "minutes": 5,
+            "label": "",
+            "argv": ["python", "x.py"],
+            "commit": _JOB_COMMIT,
+            "node": "gpu-node-b",
+            "campaign": "Issue#7",
+        }
 
     def test_jobs_and_job_read_the_callers_jobs(self) -> None:
         seen: list[httpx2.Request] = []
@@ -3501,7 +3904,7 @@ class TestJobMethods:
         assert _read_timeout(seen[0]) == 35
         assert pending.grant is None
         assert ready.grant is not None
-        assert ready.grant.node.user == "gj7"
+        assert ready.grant.node.user == "rai-ext-job-7"
 
     def test_read_grant_posts_the_key_and_returns_the_serial(self) -> None:
         seen: list[httpx2.Request] = []
@@ -3639,6 +4042,1197 @@ class TestJobMethods:
         assert "hf_SECRETVALUE" not in str(err.value)
         assert (err.value.status_code, err.value.code) == (422, "bad_secret")
         assert err.value.__cause__ is None
+
+
+_HOST_JOB_VIEW: dict[str, object] = {
+    "id": 8,
+    "host": "gx10",
+    "state": "running",
+    "gpus": 1,
+    "memory_mb": 2_048,
+    "minutes": 5,
+    "label": "",
+    "argv": ["python", "x.py"],
+    "remote": "https://github.com/o/r.git",
+    "ref": "refs/heads/main",
+    "commit": _JOB_COMMIT,
+    "exit_code": None,
+    "reason": "",
+    "created_at": "2026-10-23T12:00:00Z",
+    "queued_at": None,
+    "started_at": None,
+    "ended_at": None,
+}
+_CHUNK: dict[str, object] = {
+    "reply": {
+        "kind": "chunk",
+        "data_b64": "aGk=",
+        "offset": 4,
+        "size": 6,
+        "ended": True,
+    },
+}
+
+
+class TestHostJobMethods:
+    """Each ``host_job_*`` method and the host's three calls hit their paths."""
+
+    def test_submit_posts_the_body_once_and_parses_the_job(self) -> None:
+        seen: list[httpx2.Request] = []
+        body = HostJobSubmit(
+            host="gx10",
+            argv=["python", "x.py"],
+            gpus=1,
+            memory_mb=2_048,
+            minutes=5,
+            remote="https://github.com/o/r.git",
+            ref="refs/heads/main",
+            commit=_JOB_COMMIT,
+        )
+        with _job_client(
+            seen,
+            httpx2.Response(503, json={}),
+            httpx2.Response(201, json=_HOST_JOB_VIEW),
+        ) as client:
+            with pytest.raises(ClientError) as err:
+                _ = client.host_job_submit(body)
+            job = client.host_job_submit(body)
+
+        # A retry after a lost answer would queue the job twice.
+        assert err.value.status_code == 503
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", HOST_JOBS_PATH),
+        ] * 2
+        assert json_loads(seen[0].content) == body.model_dump(mode="json")
+        assert (job.id, job.host, job.state) == (8, "gx10", "running")
+
+    def test_list_view_and_cancel_hit_their_paths(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"jobs": [_HOST_JOB_VIEW]}),
+            httpx2.Response(200, json=_HOST_JOB_VIEW),
+            httpx2.Response(200, json=_HOST_JOB_VIEW | {"state": "cancelled"}),
+        ) as client:
+            listing = client.host_job_list()
+            one = client.host_job_view(8)
+            cancelled = client.host_job_cancel(8)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", HOST_JOBS_PATH),
+            ("GET", HOST_JOB_PATH.format(job_id=8)),
+            ("POST", HOST_JOB_CANCEL_PATH.format(job_id=8)),
+        ]
+        assert [job.id for job in listing.jobs] == [8]
+        assert (one.remote, cancelled.state) == (
+            "https://github.com/o/r.git",
+            "cancelled",
+        )
+
+    def test_a_read_is_sent_once_with_a_timeout_past_the_relay_and_the_hold(
+        self,
+    ) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(
+            seen,
+            httpx2.Response(504, json={}),
+            httpx2.Response(200, json=_CHUNK),
+            httpx2.Response(
+                200,
+                json={"reply": {"kind": "manifest", "entries": [], "total_bytes": 0}},
+            ),
+            httpx2.Response(200, json={"reply": {"kind": "refused", "reason": "big"}}),
+        ) as client:
+            with pytest.raises(ClientError) as lost:
+                _ = client.host_job_log(8, offset=4, wait=20)
+            log = client.host_job_log(8, offset=4, wait=20)
+            manifest = client.host_job_manifest(8)
+            refused = client.host_job_file(8, "a/b.txt", offset=9)
+
+        assert lost.value.status_code == 504
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", HOST_JOB_LOG_PATH.format(job_id=8)),
+            ("GET", HOST_JOB_LOG_PATH.format(job_id=8)),
+            ("GET", HOST_JOB_MANIFEST_PATH.format(job_id=8)),
+            ("GET", HOST_JOB_FILE_PATH.format(job_id=8)),
+        ]
+        assert dict(seen[1].url.params) == {"offset": "4", "wait": "20"}
+        assert dict(seen[3].url.params) == {"path": "a/b.txt", "offset": "9"}
+        assert [_read_timeout(r) for r in seen] == [55, 55, 35, 35]
+        assert log.reply.kind == "chunk"
+        assert manifest.reply.kind == "manifest"
+        assert refused.reply == ReadRefused(reason="big")
+
+    def test_the_host_waits_reports_and_answers_on_its_own_paths(self) -> None:
+        seen: list[httpx2.Request] = []
+        host, instance, read_id = uuid.UUID(int=1), uuid.UUID(int=2), uuid.uuid4()
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"work": {"kind": "cancel", "job_id": 8}}),
+            httpx2.Response(204),
+            httpx2.Response(204),
+        ) as client:
+            offer = client.wait_host_work(host, instance=instance, wait_sec=25)
+            client.report_host_job(host, 8, JobReport(state="running"))
+            client.post_host_read(host, read_id, ReadReply.model_validate(_CHUNK))
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", HOST_WORK_PATH.format(host_id=host)),
+            ("POST", HOST_JOB_REPORT_PATH.format(host_id=host, job_id=8)),
+            (
+                "POST",
+                HOST_READ_REPLY_PATH.format(host_id=host, read_id=read_id),
+            ),
+        ]
+        assert dict(seen[0].url.params) == {"instance": str(instance), "wait_sec": "25"}
+        assert (_read_timeout(seen[0]) or 0) > 25
+        assert offer.work == CancelWork(job_id=8)
+        assert json_loads(seen[1].content) == {
+            "state": "running",
+            "exit_code": None,
+            "reason": "",
+        }
+        assert json_loads(seen[2].content) == _CHUNK
+
+    def test_a_host_wait_that_fails_is_not_retried(self) -> None:
+        seen: list[httpx2.Request] = []
+        with (
+            _job_client(seen, httpx2.Response(502, json={})) as client,
+            pytest.raises(ClientError),
+        ):
+            _ = client.wait_host_work(
+                uuid.UUID(int=1),
+                instance=uuid.UUID(int=2),
+                wait_sec=0,
+            )
+
+        assert len(seen) == 1
+
+
+def test_a_held_waits_delivery_identity_is_independent_between_pending_hosts() -> None:
+    first, second, instance = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+    offer = {
+        "terminal_id": str(uuid.UUID(int=4)),
+        "opener": "a@x.y",
+        "rows": 24,
+        "cols": 80,
+    }
+    sent: list[httpx2.Request] = []
+    answers = iter(
+        [
+            httpx2.Response(200, json={"terminal_id": "not a uuid"}),
+            httpx2.Response(200, json=offer),
+            httpx2.Response(200, json=offer),
+            httpx2.Response(200, json=None),
+        ],
+    )
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return next(answers)
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        with pytest.raises(ClientError):
+            client.wait_terminals(first, instance=instance, wait_sec=0)
+        assert client.wait_terminals(second, instance=instance, wait_sec=0) is not None
+        assert client.wait_terminals(first, instance=instance, wait_sec=0) is not None
+        assert client.wait_terminals(first, instance=instance, wait_sec=0) is None
+
+    assert [(request.method, request.url.path) for request in sent] == [
+        ("GET", HOST_TERMINAL_WAIT_PATH.format(host_id=host))
+        for host in (first, second, first, first)
+    ]
+    keys = [uuid.UUID(request.headers["Idempotency-Key"]) for request in sent]
+    assert keys[0] == keys[2]
+    assert len({keys[0], keys[1], keys[3]}) == 3
+
+
+@pytest.mark.parametrize("use_filters", [False, True], ids=["ids", "filters"])
+def test_rank_metrics_preserves_selection_controls_and_ranked_rows(
+    use_filters: bool,
+) -> None:
+    experiments = [uuid.UUID(int=2), uuid.UUID(int=1)]
+    filters = [
+        Filter(field="labels", op="is", value="study:alpha"),
+        Filter(field="status", op="ne", value="abandoned"),
+    ]
+    sent: list[httpx2.Request] = []
+    answer = {
+        "rows": [
+            {
+                "experiment_id": str(experiments[1]),
+                "point": {"key": "loss", "step": 7, "value": 0.25},
+            },
+            {
+                "experiment_id": str(experiments[0]),
+                "point": {"key": "loss", "step": 9, "value": 0.75},
+            },
+        ],
+    }
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, json=answer)
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        ranked = client.rank_metrics(
+            filters if use_filters else experiments,
+            masks=[
+                MetricMaskClause(axis="key", op="is", value="loss"),
+                MetricMaskClause(axis="step", op="max"),
+            ],
+            sort="asc",
+            limit=3,
+            offset=2,
+        )
+
+    assert [
+        (row.experiment_id, row.point.key, row.point.step, row.point.value)
+        for row in ranked
+    ] == [
+        (experiments[1], "loss", 7, 0.25),
+        (experiments[0], "loss", 9, 0.75),
+    ]
+    [request] = sent
+    assert (request.method, request.url.path) == ("POST", "/api/metrics/rank")
+    assert json_loads(request.content) == {
+        "experiment_ids": None if use_filters else [str(e) for e in experiments],
+        "filters": [
+            {"field": "labels", "op": "is", "value": "study:alpha"},
+            {"field": "status", "op": "ne", "value": "abandoned"},
+        ]
+        if use_filters
+        else None,
+        "query": {
+            "masks": [
+                {"axis": "key", "op": "is", "value": "loss"},
+                {"axis": "step", "op": "max", "value": ""},
+            ],
+            "write": None,
+            "sort": "asc",
+            "limit": 3,
+            "offset": 2,
+        },
+    }
+
+
+def test_list_kind_all_keeps_selectors_and_page_cap_on_every_request() -> None:
+    full_page = [{"seq": seq} for seq in range(MAX_LIST_LIMIT)]
+    pages = iter([full_page, [{"seq": MAX_LIST_LIMIT}]])
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, json=next(pages))
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        rows = client.list_kind_all(
+            "Issue",
+            status="active",
+            seq_ranges=[SeqRange(start=2, stop=7), SeqRange(start=11)],
+            filters=[
+                Filter(field="labels", op="is", value="team:alpha"),
+                Filter(field="priority", op="le", value="20"),
+            ],
+        )
+
+    assert rows == [*full_page, {"seq": MAX_LIST_LIMIT}]
+    assert [(r.method, r.url.path) for r in sent] == [
+        ("GET", "/api/inquiries"),
+    ] * 2
+    assert [parse_qsl(r.url.query.decode()) for r in sent] == [
+        [
+            ("kind", "Issue"),
+            ("status", "active"),
+            ("limit", str(MAX_LIST_LIMIT)),
+            ("offset", str(offset)),
+            ("seq_range", "2..7"),
+            ("seq_range", "11.."),
+            ("filter", '{"field":"labels","op":"is","value":"team:alpha"}'),
+            ("filter", '{"field":"priority","op":"le","value":"20"}'),
+        ]
+        for offset in (0, MAX_LIST_LIMIT)
+    ]
+
+
+def test_export_keeps_selector_order_and_returns_the_streamed_lines() -> None:
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, content=b'{"selector":true}\n\n{"row":2}\n')
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        lines = list(
+            client.export(
+                selector=[
+                    Filter(field="labels", op="is", value="org:alpha"),
+                    Filter(field="labels", op="ne", value="private"),
+                ],
+            ),
+        )
+
+    assert lines == ['{"selector":true}', '{"row":2}']
+    [request] = sent
+    assert (request.method, request.url.path) == ("GET", EXPORT_API_PATH)
+    assert parse_qsl(request.url.query.decode()) == [
+        ("filter", '{"field":"labels","op":"is","value":"org:alpha"}'),
+        ("filter", '{"field":"labels","op":"ne","value":"private"}'),
+    ]
+
+
+def test_download_session_returns_the_streamed_lines_of_its_route() -> None:
+    session_id = uuid.UUID(int=412)
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, content=b'{"seq":412}\n{"part":0,"idx":0}\n')
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        lines = list(client.download_session(session_id))
+
+    assert lines == ['{"seq":412}', '{"part":0,"idx":0}']
+    [request] = sent
+    assert (request.method, request.url.path) == (
+        "GET",
+        f"/api/sessions/{session_id}/download",
+    )
+
+
+def test_download_session_a_refusal_raises_with_its_status() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(403, json={"detail": {"code": "session_audience"}})
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        pytest.raises(ClientError, match="-> 403") as raised,
+    ):
+        list(client.download_session(uuid.UUID(int=412)))
+
+    assert raised.value.status_code == 403
+
+
+class _BatchItemBody(TypedDict):
+    kind: str
+    title: str
+    idempotency_key: str
+
+
+class _BatchSubmitBody(TypedDict):
+    items: list[_BatchItemBody]
+    edges: list[dict[str, str | int]]
+    actor: str
+
+
+def test_submit_batch_preserves_keys_actor_edges_and_server_result_order() -> None:
+    explicit_key = str(uuid.UUID(int=3))
+    bodies = [
+        {"title": "first", "idempotency_key": explicit_key},
+        {"title": "second"},
+        {"title": "third", "idempotency_key": None},
+    ]
+    ids = [uuid.UUID(int=9), uuid.UUID(int=7), uuid.UUID(int=8)]
+    edges = [{"from_index": 2, "to_index": 0, "edge_kind": "requires"}]
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(201, json={"ids": [str(row) for row in ids]})
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        created = client.submit_batch(
+            [("Issue", bodies[0]), ("Belief", bodies[1]), ("Issue", bodies[2])],
+            edges=edges,
+            actor="alice",
+        )
+
+    assert created == ids
+    [request] = sent
+    assert (request.method, request.url.path) == ("POST", "/api/inquiries/batch")
+    body = json_loads(request.content, _BatchSubmitBody)
+    assert (body["actor"], body["edges"]) == ("alice", edges)
+    assert [(item["kind"], item["title"]) for item in body["items"]] == [
+        ("Issue", "first"),
+        ("Belief", "second"),
+        ("Issue", "third"),
+    ]
+    keys = [uuid.UUID(item["idempotency_key"]) for item in body["items"]]
+    assert keys[0] == uuid.UUID(explicit_key)
+    assert len(set(keys)) == 3
+    assert bodies == [
+        {"title": "first", "idempotency_key": explicit_key},
+        {"title": "second"},
+        {"title": "third", "idempotency_key": None},
+    ]
+
+
+@pytest.mark.parametrize("as_tuple", [False, True], ids=["list", "tuple"])
+def test_get_drops_empty_middle_query_values_without_losing_later_values(
+    as_tuple: bool,
+) -> None:
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(
+            200,
+            json={"selected": request.url.params.get_list("select")},
+        )
+
+    values = ["first", "", None, "last", 0, False]
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        result = client.get(
+            "/api/x",
+            params={
+                "select": tuple(values) if as_tuple else values,
+                "empty": "",
+                "missing": None,
+            },
+        )
+
+    assert result == {"selected": ["first", "last", "0", "False"]}
+    [request] = sent
+    assert parse_qsl(request.url.query.decode(), keep_blank_values=True) == [
+        ("select", "first"),
+        ("select", "last"),
+        ("select", "0"),
+        ("select", "False"),
+    ]
+
+
+@pytest.mark.parametrize("length", [2_047, 2_048, 2_049])
+@pytest.mark.parametrize("streaming", [False, True], ids=["request", "export"])
+def test_error_text_truncates_only_past_the_2048_character_boundary(
+    length: int,
+    streaming: bool,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(400, text="x" * length)
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        if streaming:
+            with pytest.raises(ClientError) as raised:
+                list(client.export())
+        else:
+            with pytest.raises(ClientError) as raised:
+                client.get("/api/x")
+
+    path = EXPORT_API_PATH if streaming else "/api/x"
+    expected = "x" * length if length <= 2_048 else "x" * 2_048 + "... (truncated)"
+    assert str(raised.value) == f"GET {path} -> 400: {expected}"
+    assert raised.value.status_code == 400
+
+
+def _recording(
+    sent: list[httpx2.Request],
+    *answers: httpx2.Response,
+) -> Client:
+    """Return a client that records each request and answers ``answers`` in order."""
+    queue = list(answers)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return queue.pop(0)
+
+    return Client("https://server", transport=httpx2.MockTransport(handler))
+
+
+def test_server_url_rejects_a_url_it_cannot_parse() -> None:
+    with pytest.raises(ClientError, match=r"^test has invalid URL$"):
+        server_url("https://[::1", "test")
+
+
+def test_resolve_ids_refuses_a_uuid_ref_of_the_wrong_kind() -> None:
+    row = uuid.UUID(int=5)
+
+    with (
+        _answering({"found": {str(row): "Issue"}}) as client,
+        pytest.raises(ClientError, match=f"ref Belief {row} resolves to a Issue row"),
+    ):
+        _ = client.resolve_ids([UuidRef(uuid=row, expected_kind="Belief")])
+
+
+def test_next_issue_is_none_when_the_server_names_none() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(sent, httpx2.Response(200, content=b"")) as client:
+        assert client.next_issue() is None
+    assert [(r.method, r.url.path) for r in sent] == [
+        ("GET", "/api/inquiries/next_issue"),
+    ]
+
+
+def test_claim_next_issue_posts_owner_actor_and_reason_and_reads_the_claim() -> None:
+    sent: list[httpx2.Request] = []
+    claimed = {"id": str(uuid.UUID(int=3)), "owner": "ada"}
+    with _recording(
+        sent,
+        httpx2.Response(200, json=claimed),
+        httpx2.Response(200, content=b""),
+    ) as client:
+        first = client.claim_next_issue(owner="ada", actor="bot", reason="queue")
+        second = client.claim_next_issue(owner="ada")
+
+    assert (first, second) == (claimed, None)
+    assert [(r.method, r.url.path) for r in sent] == [
+        ("POST", "/api/inquiries/next_issue"),
+    ] * 2
+    assert [json_loads(r.content, dict[str, object]) for r in sent] == [
+        {"owner": "ada", "actor": "bot", "reason": "queue"},
+        {"owner": "ada"},
+    ]
+
+
+class TestWaitUntilReady:
+    """Readiness is any non-5xx answer; a dead server or the deadline ends the wait."""
+
+    def test_a_server_without_the_version_route_is_up(self) -> None:
+        sent: list[httpx2.Request] = []
+        with _recording(sent, httpx2.Response(404, json={})) as client:
+            client.wait_until_ready(timeout_sec=0)
+        assert len(sent) == 1
+
+    def test_probes_past_a_refused_connection_until_the_server_answers(self) -> None:
+        answers = iter([httpx2.ConnectError("refused"), None])
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            error = next(answers)
+            if error is not None:
+                raise error
+            return httpx2.Response(200, json={"sha": "abc"})
+
+        with Client(
+            "https://server",
+            transport=httpx2.MockTransport(handler),
+        ) as client:
+            client.wait_until_ready(timeout_sec=60, probe_interval_sec=0)
+
+        assert next(answers, "drained") == "drained"
+
+    def test_a_dead_server_fails_at_once(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sent: list[httpx2.Request] = []
+        pauses: list[float] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            sent.append(request)
+            if len(sent) == 1:
+                raise httpx2.ConnectError("refused")
+            return httpx2.Response(200, json={"sha": "abc"})
+
+        monkeypatch.setattr("trackinizer.client.client.time.sleep", pauses.append)
+        with Client(
+            "https://server",
+            transport=httpx2.MockTransport(handler),
+        ) as client:
+            monkeypatch.setattr(
+                "trackinizer.client.client.time.monotonic",
+                lambda: 10.0,
+            )
+            with pytest.raises(
+                ClientError,
+                match="died before becoming ready",
+            ) as raised:
+                client.wait_until_ready(timeout_sec=60, alive=lambda: False)
+
+        assert isinstance(raised.value.__cause__, ClientError)
+        assert len(sent) == 1
+        assert pauses == []
+
+    @pytest.mark.parametrize("status", [500, 503])
+    def test_a_5xx_at_the_deadline_reraises_without_another_pause(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        status: int,
+    ) -> None:
+        error = ClientError("booting", status_code=status)
+        pauses: list[float] = []
+
+        def probe(client: Client) -> str:
+            del client
+            raise error
+
+        monkeypatch.setattr(Client, "version", probe)
+        monkeypatch.setattr("trackinizer.client.client.time.sleep", pauses.append)
+
+        with Client("https://server") as client:
+            moments = iter([10.0, 12.0, 13.0])
+            monkeypatch.setattr(
+                "trackinizer.client.client.time.monotonic",
+                lambda: next(moments),
+            )
+            with pytest.raises(ClientError) as raised:
+                client.wait_until_ready(timeout_sec=2, probe_interval_sec=0.5)
+
+        assert raised.value is error
+        assert pauses == []
+
+
+def test_search_sessions_sends_the_query_arms_and_limit() -> None:
+    sent: list[httpx2.Request] = []
+    found: dict[str, PlainTree] = {"hits": [], "semantic": False, "degraded": True}
+    with _recording(
+        sent,
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=[]),
+    ) as client:
+        assert client.search_sessions("loss spike", mode="keyword", limit=3) == found
+        assert client.search_sessions("loss spike") == found
+        with pytest.raises(ClientError, match=r"^/api/web/search_sessions returned"):
+            _ = client.search_sessions("loss spike")
+
+    assert [r.url.path for r in sent] == ["/api/web/search_sessions"] * 3
+    assert [dict(r.url.params) for r in sent] == [
+        {"q": "loss spike", "mode": "keyword", "limit": "3"},
+        {"q": "loss spike", "mode": "fused", "limit": "20"},
+        {"q": "loss spike", "mode": "fused", "limit": "20"},
+    ]
+
+
+def test_search_sessions_near_a_session_sends_the_session_in_place_of_words() -> None:
+    sent: list[httpx2.Request] = []
+    found: dict[str, PlainTree] = {"hits": [], "semantic": True, "degraded": False}
+    near = uuid.UUID(int=7)
+    with _recording(
+        sent,
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=found),
+    ) as client:
+        assert client.search_sessions(near, mode="vector", limit=3) == found
+        assert client.search_sessions(near, spawned="a/b") == found
+
+    assert [dict(r.url.params) for r in sent] == [
+        {"near": str(near), "mode": "vector", "limit": "3"},
+        {"near": str(near), "spawned": "a/b", "mode": "fused", "limit": "20"},
+    ]
+
+
+def test_search_inquiries_sends_the_query_arms_kind_and_limit() -> None:
+    sent: list[httpx2.Request] = []
+    found: dict[str, PlainTree] = {"hits": [], "semantic": True, "degraded": False}
+    with _recording(
+        sent,
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=[]),
+    ) as client:
+        assert (
+            client.search_inquiries("lock", mode="vector", kind="Belief", limit=3)
+            == found
+        )
+        assert client.search_inquiries("lock") == found
+        with pytest.raises(ClientError, match=r"^/api/web/search_inquiries returned"):
+            _ = client.search_inquiries("lock")
+
+    assert [r.url.path for r in sent] == ["/api/web/search_inquiries"] * 3
+    assert [dict(r.url.params) for r in sent] == [
+        {"q": "lock", "mode": "vector", "kind": "Belief", "limit": "3"},
+        {"q": "lock", "mode": "fused", "limit": "20"},
+        {"q": "lock", "mode": "fused", "limit": "20"},
+    ]
+
+
+def test_derived_confidence_and_authority_read_their_routes() -> None:
+    row = uuid.UUID(int=8)
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        httpx2.Response(200, json={"confidence": 0.75}),
+        httpx2.Response(200, json={"proves": 0.25}),
+    ) as client:
+        confidence = client.derived_confidence(row)
+        authority = client.derived_authority(row)
+
+    assert (confidence, authority) == (0.75, {"proves": 0.25})
+    assert [r.url.path for r in sent] == [
+        f"/api/inquiries/{row}/confidence",
+        f"/api/inquiries/{row}/authority",
+    ]
+
+
+def test_add_edge_sends_its_audit_reason() -> None:
+    src, dst = uuid.UUID(int=1), uuid.UUID(int=2)
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        httpx2.Response(
+            200,
+            json={"change_id": str(uuid.UUID(int=9)), "created": True},
+        ),
+    ) as client:
+        write = client.add_edge(src, dst, "requires", actor="ada", reason="blocks it")
+
+    assert write == EdgeWrite(created=True, changed=True)
+    [request] = sent
+    assert request.url.path == f"/api/edges/{src}/requires/{dst}"
+    assert json_loads(request.content, dict[str, object]) == {
+        "actor": "ada",
+        "reason": "blocks it",
+    }
+
+
+def test_read_session_parts_returns_the_listed_parts() -> None:
+    session = uuid.UUID(int=4)
+    sent: list[httpx2.Request] = []
+    listed = {
+        "parts": [
+            {"part": 0, "name": "a.jsonl", "format": "claude", "records": 3},
+            {"part": 1, "name": "b.jsonl", "format": "", "records": 0},
+        ],
+    }
+    with _recording(sent, httpx2.Response(200, json=listed)) as client:
+        parts = client.read_session_parts(session)
+
+    assert [(p.part, p.name, p.format, p.records) for p in parts] == [
+        (0, "a.jsonl", "claude", 3),
+        (1, "b.jsonl", "", 0),
+    ]
+    assert [(r.method, r.url.path) for r in sent] == [
+        ("GET", f"/api/sessions/{session}/parts"),
+    ]
+
+
+def test_set_cli_session_id_overwrites_the_field_with_a_resume_reason() -> None:
+    session = uuid.UUID(int=6)
+    sent: list[httpx2.Request] = []
+    with _recording(sent, httpx2.Response(200, content=b"")) as client:
+        client.set_cli_session_id(session, "cli-123")
+
+    [request] = sent
+    assert (request.method, request.url.path) == (
+        "PUT",
+        inquiry_field_path("cli_session_id").format(target_id=session),
+    )
+    assert json_loads(request.content, dict[str, object]) == {
+        "value": "cli-123",
+        "actor": "agent",
+        "reason": "resume: minted a fresh CLI session id",
+    }
+
+
+class TestMetricPoints:
+    """Logging, reading and masked writes of one experiment's points."""
+
+    def test_log_metrics_posts_the_points_and_reads_the_counts(self) -> None:
+        experiment = uuid.UUID(int=7)
+        sent: list[httpx2.Request] = []
+        with _recording(
+            sent,
+            httpx2.Response(200, json={"logged": 1, "skipped": 1}),
+        ) as client:
+            logged = client.log_metrics(
+                experiment,
+                [
+                    MetricPoint(
+                        key="loss",
+                        step=1,
+                        value=0.5,
+                        timestamp=datetime(2026, 11, 7, 12, tzinfo=UTC),
+                    ),
+                    MetricPoint(key="loss", step=2, value=0.25),
+                ],
+            )
+
+        assert (logged.logged, logged.skipped) == (1, 1)
+        [request] = sent
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/experiments/{experiment}/metrics",
+        )
+        assert json_loads(request.content, dict[str, object]) == {
+            "points": [
+                {
+                    "key": "loss",
+                    "step": step,
+                    "value": value,
+                    "kind": "scalar",
+                    "timestamp": "2026-11-07T12:00:00Z" if step == 1 else None,
+                }
+                for step, value in ((1, 0.5), (2, 0.25))
+            ],
+        }
+
+    def test_read_metrics_pages_and_narrows_to_a_key_only_when_given(self) -> None:
+        experiment = uuid.UUID(int=7)
+        sent: list[httpx2.Request] = []
+        page = {"points": [{"key": "loss", "step": 3, "value": 0.125}]}
+        with _recording(
+            sent,
+            httpx2.Response(200, json=page),
+            httpx2.Response(200, json={"points": []}),
+        ) as client:
+            narrowed = client.read_metrics(experiment, key="loss", limit=5, offset=2)
+            every = client.read_metrics(experiment)
+
+        assert [(p.key, p.step, p.value) for p in narrowed] == [("loss", 3, 0.125)]
+        assert every == []
+        assert [(request.method, request.url.path) for request in sent] == [
+            ("GET", f"/api/experiments/{experiment}/metrics"),
+        ] * 2
+        assert [dict(r.url.params) for r in sent] == [
+            {"limit": "5", "offset": "2", "key": "loss"},
+            {"limit": str(DEFAULT_LIST_LIMIT), "offset": "0"},
+        ]
+
+    def test_write_metrics_masked_posts_the_value_and_returns_the_count(self) -> None:
+        experiment = uuid.UUID(int=7)
+        sent: list[httpx2.Request] = []
+        with _recording(sent, httpx2.Response(200, json={"written": 4})) as client:
+            written = client.write_metrics_masked(
+                experiment,
+                masks=[MetricMaskClause(axis="key", op="is", value="loss")],
+                value=1.5,
+            )
+
+        assert written == 4
+        [request] = sent
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/experiments/{experiment}/metrics/write",
+        )
+        body = json_loads(request.content, dict[str, object])
+        assert (body["write"], body["masks"]) == (
+            1.5,
+            [{"axis": "key", "op": "is", "value": "loss"}],
+        )
+
+
+def test_a_canvas_with_a_malformed_revision_is_refused_before_posting() -> None:
+    canvas = uuid.UUID(int=2)
+    sent: list[httpx2.Request] = []
+    with (
+        _recording(
+            sent,
+            httpx2.Response(200, json={"id": str(canvas), "revision": "3"}),
+        ) as client,
+        pytest.raises(ClientError, match="returned a malformed revision '3'"),
+    ):
+        _ = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
+
+    assert [r.method for r in sent] == ["GET"]
+
+
+def test_logout_host_reads_what_it_stopped_and_revoked() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(sent, httpx2.Response(200, json={"runs": [], "keys": 2})) as client:
+        logged_out = client.logout_host("gpu box")
+
+    assert (logged_out.runs, logged_out.keys) == ([], 2)
+    assert [(r.method, str(r.url)) for r in sent] == [
+        ("POST", "https://server/api/hosts/gpu%20box/logout"),
+    ]
+
+
+def test_a_request_allowed_no_attempts_sends_nothing() -> None:
+    sent: list[httpx2.Request] = []
+    with (
+        _recording(sent) as client,
+        pytest.raises(AssertionError, match=r"^unreachable: retry_attempts >= 1$"),
+    ):
+        client.post("/api/x", retry_attempts=0)
+    assert sent == []
+
+
+def _transport_records(
+    caplog: pytest.LogCaptureFixture,
+) -> list[dict[str, object]]:
+    return [
+        from_plain(record.__dict__, dict[str, object])
+        for record in caplog.records
+        if getattr(record, "event", "") == "trackinizer_transport_failure"
+    ]
+
+
+class TestRetryBackoff:
+    """A retried failure waits 0.1 s, then 0.3 s, and reports every attempt."""
+
+    @pytest.fixture
+    def slept(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        waits: list[float] = []
+        monkeypatch.setattr(
+            "trackinizer.client.client.time.sleep",
+            waits.append,
+        )
+        return waits
+
+    @pytest.mark.parametrize("status", [500, 502, 503, 504])
+    def test_each_retried_5xx_backs_off_geometrically(
+        self,
+        status: int,
+        slept: list[float],
+    ) -> None:
+        sent: list[httpx2.Request] = []
+        with (
+            _recording(
+                sent,
+                *(httpx2.Response(status, text="down") for _ in range(3)),
+            ) as client,
+            pytest.raises(ClientError) as raised,
+        ):
+            client.post("/api/x")
+
+        assert len(sent) == 3
+        assert slept == pytest.approx([0.1, 0.3])
+        assert (raised.value.status_code, raised.value.code) == (status, "")
+
+    def test_a_retried_read_timeout_logs_each_attempt_then_names_the_request(
+        self,
+        slept: list[float],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            raise httpx2.ReadTimeout("timed out")
+
+        with (
+            Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+            caplog.at_level(logging.WARNING),
+        ):
+            with pytest.raises(ClientError, match=r"^GET /api/a failed: timed out$"):
+                client.get("/api/a")
+            with pytest.raises(ClientError):
+                client.post("/api/b", retry_attempts=1)
+
+        assert slept == pytest.approx([0.1, 0.3])
+        assert [
+            (
+                fields.get("method"),
+                fields.get("path"),
+                fields.get("attempt"),
+                fields.get("client_request_index"),
+            )
+            for fields in _transport_records(caplog)
+        ] == [
+            ("GET", "/api/a", 1, 1),
+            ("GET", "/api/a", 2, 1),
+            ("GET", "/api/a", 3, 1),
+            ("POST", "/api/b", 1, 2),
+        ]
+
+
+def test_the_idempotency_key_is_sent_with_its_canonical_casing() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(sent, httpx2.Response(200, content=b"")) as client:
+        client.post("/api/x")
+
+    [request] = sent
+    assert [
+        name for name, _ in request.headers.raw if name.lower() == b"idempotency-key"
+    ] == [
+        b"Idempotency-Key",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "classified"),
+    [
+        (
+            httpx2.ConnectError("[Errno 111] Connection refused"),
+            ("connect_error", "connection_refused"),
+        ),
+        (
+            httpx2.ConnectError("[Errno 104] Connection reset by peer"),
+            ("connect_error", "connection_reset"),
+        ),
+        (httpx2.ConnectError("Name or service not known"), ("connect_error",) * 2),
+        (httpx2.ReadTimeout("timed out"), ("read_timeout",) * 2),
+        (httpx2.ReadError("eof"), ("read_error",) * 2),
+        (httpx2.WriteTimeout("timed out"), ("write_timeout",) * 2),
+        (httpx2.WriteError("broken pipe"), ("write_error",) * 2),
+        (httpx2.PoolTimeout("pool full"), ("pool_timeout",) * 2),
+        (httpx2.RemoteProtocolError("closed"), ("remote_protocol_error",) * 2),
+        (httpx2.UnsupportedProtocol("ftp"), ("transport_error",) * 2),
+        (httpx2.ProxyError("407"), ("transport_error",) * 2),
+    ],
+)
+def test_a_transport_failure_is_logged_with_its_class_and_detail(
+    error: httpx2.TransportError,
+    classified: tuple[str, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        raise error
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        caplog.at_level(logging.WARNING),
+        pytest.raises(ClientError),
+    ):
+        client.post("/api/x", retry_attempts=1)
+
+    [fields] = _transport_records(caplog)
+    assert (fields.get("failure_class"), fields.get("failure_detail")) == classified
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"code": "conflict", "detail": {"code": "inner"}}, "conflict"),
+        ({"detail": {"code": "chat_deleted"}}, "chat_deleted"),
+        ({"detail": "plain"}, ""),
+        ({"code": 7}, ""),
+        ([{"code": "listed"}], ""),
+        ("not json", ""),
+    ],
+    ids=["top", "nested", "uncoded", "non-string", "list", "text"],
+)
+def test_an_error_carries_only_a_string_code_the_body_names(
+    body: PlainTree,
+    code: str,
+) -> None:
+    answer = (
+        httpx2.Response(409, text=body)
+        if isinstance(body, str)
+        else httpx2.Response(409, json=body)
+    )
+    with _recording([], answer) as client, pytest.raises(ClientError) as raised:
+        client.get("/api/x")
+
+    assert raised.value.code == code
+
+
+def test_a_client_with_routes_sends_no_other_request() -> None:
+    """Refused before the transport sees it, by every method that sends one."""
+    sent: list[tuple[str, str]] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        sent.append((request.method, request.url.path))
+        return httpx2.Response(200, json={"sha": "abc123"})
+
+    with Client(
+        "https://given.test",
+        transport=httpx2.MockTransport(answer),
+        routes=[("GET", "/api/version")],
+    ) as client:
+        version = client.version()
+        with pytest.raises(
+            ClientError,
+            match=r"^POST /api/inquiries/batch is not available to this client$",
+        ):
+            client.submit_batch([("Issue", {"title": "x"})])
+        with pytest.raises(ClientError, match=r"^GET /api/export is not available"):
+            list(client.export())
+        with (
+            pytest.raises(ClientError, match=r"/lines is not available"),
+            client.lines_stream(uuid.UUID(int=1)),
+        ):
+            pass
+
+    assert version == "abc123"
+    assert sent == [("GET", "/api/version")]
+
+
+def test_every_request_the_client_sends_is_checked_against_its_routes() -> None:
+    """A method that reaches the HTTP client checks its route before it does.
+
+    Any use of ``self._http`` counts, a call or not, so a stored reference cannot
+    slip a request past the check. Only building it (assigning it) and closing it
+    (``self._http.close()``) are exempt, known by what the code does rather than by
+    the method's name, which a copy of the method under another name keeps.
+    """
+    tree = ast.parse(inspect.getsource(Client))
+    unchecked = [
+        method.name
+        for method in ast.walk(tree)
+        if isinstance(method, ast.FunctionDef)
+        and (uses := _http_lines(method))
+        and not any(line < min(uses) for line in _check_lines(method))
+    ]
+
+    assert unchecked == []
+
+
+def test_the_route_check_finds_a_use_only_building_or_closing_skips() -> None:
+    """A request or a stored reference counts; building or closing it never does."""
+    source = """
+class Client:
+    def __init__(self):
+        self._http: object = object()
+    def init_copy(self):
+        self._http = object()
+    def close(self):
+        self._http.close()
+    def kept(self):
+        held = self._http
+    def sent(self):
+        self._http.request("GET", "/")
+    def checked(self):
+        self._check_route("GET", "/")
+        self._http.request("GET", "/")
+"""
+    methods = {
+        node.name: _http_lines(node)
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    assert methods == {
+        "__init__": [],
+        "init_copy": [],
+        "close": [],
+        "kept": [10],
+        "sent": [12],
+        "checked": [15],
+    }
+
+
+def _http_lines(method: ast.FunctionDef) -> list[int]:
+    """Return the lines where ``method`` uses ``self._http``, but to build or close it."""
+    exempt = {
+        id(target) for node in ast.walk(method) for target in _built_or_closed(node)
+    }
+    return [
+        node.lineno
+        for node in ast.walk(method)
+        if _is_http(node) and id(node) not in exempt
+    ]
+
+
+def _built_or_closed(node: ast.AST) -> list[ast.expr]:
+    """Return the ``self._http`` that ``node`` builds or closes, if it does either."""
+    match node:
+        case ast.Assign(targets=targets):
+            return [target for target in targets if _is_http(target)]
+        case ast.AnnAssign(target=target) if _is_http(target):
+            return [target]
+        case ast.Call(
+            func=ast.Attribute(attr="close", value=closed),
+            args=[],
+            keywords=[],
+        ) if _is_http(closed):
+            return [closed]
+        case _:
+            return []
+
+
+def _is_http(node: ast.AST) -> TypeGuard[ast.Attribute]:
+    """Return whether ``node`` is ``self._http``."""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "_http"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    )
+
+
+def _check_lines(method: ast.FunctionDef) -> list[int]:
+    """Return the lines where ``method`` calls ``self._check_route``."""
+    return [
+        node.lineno
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_check_route"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    ]
 
 
 if __name__ == "__main__":

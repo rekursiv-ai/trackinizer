@@ -2,22 +2,23 @@
 
 Owns CRUD against the three-table backend; emits changes; cascades. The
 concrete behavior is split across mixins (submit / read / edit / edge /
-session / cascade); this module keeps the lifecycle (construction, bootstrap,
-embedding) and composes them into the public :class:`Store`.
+session / cascade); this module keeps the lifecycle (construction, bootstrap)
+and composes them into the public :class:`Store`.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import suppress
-from typing import TYPE_CHECKING, Final, cast
-from uuid import UUID
+from typing import TYPE_CHECKING, Final
 
 import asyncio
 import hashlib
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
+    from uuid import UUID
 
     import asyncpg
 
@@ -30,7 +31,6 @@ else:
 from trackinizer.server import auth
 from trackinizer.server.auth import bootstrap_admin
 from trackinizer.server.notify import tx
-from trackinizer.server.primitives import upsert_embedding
 from trackinizer.server.schema_gen import (
     SEQ_FOR_KIND,
     substitute_schema_placeholders,
@@ -71,11 +71,11 @@ _TRANSIENT_FAULT_MARKERS: Final = (
 
 
 class _LifecycleMixin(_StoreShared):
-    """Bootstrap and embedding-backfill lifecycle for :class:`Store`.
+    """Bootstrap lifecycle for :class:`Store`.
 
-    Construction (``__init__``) and the :meth:`_embed_all` helper live on the
-    shared base :class:`_StoreShared`; this mixin adds the boot-time schema /
-    embedding reconciliation that runs against ``self.engine``.
+    Construction (``__init__``) lives on the shared base :class:`_StoreShared`;
+    this mixin adds the boot-time schema reconciliation that runs against
+    ``self.engine``.
     """
 
     def should_bump_api_key_last_used(self, key_id: UUID) -> bool:
@@ -201,6 +201,23 @@ class _LifecycleMixin(_StoreShared):
         """
         self._forget_bearers_where(lambda identity: identity.api_key_id == key_id)
 
+    def forget_bearer_identities_for_host(self, host_id: UUID) -> None:
+        """Drop the cached entry of each key a start minted for a process on one host.
+
+        For a host taken out of service, which revokes every such key in its
+        transaction (``auth.revoke_host_process_keys``); a key a device login bound to
+        the host is not one, and stays until logging the host out revokes it.
+
+        Args:
+          host_id: The host whose agent processes' keys were revoked.
+
+        """
+        self._forget_bearers_where(
+            lambda identity: (
+                identity.process is not None and identity.process.host_id == host_id
+            ),
+        )
+
     def _forget_bearers_where(
         self,
         predicate: Callable[[auth.AuthIdentity], bool],
@@ -213,34 +230,17 @@ class _LifecycleMixin(_StoreShared):
         ]:
             del self._verified_bearers[digest]
 
-    # A datadir rebuild or dump reload that copies ``inquiries`` but not
-    # ``inquiry_embeddings`` leaves semantic search blind to those rows. Idempotent via
-    # the ``(inquiry_id, model)`` PK: an inquiry already embedded by every embedder is
-    # skipped, and a freshly added embedder backfills only its own missing rows.
-    #
-    # Safe to run synchronously at boot only because every production embedder is the
-    # deterministic hash :class:`StubEmbedder` (no model, no network). A future
-    # network/model embedder must move this off the startup path -- N blocking ``embed``
-    # calls would stall boot.
-    async def _backfill_embeddings(self, conn: Conn) -> None:
-        """Embed any inquiry missing a row for a registered embedder."""
-        for embedder in self.embedders:
-            rows = await conn.fetch(
-                "SELECT id, title FROM inquiries i WHERE NOT EXISTS ("
-                "SELECT 1 FROM inquiry_embeddings e "
-                "WHERE e.inquiry_id = i.id AND e.model = $1)",
-                embedder.name,
-            )
-            for row in rows:
-                await upsert_embedding(
-                    conn,
-                    cast(UUID, row["id"]),
-                    embedder.name,
-                    await embedder.embed(cast(str, row["title"])),
-                )
-
-    async def bootstrap(self, *, attempts: int = 6) -> None:
+    async def bootstrap(
+        self,
+        *,
+        attempts: int = 6,
+        addon_migrations: Sequence[tuple[str, str]] = (),
+    ) -> None:
         """Apply the canonical schema when this database has not seen it.
+
+        Then each of ``addon_migrations`` this database has not seen runs, in order,
+        under the same lock and ledger. Unlike a numbered core migration, an addon's
+        runs on a fresh database too: the baseline does not carry its tables.
 
         ``attempts`` is the number of fresh passes before a transient PGlite WASM
         fault gives up. Under whole-suite ``pytest -n`` load PGlite's WASM
@@ -276,14 +276,22 @@ class _LifecycleMixin(_StoreShared):
 
         Args:
           attempts: Max retry attempts on transient PGlite faults.
+          addon_migrations: The deployment's addons' migrations, ``(name, SQL)``,
+            each named so no core migration shares the name.
 
         Raises:
+          ValueError: Two migrations share a name; the second would never run.
           Various: On first pass deterministic failures (bad DDL, missing extension).
 
         """
+        names = Counter(
+            name for name, _body in (*schema_migrations(), *addon_migrations)
+        )
+        if reused := sorted(name for name, count in names.items() if count > 1):
+            raise ValueError(f"Two migrations are named {', '.join(reused)}.")
         for attempt in range(attempts):
             try:
-                await self._bootstrap_once()
+                await self._bootstrap_once(addon_migrations)
                 return
             except (asyncpg.PostgresConnectionError, ConnectionRefusedError):
                 if attempt == attempts - 1:
@@ -309,10 +317,11 @@ class _LifecycleMixin(_StoreShared):
     # ``seq`` already present. A datadir rebuild or dump reload that bulk-loads rows
     # with literal ``seq`` values leaves the freshly created sequence at its start, so
     # the next ``nextval`` would re-mint a live ref; the reconcile closes that gap and
-    # is a monotonic no-op once aligned. The same rebuild can drop
-    # ``inquiry_embeddings`` rows, so every inquiry missing an embedding is re-embedded
-    # here as well.
-    async def _bootstrap_once(self) -> None:
+    # is a monotonic no-op once aligned.
+    async def _bootstrap_once(
+        self,
+        addon_migrations: Sequence[tuple[str, str]],
+    ) -> None:  # pragma: no mutate block
         """One idempotent bootstrap pass; see :meth:`bootstrap`."""
         async with self.engine.acquire() as conn:
             await conn.execute(
@@ -359,11 +368,17 @@ class _LifecycleMixin(_StoreShared):
                             baseline_name,
                         )
                         applied.add(baseline_name)
-                for name, body in numbered_migrations:
-                    if name in applied:
-                        continue
+                pending = [
+                    *(
+                        (name, substitute_schema_placeholders(body))
+                        for name, body in numbered_migrations
+                        if name not in applied
+                    ),
+                    *(each for each in addon_migrations if each[0] not in applied),
+                ]
+                for name, body in pending:
                     async with tx(conn):
-                        await conn.execute(substitute_schema_placeholders(body))
+                        await conn.execute(body)
                         await conn.execute(
                             "INSERT INTO applied_migrations (name) VALUES ($1) "
                             "ON CONFLICT (name) DO NOTHING",
@@ -373,9 +388,8 @@ class _LifecycleMixin(_StoreShared):
                 # (auth v2 Phase 1). Idempotent: once any user logs in
                 # the path no-ops. Runs after migrations so the table
                 # exists on first boot.
-                await bootstrap_admin(conn)
+                await bootstrap_admin(conn, policy=self.access_policy)
                 await _reconcile_sequences(conn)
-                await self._backfill_embeddings(conn)
             finally:
                 # If the body died because the connection dropped, the unlock
                 # raises the same family -- and that fresh exception would
@@ -431,9 +445,9 @@ def _is_transient_pglite_fault(err: BaseException) -> bool:
 
 class Store(
     _LifecycleMixin,
+    _ExportMixin,
     _ReadMixin,
     _AuthorityMixin,
-    _ExportMixin,
     _MetricsMixin,
     _SessionMixin,
     _SessionFeedMixin,

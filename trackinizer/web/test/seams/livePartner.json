@@ -3,10 +3,12 @@
   "cli": "claude",
   "cwd": "~/project",
   "label": "claude · gx10",
-  "machine": "gx10",
+  "host": "gx10",
   "provider": "claude",
+  "refused": "",
+  "refused_at": null,
   "run_name": "chat-1a2b3c4d",
+  "runs": true,
   "session_id": "00000000-0000-4000-8000-000000000001",
-  "state": "idle",
   "status": "live"
 }

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AGREED, stubFetch } from "../api/testing";
+import { SIGNED_IN_KEY } from "../api/signedIn";
 import { FakeEventSource } from "../live/testing";
 import { setChatSide } from "../visuals/chatColumnState";
 import { ACCOUNTS_KEY, readAccounts } from "./accounts";
@@ -226,8 +227,8 @@ test("a skin shows at once and is kept in the user's preferences; the theme is o
   expect(menu.getByRole("group", { name: "Theme" })).toBeTruthy();
   await waitFor(() => expect(sent.filter((request) => request.path === "/api/me/preferences").map((request) => request.body))
     .toEqual([{ theme: "light" }, { skin: "dos" }, { skin: "default" }]));
-  // The browser keeps the accounts it signed in as, and nothing of the user's preferences.
-  expect(Object.keys(localStorage)).toEqual([ACCOUNTS_KEY]);
+  // The browser keeps the accounts it signed in as, the signed-in session, and nothing of the user's preferences.
+  expect(Object.keys(localStorage).sort()).toEqual([ACCOUNTS_KEY, SIGNED_IN_KEY].sort());
 });
 
 test("the browser remembers the account signed in; another it remembers is listed with its role and kind, signs in by Google with it picked, and × forgets it", async () => {

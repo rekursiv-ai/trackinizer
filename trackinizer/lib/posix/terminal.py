@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import fcntl
 import os
+import re
 import select
 import shutil
 import signal
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "CSI",
     "ESSENTIAL_ENV",
     "PASTE_END",
     "PASTE_START",
@@ -88,7 +90,6 @@ dotfile picks a different wrong answer.
 # idempotent, so sending them when the child already cleaned up is a no-op.
 TERMINAL_RESET: Final = b"".join(
     (
-        b"\x1b[?1049l",  # Leave alternate screen.
         b"\x1b[?1000l\x1b[?1002l\x1b[?1003l",  # Mouse: click, drag, any-motion.
         b"\x1b[?1005l\x1b[?1006l\x1b[?1015l",  # Mouse encodings: utf8, SGR, urxvt.
         b"\x1b[?1004l",  # Focus in/out reporting.
@@ -99,6 +100,10 @@ TERMINAL_RESET: Final = b"".join(
         b"\x1b[0m",  # Default colors and attributes.
     ),
 )
+
+CSI: Final = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+"""One control sequence a child writes (ECMA-48 CSI): a cursor move, a colour, a mode.
+What a screen shows of the child's output is what is left between them."""
 
 
 def encode_paste(text: str) -> bytes:
@@ -153,7 +158,7 @@ def write_all(fd: int, data: bytes) -> bool:
     return True
 
 
-def reset_terminal_modes(fd: int) -> bool:
+def reset_terminal_modes(fd: int, *, alternate_screen: int | None = None) -> bool:
     """Disable DECSET modes a child may have left on; True if written.
 
     Only for a real terminal: a redirected or piped ``fd`` would collect the
@@ -162,6 +167,7 @@ def reset_terminal_modes(fd: int) -> bool:
 
     Args:
       fd: Descriptor of the terminal to restore.
+      alternate_screen: Active screen-switch mode (47, 1047, 1049), or None.
 
     Returns:
       written: Whether the reset was sent.
@@ -169,7 +175,9 @@ def reset_terminal_modes(fd: int) -> bool:
     """
     if fd < 0 or not os.isatty(fd):
         return False
-    return write_all(fd, TERMINAL_RESET)
+    # Resetting 1049 on the normal screen restores a stale cursor position.
+    leave = b"" if alternate_screen is None else f"\x1b[?{alternate_screen}l".encode()
+    return write_all(fd, leave + TERMINAL_RESET)
 
 
 class Terminal:
@@ -226,7 +234,8 @@ class Terminal:
         self._winsize = winsize
         self._bracketed_paste = bracketed_paste
         self._master_fd = -1
-        self._pid = -1
+        # None, never a number: a numeric "no child" is one slip from kill(-1).
+        self._pid: int | None = None
         self._proc: subprocess.Popen[bytes] | None = None
         self._status: int | None = None
         self._submitted = 0
@@ -266,7 +275,7 @@ class Terminal:
     @property
     def pid(self) -> int | None:
         """Return the child process ID while it is owned by this terminal."""
-        return self._pid if self._pid > 0 else None
+        return self._pid
 
     @property
     def submitted(self) -> int:
@@ -440,7 +449,10 @@ class Terminal:
             # Enter is suppressed and the line never submits. The delay is
             # deliberately OUTSIDE ``_write_lock`` -- holding that across the
             # sleep stalls every peer keystroke for the full delay.
-            await asyncio.sleep(self._enter_delay_sec)
+            # The child's paste-burst window is a duration, not an event.
+            await asyncio.sleep(
+                self._enter_delay_sec,
+            )  # house-ignore[sleep] -- See above.
             async with self._write_lock:
                 _ = await self._write(SUBMIT)
             self._submitted += 1
@@ -503,7 +515,7 @@ class Terminal:
         a zombie keeps it anchoring the group id, so the final KILL cannot land
         on a recycled, unrelated group. :meth:`wait` reaps it afterwards.
         """
-        if self._pid <= 0:
+        if self._pid is None:
             return
         if not self._signal(signal.SIGTERM):
             return
@@ -514,7 +526,8 @@ class Terminal:
                 break
             # A cooperative child is gone within a millisecond of TERM; the
             # tick is the floor on every teardown.
-            await asyncio.sleep(0.001)
+            # Reaping would end the wait but frees the group id this KILL needs.
+            await asyncio.sleep(0.001)  # house-ignore[sleep] -- See above.
         # The whole group received TERM; once its leader is gone, the rest are
         # stragglers with no reason to outlive it.
         if self._signal(signal.SIGKILL):
@@ -550,7 +563,7 @@ class Terminal:
     def _signal(self, sig: int) -> bool:
         """Signal the child's process group; False once it is gone."""
         pid = self._pid
-        if pid <= 0:
+        if pid is None:
             return False
         try:
             os.killpg(pid, sig)
@@ -565,23 +578,23 @@ class Terminal:
 
     def _exited(self) -> bool:
         """Whether the child has exited, WITHOUT reaping it."""
-        return self._pid <= 0 or _exit_seen(self._pid, block=False)
+        return self._pid is None or _exit_seen(self._pid, block=False)
 
     def _wait_until_exited(self) -> None:
         """Wait for child exit without consuming the status used by wait()."""
         pid = self._pid
-        if pid > 0:
+        if pid is not None:
             _ = _exit_seen(pid, block=True)
 
     def _reap(self) -> int:
         """Block until the child exits; return its status."""
-        if self._pid <= 0:
+        if self._pid is None:
             return 0
         try:
             _, status = os.waitpid(self._pid, 0)
         except ChildProcessError:
             status = 0
-        self._pid = -1
+        self._pid = None
         if os.WIFSIGNALED(status):
             code = 128 + os.WTERMSIG(status)
         else:
@@ -628,7 +641,7 @@ def _resolve(ready: asyncio.Future[None]) -> None:
 # anchors the process group until ``wait`` reaps it.
 if sys.platform == "darwin" and sys.version_info < (3, 13):
 
-    def _exit_seen(pid: int, *, block: bool) -> bool:  # pyright: ignore[reportUnreachable] -- Linux-targeted checking omits macOS select types.
+    def _exit_seen(pid: int, *, block: bool) -> bool:
         """Whether ``pid`` has exited, without reaping it; ``block`` waits."""
         with contextlib.closing(select.kqueue()) as kernel:
             note = select.kevent(

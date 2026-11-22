@@ -6,76 +6,54 @@ a LIST-shaped column whose elements happen to live in a side table
 (``session_records``), so it inherits the membership semantics ``labels is
 backend`` already has: any element matching satisfies the clause.
 
-Which kinds qualify is DERIVED, not listed. A class is a field iff its
+Which kinds qualify is DERIVED, not listed. A kind is a field iff its
 ``text`` projection is non-empty (``types/session_records.py::search_text``):
-a filter on ``TurnContext`` could never match, because nothing is indexed for
+a filter on ``SessionContext`` could never match, because nothing is indexed for
 it. Deriving it is what keeps a record class added upstream from needing a
-parallel edit here.
+parallel edit here. A tool-call row is stored under its tool's legacy class
+name, such as ``BashResult`` (``types/session_records.py::record_kind``), so
+each of those names is a field of its own.
 """
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import re
 
-from trackinizer.lib.agent.types.sessions import (
-    AgentStatusResult,
-    AgentToAgentMessage,
-    AssistantMessage,
-    ContextCompaction,
-    ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
-    IncompleteRecord,
-    ShellCommandResult,
-    SystemMessage,
-    Thinking,
-    ToolCall,
-    UncategorizedToolResult,
-    UserMessage,
-    WebFetchResult,
-    WebSearchResults,
+from trackinizer.sagent.session.types import (
+    ContextClear,
+    SessionContext,
+    TokenUsage,
+    UncategorizedRecord,
 )
-from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
+from trackinizer.types.session_records import _BY_KIND
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.streams import TraxRecord
 
 
 __all__ = [
     "SESSION_RECORD_FIELDS",
-    "record_kind_for",
+    "column_record_kind",
     "snake_case",
 ]
 
 
-# Every record class whose ``text`` projection can be non-empty. Listed here
-# rather than walked from the union because the union is a type alias, not a
-# runtime registry; ``session_record_fields_test`` asserts this agrees with
-# ``search_text`` over every member, so a class added upstream fails that test
-# rather than silently becoming unfilterable.
-_TEXT_BEARING: Final[tuple[type[TraxRecord], ...]] = (
-    UserMessage,
-    AssistantMessage,
-    SystemMessage,
-    AgentToAgentMessage,
-    Thinking,
-    ToolCall,
-    ShellCommandResult,
-    FileReadResult,
-    FileWriteResult,
-    FileEditResult,
-    WebSearchResults,
-    WebFetchResult,
-    AgentStatusResult,
-    UncategorizedToolResult,
-    ContextState,
-    ContextCompaction,
-    IncompleteRecord,
-    # A captured stream is all prose, so every one of the three is filterable
-    # -- ``agentsession std_err re 'Traceback'`` finds the runs that failed.
-    Stdin,
-    Stdout,
-    Stderr,
+# The record kinds with no prose: settings, a window's start, token counts, and an
+# untyped payload. ``session_record_fields_test`` checks the rest against
+# ``search_text``, so a kind added upstream is filterable unless it is listed here.
+_NO_TEXT: Final[frozenset[type[TraxRecord]]] = frozenset(
+    (SessionContext, ContextClear, TokenUsage, UncategorizedRecord),
+)
+
+# Every kind whose record's ``text`` projection can be non-empty. Rows are stored
+# under ``FunctionResult`` though no new row is: sagent has no result class of that
+# name now. Each is a tool call's row, which has text, so it stays filterable.
+_TEXT_BEARING: Final[tuple[str, ...]] = (
+    *(kind for kind, cls in _BY_KIND.items() if cls not in _NO_TEXT),
+    "FunctionResult",
 )
 
 
@@ -85,8 +63,8 @@ _CAMEL_BOUNDARY: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 def snake_case(name: str) -> str:
     """``ToolCall`` -> ``tool_call``, the spelling a filter names.
 
-    Only the lower-to-upper boundary splits, so ``WebSearchResults`` becomes
-    ``web_search_results`` and an acronym run stays together.
+    Only the lower-to-upper boundary splits, so ``WebSearchResult`` becomes
+    ``web_search_result`` and an acronym run stays together.
 
     Args:
       name: CamelCase identifier to convert.
@@ -99,14 +77,14 @@ def snake_case(name: str) -> str:
 
 
 # Filter field -> the ``session_records.kind`` it selects. The field is the
-# snake_cased class name, which is what makes ``agentsession tool_call re bar``
+# snake_cased kind, which is what makes ``agentsession tool_call re bar``
 # read as the record it names.
 SESSION_RECORD_FIELDS: Final[dict[str, str]] = {
-    snake_case(cls.__name__): cls.__name__ for cls in _TEXT_BEARING
+    snake_case(kind): kind for kind in _TEXT_BEARING
 }
 
 
-def record_kind_for(column: str) -> str | None:
+def column_record_kind(column: str) -> str | None:
     """Return the record kind ``column`` filters on, or ``None`` if it is not one.
 
     Args:

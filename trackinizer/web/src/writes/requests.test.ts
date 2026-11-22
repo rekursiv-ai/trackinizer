@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { ApiError } from "../api/client";
+import type { ApiError } from "../api/client";
 import { recentEvents } from "../debug/log";
 import { createToken } from "../api/me";
 import { type Sent, stubFetch } from "../api/testing";
@@ -18,6 +18,7 @@ import {
   setFieldRequest,
   type WriteRequest,
 } from "./requests";
+import { must } from "../must";
 
 const ID = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
 const PARENT = "5d3c2b1a-0f9e-4d8c-8b7a-6e5d4c3b2a19";
@@ -34,17 +35,39 @@ afterEach(() => {
 type KeyPlace = "header" | "body" | "items";
 
 /** Every write route: how to make its request, and what the server must receive. */
-const ROUTES: readonly [string, () => WriteRequest<unknown>, Omit<Sent, "headers" | "query">, KeyPlace][] = [
+const ROUTES: readonly [
+  string,
+  () => WriteRequest<unknown>,
+  Omit<Sent, "headers" | "query">,
+  KeyPlace,
+][] = [
   [
     "set a field",
-    () => setFieldRequest("/api/inquiries/{target_id}/title", ID, { value: "Renamed", reason: "typo" }),
-    { method: "PUT", path: `/api/inquiries/${ID}/title`, body: { value: "Renamed", reason: "typo" } },
+    () =>
+      setFieldRequest("/api/inquiries/{target_id}/title", ID, {
+        value: "Renamed",
+        reason: "typo",
+      }),
+    {
+      method: "PUT",
+      path: `/api/inquiries/${ID}/title`,
+      body: { value: "Renamed", reason: "typo" },
+    },
     "header",
   ],
   [
     "set a field by compare-and-set",
-    () => setFieldRequest("/api/inquiries/{target_id}/status", ID, { value: "complete", mode: "cas", expected: "active" }),
-    { method: "PUT", path: `/api/inquiries/${ID}/status`, body: { value: "complete", mode: "cas", expected: "active" } },
+    () =>
+      setFieldRequest("/api/inquiries/{target_id}/status", ID, {
+        value: "complete",
+        mode: "cas",
+        expected: "active",
+      }),
+    {
+      method: "PUT",
+      path: `/api/inquiries/${ID}/status`,
+      body: { value: "complete", mode: "cas", expected: "active" },
+    },
     "header",
   ],
   [
@@ -55,14 +78,26 @@ const ROUTES: readonly [string, () => WriteRequest<unknown>, Omit<Sent, "headers
   ],
   [
     "add one element to a list field",
-    () => patchFieldRequest("/api/inquiries/{target_id}/labels", ID, { op: "add", value: "webui" }),
-    { method: "PATCH", path: `/api/inquiries/${ID}/labels`, body: { op: "add", value: "webui" } },
+    () =>
+      patchFieldRequest("/api/inquiries/{target_id}/labels", ID, {
+        op: "add",
+        value: "webui",
+      }),
+    {
+      method: "PATCH",
+      path: `/api/inquiries/${ID}/labels`,
+      body: { op: "add", value: "webui" },
+    },
     "header",
   ],
   [
     "create a row",
     () => createRequest("Issue", { title: "Ship it", narrows: [[PARENT, 10]] }),
-    { method: "POST", path: "/api/inquiries/issue", body: { title: "Ship it", narrows: [[PARENT, 10]] } },
+    {
+      method: "POST",
+      path: "/api/inquiries/issue",
+      body: { title: "Ship it", narrows: [[PARENT, 10]] },
+    },
     "body",
   ],
   [
@@ -91,13 +126,21 @@ const ROUTES: readonly [string, () => WriteRequest<unknown>, Omit<Sent, "headers
   [
     "add an edge",
     () => addEdgeRequest(EDGE, { priority: 0 }),
-    { method: "POST", path: `/api/edges/${ID}/narrows/${PARENT}`, body: { priority: 0 } },
+    {
+      method: "POST",
+      path: `/api/edges/${ID}/narrows/${PARENT}`,
+      body: { priority: 0 },
+    },
     "header",
   ],
   [
     "annotate an edge",
     () => setEdgeAnnotationRequest("note", EDGE, { value: "why" }),
-    { method: "PUT", path: `/api/edges/${ID}/narrows/${PARENT}/note`, body: { value: "why" } },
+    {
+      method: "PUT",
+      path: `/api/edges/${ID}/narrows/${PARENT}/note`,
+      body: { value: "why" },
+    },
     "header",
   ],
   [
@@ -109,7 +152,11 @@ const ROUTES: readonly [string, () => WriteRequest<unknown>, Omit<Sent, "headers
   [
     "remove one edge label",
     () => patchEdgeLabelsRequest(EDGE, { op: "sub", value: "blocked" }),
-    { method: "PATCH", path: `/api/edges/${ID}/narrows/${PARENT}/labels`, body: { op: "sub", value: "blocked" } },
+    {
+      method: "PATCH",
+      path: `/api/edges/${ID}/narrows/${PARENT}/labels`,
+      body: { op: "sub", value: "blocked" },
+    },
     "header",
   ],
   [
@@ -140,19 +187,29 @@ describe("every write route: method, path, body, key, and a retry that repeats b
     expect(keys(first).every((key) => UUID.test(key))).toBe(true);
     expect(keys(next).some((key) => keys(first).includes(key))).toBe(false);
     expect(new Set(keys(first)).size).toBe(keys(first).length);
-    expect({ method: first.method, path: first.path, body: withoutKeys(first.body, keyPlace) }).toEqual(expected);
+    expect({
+      method: first.method,
+      path: first.path,
+      body: withoutKeys(first.body, keyPlace),
+    }).toEqual(expected);
     expect(JSON.stringify(first.body)).not.toContain("actor");
   });
 });
 
 test("a write with no read to tell whether it landed is sent once, unless the server replays it: a create is", async () => {
   vi.useFakeTimers();
-  const sent = stubFetch(() => Response.json({ detail: "database unavailable" }, { status: 503 }));
-  const unread = sendWithRetries(setFieldRequest("/api/inquiries/{target_id}/title", ID, { value: "x" })).catch(() => {});
+  const sent = stubFetch(() =>
+    Response.json({ detail: "database unavailable" }, { status: 503 }),
+  );
+  const unread = sendWithRetries(
+    setFieldRequest("/api/inquiries/{target_id}/title", ID, { value: "x" }),
+  ).catch(() => {});
   await vi.runAllTimersAsync();
   await unread;
   expect(sent).toHaveLength(1);
-  const create = sendWithRetries(createRequest("Issue", { title: "Ship it" })).catch(() => {});
+  const create = sendWithRetries(createRequest("Issue", { title: "Ship it" })).catch(
+    () => {},
+  );
   await vi.runAllTimersAsync();
   await create;
   expect(sent).toHaveLength(5);
@@ -160,8 +217,13 @@ test("a write with no read to tell whether it landed is sent once, unless the se
 
 test("an account write is sent once, even after a timeout or a 5xx", async () => {
   vi.useFakeTimers();
-  const sent = stubFetch(() => Response.json({ detail: "database unavailable" }, { status: 503 }));
-  const request: WriteRequest<unknown> = { route: "account", send: () => createToken({ name: "ci" }) };
+  const sent = stubFetch(() =>
+    Response.json({ detail: "database unavailable" }, { status: 503 }),
+  );
+  const request: WriteRequest<unknown> = {
+    route: "account",
+    send: () => createToken({ name: "ci" }),
+  };
   const failure = sendWithRetries(request).catch((error: unknown) => error);
   await vi.runAllTimersAsync();
   expect(await failure).toMatchObject({ status: 503, detail: "database unavailable" });
@@ -176,8 +238,10 @@ test("a timeout, a dropped network or a 5xx is retried three times, 1, 3 and 9 s
     () => new Response("bad gateway", { status: 502 }),
     () => Response.json({ id: ID, change_id: "c1" }),
   ];
-  const sent = stubFetch(() => answers[sent.length - 1]!());
-  const done = sendWithRetries(unsent(setFieldRequest("/api/inquiries/{target_id}/title", ID, { value: "x" })));
+  const sent = stubFetch(() => must(answers[sent.length - 1])());
+  const done = sendWithRetries(
+    unsent(setFieldRequest("/api/inquiries/{target_id}/title", ID, { value: "x" })),
+  );
   const counts: number[] = [];
   for (const waitMs of [1000, 3000, 9000]) {
     await vi.advanceTimersByTimeAsync(waitMs - 1);
@@ -192,29 +256,41 @@ test("a timeout, a dropped network or a 5xx is retried three times, 1, 3 and 9 s
 
 test("the fourth transient failure is thrown", async () => {
   vi.useFakeTimers();
-  const sent = stubFetch(() => Response.json({ detail: "database unavailable" }, { status: 503 }));
-  const failure = sendWithRetries(unsent(clearFieldRequest("/api/inquiries/{target_id}/description", ID))).catch(
-    (error: unknown) => error,
+  const sent = stubFetch(() =>
+    Response.json({ detail: "database unavailable" }, { status: 503 }),
   );
+  const failure = sendWithRetries(
+    unsent(clearFieldRequest("/api/inquiries/{target_id}/description", ID)),
+  ).catch((error: unknown) => error);
   await vi.runAllTimersAsync();
   expect(await failure).toMatchObject({ status: 503, detail: "database unavailable" });
   expect(sent).toHaveLength(4);
 });
 
 test("an answer from the server is not retried", async () => {
-  const conflict = stubFetch(() => Response.json({ detail: "expected 'active'", code: "conflict" }, { status: 409 }));
+  const conflict = stubFetch(() =>
+    Response.json({ detail: "expected 'active'", code: "conflict" }, { status: 409 }),
+  );
   await expect(
-    sendWithRetries(setFieldRequest("/api/inquiries/{target_id}/status", ID, { value: "complete" })),
+    sendWithRetries(
+      setFieldRequest("/api/inquiries/{target_id}/status", ID, { value: "complete" }),
+    ),
   ).rejects.toMatchObject({ status: 409 });
   expect(conflict).toHaveLength(1);
 });
 
 test("a batch that fails is retried with the same item keys", async () => {
   vi.useFakeTimers();
-  const answers = [() => Response.json({ detail: "database unavailable" }, { status: 503 }), () => Response.json({ ids: [ID] })];
-  const sent = stubFetch(() => answers[sent.length - 1]!());
+  const answers = [
+    () => Response.json({ detail: "database unavailable" }, { status: 503 }),
+    () => Response.json({ ids: [ID] }),
+  ];
+  const sent = stubFetch(() => must(answers[sent.length - 1])());
   const done = sendWithRetries(
-    batchRequest([{ kind: "Issue", title: "Follow-up" }], [{ from_index: 0, to_id: PARENT, edge_kind: "narrows" }]),
+    batchRequest(
+      [{ kind: "Issue", title: "Follow-up" }],
+      [{ from_index: 0, to_id: PARENT, edge_kind: "narrows" }],
+    ),
   );
   await vi.runAllTimersAsync();
   expect(await done).toEqual({ ids: [ID] });
@@ -226,19 +302,35 @@ test("a write logs its send, each automatic retry with its attempt, wait and key
   vi.useFakeTimers();
   vi.spyOn(console, "warn").mockImplementation(() => {});
   stubFetch(() => Response.json({ detail: "database unavailable" }, { status: 503 }));
-  const request = unsent(setFieldRequest("/api/inquiries/{target_id}/title", ID, { value: "A private title" }));
+  const request = unsent(
+    setFieldRequest("/api/inquiries/{target_id}/title", ID, {
+      value: "A private title",
+    }),
+  );
   const failure = sendWithRetries(request).catch((error: unknown) => error);
   await vi.runAllTimersAsync();
   const failed = (await failure) as ApiError;
-  const events = recentEvents().filter(({ event, fields }) => event.startsWith("write.") && fields.key === request.key);
-  expect(events.map(({ event, fields }) => [event, fields.route, fields.attempt, fields.wait_ms])).toEqual([
+  const events = recentEvents().filter(
+    ({ event, fields }) => event.startsWith("write.") && fields.key === request.key,
+  );
+  expect(
+    events.map(({ event, fields }) => [
+      event,
+      fields.route,
+      fields.attempt,
+      fields.wait_ms,
+    ]),
+  ).toEqual([
     ["write.send", "setField", undefined, undefined],
     ["write.retry", "setField", 2, 1000],
     ["write.retry", "setField", 3, 3000],
     ["write.retry", "setField", 4, 9000],
     ["write.failed", "setField", 4, undefined],
   ]);
-  expect(events.at(-1)!.fields).toMatchObject({ status: 503, request_id: failed.sent!.id });
+  expect(must(events.at(-1)).fields).toMatchObject({
+    status: 503,
+    request_id: must(failed.sent).id,
+  });
   expect(JSON.stringify(recentEvents())).not.toContain("private");
 });
 
@@ -247,7 +339,10 @@ test("a Retry after attempts that got no answer reads first; one found landed re
   vi.spyOn(console, "warn").mockImplementation(() => {});
   const sent = stubFetch(() => Promise.reject(new TypeError("Failed to fetch")));
   let landed = false;
-  const request = { ...removeEdgeRequest(EDGE), reconcile: async () => (landed ? { change_id: "c1", created: false } : null) };
+  const request = {
+    ...removeEdgeRequest(EDGE),
+    reconcile: async () => (landed ? { change_id: "c1", created: false } : null),
+  };
   const failure = sendWithRetries(request).catch(() => {});
   await vi.runAllTimersAsync();
   await failure;
@@ -273,23 +368,29 @@ function unsent<Result>(request: WriteRequest<Result>): WriteRequest<Result> {
 }
 
 function keysOf(request: Sent, place: KeyPlace): string[] {
-  const body = request.body as { idempotency_key?: string; items?: { idempotency_key: string }[] };
+  const body = request.body as {
+    idempotency_key?: string;
+    items?: { idempotency_key: string }[];
+  };
   switch (place) {
     case "header":
       expect(body).not.toHaveProperty("idempotency_key");
-      return [request.headers["idempotency-key"]!];
+      return [must(request.headers["idempotency-key"])];
     case "body":
       expect(request.headers).not.toHaveProperty("idempotency-key");
-      return [body.idempotency_key!];
+      return [must(body.idempotency_key)];
     case "items":
       expect(request.headers).not.toHaveProperty("idempotency-key");
-      return body.items!.map((item) => item.idempotency_key);
+      return must(body.items).map((item) => item.idempotency_key);
   }
 }
 
 /** `body` with its keys taken out, to compare with what the caller asked for. */
 function withoutKeys(body: unknown, place: KeyPlace): unknown {
-  const { idempotency_key: _, ...rest } = body as { idempotency_key?: string; items?: object[] };
+  const { idempotency_key: _, ...rest } = body as {
+    idempotency_key?: string;
+    items?: object[];
+  };
   if (place !== "items") return rest;
-  return { ...rest, items: rest.items!.map((item) => withoutKeys(item, "body")) };
+  return { ...rest, items: must(rest.items).map((item) => withoutKeys(item, "body")) };
 }

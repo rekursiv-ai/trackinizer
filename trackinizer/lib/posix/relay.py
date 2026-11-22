@@ -35,6 +35,7 @@ import logging
 import os
 import select
 import signal
+import stat
 import struct
 import sys
 import termios
@@ -169,7 +170,11 @@ def terminal_size(fd: int) -> tuple[int, int]:
 
     """
     try:
-        packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+        packed = fcntl.ioctl(
+            fd,
+            termios.TIOCGWINSZ,
+            bytes(8),  # A ``struct winsize``: four unsigned shorts.
+        )
     except (OSError, ValueError, AttributeError):
         return (24, 80)
     rows, cols, _, _ = struct.unpack("HHHH", packed)
@@ -196,6 +201,12 @@ class Relay:
         block: it runs on the relay's own path, so an escape stops mirroring.
       on_started: Called with the child PID once it has started, before the
         relay begins pumping its output. Must not raise or block.
+      suspend_key: A keystroke that suspends THIS process, as Ctrl+Z does a
+        job run directly, instead of reaching the child: the terminal is
+        handed back cooked, and on ``fg`` taken raw again and resized. For a
+        child that outlives the relay; None forwards every key.
+      on_resume: Called once ``fg`` has given the terminal back, so the child
+        can be asked to repaint over whatever the shell wrote meanwhile.
 
     """
 
@@ -208,6 +219,8 @@ class Relay:
         on_input: Callable[[bytes], None] | None = None,
         on_output: Callable[[bytes], None] | None = None,
         on_started: Callable[[int], None] | None = None,
+        suspend_key: bytes | None = None,
+        on_resume: Callable[[], None] | None = None,
     ) -> None:
         self._terminal = terminal
         self._stdin = stdin
@@ -215,8 +228,12 @@ class Relay:
         self._on_input = on_input
         self._on_output = on_output
         self._on_started = on_started
+        self._suspend_key = suspend_key
+        self._on_resume = on_resume
         self._interrupted: int | None = None
-        self._teardown: asyncio.Task[None] | None = None
+        self._teardowns: set[asyncio.Task[None]] = set()
+        self._old_attr: list[int | list[bytes | int]] | None = None
+        self._screen = _ScreenMode()
 
     async def serve(self) -> int:
         """Spawn the child, relay until it exits, and restore the terminal.
@@ -231,7 +248,9 @@ class Relay:
 
         """
         stdin_fd = real_fd(self._stdin if self._stdin is not None else sys.stdin)
-        out_fd = real_fd(self._stdout if self._stdout is not None else sys.stdout)
+        out_fd = real_fd(
+            self._stdout if self._stdout is not None else sys.stdout,
+        )
         await self._terminal.start()
         # From here the child exists, so every later failure must still reap
         # it: an exception in terminal setup would otherwise leak a live
@@ -244,18 +263,18 @@ class Relay:
                 self._on_started(pid)
             if stdin_fd >= 0:
                 self._terminal.set_winsize(*terminal_size(stdin_fd))
-            old_attr = _enter_raw(stdin_fd)
+            old_attr = self._old_attr = _enter_raw(stdin_fd)
             handlers = self._install_handlers(stdin_fd)
             try:
                 await self._pump(stdin_fd, out_fd)
             finally:
                 for sig in handlers:
-                    with contextlib.suppress(NotImplementedError, RuntimeError):
+                    with contextlib.suppress(RuntimeError):
                         asyncio.get_running_loop().remove_signal_handler(sig)
                 # While the child is provably gone and raw mode still stands:
                 # these are emulator modes, so ``tcsetattr`` below cannot undo
                 # them and nothing after it can reach them.
-                _ = reset_terminal_modes(out_fd)
+                _ = reset_terminal_modes(out_fd, alternate_screen=self._screen.active)
                 _restore(stdin_fd, old_attr)
         finally:
             await self._terminal.terminate()
@@ -293,8 +312,8 @@ class Relay:
     def _interrupt(self, signum: int) -> None:
         """Record a relay-level signal and tear the child down for it."""
         self._interrupted = signum
-        self._teardown = asyncio.get_running_loop().create_task(
-            self._terminal.terminate(),
+        self._teardowns.add(
+            asyncio.get_running_loop().create_task(self._terminal.terminate()),
         )
 
     # The child's output ends the relay: on a pty the master reads EIO when the slave
@@ -304,12 +323,13 @@ class Relay:
     async def _pump(self, stdin_fd: int, out_fd: int) -> None:
         """Copy keystrokes down and the child's painting up, until it exits."""
         keystrokes = (
-            asyncio.create_task(self._forward_input(stdin_fd))
+            asyncio.create_task(self._forward_input(stdin_fd, out_fd))
             if stdin_fd >= 0
             else None
         )
         try:
             async for chunk in self._terminal.output():
+                self._screen.feed(chunk)
                 # Tee BEFORE the mirror: a caller whose session source is the
                 # stream must see every byte even when there is no real
                 # destination to mirror to (captured stdout under a harness).
@@ -323,7 +343,7 @@ class Relay:
                 with contextlib.suppress(asyncio.CancelledError):
                     await keystrokes
 
-    async def _forward_input(self, stdin_fd: int) -> None:
+    async def _forward_input(self, stdin_fd: int, out_fd: int) -> None:
         """Copy this terminal's keystrokes to the child until stdin closes."""
         while True:
             if not await _readable(stdin_fd):
@@ -336,12 +356,39 @@ class Relay:
                 return
             if not data:
                 return
-            if not await self._terminal.write(data):
+            while self._suspend_key is not None and self._suspend_key in data:
+                typed, _, data = data.partition(self._suspend_key)
+                if typed and not await self._send(typed):
+                    return
+                self._suspend(stdin_fd, out_fd)
+            if data and not await self._send(data):
                 return
-            # Tee AFTER the write, so an observer only ever sees input the
-            # child actually received.
-            if self._on_input is not None:
-                self._on_input(data)
+
+    async def _send(self, data: bytes) -> bool:
+        """Type ``data`` into the child; False once it takes no more."""
+        if not await self._terminal.write(data):
+            return False
+        # Tee AFTER the write, so an observer only ever sees input the child
+        # actually received.
+        if self._on_input is not None:
+            self._on_input(data)
+        return True
+
+    # A job stopped from its own terminal is stopped with its whole group, as the
+    # line discipline would stop it; signalling only this pid would leave a shell
+    # pipeline's other members running.
+    def _suspend(self, stdin_fd: int, out_fd: int) -> None:
+        """Hand the terminal back and stop this job; take it back on ``fg``."""
+        _ = reset_terminal_modes(out_fd, alternate_screen=self._screen.active)
+        _restore(stdin_fd, self._old_attr)
+        os.killpg(os.getpgrp(), signal.SIGTSTP)
+        # Continued: ``fg`` gave the terminal back to this job.
+        self._old_attr = _enter_raw(stdin_fd)
+        if self._screen.active is not None and out_fd >= 0 and os.isatty(out_fd):
+            _ = write_all(out_fd, f"\x1b[?{self._screen.active}h".encode())
+        self._resize(stdin_fd)
+        if self._on_resume is not None:
+            self._on_resume()
 
 
 class ThreadedRelay:
@@ -515,6 +562,74 @@ class ThreadedRelay:
             return
 
 
+class _ScreenMode:
+    """Track screen switches across chunks without retaining terminal output."""
+
+    def __init__(self) -> None:
+        self.active: int | None = None
+        self._state = "ground"
+        self._osc = False
+        self._parameter = 0
+        self._mode: int | None = None
+
+    def feed(self, chunk: bytes) -> None:
+        """Observe control sequences without interpreting control-string payloads.
+
+        Args:
+          chunk: The next bytes mirrored to the terminal.
+
+        """
+        for byte in chunk:
+            if self._state in ("string", "string_escape"):
+                self._string(byte)
+            elif byte == 27:
+                self._state = "escape"
+            elif byte in (24, 26):
+                self._state = "ground"
+            elif self._state == "escape":
+                self._escape(byte)
+            elif self._state == "private":
+                self._state = "parameters" if byte == ord("?") else "ignore"
+            elif self._state == "parameters":
+                self._parameters(byte)
+            elif self._state == "ignore" and 0x40 <= byte <= 0x7E:
+                self._state = "ground"
+
+    def _string(self, byte: int) -> None:
+        if (self._state == "string_escape" and byte == ord("\\")) or (
+            self._osc and byte == 7
+        ):
+            self._state = "ground"
+        else:
+            self._state = "string_escape" if byte == 27 else "string"
+
+    def _escape(self, byte: int) -> None:
+        self._state = "ground"  # pragma: no mutate -- Other labels act as ground.
+        if byte == ord("["):
+            self._state = "private"
+            self._parameter = 0
+            self._mode = None
+        elif byte in b"]PX^_":  # pragma: no mutate -- X is already a member.
+            self._osc = byte == ord("]")
+            self._state = "string"
+        elif byte == ord("c"):
+            self.active = None
+
+    def _parameters(self, byte: int) -> None:
+        if ord("0") <= byte <= ord("9"):
+            self._parameter = min(10_000, self._parameter * 10 + byte - ord("0"))
+        elif byte == ord(";") or byte in b"hl":
+            if self._parameter in (47, 1047, 1049):
+                self._mode = self._parameter
+            self._parameter = 0
+            if byte in b"hl":
+                if self._mode is not None:
+                    self.active = self._mode if byte == ord("h") else None
+                self._state = "ground"
+        elif byte >= 0x20:
+            self._state = "ground" if byte >= 0x40 else "ignore"
+
+
 # None when ``fd`` is not a terminal (piped stdin, or -1), so the relay still runs -- it
 # just has no line discipline to toggle.
 def _enter_raw(fd: int) -> list[int | list[bytes | int]] | None:
@@ -525,7 +640,10 @@ def _enter_raw(fd: int) -> list[int | list[bytes | int]] | None:
         old = cast(list[int | list[bytes | int]], termios.tcgetattr(fd))
     except termios.error:
         return None
-    tty.setraw(fd)
+    # ``TCSANOW``, not setraw's default ``TCSAFLUSH``: that drains pending output first,
+    # and blocks forever on Darwin when nothing reads it, as ``TCSADRAIN`` does (see
+    # ``_restore``). After a suspend the mode reset is just such output.
+    tty.setraw(fd, termios.TCSANOW)
     return old
 
 
@@ -545,13 +663,18 @@ def _restore(fd: int, old_attr: list[int | list[bytes | int]] | None) -> None:
         termios.tcsetattr(fd, termios.TCSANOW, old_attr)
 
 
-# A selector is the cheap path, but it rejects a regular file outright (``EPERM`` from
-# ``epoll``), and stdin is a redirected file whenever the caller was invoked with ``<
-# file`` or driven by a harness. Such a file is always ready anyway, so falling back to
-# a thread read is not a busy loop -- it is one blocking read per chunk, off the event
-# loop.
+# `stdin` is a regular file whenever the caller was invoked with ``< file`` or driven by a
+# harness, and a regular file is always ready: a read returns bytes, or b"" at its end.
+# So it is never waited on. Asking the selector instead hangs on macOS: kqueue takes the
+# file but reports it readable only while bytes remain, so the read that would find the
+# end never comes (epoll refuses it outright, EPERM). For any other descriptor a selector
+# refuses, a thread's blocking poll waits instead -- one per chunk, off the event loop.
 async def _readable(fd: int) -> bool:
     """Wait until ``fd`` has bytes; False once it is unreadable."""
+    # A descriptor fstat cannot read is the selector's to refuse, as before.
+    with contextlib.suppress(OSError):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            return True
     loop = asyncio.get_running_loop()
     ready = cast(asyncio.Future[None], loop.create_future())
     try:

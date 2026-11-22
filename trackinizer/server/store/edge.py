@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Final, cast
 from treekle import from_plain
 from treekle.absent import ABSENT, Absent
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     infer_produced_endpoints,
@@ -26,6 +27,7 @@ from trackinizer.server.store.cascade import _CascadeAuditMixin
 from trackinizer.server.values import (
     canonical_strs,
     empty_optional_to_none,
+    vetted_sql,
 )
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.edges import Edge
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import Principal
 
 
 __all__ = [
@@ -743,8 +746,9 @@ class _EdgeMixin(_CascadeAuditMixin):
         from_id: UUID,
         to_id: UUID,
         edge_kind: Edge.Kind,
+        principal: Principal | None = None,
     ) -> Edge | None:
-        """Fetch one edge by its ``(from_id, edge_kind, to_id)`` identity.
+        """Fetch one edge by identity when both endpoints are readable.
 
         Returns ``None`` when no such edge exists. Backs the read route
         ``GET /api/edges/<from>/<kind>/<to>`` (``docs/api.md`` 1.8).
@@ -753,19 +757,34 @@ class _EdgeMixin(_CascadeAuditMixin):
           from_id: UUID of the edge origin.
           to_id: UUID of the edge target.
           edge_kind: Type of edge (proves, favors, decomposes, etc).
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
-          edge: The edge, or None if not found.
+          edge: The edge, or None if absent or either endpoint is denied.
 
         """
+        params: list[object] = [from_id, to_id, edge_kind]
+        predicates = [
+            inquiry_read_filter(
+                reference,
+                policy=self.access_policy,
+                principal=principal,
+                params=params,
+            )
+            for reference in ("edges.from_id", "edges.to_id")
+        ]
+        readable = "".join(
+            f" AND ({predicate})" for predicate in predicates if predicate != "TRUE"
+        )
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
-                "priority, note, valence, labels FROM edges "
-                "WHERE from_id = $1 AND to_id = $2 AND edge_kind = $3",
-                from_id,
-                to_id,
-                edge_kind,
+                vetted_sql(
+                    "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
+                    "priority, note, valence, labels FROM edges "
+                    "WHERE from_id = $1 AND to_id = $2 AND edge_kind = $3",
+                    readable,
+                ),
+                *params,
             )
         return None if row is None else Edge.from_row(row)
 

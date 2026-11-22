@@ -2,29 +2,28 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from pydantic import ValidationError
 
 import pytest
 
 from trackinizer.server.visuals.catalog import (
+    RECORD_VISUAL,
+    Canvas,
     ContextGraphVisual,
     FilesVisual,
-    KnowledgeVisual,
     ParameterDescription,
     StaticVisual,
     TerminalVisual,
     TimelineVisual,
-    Workspace,
+    default_canvas,
     default_catalog,
-    default_workspace,
+    offer_record_visual,
 )
 
 
-def test_default_workspace_builds_the_default_catalog() -> None:
-    """The built workspace is the one place the default catalog comes from."""
-    assert default_workspace().catalog() == default_catalog()
+def test_default_canvas_builds_the_default_catalog() -> None:
+    """The built canvas is the one place the default catalog comes from."""
+    assert default_canvas().catalog() == default_catalog()
     assert [visual.type for visual in default_catalog().visuals] == [
         "trax.browse",
         "trax.subgraph",
@@ -38,26 +37,11 @@ def test_default_workspace_builds_the_default_catalog() -> None:
     ]
 
 
-def test_every_registered_visual_is_named_in_the_agent_skill() -> None:
-    """A seat that cannot read a type's name from its skill never asks for it.
-
-    Measured: with `trax.knowledge` missing from the SKILL.md list, a real Claude
-    turn asked for what a record stands on chose `trax.subgraph` instead.
-    """
-    skill = (
-        Path(__file__).parents[2] / "trax" / "docs" / "skills" / "trax" / "SKILL.md"
-    ).read_text()
-    missing = [
-        visual.type for visual in default_catalog().visuals if visual.type not in skill
-    ]
-    assert missing == []
-
-
 def test_a_type_that_is_not_registered_has_no_description() -> None:
     """A show of an unknown type is refused by the lookup, not by an exception."""
-    workspace = default_workspace()
-    assert workspace.visual("x.unknown") is None
-    summary = workspace.visual("trax.summary")
+    canvas = default_canvas()
+    assert canvas.visual("x.unknown") is None
+    summary = canvas.visual("trax.summary")
     assert summary is not None
     assert (summary.requires, summary.record_kinds) == (
         ["record"],
@@ -81,14 +65,12 @@ def test_static_visual_is_configured_by_data() -> None:
         ["record"],
     )
     assert described.default_size == "compact"
-    # No placement of its own, so a show of it still lands by the size rule.
-    assert described.default_placement is None
     assert described.parameter_schema == {}
 
 
 def test_browse_is_the_page_and_takes_no_record_or_parameter() -> None:
     """Browse draws the page: no record, no parameters, version unchanged."""
-    browse = default_workspace().visual("trax.browse")
+    browse = default_canvas().visual("trax.browse")
     assert browse is not None
     assert browse.version == 1
     assert browse.record_kinds == []
@@ -111,10 +93,37 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
     }
 
 
+def test_the_record_tile_is_offered_once_and_is_no_default_visual() -> None:
+    """A site whose app draws record tiles offers them; the default catalog does not."""
+    visuals = Canvas.Config()
+    offer_record_visual(visuals)
+    offer_record_visual(visuals)
+    offered = [
+        visual
+        for visual in visuals.make().catalog().visuals
+        if visual.type == RECORD_VISUAL
+    ]
+    assert RECORD_VISUAL not in {visual.type for visual in default_catalog().visuals}
+    assert len(offered) == 1
+    record = offered[0]
+    assert (record.requires, record.record_kinds, record.default_size) == (
+        ["record"],
+        None,
+        "compact",
+    )
+    assert sorted(record.parameter_schema) == ["kind"]
+    assert record.parameter_schema["kind"].max_length == 64
+
+
 def test_default_visual_requiring_a_record_is_rejected() -> None:
     """A new canvas cannot open on a tile that has no record to render."""
     with pytest.raises(ValueError, match="record"):
-        Workspace.Config(default_visual="trax.subgraph").make()
+        Canvas.Config(default_visual="trax.subgraph").make()
+
+
+def test_default_visual_that_is_not_registered_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Default visual must be registered"):
+        Canvas.Config(default_visual="x.nowhere").make()
 
 
 def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
@@ -140,37 +149,17 @@ def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
     )
 
 
-def test_knowledge_bounds_its_reach_and_names_one_claim() -> None:
-    """The fold takes claims 1 to 3 edges out, 2 unless asked, and opens one by id."""
-    described = KnowledgeVisual.Config().make().describe()
-    assert (described.type, described.requires, described.default_size) == (
-        "trax.knowledge",
-        ["record"],
-        "wide",
-    )
-    # The fold is the answer over the stage, not a third lane in the page's row.
-    assert described.default_placement == "floating"
-    assert set(described.parameter_schema) == {"hops", "claim"}
-    hops = described.parameter_schema["hops"]
-    assert (hops.type, hops.default, hops.minimum, hops.maximum) == ("integer", 2, 1, 3)
-    claim = described.parameter_schema["claim"]
-    assert (claim.type, claim.default, claim.max_length) == ("string", "", 512)
-    assert default_workspace().visual("trax.knowledge") == described
-
-
-def test_terminal_needs_no_record_and_bounds_its_machine_and_has_no_terminal_id() -> (
-    None
-):
-    """The tile starts nothing itself, caps its machine and keeps no terminal id."""
+def test_terminal_needs_no_record_and_bounds_its_host_and_has_no_terminal_id() -> None:
+    """The tile starts nothing itself, caps its host and keeps no terminal id."""
     described = TerminalVisual.Config().make().describe()
     assert (described.type, described.requires, described.default_size) == (
         "trax.terminal",
         [],
         "wide",
     )
-    machine = described.parameter_schema["machine"]
-    assert (machine.type, machine.default, machine.max_length) == ("string", "", 63)
-    assert set(described.parameter_schema) == {"machine", "start"}
+    host = described.parameter_schema["host"]
+    assert (host.type, host.default, host.max_length) == ("string", "", 63)
+    assert set(described.parameter_schema) == {"host", "start"}
     start = described.parameter_schema["start"]
     assert (start.type, start.default) == ("boolean", False)
 
@@ -213,7 +202,7 @@ def test_files_takes_any_record_and_bounds_its_narrowing() -> None:
         },
         "record_kinds": None,
     }
-    assert default_workspace().visual("trax.files") == described
+    assert default_canvas().visual("trax.files") == described
 
 
 def test_context_graph_default_reach_past_three_hops_is_a_config_error() -> None:
@@ -236,11 +225,11 @@ def test_timeline_config_raises_the_descriptor_bound_instead_of_failing() -> Non
         schema["results_per_direction"].default,
         schema["results_per_direction"].maximum,
     ) == (3, 9)
-    workspace = Workspace.Config(
+    canvas = Canvas.Config(
         visuals=[StaticVisual.Config(type="x.notes", title="Notes"), timeline],
         default_visual="x.notes",
     ).make()
-    registered = workspace.visual("trax.timeline")
+    registered = canvas.visual("trax.timeline")
     assert registered is not None
     assert registered.parameter_schema["direction_limit"].maximum == 20
 
@@ -267,6 +256,38 @@ def test_parameter_bounds_that_do_not_apply_to_the_type_are_rejected(
     """Every type rejects the bounds that belong to the other types."""
     with pytest.raises(ValidationError, match="cannot have"):
         ParameterDescription.model_validate(kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"type": "string", "default": ""}, "need a default and max_length"),
+        ({"type": "string", "default": 3, "max_length": 5}, "need a default"),
+        ({"type": "string", "default": "toolong", "max_length": 3}, "exceeds maximum"),
+        ({"type": "integer", "default": "1", "minimum": 0, "maximum": 2}, "integer"),
+        ({"type": "integer", "default": True, "minimum": 0, "maximum": 2}, "integer"),
+        ({"type": "integer", "default": 1, "minimum": 0}, "need minimum and maximum"),
+        ({"type": "integer", "default": 1, "minimum": 3, "maximum": 2}, "exceeds max"),
+        ({"type": "boolean", "default": "yes"}, "need a boolean default"),
+    ],
+)
+def test_a_parameter_whose_default_its_type_cannot_hold_is_rejected(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        ParameterDescription.model_validate(kwargs)
+
+
+def test_two_visuals_of_one_type_are_rejected() -> None:
+    notes = StaticVisual.Config(type="x.notes", title="Notes")
+    with pytest.raises(ValueError, match="Visual types must be unique"):
+        Canvas.Config(visuals=[notes, notes], default_visual="x.notes").make()
+
+
+def test_an_unregistered_default_visual_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Default visual must be registered"):
+        Canvas.Config(default_visual="x.absent").make()
 
 
 if __name__ == "__main__":

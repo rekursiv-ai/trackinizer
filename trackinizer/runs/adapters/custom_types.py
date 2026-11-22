@@ -1,0 +1,198 @@
+"""The ``Adapter`` protocol each supported CLI implements.
+
+Each CLI ships one ``Adapter`` saying where its session log lives and which
+reader turns that log into records. The session runner stays CLI-agnostic and
+drives every adapter through this protocol.
+
+The records themselves are the shared IR (``trackinizer.sagent.session.types``),
+not a trackinizer-specific shape: one vocabulary reads a session, stores it,
+and writes it back out as any CLI's native format.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
+
+    from trackinizer.sagent.scripts.convert_session.tail import Tail
+    from trackinizer.types.streams import TraxRecord
+
+
+__all__ = ["Adapter", "Subagent"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Subagent:
+    """A session one of the run's own sessions spawned, as the CLI's files name it."""
+
+    child: str
+    """The CLI's own id for the sub-agent's session, as ``session_id_from_path`` says."""
+
+    parent: str
+    """The CLI's own id for the session that spawned it, the run's or a sub-agent's."""
+
+    note: str = ""
+    """What spawned it, as the CLI records it: the agent's type, task, and call."""
+
+
+class Adapter(Protocol):
+    """One CLI's session-log dialect."""
+
+    name: str
+    """Adapter identifier (``"claude"`` / ``"gemini"`` / ``"codex"``)."""
+
+    cli_binary: str
+    """The executable we exec (``"claude"`` / ``"gemini"`` / ``"codex"``)."""
+
+    whole_file: bool
+    """Whether the CLI rewrites its session file rather than appending.
+
+    ``False`` (claude / codex): append-only JSONL, so the runner follows a
+    byte offset and feeds each new line. ``True`` (gemini): one JSON object
+    rewritten in place, so the runner re-reads the whole body on each change
+    and feeds that -- which the reader takes as the whole session again, and
+    the chunk is marked a restart so each record lands back on the position it
+    already held.
+    """
+
+    parent_session_env: frozenset[str]
+    """Inherited variables that name the session which LAUNCHED the runner.
+
+    The runner drops them from the wrapped CLI's environment. An agent that
+    starts the runner hands its own environment down, and a CLI finding its
+    launcher's markers acts as that launcher's child: claude, given
+    ``CLAUDE_CODE_CHILD_SESSION``, keeps no transcript -- and the transcript
+    is what the runner captures, so the run records nothing at all.
+    """
+
+    session_switch_commands: frozenset[str]
+    """Slash commands that can move the live CLI into another session.
+
+    Each continues under a session id this run does not own -- claude's
+    ``/clear`` mints one, ``/resume`` and ``/branch`` switch to one -- so the
+    turns after it go uncaptured. The runner names them in a warning at exit.
+    """
+
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        """Return the session ``cli_args`` continue: its id, ``""``, or ``None``.
+
+        ``None`` means the arguments start a new session: a fresh one, or a
+        fork, which copies an old session into a NEW transcript. ``""`` means
+        they continue one the CLI picks after it starts (a picker,
+        ``--continue``, a search term), which the runner cannot name.
+
+        Args:
+          cli_args: The arguments the CLI is spawned with.
+
+        Returns:
+          session_id: The continued session's id, ``""`` when the CLI picks it,
+            or ``None`` for a new session.
+
+        """
+        ...
+
+    def session_dirs(self) -> Iterable[Path]:
+        """Directories the wrapped CLI writes session files to.
+
+        An iterable of watch ROOTS. Paths may not exist before a first
+        hermetic run; the live runner creates them before arming its
+        filesystem watches. An empty iterable means the adapter has no
+        filesystem capture source.
+
+        Returns:
+          result: Iterable of directories where session files may appear.
+
+        """
+        ...
+
+    def matches_session_file(self, path: Path) -> bool:
+        """Whether ``path`` under ``session_dirs()`` is a log this adapter parses.
+
+        Usually a check on the suffix (``*.jsonl``) and maybe the parent dir.
+
+        Args:
+          path: File path to check.
+
+        Returns:
+          result: True if this adapter can parse the file.
+
+        """
+        ...
+
+    def session_scope(self) -> Path | None:
+        """Return the subtree THIS run's session files land in, if the CLI has one.
+
+        ``session_dirs()`` is deliberately wide -- a root, so a project
+        directory minted mid-run is still covered. That width is what makes a
+        concurrent run's brand-new file indistinguishable from this run's
+        without a session ID: both appear under the watched root after arming.
+
+        A CLI that derives its directory from the working directory (claude
+        encodes the cwd; gemini hashes it) can say so here, and the runner
+        drops anything outside it. ``None`` means the CLI offers no such
+        signal -- codex shards by DATE, which every concurrent run shares.
+        The runner then claims the child-held rollout's session ID instead.
+
+        Returns:
+          result: The Path | None.
+
+        """
+        ...
+
+    def session_id_from_path(self, path: Path) -> str | None:
+        """Return the CLI's OWN session id for this file, used to correlate a resume.
+
+        Claude names each session file ``<session-id>.jsonl``, so the stem is
+        the id that stays stable across ``--resume``; an adapter whose CLI has
+        no stable per-session id returns ``None`` (such a CLI's runs are simply
+        not resumable via correlation).
+
+        Args:
+          path: Session file path.
+
+        Returns:
+          result: Stable session id if extractable; None if unsupported.
+
+        """
+        ...
+
+    def subagent(self, path: Path) -> Subagent | None:
+        """Return the sub-agent whose transcript ``path`` is; ``None`` for any other file.
+
+        A sub-agent's transcript is a session of its own: the runner records it
+        in an AgentSession apart from the run's, linked to the one that spawned it.
+        A CLI that keeps sub-agents inside the parent's file, or has none, says
+        ``None`` for every path.
+
+        Args:
+          path: Session file path.
+
+        Returns:
+          result: The sub-agent and its parent, by the CLI's own ids, or ``None``.
+
+        """
+        ...
+
+    def reader(self) -> Tail[TraxRecord]:
+        """Return a fresh reader for one of this CLI's session files.
+
+        One per FILE, not per run: a reader carries the position it has read
+        to, and a session spans several files (claude splits on compaction,
+        codex forks). Sharing one across files would number the second file's
+        records after the first's.
+
+        A :class:`Tail` rather than a reader of this module's own: the IR's
+        ``normalize`` PULLS lines and the runner PUSHES them, and ``Tail`` is
+        that turn -- so capture runs the same reader conversion does, and a
+        dialect fix lands in both.
+
+        Returns:
+          result: Fresh reader for parsing session lines from a file.
+
+        """
+        ...

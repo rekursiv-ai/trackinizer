@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from functools import partial
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 from uuid import UUID
 
 import logging
@@ -27,8 +27,11 @@ from trackinizer.server.api._deps import (
     get_hub,
     get_inbound,
     get_replays,
+    get_session_relay,
     get_store,
 )
+from trackinizer.server.api._routes_shared import refusal
+from trackinizer.server.api.agent_policy_gate import refuse_line
 from trackinizer.server.api.session_access import (
     granted_audience,
     is_a_science_chat,
@@ -47,6 +50,7 @@ from trackinizer.server.auth import (
     require_role,
 )
 from trackinizer.server.inbound import Inbound, InboundQueue
+from trackinizer.server.session_relay import InputRefusedError, NotLiveError
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.visuals.partners import (
     is_assistant_session,
@@ -59,13 +63,14 @@ from trackinizer.server.visuals.workspace_store import read_chat_provider
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.audience import OPEN
 from trackinizer.wire.bodies import SubmitAgentSession
-from trackinizer.wire.wire_machines import NAME_PATTERN
+from trackinizer.wire.wire_hosts import NAME_PATTERN
 from trackinizer.wire.wire_science_chat import (
     CHAT_SESSION_PREFIX,
     CHAT_TITLE,
     ChatProvider,
     chat_conversation_id,
 )
+from trackinizer.wire.wire_session_relay import INPUT_REFUSED, NewInput
 from trackinizer.wire.wire_sessions import (
     CHAT_RUN_LIVE,
     CLI_REQUIRED,
@@ -85,6 +90,10 @@ from trackinizer.wire.wire_sessions import (
     SessionStart,
     SessionStartResponse,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 _logger = logging.getLogger(__name__)
@@ -200,6 +209,7 @@ async def session_start_route(
         seq=next_seq,
         cli_session_id=row.cli_session_id,
         actor=row.owner,
+        account=row.account,
         audience=row.audience,
     )
 
@@ -339,32 +349,16 @@ async def send_message_route(
         live session matched).
 
     """
-    inbound = get_inbound(request)
-    idempotency_key = _idempotency_key(request)
-
     store = get_store(request)
+    relay = get_session_relay(request)
+    author = await _author(request, identity, body=body)
     # Once for every session the name reaches: the asker's rights do not vary by session.
     asker = await resolve_asker(request, identity, email=body.asker)
-    # Resolve liveness BEFORE the in-memory critical section: the DB resolve
-    # (and the per-session liveness re-check below) is async and must not run
-    # while ``send_once`` holds the queue lock.
-    matches = await store.resolve_live_sessions(body.actor, room=body.room)
-    if body.room is None:
-        for _, rooms in matches:
-            if len(rooms) > 1:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"@{body.actor} is in rooms {sorted(rooms)}; "
-                        f"address one explicitly (e.g. @{body.actor}:{min(rooms)})"
-                    ),
-                )
-
-    targets: list[tuple[UUID, Inbound]] = []
-    for session_id, rooms in matches:
+    targets: list[UUID] = []
+    for session_id in await _sessions(request, body):
         # Re-check liveness immediately before building the target: ``resolve``
-        # and the enqueue are separate steps, and a concurrent ``end`` between
-        # them would otherwise drop the message into a queue nobody drains.
+        # and the send are separate steps, and a concurrent ``end`` between
+        # them would otherwise drop the message where nothing takes it.
         session = await store.get_inquiry(session_id)
         if session is not None:
             # Before the liveness skip: the send is refused whole, so a caller
@@ -373,14 +367,14 @@ async def send_message_route(
                 request,
                 identity,
                 session=cast(AgentSession, session),
-                mode="input",
+                mode="post",
                 asker=asker,
             )
         if session is None or cast(AgentSession, session).ended is not None:
             continue
-        # A browser reaches a chat through its station, whether or not anything is
-        # draining the chat now; an agent key's send to an idle chat is dropped, as
-        # it is to any session no one drains.
+        # A browser reaches a chat through its station, whether or not a run holds the
+        # chat now; an agent key's send to an idle chat is dropped, as it is to any
+        # session whose process is gone.
         if identity.api_key_id is None and is_a_science_chat(
             cast(AgentSession, session),
         ):
@@ -388,29 +382,122 @@ async def send_message_route(
                 status_code=409,
                 detail="Open its station to talk to this chat",
             )
-        if not inbound.has_poller(session_id):
+        process = relay.process(session_id)
+        if process is None or process.state == "detached":
             continue
+        # A chat's line arrives through its station, which opens the conversation it
+        # answers in; a direct send names none, so it has nowhere to land.
         if is_a_science_chat(cast(AgentSession, session)):
             raise _no_direct_line()
-        scoped_room = body.room or (rooms[0] if rooms else None)
-        targets.append(
-            (
-                session_id,
-                Inbound(
-                    text=body.text,
-                    source=identity.email,
-                    source_role=identity.role,
-                    room=scoped_room,
-                ),
-            ),
-        )
+        # As the access check, before anything is sent: one refusal refuses the send.
+        await refuse_line(request, identity, session_id=session_id)
+        targets.append(session_id)
+    key = _idempotency_key(request)
+    # One receipt per key: a replay answers what the first send answered, and two
+    # concurrent sends under one key send once.
+    return SendMessageResponse(
+        delivered=await get_replays(request).messages.run(
+            None if key is None else (identity.user_id, identity.api_key_id, key),
+            fingerprint="",
+            operation=partial(_sent, request, targets, body=body, author=author),
+        ),
+    )
 
-    # One atomic critical section dedups, enqueues every target, and records
-    # the receipt -- so two concurrent same-key sends can't both pass the
-    # dedup check and double-enqueue. A replay returns the original receipt;
-    # an empty non-replayed delivery is not recorded (the retry stays a real
-    # send once a session comes live).
-    return SendMessageResponse(delivered=inbound.send_once(idempotency_key, targets))
+
+async def _author(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    body: SendMessage,
+) -> str:
+    """Return who sends ``body``: an agent of the caller's own process, else the caller."""
+    if body.from_session is None and identity.process is None:
+        return identity.email
+    if body.from_session is None:
+        raise refusal(
+            403,
+            code="not_its_process",
+            message="an agent process's key sends as an agent of its session; name it",
+        )
+    assert isinstance(body.from_label, str)
+    held = get_session_relay(request).socket_key(body.from_session)
+    if identity.api_key_id is None or held != identity.api_key_id:
+        raise refusal(
+            403,
+            code="not_its_process",
+            message="this key holds the socket of no agent process of that session",
+        )
+    sender = await require_session(get_store(request), body.from_session)
+    return f"{body.from_label}#{sender.seq}"
+
+
+async def _sessions(
+    request: Request,
+    body: SendMessage,
+) -> list[UUID]:
+    """Return the sessions ``body``'s target names."""
+    store = get_store(request)
+    if body.to is None:
+        assert isinstance(body.actor, str)
+        matches = await store.resolve_live_sessions(body.actor, room=body.room)
+        if body.room is None:
+            for _, rooms in matches:
+                if len(rooms) > 1:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"@{body.actor} is in rooms {sorted(rooms)}; "
+                            f"address one explicitly (e.g. @{body.actor}:{min(rooms)})"
+                        ),
+                    )
+        return [session_id for session_id, _ in matches]
+    named = body.to.session
+    session_id = (
+        named
+        if isinstance(named, UUID)
+        else await store.inquiry_id("AgentSession", named)
+    )
+    found = None if session_id is None else await store.get_inquiry(session_id)
+    if not isinstance(found, AgentSession):
+        raise refusal(404, code="no_session", message=f"no session {named}")
+    return [found.id]
+
+
+# A send no target took and one refused is that refusal, 409 ``input_refused``.
+async def _sent(
+    request: Request,
+    targets: Sequence[UUID],
+    *,
+    body: SendMessage,
+    author: str,
+) -> list[UUID]:
+    """Send ``body``'s text to each target's agent process; return those sent to."""
+    relay = get_session_relay(request)
+    sent: list[UUID] = []
+    refused: InputRefusedError | None = None
+    for session_id in targets:
+        try:
+            _ = relay.send_input(
+                session_id,
+                NewInput(
+                    kind="UserMessage",
+                    payload={"py/object": "UserMessage", "content": body.text},
+                ),
+                author=author,
+                recipient="" if body.to is None else body.to.label,
+                booked=body.booked,
+            )
+        # Its process went since it was found.
+        except NotLiveError:
+            continue
+        except InputRefusedError as error:
+            refused = error
+            continue
+        sent.append(session_id)
+    # Told as an empty receipt, a refusal reads as no session taking messages.
+    if refused is not None and not sent:
+        raise refusal(409, code=INPUT_REFUSED, message=str(refused)) from refused
+    return sent
 
 
 @router.get(

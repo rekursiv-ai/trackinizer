@@ -80,23 +80,44 @@ export type WriteRequest<Result> = {
 };
 
 /** Set a field with `PUT`. */
-export function setFieldRequest<P extends SetFieldPath>(path: P, id: string, body: SetFieldBody<P>) {
-  return bind("setField", body, (write: Keyed<SetFieldBody<P>>) => setField(path, id, write));
+export function setFieldRequest<P extends SetFieldPath>(
+  path: P,
+  id: string,
+  body: SetFieldBody<P>,
+) {
+  return bind("setField", body, (write: Keyed<SetFieldBody<P>>) =>
+    setField(path, id, write),
+  );
 }
 
 /** Clear a field with `DELETE`, never a `PUT` of `""`. */
-export function clearFieldRequest(path: ClearFieldPath, id: string, body: MutationBody = {}) {
+export function clearFieldRequest(
+  path: ClearFieldPath,
+  id: string,
+  body: MutationBody = {},
+) {
   return bind("clearField", body, (write) => clearField(path, id, write));
 }
 
 /** Add or remove one element of a list field with `PATCH`. */
-export function patchFieldRequest<P extends PatchFieldPath>(path: P, id: string, body: PatchFieldBody<P>) {
-  return bind("patchField", body, (write: Keyed<PatchFieldBody<P>>) => patchField(path, id, write));
+export function patchFieldRequest<P extends PatchFieldPath>(
+  path: P,
+  id: string,
+  body: PatchFieldBody<P>,
+) {
+  return bind("patchField", body, (write: Keyed<PatchFieldBody<P>>) =>
+    patchField(path, id, write),
+  );
 }
 
 /** Create one row of `kind` (`Issue`), with its relations in the body. */
-export function createRequest<Kind extends InquiryKind>(kind: Kind, body: CreateBody<Kind>) {
-  return bind("create", body, (write: Keyed<CreateBody<Kind>>) => createInquiry(kind, write));
+export function createRequest<Kind extends InquiryKind>(
+  kind: Kind,
+  body: CreateBody<Kind>,
+) {
+  return bind("create", body, (write: Keyed<CreateBody<Kind>>) =>
+    createInquiry(kind, write),
+  );
 }
 
 /**
@@ -105,7 +126,10 @@ export function createRequest<Kind extends InquiryKind>(kind: Kind, body: Create
  * Its edges carry none: a resend after a lost answer replays the items, and adds
  * again any of the edges someone removed meanwhile.
  */
-export function batchRequest(items: readonly BatchItem[], edges: readonly BatchEdge[] = []): WriteRequest<{ ids: string[] }> {
+export function batchRequest(
+  items: readonly BatchItem[],
+  edges: readonly BatchEdge[] = [],
+): WriteRequest<{ ids: string[] }> {
   const batch = keyedBatch(items, edges);
   return { route: "batch", key: batch.items[0]?.key, send: () => createBatch(batch) };
 }
@@ -121,7 +145,9 @@ export function setEdgeAnnotationRequest<A extends EdgeAnnotation>(
   edge: EdgeRef,
   body: SetEdgeAnnotationBody<A>,
 ) {
-  return bind("annotateEdge", body, (write: Keyed<SetEdgeAnnotationBody<A>>) => setEdgeAnnotation(annotation, edge, write));
+  return bind("annotateEdge", body, (write: Keyed<SetEdgeAnnotationBody<A>>) =>
+    setEdgeAnnotation(annotation, edge, write),
+  );
 }
 
 /** Clear one of an edge's annotations, or all its labels, with `DELETE`. */
@@ -130,7 +156,9 @@ export function clearEdgeAnnotationRequest(
   edge: EdgeRef,
   body: MutationBody = {},
 ) {
-  return bind("annotateEdge", body, (write) => clearEdgeAnnotation(annotation, edge, write));
+  return bind("annotateEdge", body, (write) =>
+    clearEdgeAnnotation(annotation, edge, write),
+  );
 }
 
 /** Add or remove one of an edge's labels with `PATCH`. */
@@ -163,7 +191,9 @@ export function purgeRequest(id: string, body: MutationBody = {}) {
  * that found it landed, each automatic retry and a final failure, by route and
  * key.
  */
-export async function sendWithRetries<Result>(request: WriteRequest<Result>): Promise<Result> {
+export async function sendWithRetries<Result>(
+  request: WriteRequest<Result>,
+): Promise<Result> {
   const { route, key } = request;
   log("info", unanswered.has(request) ? "write.resend" : "write.send", { route, key });
   for (let failures = 0; ; failures++) {
@@ -179,10 +209,23 @@ export async function sendWithRetries<Result>(request: WriteRequest<Result>): Pr
       if (isTransient(error)) unanswered.add(request);
       const delayMs = RETRY_DELAYS_MS[failures];
       if (delayMs === undefined || !resendable(request) || !isTransient(error)) {
-        log("warn", "write.failed", { route, key, ...(error instanceof ApiError ? failureFields(error) : { error: String(error) }) });
+        log("warn", "write.failed", {
+          route,
+          key,
+          ...(error instanceof ApiError
+            ? failureFields(error)
+            : { error: String(error) }),
+        });
         throw error;
       }
-      log("warn", "write.retry", { route, key, attempt: failures + 2, wait_ms: delayMs, status: error.status, request_id: error.sent?.id });
+      log("warn", "write.retry", {
+        route,
+        key,
+        attempt: failures + 2,
+        wait_ms: delayMs,
+        status: error.status,
+        request_id: error.sent?.id,
+      });
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
@@ -210,7 +253,11 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000];
  * The trax CLI's own retries resend without such a read.
  */
 function resendable(request: WriteRequest<unknown>): boolean {
-  return request.reconcile !== undefined || request.route === "create" || request.route === "batch";
+  return (
+    request.reconcile !== undefined ||
+    request.route === "create" ||
+    request.route === "batch"
+  );
 }
 
 /** Requests whose last attempt got no sure answer, so the next reads before it sends. */

@@ -18,13 +18,16 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", "/");
 });
 
 test("Copy details has the message, time, page, build and browser, the failed request, and the recent events", () => {
   history.replaceState(null, "", "#/ref/Issue/412");
   log("warn", "earlier", { n: 1 });
-  const text = errorDetails("Not saved: the server failed (database unavailable).", new ApiError(503, "database unavailable", null, SENT));
+  const text = errorDetails(
+    "Not saved: the server failed (database unavailable).",
+    new ApiError(503, "database unavailable", null, SENT),
+  );
   const lines = text.split("\n");
   expect(lines.slice(0, 3)).toEqual([
     "Trackinizer web app: Not saved: the server failed (database unavailable).",
@@ -46,16 +49,20 @@ test("a failure without a request says what it can; any other error keeps its st
     const all = errorDetails("m", error).split("\n");
     return all.slice(5, all.indexOf("recent events:"));
   };
-  expect(lines(new ApiError(0, "No response within 30 s.", "timeout"))).toEqual(["failed: request status=0 code=timeout"]);
+  expect(lines(new ApiError(0, "No response within 30 s.", "timeout"))).toEqual([
+    "failed: request status=0 code=timeout",
+  ]);
   expect(lines(null)).toEqual([]);
   const crash = new TypeError("kinds.find is not a function");
   const text = errorDetails("The page crashed", crash);
-  expect(text).toContain("\nerror: TypeError: kinds.find is not a function\nstack: TypeError: kinds.find is not a function\n    at ");
+  expect(text).toContain(
+    "\nerror: TypeError: kinds.find is not a function\nstack: TypeError: kinds.find is not a function\n    at ",
+  );
 });
 
 test("the page's route leaves out search text and a hash's query", () => {
   const route = (hash: string) => {
-    history.replaceState(null, "", hash || location.pathname);
+    history.replaceState(null, "", hash || "/");
     return pageRoute();
   };
   expect(route("#/search/my%20private%20words")).toBe("#/search/…");

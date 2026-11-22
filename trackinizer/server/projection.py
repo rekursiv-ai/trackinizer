@@ -7,6 +7,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
+from trackinizer.server.access_policy import inquiry_read_filter
+from trackinizer.server.values import vetted_sql
 from trackinizer.types.inquiries import (
     CITATION_VALENCE_DEFAULT,
     KIND_TO_CLASS,
@@ -31,18 +33,24 @@ if TYPE_CHECKING:
     import asyncpg
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.types.edges import Edge
 
 
 async def fetch_edges(
     conn: Conn,
     subject_id: UUID,
+    *,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
     """Return the outbound and inbound edge rows touching ``subject_id``.
 
     Args:
       conn: Database connection.
       subject_id: Row id to fetch edges for.
+      policy: Deployment policy for peer visibility.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       outbound: Rows where ``subject_id`` is the ``from`` side, each carrying
@@ -51,17 +59,37 @@ async def fetch_edges(
         ``from`` endpoint and the edge annotations.
 
     """
+    params: list[object] = [subject_id]
+    outbound_filter = inquiry_read_filter(
+        "edges.to_id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     outbound = await conn.fetch(
-        "SELECT to_id, to_kind, edge_kind, priority, note, valence, labels "
-        "FROM edges WHERE from_id = $1 "
-        "ORDER BY edge_kind, to_id",
-        subject_id,
+        vetted_sql(
+            "SELECT to_id, to_kind, edge_kind, priority, note, valence, labels "
+            "FROM edges WHERE from_id = $1 ",
+            "" if outbound_filter == "TRUE" else f"AND ({outbound_filter}) ",
+            "ORDER BY edge_kind, to_id",
+        ),
+        *params,
+    )
+    params = [subject_id]
+    inbound_filter = inquiry_read_filter(
+        "edges.from_id",
+        policy=policy,
+        principal=principal,
+        params=params,
     )
     inbound = await conn.fetch(
-        "SELECT from_id, from_kind, edge_kind, priority, note, valence, labels "
-        "FROM edges WHERE to_id = $1 "
-        "ORDER BY edge_kind, from_id",
-        subject_id,
+        vetted_sql(
+            "SELECT from_id, from_kind, edge_kind, priority, note, valence, labels "
+            "FROM edges WHERE to_id = $1 ",
+            "" if inbound_filter == "TRUE" else f"AND ({inbound_filter}) ",
+            "ORDER BY edge_kind, from_id",
+        ),
+        *params,
     )
     return list(outbound), list(inbound)
 
@@ -69,6 +97,9 @@ async def fetch_edges(
 async def fetch_edges_bulk(
     conn: Conn,
     subject_ids: Sequence[UUID],
+    *,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> tuple[dict[UUID, list[asyncpg.Record]], dict[UUID, list[asyncpg.Record]]]:
     """Outbound and inbound edges for many subjects, bucketed by id.
 
@@ -80,6 +111,8 @@ async def fetch_edges_bulk(
     Args:
       conn: Database connection.
       subject_ids: Row ids to fetch edges for (bulk).
+      policy: Deployment policy for peer visibility.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       outbound: ``subject_id -> outbound edge rows`` (the subject is the
@@ -92,18 +125,37 @@ async def fetch_edges_bulk(
     inbound: dict[UUID, list[asyncpg.Record]] = {sid: [] for sid in subject_ids}
     if not subject_ids:
         return outbound, inbound
-    ids = list(subject_ids)
+    params: list[object] = [list(subject_ids)]
+    outbound_filter = inquiry_read_filter(
+        "edges.to_id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     out_rows = await conn.fetch(
-        "SELECT from_id, to_id, to_kind, edge_kind, priority, note, valence, labels "
-        "FROM edges WHERE from_id = ANY($1::uuid[]) "
-        "ORDER BY edge_kind, to_id",
-        ids,
+        vetted_sql(
+            "SELECT from_id, to_id, to_kind, edge_kind, priority, note, valence, labels "
+            "FROM edges WHERE from_id = ANY($1::uuid[]) ",
+            "" if outbound_filter == "TRUE" else f"AND ({outbound_filter}) ",
+            "ORDER BY edge_kind, to_id",
+        ),
+        *params,
+    )
+    params = [list(subject_ids)]
+    inbound_filter = inquiry_read_filter(
+        "edges.from_id",
+        policy=policy,
+        principal=principal,
+        params=params,
     )
     in_rows = await conn.fetch(
-        "SELECT to_id, from_id, from_kind, edge_kind, priority, note, valence, labels "
-        "FROM edges WHERE to_id = ANY($1::uuid[]) "
-        "ORDER BY edge_kind, from_id",
-        ids,
+        vetted_sql(
+            "SELECT to_id, from_id, from_kind, edge_kind, priority, note, valence, labels "
+            "FROM edges WHERE to_id = ANY($1::uuid[]) ",
+            "" if inbound_filter == "TRUE" else f"AND ({inbound_filter}) ",
+            "ORDER BY edge_kind, from_id",
+        ),
+        *params,
     )
     for r in out_rows:
         from_id = r["from_id"]

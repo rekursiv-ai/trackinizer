@@ -16,15 +16,11 @@ import json
 from treekle import from_plain, json_loads
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.export import _SCOPE_COLUMNS
-from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stdout
 from trackinizer.wire.audience import AUDIENCES
@@ -39,9 +35,7 @@ from trackinizer.wire.wire_metrics import MetricPoint
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.server.store.core import Store
     from trackinizer.server.store.export import GraphExport
 
 
@@ -49,7 +43,6 @@ if TYPE_CHECKING:
 _ANYONE: Final = SessionReader(
     audiences=AUDIENCES,
     every_session=True,
-    every_chat=True,
     oversight=True,
 )
 _LEFT_OUT: Final = frozenset(
@@ -59,52 +52,38 @@ _LEFT_OUT: Final = frozenset(
         "applied_migrations",
         "code_blobs",
         "code_snapshots",
-        "credit_entries",
-        "credit_grace",
         "device_logins",
         "gpu_box_credentials",
         "gpu_issuances",
         "gpu_jobs",
         "gpu_owners",
-        "inquiry_embeddings",
-        "inquiry_lock_log",
-        "machine_credentials",
-        "machine_enrollments",
-        "machines",
+        "host_credentials",
+        "host_enrollments",
+        "host_jobs",
+        "hosts",
         "science_chat_shares",
         "science_chat_tombstones",
         "session_bodies",
         "session_ciphertext",
-        "session_embeddings",
-        "session_index_state",
         "session_liveness",
         "users",
         "variables",
         "visual_report_revisions",
         "visual_reports",
-        "visual_workspace_operations",
-        "visual_workspaces",
+        "visual_canvas_operations",
+        "visual_canvases",
     },
 )
 """Tables the export omits on purpose; ``wire_export.EXPORT_TABLES`` says why.
 
 ``variables`` is also left out: its secret rows name values that live outside
 the database, so a restored export could not carry them, and its plain values
-are launch configuration, not graph records. ``machines`` is the same: it names
+are launch configuration, not graph records. ``hosts`` is the same: it names
 where campaigns may run, which belongs to the deployment, not the graph.
-``machine_enrollments`` and ``machine_credentials`` hold hashes of the secrets a
+``host_enrollments`` and ``host_credentials`` hold hashes of the secrets a
 host joins with, which is access control, as ``api_keys`` is. So is ``device_logins``,
 the short-lived codes a program polls with to be given a key.
 """
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
 
 
 async def _seed(store: Store) -> dict[str, UUID]:
@@ -158,13 +137,15 @@ async def _seed(store: Store) -> dict[str, UUID]:
                 record=Stdout(text="hello\n"),
             ),
         ],
-        slash_commands=[
-            SlashCommandRow(
-                timestamp=datetime(2026, 9, 19, tzinfo=UTC),
-                command="compact",
-            ),
-        ],
     )
+    # No route writes a typed command any more; the table's old rows still export.
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO session_slash_commands (session_id, seq, timestamp, command) "
+            "VALUES ($1, 0, $2, 'compact')",
+            session,
+            datetime(2026, 9, 19, tzinfo=UTC),
+        )
     return {"broad": broad, "narrow": narrow, "run": run, "session": session}
 
 
@@ -215,6 +196,34 @@ async def test_the_export_carries_every_seeded_row(store: Store) -> None:
     assert "search" not in record
     (command,) = _rows(graph, "session_slash_commands")
     assert command["command"] == "compact"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_export_leaves_out_lock_events_for_every_reader(store: Store) -> None:
+    """Lock history is protected: not even an admin's export carries it."""
+    ids = await _seed(store)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind) "
+            "SELECT gen_random_uuid(), 'admin@example.com', $1, 'Issue', kind "
+            "FROM unnest(ARRAY['locked', 'unlocked']) AS kind",
+            ids["broad"],
+        )
+
+    exported = [
+        {row["kind"] for row in _rows(graph, "change_log")}
+        for graph in [
+            await store.export_graph(reader=_ANYONE),
+            await store.export_graph(
+                reader=_ANYONE,
+                principal=Principal(email="admin@example.com", role="admin"),
+            ),
+        ]
+    ]
+
+    assert all("created" in kinds for kinds in exported)
+    assert not any(kinds & {"locked", "unlocked"} for kinds in exported)
 
 
 @pytest.mark.db_pglite
@@ -296,7 +305,7 @@ async def _seed_partitioned(store: Store) -> dict[str, UUID]:
         SubmitIssue(
             account="tester@example.com",
             title="Ours, device scoped",
-            labels=["org:rekursiv", "machine:laptop-1"],
+            labels=["org:rekursiv", "host:laptop-1"],
         ),
     )
     for child in (ours_child, device):
@@ -342,14 +351,14 @@ async def test_a_selector_exports_only_the_inquiries_it_matches(store: Store) ->
 async def test_clauses_and_together_the_way_the_request_spells_it(
     store: Store,
 ) -> None:
-    """``org:rekursiv AND NOT machine:*`` is two clauses, and drops the device row."""
+    """``org:rekursiv AND NOT host:*`` is two clauses, and drops the device row."""
     ids = await _seed_partitioned(store)
 
     graph = await store.export_graph(
         reader=_ANYONE,
         selector=(
             Filter(field="labels", op="is", value="org:rekursiv"),
-            Filter(field="labels", op="nre", value="^machine:"),
+            Filter(field="labels", op="nre", value="^host:"),
         ),
     )
 
@@ -369,7 +378,7 @@ async def test_an_edge_rides_along_only_when_both_ends_do(store: Store) -> None:
         reader=_ANYONE,
         selector=(
             Filter(field="labels", op="is", value="org:rekursiv"),
-            Filter(field="labels", op="nre", value="^machine:"),
+            Filter(field="labels", op="nre", value="^host:"),
         ),
     )
 

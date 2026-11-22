@@ -1,5 +1,9 @@
 import type { FeedEvent } from "../api/sessions";
-import { codexContext, taskNotification, unreadable } from "../detail/transcript/records";
+import {
+  codexContext,
+  taskNotification,
+  unreadable,
+} from "../detail/transcript/records";
 
 /** How much of the feed a view shows: 1 Messages, 2 + Calls, 3 + Output, 4 All. */
 export type Level = 1 | 2 | 3 | 4;
@@ -31,9 +35,11 @@ export function levelOf({ kind, message }: FeedEvent): number {
   const content = typeof payload.content === "string" ? payload.content : "";
   switch (kind) {
     case "UserMessage":
-      return extra.isMeta === true || codexContext(content) || taskNotification(content) ? 4 : said(payload);
+      return extra.isMeta === true || codexContext(content) || taskNotification(content)
+        ? 4
+        : said(payload);
     case "AssistantMessage":
-    case "AgentToAgentMessage":
+    case "AgentMessage":
       return said(payload);
     case "ContextState": {
       const attachment = isFields(extra.attachment) ? extra.attachment : {};
@@ -67,23 +73,34 @@ export function levelCounts({
   count: number;
   kinds: { readonly [kind: string]: number };
 }): readonly number[] {
-  const sum = (names: readonly string[]) => names.reduce((total, name) => total + (kinds[name] ?? 0), 0);
+  const sum = (names: readonly string[]) =>
+    names.reduce((total, name) => total + (kinds[name] ?? 0), 0);
   const rest = sum(BOOKKEEPING) + sum(CONVERSATION) - conversation;
   return [conversation, conversation + sum(["ToolCall"]), count - rest, count];
 }
 
 /** Kinds that hold conversation, and other records too (`levelOf`). */
-const CONVERSATION: readonly string[] = ["AgentToAgentMessage", "AssistantMessage", "ContextState", "UserMessage"];
+const CONVERSATION: readonly string[] = [
+  "AgentMessage",
+  "AssistantMessage",
+  "ContextState",
+  "UserMessage",
+];
 
 /** Kinds shown only at All. */
-const BOOKKEEPING: readonly string[] = ["SystemMessage", "TokenUsage", "TurnContext", "UncategorizedRecord"];
+const BOOKKEEPING: readonly string[] = [
+  "SystemMessage",
+  "TokenUsage",
+  "SessionContext",
+  "UncategorizedRecord",
+];
 
 type Fields = { readonly [field: string]: unknown };
 
-/** A message is conversation when it says something: text, or an attachment (a plain array or a tagged tuple). */
+/** A message is conversation when it says something: text, or an attachment. */
 function said(payload: Fields): Level {
   const text = typeof payload.content === "string" ? payload.content.trim() : "";
-  const attachments = isFields(payload.attachments) ? payload.attachments["py/tuple"] : payload.attachments;
+  const attachments = payload.attachments;
   return text || (Array.isArray(attachments) && attachments.length) ? 1 : 4;
 }
 

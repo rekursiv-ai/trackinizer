@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import argparse
+import sys
 
 import httpx2
 import pytest
 
 from trackinizer.trax.profile import Profile
+from trackinizer.web.scripts import probe_stream
 from trackinizer.web.scripts.probe_stream import (
     PROBE_PATH,
     _add_arguments,
@@ -130,6 +132,65 @@ def test_the_token_goes_only_to_the_profiles_server(
     )
     assert got_url == base_url
     assert got_headers == {"Accept-Encoding": "identity", **headers}
+
+
+def test_a_frame_that_is_not_json_is_named_not_parsed() -> None:
+    events = probe(
+        _client(200, iter([b"data: {torn\n\n" + _frames((2, 0.003))])),
+        params={},
+        read_timeout_sec=5,
+    )
+    assert events[1].what.startswith("chunk ")
+    assert "not a probe frame: b'data: {torn'" in events[1].what
+    assert "seq 2 sent at +0.003s" in events[1].what
+
+
+def test_main_probes_the_profiles_server_and_prints_the_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[httpx2.Request] = []
+
+    def serve(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, content=iter([_frames((0, 0.001))]))
+
+    real = httpx2.Client
+
+    def client(*, base_url: str, headers: dict[str, str]) -> httpx2.Client:
+        return real(
+            base_url=base_url,
+            headers=headers,
+            transport=httpx2.MockTransport(serve),
+        )
+
+    monkeypatch.setattr(probe_stream, "load_profile", lambda: _PROFILE)
+    monkeypatch.setattr(httpx2, "Client", client)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["probe_stream", "--first-after", "1", "--for", "5", "--forbid-transform"],
+    )
+
+    assert probe_stream.main() == 0
+
+    (request,) = seen
+    assert request.url.path == PROBE_PATH
+    assert dict(request.url.params) == {
+        "first_after_sec": "1.0",
+        "every_sec": "0.0",
+        "for_sec": "5.0",
+        "forbid_transform": "true",
+    }
+    assert request.headers["authorization"] == "Bearer trax_secret"
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith(f"GET https://tracker.example{PROBE_PATH} ")
+    assert lines[1].endswith(
+        "headers 200 content-type=- content-encoding=- "
+        "cache-control=- via=- server=- cf-ray=-",
+    )
+    assert "seq 0 sent at +0.001s" in lines[2]
+    assert lines[3].endswith("end: the server closed the stream")
 
 
 def test_the_schedule_flags_become_the_probe_query() -> None:
