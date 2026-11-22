@@ -715,10 +715,10 @@ class TestDetailFormats:
                 },
             },
         )
-        assert "supported_by:" in text
-        assert "suggested_by:" in text
-        assert "supports:" not in text
-        assert "suggests:" not in text
+        assert "proved_by:" in text
+        assert "favored_by:" in text
+        assert "proves:" not in text
+        assert "favors:" not in text
 
     def test_format_show_uses_artifact_facing_citation_names(self) -> None:
         text = render.format_show(
@@ -734,8 +734,8 @@ class TestDetailFormats:
                 "edges": {"proves": [{"kind": "Belief", "seq": 5, "title": "finding"}]},
             },
         )
-        assert "supports:" in text
-        assert "supported_by:" not in text
+        assert "proves:" in text
+        assert "proved_by:" not in text
         assert "proved_by:" not in text
 
     def test_format_show_defaults_owner(self) -> None:
