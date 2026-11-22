@@ -741,6 +741,9 @@ class SessionEnd(BaseModel):
 
     ended: UtcDatetime | None = None
     cli_session_id: str | None = Field(default=None, min_length=1)
+
+    cli: str | None = Field(default=None, min_length=1)
+    """The CLI the run was, when its end names one."""
     """Set when the CLI only revealed its session id mid-run."""
 
     actor: str | None = None

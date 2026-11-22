@@ -22,6 +22,7 @@ from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.terminals import Terminal, TerminalRelay
 from trackinizer.server.tool_relay import ToolConnection, ToolRelay
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
+from trackinizer.server.chat_hub import ChatHub
 
 
 if TYPE_CHECKING:
