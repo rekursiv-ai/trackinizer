@@ -964,3 +964,7 @@ class WorkspaceMark(BaseModel):
     """The records under it that exist."""
 
 STATION_LABEL_PREFIX: Final = "station:"
+
+
+CONSOLE_RELAY_MARK: Final = "→ "
+"""What a line relayed from a console is prefixed with in the chat."""
