@@ -255,8 +255,10 @@ def caller_reader(
             else None
         ),
         every_session=orgs == "single",
+        every_chat=orgs == "single" and (person or the_assistant) and not delegated,
         oversight=person and not delegated and (STAFF in audiences or admin),
         hidden=hidden,
+        assistant=assistant,
     )
 
 

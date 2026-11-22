@@ -75,7 +75,7 @@ from trackinizer.server.audience import (
     caller_reader,
     reads_session,
 )
-from trackinizer.server.api.session_identity import Asker, request_principal
+from trackinizer.server.api.session_identity import Asker, session_reader, request_principal
 from trackinizer.server.auth import ROLE_ORDER, Role
 from trackinizer.server.config import Config
 from trackinizer.server.notify import tx
@@ -506,48 +506,6 @@ async def require_session_access(
     raise hidden_session(session.audience)
 
 
-def session_reader(
-    request: Request,
-    identity: AuthIdentity,
-    *,
-    hidden: bool = True,
-) -> SessionReader:
-    """Describe ``identity`` as the transcript test reads it on this server.
-
-    Under ``--no-auth`` the one caller reads every audience, every session and every
-    chat but a private one.
-
-    Args:
-      request: The request, which carries the configuration.
-      identity: Authenticated caller.
-      hidden: Keep private sessions; a listing passes False unless asked for them.
-
-    Returns:
-      reader: As :func:`~trackinizer.server.audience.caller_reader` derives it for
-        the server's organisation mode.
-
-    """
-    assistant = get_assistant(request)
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    if isinstance(config, Config) and config.auth_disabled:
-        return SessionReader(
-            audiences=AUDIENCES,
-            email=identity.email.lower(),
-            every_session=True,
-            every_chat=True,
-            oversight=True,
-            hidden=hidden,
-            assistant="" if assistant is None else assistant.email,
-        )
-    return caller_reader(
-        identity.email,
-        audiences=identity.read_audiences,
-        admin=identity.role == "admin",
-        orgs=get_chat_orgs(request),
-        assistant="" if assistant is None else assistant.email,
-        hosted_domain=identity.hosted_domain,
-        hidden=hidden,
-    )
 
 
 def asker_reader(request: Request, asker: Asker, *, delegated: bool) -> SessionReader:
