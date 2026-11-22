@@ -437,7 +437,9 @@ class Preferences(_Strict):
     ] = Field(
         default="default",
         description=(
-            "The app's look: default, or one of the fixed skins, which ignore theme."
+            "The app's look: default, or one of the fixed skins, each drawn in the "
+            "theme's light or dark where an app draws both; Trackinizer's own web "
+            "UI draws a fixed skin in its one palette and ignores the theme."
         ),
         json_schema_extra=SETTING,
     )
@@ -455,7 +457,8 @@ class Preferences(_Strict):
             "The browser terminal's colours, which the Hacker skin draws in too: "
             "text, background and bold, the 16-colour palette (ANSI 0 to 15), and "
             "whether bold text in colours 0 to 7 shows in 8 to 15. GNOME Terminal's "
-            "Green on black over its GNOME palette until changed."
+            "Green on black over its GNOME palette until changed. In light mode a "
+            "set on a dark background gives way to GNOME's light one."
         ),
         json_schema_extra=SETTING,
     )
