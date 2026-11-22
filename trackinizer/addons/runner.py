@@ -33,7 +33,7 @@ from trackinizer.addons.deployment import (
     supervise,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.trax.cli import connect
+from trackinizer.trax.connection import connect
 
 
 if TYPE_CHECKING:

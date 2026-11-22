@@ -8,7 +8,7 @@ function record(idx: number, kind: string, payload: { [field: string]: unknown }
 const said = (idx: number, sender: string, content: string) => record(idx, "AgentToAgentMessage", { sender, content });
 const answer = (idx: number, content: string) => record(idx, "AssistantMessage", { content });
 const call = (idx: number, name: string) => record(idx, "ToolCall", { name });
-const result = (idx: number) => record(idx, "ShellCommandResult", { stdout: "x" });
+const result = (idx: number) => record(idx, "BashResult", { stdout: "x" });
 const parts = (...records: SessionRecord[]): ChatPart[] => [{ part: 0, format: "sagent", records }];
 
 test("a person's line is a message from its poster, an answer an assistant message, and the rest are not lines", () => {
@@ -408,7 +408,7 @@ test("one compaction is one line, however many records name it, and a compaction
 // Tool calls as lines: a claude part writes the call and its result with the CLI's own
 // ids, a sagent part with sagent's.
 const toolCall = (idx: number, id: string, name: string, args: { [field: string]: unknown } = {}) => record(idx, "ToolCall", { call_id: id, name, arguments: args });
-const toolResult = (idx: number, id: string, stdout: string) => record(idx, "ShellCommandResult", { call_id: id, command: ["ls"], stdout, stderr: "", exit_code: 0 });
+const toolResult = (idx: number, id: string, stdout: string) => record(idx, "BashResult", { call_id: id, command: ["ls"], stdout, stderr: "", exit_code: 0 });
 const withTools = { tools: true };
 
 test("with tool calls on, each call is a line of its own in time order, its result the one answering its call id", () => {

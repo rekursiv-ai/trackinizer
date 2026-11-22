@@ -300,6 +300,10 @@ class TestModels:
         with pytest.raises(ValueError, match="owner"):
             Inquiry.from_row(cast(Row, {"kind": "Issue", "id": new_uuid(), "seq": 0}))
 
+    def test_from_row_refuses_a_row_of_another_kind(self) -> None:
+        with pytest.raises(ValueError, match=r"Issue\.from_row called on a Belief row"):
+            Issue.from_row(cast(Row, {"kind": "Belief"}))
+
 
 class TestIsValidSource:
     """``is_valid_source`` requires a non-whitespace remainder after the scheme."""
@@ -318,7 +322,7 @@ class TestKindToClass:
     """``KIND_TO_CLASS`` is the canonical row-discriminator -> class registry."""
 
     def test_covers_every_declared_kind(self) -> None:
-        declared = set(get_args(Inquiry.InquiryKind.__value__))
+        declared = set(get_args(cast(object, Inquiry.InquiryKind.__value__)))
         assert set(KIND_TO_CLASS) == declared
 
     def test_enumerates_every_concrete_subclass(self) -> None:

@@ -18,8 +18,7 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.app import app
-from trackinizer.server.api.conftest import clear_identity_override
+from trackinizer.server.api.conftest import clear_identity_override, patch_state
 from trackinizer.server.auth import TOKEN_PREFIX_LEN, create_api_key
 from trackinizer.server.config import Config
 from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
@@ -51,13 +50,13 @@ def cheap_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _serve(monkeypatch: pytest.MonkeyPatch, *staff: str, session: str = "") -> None:
-    """Serve the app with Workspace members of ``example.com`` and these entries as staff."""
+    """Serve the app with Canvas members of ``example.com`` and these entries as staff."""
     config = Config(
         staff=("*@example.com", *staff),
         session_secret=session,
         session_max_age_seconds=600,
     )
-    monkeypatch.setattr(app.state, "config", config, raising=False)
+    patch_state(monkeypatch, "config", config)
 
 
 async def _person(
@@ -106,7 +105,7 @@ async def _admin(
     staff: bool = True,
     open_into: str | None = None,
 ) -> tuple[uuid.UUID, str]:
-    """Insert an admin, a Workspace member of the staff domain when ``staff``."""
+    """Insert an admin, a Canvas member of the staff domain when ``staff``."""
     user_id = await _person(
         store,
         email,
@@ -204,7 +203,7 @@ async def _key_ids(store: Store, user_id: uuid.UUID) -> list[uuid.UUID]:
     return [from_plain(row["id"], uuid.UUID) for row in rows]
 
 
-async def _id_of(store: Store, secret: str) -> uuid.UUID:
+async def _secret_key_id(store: Store, secret: str) -> uuid.UUID:
     """Return the id of the key a secret belongs to."""
     async with store.engine.acquire() as conn:
         key_id = await conn.fetchval(
@@ -344,7 +343,10 @@ async def test_p4_a_service_key_cannot_mint_re_role_or_revoke_tokens(
     account = await _service(client, boss)
     own = await _token(client, boss, account, name="host")
     spare = await _token(client, boss, account, name="spare")
-    host_id, spare_id = await _id_of(store, own), await _id_of(store, spare)
+    host_id, spare_id = (
+        await _secret_key_id(store, own),
+        await _secret_key_id(store, spare),
+    )
     before = await _snapshot(store)
 
     minted = await _call(
@@ -733,7 +735,7 @@ async def test_p8_nothing_is_reachable_with_a_disabled_admin_or_a_revoked_admin_
         f"/api/admin/users/{first}/disable",
         secret=second_key,
     )
-    third_id = await _id_of(store, third_key)
+    third_id = await _secret_key_id(store, third_key)
     revoked = await _call(
         client,
         "POST",
@@ -770,6 +772,7 @@ async def test_a_session_cookie_never_opens_a_service_account(
     set_session_cookie(
         signed,
         user_id=str(account),
+        generation=0,
         secret="session-signing-secret",  # noqa: S106 -- test fixture.
         max_age_seconds=600,
     )
@@ -857,7 +860,10 @@ async def test_an_admin_lists_and_revokes_the_tokens_of_a_service_account(
     account = await _service(client, boss)
     host = await _token(client, boss, account, name="host")
     spare = await _token(client, boss, account, name="spare")
-    host_id, spare_id = await _id_of(store, host), await _id_of(store, spare)
+    host_id, spare_id = (
+        await _secret_key_id(store, host),
+        await _secret_key_id(store, spare),
+    )
     tokens = f"{_ACCOUNTS}/{account}/tokens"
 
     revoked = await _call(client, "POST", f"{tokens}/{host_id}/revoke", secret=boss)

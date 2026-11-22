@@ -3,27 +3,35 @@
 from __future__ import annotations
 
 from dataclasses import field
-from typing import Literal, Protocol, Self
+from typing import Final, Literal, Protocol, Self
 
 from configgle import Fig, Makeable
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 __all__ = [
+    "RECORD_VISUAL",
+    "Canvas",
     "ContextGraphVisual",
     "FilesVisual",
     "KnowledgeVisual",
     "ParameterDescription",
+    "RecordVisual",
     "StaticVisual",
     "TerminalVisual",
     "TimelineVisual",
     "Visual",
     "VisualCatalogBody",
     "VisualDescription",
-    "Workspace",
+    "default_canvas",
     "default_catalog",
-    "default_workspace",
+    "offer_record_visual",
 ]
+
+
+RECORD_VISUAL: Final = "trax.record"
+"""A record's page as a tile of its own. A canvas holds one per record, so several
+stand at once, where every other visual type has one instance."""
 
 
 class ParameterDescription(BaseModel):
@@ -359,7 +367,7 @@ class FilesVisual:
 
 
 class TerminalVisual:
-    """A shell on one of the viewer's own machines."""
+    """A shell on one of the viewer's own hosts."""
 
     class Config(Fig["TerminalVisual"]):
         title: str = "Terminal"
@@ -381,14 +389,14 @@ class TerminalVisual:
             version=1,
             title=self.config.title,
             description=(
-                "A shell on one of your own machines. "
+                "A shell on one of your own hosts. "
                 "It starts only when you click Start terminal."
             ),
             requires=[],
             default_size="wide",
             parameter_schema={
-                # A machine name; empty lets the viewer pick one.
-                "machine": ParameterDescription(
+                # A host name; empty lets the viewer pick one.
+                "host": ParameterDescription(
                     type="string",
                     default="",
                     max_length=63,
@@ -400,10 +408,46 @@ class TerminalVisual:
         )
 
 
-class Workspace:
+class RecordVisual:
+    """One record's page as a tile; a canvas holds one per record."""
+
+    class Config(Fig["RecordVisual"]):
+        title: str = "Record"
+        """Name shown in the Configure panel."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the tile and the kind its opener names.
+
+        Returns:
+          description: Inert catalog entry; it takes a record of any kind.
+
+        """
+        return VisualDescription(
+            type=RECORD_VISUAL,
+            version=1,
+            title=self.config.title,
+            description=(
+                "One record's page as a tile of its own; several records stand "
+                "side by side."
+            ),
+            requires=["record"],
+            default_size="compact",
+            parameter_schema={
+                # The record's kind as its opener read it, which picks the column
+                # it stacks in; the policy reads it from the canvas, not the graph.
+                "kind": ParameterDescription(type="string", default="", max_length=64),
+            },
+        )
+
+
+class Canvas:
     """The trusted composition of visual configs and its initial selection."""
 
-    class Config(Fig["Workspace"]):
+    class Config(Fig["Canvas"]):
         visuals: list[Makeable[Visual]] = field(
             default_factory=lambda: [
                 StaticVisual.Config(
@@ -444,10 +488,10 @@ class Workspace:
                 ),
             ],
         )
-        """Configured visual modules available to a workspace."""
+        """Configured visual modules available to a canvas."""
 
         default_visual: str = "trax.browse"
-        """Visual type shown when a new workspace opens; it must need no record."""
+        """Visual type shown when a new canvas opens; it must need no record."""
 
     def __init__(self, config: Config) -> None:
         """Build the lightweight definitions and validate their identity."""
@@ -477,11 +521,25 @@ class Workspace:
         )
 
 
-def default_workspace() -> Workspace:
-    """Build the default workspace without instantiating a data provider."""
-    return Workspace.Config().make()
+def default_canvas() -> Canvas:
+    """Build the default canvas without instantiating a data provider."""
+    return Canvas.Config().make()
 
 
 def default_catalog() -> VisualCatalogBody:
-    """Project the default workspace's catalog."""
-    return default_workspace().catalog()
+    """Project the default canvas's catalog."""
+    return default_canvas().catalog()
+
+
+# The record tile is not in the default list: an app that draws the canvas mirrors the
+# default catalog with a renderer of its own, and only a site whose app draws a record
+# tile offers it. Trackinizer's own app draws no canvas.
+def offer_record_visual(visuals: Canvas.Config) -> None:
+    """Add the record tile to a deployment's catalog, once.
+
+    Args:
+      visuals: The deployment's visual configs, changed in place.
+
+    """
+    if not any(isinstance(each, RecordVisual.Config) for each in visuals.visuals):
+        visuals.visuals.append(RecordVisual.Config())

@@ -7,23 +7,25 @@ dispatch over many items in one all-or-nothing transaction.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.locks import referenced_ids, require_unlocked
+from trackinizer.server.api.locks import referenced_ids, require_writable
 from trackinizer.server.api.session_access import (
     granted_audience,
     require_attributable,
 )
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
     require_role,
 )
 from trackinizer.wire.bodies import (
+    SubmitAccessGroup,
     SubmitAgentSession,
     SubmitArtifact,
     SubmitBase,
@@ -43,15 +45,16 @@ from trackinizer.wire.json_types import MutableJSON
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from trackinizer.server.access_policy import Principal
     from trackinizer.server.store.core import Store
 
 
 router = APIRouter()
 
-# Each body class keyed by its PascalCase kind discriminator, read off an
-# unvalidated instance: the ``kind`` literal is the one declaration of it.
+# Each body class keyed by its PascalCase kind discriminator, read off the
+# ``kind`` field's default: the ``kind`` literal is the one declaration of it.
 _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
-    body.model_construct().kind: body
+    cast(str, body.model_fields["kind"].default): body
     for body in (
         SubmitIssue,
         SubmitArtifact,
@@ -62,6 +65,7 @@ _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
         SubmitWebResult,
         SubmitWebSearch,
         SubmitAgentSession,
+        SubmitAccessGroup,
     )
 }
 
@@ -89,7 +93,10 @@ async def submit_batch_route(
     whole batch back, so no partial state is left behind. On success the
     response is ``{"ids": [...]}`` with the server-minted ids in input
     order. A failure propagates as the same HTTP error a single submit of
-    that item would raise (e.g. 409 on a conflict, 422 on bad input).
+    that item would raise (e.g. 409 on a conflict, 422 on bad input). One
+    item carrying ``modified`` from a non-admin 403s the batch. A batch naming a
+    science ``chat`` is filed from it, which only the assistant does: every item
+    is then read as the chat is.
 
     Args:
       req: SubmitBatch payload with items and edges to create atomically.
@@ -100,7 +107,8 @@ async def submit_batch_route(
       body: JSON object with "ids" key mapping to list of minted server IDs.
 
     """
-    await require_unlocked(request, identity, referenced_ids(req))
+    _require_admin_to_set_modified(identity, *req.items)
+    await require_writable(request, identity, referenced_ids(req))
     store = get_store(request)
     session_audience = _opening_audience(identity, *req.items)
     # Resolve each item's account, then validate the DISTINCT set before the
@@ -125,6 +133,7 @@ async def submit_batch_route(
         # creates, which recorded the wrong author on every batch-created row.
         actor=req.actor or identity.email,
         session_audience=session_audience,
+        principal=await request_principal(request, identity),
     )
     body: MutableJSON = {"ids": [str(row_id) for row_id in ids]}
     return body
@@ -142,7 +151,7 @@ async def submit_route(
     The body is validated against the matching ``SubmitX`` model. The
     ``kind`` discriminator is injected from the URL token, so callers
     never restate it and a mismatching body ``kind`` can't smuggle in a
-    different model.
+    different model. ``modified`` from a non-admin is a 403.
 
     Args:
       kind: Lowercase URL token (e.g. "issue", "experiment") selecting the submit model.
@@ -170,8 +179,29 @@ async def submit_route(
             status_code=422,
             detail=err.errors(include_context=False),
         ) from err
-    await require_unlocked(request, identity, referenced_ids(req))
-    return {"id": str(await _submit_one(get_store(request), req, identity))}
+    _require_admin_to_set_modified(identity, req)
+    await require_writable(request, identity, referenced_ids(req))
+    return {
+        "id": str(
+            await _submit_one(
+                get_store(request),
+                req,
+                identity,
+                principal=await request_principal(request, identity),
+            ),
+        ),
+    }
+
+
+# Refused, never dropped: a silently dropped time would store a row the importer
+# believes carries its historical dates.
+def _require_admin_to_set_modified(identity: AuthIdentity, *bodies: SubmitBase) -> None:
+    """Refuse ``modified`` from any caller but an admin, with 403."""
+    if identity.role != "admin" and any(body.modified is not None for body in bodies):
+        raise HTTPException(
+            status_code=403,
+            detail="Only an admin may set modified.",
+        )
 
 
 # The default is the authenticated ``identity.email`` -- never the spoofable ``actor``
@@ -185,6 +215,8 @@ async def _submit_one(
     store: Store,
     req: SubmitBase,
     identity: AuthIdentity,
+    *,
+    principal: Principal,
 ) -> UUID:
     session_audience = _opening_audience(identity, req)
     account = _resolve_account(req, identity)
@@ -195,6 +227,7 @@ async def _submit_one(
         api_key_id=identity.api_key_id,
         actor=req.actor or identity.email,
         session_audience=session_audience,
+        principal=principal,
     )
 
 

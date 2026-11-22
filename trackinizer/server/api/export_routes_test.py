@@ -7,9 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-import json
-
-from treekle import from_plain, json_loads, to_plain
+from treekle import from_plain, json_dumps, json_loads
 
 import asyncpg
 import pytest
@@ -36,6 +34,7 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.server.access_policy import Principal
     from trackinizer.server.audience import SessionReader
     from trackinizer.server.store.core import Store
     from trackinizer.wire.filters import Filter, FilterOp
@@ -87,18 +86,19 @@ def export_client(
         *,
         reader: SessionReader,
         selector: Sequence[Filter] = (),
+        principal: Principal | None = None,
     ) -> GraphExport:
         # Echoed back rather than applied: what the route owns is parsing the
         # selector and putting it in the header, and the store's own tests
         # cover the scoping it does with it.
-        del reader
+        del reader, principal
         return replace(_graph(), selector=tuple(selector))
 
     monkeypatch.setattr(store, "export_graph", export_graph)
     return client
 
 
-def _selector_of(raw: str) -> dict[str, str]:
+def _filter_selector(raw: str) -> dict[str, str]:
     """One ``filter=`` param value as the route's query string spells it."""
     return {EXPORT_FILTER_PARAM: raw}
 
@@ -162,6 +162,13 @@ def test_a_non_finite_float_is_refused() -> None:
         list(export_lines(graph))
 
 
+def test_a_column_type_with_no_json_form_is_refused_by_name() -> None:
+    graph = replace(_graph(), tables=(("inquiries", ({"tags": {"a"}},)),))
+
+    with pytest.raises(TypeError, match="no JSON form for set"):
+        list(export_lines(graph))
+
+
 def test_a_viewer_may_export(export_client: TestClient) -> None:
     install_identity(make_test_identity(role="viewer"))
 
@@ -180,7 +187,7 @@ def test_a_selector_reaches_the_store_and_the_header(
     """The clause the caller sent is what the store is asked for, and what is said."""
     r = export_client.get(
         EXPORT_API_PATH,
-        params=_selector_of('{"field":"labels","op":"is","value":"org:rekursiv"}'),
+        params=_filter_selector('{"field":"labels","op":"is","value":"org:rekursiv"}'),
     )
 
     assert r.status_code == 200
@@ -201,14 +208,14 @@ def test_clauses_arrive_in_the_order_they_were_sent(
                 EXPORT_FILTER_PARAM,
                 '{"field":"labels","op":"is","value":"org:rekursiv"}',
             ),
-            (EXPORT_FILTER_PARAM, '{"field":"labels","op":"nre","value":"^machine:"}'),
+            (EXPORT_FILTER_PARAM, '{"field":"labels","op":"nre","value":"^host:"}'),
         ],
     )
 
     header = json_loads(r.text.splitlines()[0], dict[str, object])
     assert header["selector"] == [
         {"field": "labels", "op": "is", "value": "org:rekursiv"},
-        {"field": "labels", "op": "nre", "value": "^machine:"},
+        {"field": "labels", "op": "nre", "value": "^host:"},
     ]
 
 
@@ -218,7 +225,7 @@ def test_an_unselectable_field_is_400_and_names_what_is_allowed(
     """A subgraph is carved on labels; ``title`` would be a different feature."""
     r = export_client.get(
         EXPORT_API_PATH,
-        params=_selector_of('{"field":"title","op":"is","value":"anything"}'),
+        params=_filter_selector('{"field":"title","op":"is","value":"anything"}'),
     )
 
     assert r.status_code == 400
@@ -240,7 +247,7 @@ def test_a_malformed_clause_is_400_not_a_whole_graph(
     raw: str,
 ) -> None:
     """The dangerous failure is a refused selector quietly exporting everything."""
-    r = export_client.get(EXPORT_API_PATH, params=_selector_of(raw))
+    r = export_client.get(EXPORT_API_PATH, params=_filter_selector(raw))
 
     assert r.status_code == 400
 
@@ -262,9 +269,9 @@ def test_label_ordering_is_a_client_error(
 ) -> None:
     """The real store rejects unsupported operators before opening a connection."""
     client, _store, engine = route_client
-    raw = json.dumps(to_plain({"field": "labels", "op": op, "value": "x"}))
+    raw = json_dumps({"field": "labels", "op": op, "value": "x"})
 
-    response = client.get(EXPORT_API_PATH, params=_selector_of(raw))
+    response = client.get(EXPORT_API_PATH, params=_filter_selector(raw))
 
     assert response.status_code == 422
     body = from_plain(response.json(), dict[str, object])
@@ -290,7 +297,7 @@ def test_database_selector_failures_are_client_errors(
 
     response = client.get(
         EXPORT_API_PATH,
-        params=_selector_of('{"field":"labels","op":"re","value":"x"}'),
+        params=_filter_selector('{"field":"labels","op":"re","value":"x"}'),
     )
 
     assert response.status_code == 400
@@ -307,8 +314,9 @@ def test_the_export_is_read_for_the_audiences_of_its_caller(
         *,
         reader: SessionReader,
         selector: Sequence[Filter] = (),
+        principal: Principal | None = None,
     ) -> GraphExport:
-        del selector
+        del selector, principal
         asked.append(reader.audiences)
         return _graph()
 

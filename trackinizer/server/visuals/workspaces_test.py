@@ -17,7 +17,7 @@ from trackinizer.server.visuals.catalog import (
     VisualCatalogBody,
     VisualDescription,
     default_catalog,
-    default_workspace,
+    default_canvas,
 )
 from trackinizer.server.visuals.workspaces import (
     MAX_MARKS,
@@ -279,7 +279,7 @@ def test_a_visual_records_who_placed_it_only_when_told_and_only_when_it_is_new()
     assert placed(again) == ["kb@x.y"]
     assert placed(by_person) == [None]
     [terminal] = [v for v in by_agent.visuals if v.type == "trax.terminal"]
-    assert terminal.params == {"machine": "gx10", "start": True}
+    assert terminal.params == {"host": "gx10", "start": True}
 
 
 def test_showing_files_on_a_new_record_keeps_its_narrowing() -> None:
@@ -602,7 +602,7 @@ def test_a_visual_that_takes_no_record_refuses_one() -> None:
 
 
 def _entry(visual: str) -> VisualDescription:
-    entry = default_workspace().visual(visual)
+    entry = default_canvas().visual(visual)
     assert entry is not None
     return entry
 

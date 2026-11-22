@@ -10,7 +10,7 @@ would have compared differently.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 import re
 
@@ -22,18 +22,46 @@ from trackinizer.wire.column_shapes import (
     COLUMN_SHAPES,
     ColumnShape,
     _classify,
+    _column_shapes,
     _is_integer_sql,
     _is_real_sql,
+    compares_as_float,
     lowers_into_sql,
+    requires_numeric_operand,
     sql_template,
 )
+from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
+type NullableReal = float | None
+
+
 class TestTheOracleIsPerColumnAndOp:
+    @pytest.mark.parametrize(
+        ("column", "op", "as_float", "numeric"),
+        [
+            ("belief_confidence", "gt", True, True),
+            ("issue_priority", "gt", False, True),
+            ("created", "gt", False, False),
+            ("labels", "gt", False, False),
+        ],
+        ids=["real", "integer", "timestamp", "no-template"],
+    )
+    def test_ordering_casts_are_read_off_the_template(
+        self,
+        column: str,
+        op: str,
+        as_float: bool,
+        numeric: bool,
+    ) -> None:
+        """A real casts to float8 and numeric; an integer to numeric; text, neither."""
+        assert compares_as_float(column, op) is as_float
+        assert requires_numeric_operand(column, op) is numeric
+
     def test_text_array_membership_uses_gin_containment(self) -> None:
         assert sql_template("labels", "is") == "{col} @> ARRAY[{p}]::text[]"
 
@@ -62,6 +90,19 @@ class TestTheOracleIsPerColumnAndOp:
         assert lowers_into_sql("labels", op) is False
         assert lowers_into_sql("id", op) is False
 
+    @pytest.mark.parametrize("column", SESSION_RECORD_FIELDS)
+    @pytest.mark.parametrize("op", ["is", "ne", "isnull", "notnull"])
+    def test_a_session_projection_binds_its_sql_expression(
+        self,
+        column: str,
+        op: str,
+    ) -> None:
+        template = sql_template(column, op)
+
+        assert template is not None
+        assert "{col}" not in template
+        assert SESSION_RECORD_FIELDS[column] in template
+
 
 class TestTheNumericVocabularyIsComplete:
     r"""A declared type must classify by what Postgres MEANS, not its spelling.
@@ -76,7 +117,7 @@ class TestTheNumericVocabularyIsComplete:
 
     @pytest.mark.parametrize(
         "sql_type",
-        ["DOUBLE PRECISION", "FLOAT", "FLOAT4", "FLOAT8", "REAL"],
+        ["DOUBLE PRECISION", "DOUBLE", "FLOAT", "FLOAT4", "FLOAT8", "REAL", "DECIMAL"],
     )
     def test_a_real_spelling_classifies_as_real(self, sql_type: str) -> None:
         assert _is_real_sql(sql_type) is True
@@ -151,7 +192,7 @@ class TestEveryShapeMatchesTheDeclaredType:
         declared = self.declared().get(column)
         if declared is None:
             return  # An identity column, declared in ``schema.sql`` by hand.
-        shape = COLUMN_SHAPES[column]
+        shape = _column_shapes()[column]
         head = declared.split("(", maxsplit=1)[0].upper()
         assert head in self.HEADS[shape], f"{column} is {declared}, shaped {shape}"
 
@@ -212,6 +253,9 @@ class TestEveryShapeMatchesTheDeclaredType:
 
 
 class TestEveryShapeIsUsable:
+    def test_rebuilt_shapes_match_the_published_filter_columns(self) -> None:
+        assert _column_shapes() == COLUMN_SHAPES
+
     @pytest.mark.parametrize("op", ["is", "ne", "isnull", "notnull"])
     def test_every_column_answers_equality_and_presence(self, op: str) -> None:
         for column in COLUMN_SHAPES:
@@ -229,6 +273,36 @@ class TestEveryShapeIsUsable:
         assert template is not None
         assert "{col}" in template
         assert "{p}" in template
+
+
+@pytest.mark.parametrize(
+    ("sql_type", "value_type", "expected"),
+    [
+        ("TEXT[]", list[str], ColumnShape.TEXT_ARRAY),
+        ("UUID[]", list[str], ColumnShape.UUID_ARRAY),
+        ("INTEGER", int, ColumnShape.INTEGER),
+        ("NUMERIC(14, 6)", float, ColumnShape.REAL),
+        ("UUID", str, ColumnShape.RENDERED),
+        ("TIMESTAMPTZ", object, ColumnShape.TIMESTAMP),
+        ("TEXT", str | None, ColumnShape.TEXT),
+        ("TEXT", Literal["open", "closed"], ColumnShape.TEXT),
+        ("TEXT", Literal["open", 3], None),
+        ("", int, ColumnShape.INTEGER),
+        ("", float | None, ColumnShape.REAL),
+        ("", NullableReal, ColumnShape.REAL),
+        ("", bool, None),
+        ("", int | str, None),
+        ("JSONB", dict[str, object], None),
+    ],
+)
+def test_classifies_declared_columns_and_flattened_annotations(
+    sql_type: str,
+    value_type: object,
+    expected: ColumnShape | None,
+) -> None:
+    flat = FlatColumn(spec=ColumnSpec(sql_type=sql_type), value_type=value_type)
+
+    assert _classify(flat) is expected
 
 
 if __name__ == "__main__":

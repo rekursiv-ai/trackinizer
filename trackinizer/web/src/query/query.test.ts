@@ -13,9 +13,15 @@ import {
   withTab,
 } from "./query";
 import { priorityBand } from "../ui/glyphs";
+import { must } from "../must";
 
 // As `GET /api/meta/fields` answers: kind-specific fields only.
-const FIELD_OWNERS = { priority: "issue", issue_kind: "issue", judgement: "belief", authors: "paper" };
+const FIELD_OWNERS = {
+  priority: "issue",
+  issue_kind: "issue",
+  judgement: "belief",
+  authors: "paper",
+};
 
 const issues: ListQuery = { kinds: ["Issue"], tab: "active", choices: [] };
 
@@ -43,7 +49,11 @@ describe("one query drives the request and the trax line", () => {
   });
 
   test("COLD-06: a Kind choice narrows the kinds, in the request and the trax line", () => {
-    const mine: ListQuery = { kinds: ["Issue", "Belief", "Paper"], tab: "all", choices: [] };
+    const mine: ListQuery = {
+      kinds: ["Issue", "Belief", "Paper"],
+      tab: "all",
+      choices: [],
+    };
     const request = compileQuery(toggleChoice(mine, "kind", "Paper"), FIELD_OWNERS);
     expect(request).toEqual({ kinds: ["Paper"], filters: [] });
     expect(traxLine(request)).toBe("trax paper");
@@ -66,7 +76,8 @@ describe("one query drives the request and the trax line", () => {
   });
 
   test("a # (a comment, or zsh's glob) or a leading = (zsh's command path) is quoted (WEB-24)", () => {
-    const line = (label: string) => traxLine(compileQuery(toggleChoice(issues, "labels", label), FIELD_OWNERS));
+    const line = (label: string) =>
+      traxLine(compileQuery(toggleChoice(issues, "labels", label), FIELD_OWNERS));
     expect(line("#urgent")).toBe("trax issue status is active labels is '#urgent'");
     expect(line("c#2")).toBe("trax issue status is active labels is 'c#2'");
     expect(line("=ls")).toBe("trax issue status is active labels is '=ls'");
@@ -83,20 +94,50 @@ describe("the plan's Who me is: in a read filter, my email stands for every name
   const me = ["ada@example.com", "ada", "Agent Ada"];
 
   test("Me alone is the one anchored regex over my names, as meFilter makes it", () => {
-    const request = compileQuery(toggleChoice(issues, "owner", "ada@example.com"), FIELD_OWNERS, me);
-    expect(request.filters.at(-1)).toEqual({ field: "owner", op: "re", value: "^(ada@example\\.com|ada|Agent Ada)$" });
+    const request = compileQuery(
+      toggleChoice(issues, "owner", "ada@example.com"),
+      FIELD_OWNERS,
+      me,
+    );
+    expect(request.filters.at(-1)).toEqual({
+      field: "owner",
+      op: "re",
+      value: "^(ada@example\\.com|ada|Agent Ada)$",
+    });
   });
 
   test("Me with another owner ORs them all; with no aliases Me is the email alone", () => {
-    const both = toggleChoice(toggleChoice(issues, "owner", "josh"), "owner", "ada@example.com");
-    expect(compileQuery(both, FIELD_OWNERS, me).filters.at(-1)!.value).toBe("^(josh|ada@example\\.com|ada|Agent Ada)$");
-    const alone = compileQuery(toggleChoice(issues, "owner", "ada@example.com"), FIELD_OWNERS, ["ada@example.com"]);
-    expect(alone.filters.at(-1)).toEqual({ field: "owner", op: "is", value: "ada@example.com" });
+    const both = toggleChoice(
+      toggleChoice(issues, "owner", "josh"),
+      "owner",
+      "ada@example.com",
+    );
+    expect(must(compileQuery(both, FIELD_OWNERS, me).filters.at(-1)).value).toBe(
+      "^(josh|ada@example\\.com|ada|Agent Ada)$",
+    );
+    const alone = compileQuery(
+      toggleChoice(issues, "owner", "ada@example.com"),
+      FIELD_OWNERS,
+      ["ada@example.com"],
+    );
+    expect(alone.filters.at(-1)).toEqual({
+      field: "owner",
+      op: "is",
+      value: "ada@example.com",
+    });
   });
 
   test("only the owner field reads me: a label named like my email is that label", () => {
-    const request = compileQuery(toggleChoice(issues, "labels", "ada@example.com"), FIELD_OWNERS, me);
-    expect(request.filters.at(-1)).toEqual({ field: "labels", op: "is", value: "ada@example.com" });
+    const request = compileQuery(
+      toggleChoice(issues, "labels", "ada@example.com"),
+      FIELD_OWNERS,
+      me,
+    );
+    expect(request.filters.at(-1)).toEqual({
+      field: "labels",
+      op: "is",
+      value: "ada@example.com",
+    });
   });
 });
 
@@ -135,16 +176,23 @@ describe("COLD-07: the priority selection is one exact range", () => {
         if (f.op === "isnull") return priority === null;
         if (priority === null) return false;
         const bound = Number(f.value);
-        return f.op === "ge" ? priority >= bound : f.op === "lt" ? priority < bound : false;
+        return f.op === "ge"
+          ? priority >= bound
+          : f.op === "lt"
+            ? priority < bound
+            : false;
       });
-  const ticked = (query: ListQuery) => query.choices.find((c) => c.field === "priority")?.values ?? [];
+  const ticked = (query: ListQuery) =>
+    query.choices.find((c) => c.field === "priority")?.values ?? [];
 
   test("ticking P0 then P2 fills in P1, so what is ticked is what matches", () => {
     let query = toggleChoice(issues, "priority", "0");
     query = toggleChoice(query, "priority", "2");
     expect(ticked(query)).toEqual(["0", "1", "2"]);
     for (const priority of [0, 5, 10, 20, 29, 30, 40, null]) {
-      expect(passes(query, priority)).toBe(ticked(query).includes(String(priorityBand(priority))));
+      expect(passes(query, priority)).toBe(
+        ticked(query).includes(String(priorityBand(priority))),
+      );
     }
   });
 
@@ -197,7 +245,11 @@ describe("COLD-08: several literal values become one escaped, anchored regex", (
 
   test("a dot in an owner matches only a dot", () => {
     const filter = oneOf("owner", ["dan@example.com", "craftax-arm"]);
-    expect(filter).toEqual({ field: "owner", op: "re", value: "^(dan@example\\.com|craftax-arm)$" });
+    expect(filter).toEqual({
+      field: "owner",
+      op: "re",
+      value: "^(dan@example\\.com|craftax-arm)$",
+    });
     const pattern = new RegExp(filter.value);
     expect(pattern.test("dan@example.com")).toBe(true);
     expect(pattern.test("craftax-arm")).toBe(true);
@@ -222,11 +274,17 @@ describe("editing a query", () => {
 
   test("removing a choice keeps the others", () => {
     const query = toggleChoice(toggleChoice(issues, "owner", "josh"), "labels", "ui");
-    expect(removeChoice(query, "owner").choices).toEqual([{ field: "labels", values: ["ui"] }]);
+    expect(removeChoice(query, "owner").choices).toEqual([
+      { field: "labels", values: ["ui"] },
+    ]);
   });
 
   test("a tab change drops the status choice, which the tab now decides", () => {
-    const query = toggleChoice(toggleChoice({ ...issues, tab: "all" }, "status", "complete"), "owner", "x");
+    const query = toggleChoice(
+      toggleChoice({ ...issues, tab: "all" }, "status", "complete"),
+      "owner",
+      "x",
+    );
     expect(withTab(query, "active")).toEqual({
       kinds: ["Issue"],
       tab: "active",
@@ -237,23 +295,30 @@ describe("editing a query", () => {
 
 describe("the Filter menu offers each kind its own fields", () => {
   test("a kind's fields show only on lists that hold that kind", () => {
-    expect(filterFields({ ...issues, tab: "all" }, FIELD_OWNERS)).toEqual(["status", "priority", "owner", "labels"]);
-    expect(filterFields({ kinds: ["Belief"], tab: "all", choices: [] }, FIELD_OWNERS)).toEqual([
+    expect(filterFields({ ...issues, tab: "all" }, FIELD_OWNERS)).toEqual([
       "status",
-      "judgement",
+      "priority",
       "owner",
       "labels",
     ]);
-    expect(filterFields({ kinds: ["Paper"], tab: "all", choices: [] }, FIELD_OWNERS)).toEqual([
-      "status",
-      "owner",
-      "labels",
-    ]);
+    expect(
+      filterFields({ kinds: ["Belief"], tab: "all", choices: [] }, FIELD_OWNERS),
+    ).toEqual(["status", "judgement", "owner", "labels"]);
+    expect(
+      filterFields({ kinds: ["Paper"], tab: "all", choices: [] }, FIELD_OWNERS),
+    ).toEqual(["status", "owner", "labels"]);
   });
 
   test("a mixed list offers Kind and every kind's fields; S8 then narrows the request", () => {
     const mixed: ListQuery = { kinds: ["Issue", "Belief"], tab: "all", choices: [] };
-    expect(filterFields(mixed, FIELD_OWNERS)).toEqual(["kind", "status", "priority", "judgement", "owner", "labels"]);
+    expect(filterFields(mixed, FIELD_OWNERS)).toEqual([
+      "kind",
+      "status",
+      "priority",
+      "judgement",
+      "owner",
+      "labels",
+    ]);
   });
 
   test("the Active tab decides status, so Status is not offered there", () => {

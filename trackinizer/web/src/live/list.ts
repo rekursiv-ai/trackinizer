@@ -1,5 +1,11 @@
 import type { Query, QueryClient } from "@tanstack/react-query";
-import { INQUIRY_ROW_FIELDS, type InquiryRow, inquiryKinds, listInquiries, listInquiriesBySeq } from "../api/inquiries";
+import {
+  INQUIRY_ROW_FIELDS,
+  type InquiryRow,
+  inquiryKinds,
+  listInquiries,
+  listInquiriesBySeq,
+} from "../api/inquiries";
 import { serverText } from "../lists/pages";
 import type { Filter, ListRequest } from "../query/query";
 import { readOnce } from "./cache";
@@ -18,6 +24,7 @@ import {
   WHOLE_IDS,
 } from "./rows";
 import type { Batch, Failure, Later } from "./serial";
+import { must } from "../must";
 
 /** Which of a list's rows are on screen now. */
 export type RowsOnScreen = { onScreen(ids: Iterable<string>): ReadonlySet<string> };
@@ -84,10 +91,21 @@ export class ListLive {
   #early: Batch | null = null;
   #lastCheckAt = -Infinity;
   #failure: Failure | null = null;
-  #snapshot: ListSnapshot = { arrivals: 0, left: new Set(), joined: new Map(), gone: new Set(), failure: null };
+  #snapshot: ListSnapshot = {
+    arrivals: 0,
+    left: new Set(),
+    joined: new Map(),
+    gone: new Set(),
+    failure: null,
+  };
   readonly #listeners = new Set<() => void>();
 
-  constructor(client: QueryClient, request: ListRequest, pageSize: number, now: () => number = Date.now) {
+  constructor(
+    client: QueryClient,
+    request: ListRequest,
+    pageSize: number,
+    now: () => number = Date.now,
+  ) {
     this.#client = client;
     this.#request = request;
     this.#pageSize = pageSize;
@@ -157,7 +175,9 @@ export class ListLive {
       if (!loaded.has(row.id)) joined.set(row.id, row);
     }
     // A row merged away that matched again is still on its page: freshen it there.
-    void this.#freshen(new Map(rows.filter((row) => loaded.has(row.id)).map((row) => [row.id, row])));
+    void this.#freshen(
+      new Map(rows.filter((row) => loaded.has(row.id)).map((row) => [row.id, row])),
+    );
     this.#arrivals.clear();
     if (dropLeft) {
       for (const id of this.#left) {
@@ -176,7 +196,10 @@ export class ListLive {
    * The rows `loaded` from this list's pages as the list shows them: without
    * those merged away, with those merged in, each kind in the server's order.
    */
-  rows(loaded: readonly InquiryRow[], { joined, gone }: ListSnapshot = this.#snapshot): readonly InquiryRow[] {
+  rows(
+    loaded: readonly InquiryRow[],
+    { joined, gone }: ListSnapshot = this.#snapshot,
+  ): readonly InquiryRow[] {
     if (joined.size === 0 && gone.size === 0) return loaded;
     const kept = loaded.filter((row) => !gone.has(row.id));
     const loadedIds = new Set(loaded.map((row) => row.id));
@@ -194,7 +217,8 @@ export class ListLive {
   settle(loaded: readonly InquiryRow[]): void {
     if (this.#arrivals.size === 0) return;
     const shown = new Set(loaded.map((row) => row.id));
-    for (const id of this.#arrivals.keys()) if (shown.has(id) && !this.#gone.has(id)) this.#arrivals.delete(id);
+    for (const id of this.#arrivals.keys())
+      if (shown.has(id) && !this.#gone.has(id)) this.#arrivals.delete(id);
     this.#publish();
   }
 
@@ -222,14 +246,20 @@ export class ListLive {
   /** Whether `query` is one of this list's pages: its filters, a kind it lists, its page size. */
   #isPage(query: Query): boolean {
     const page = isPageOf(query, this.#request.filters) ? pageOf(query) : null;
-    return page !== null && page.pageSize === this.#pageSize && this.#request.kinds.includes(page.kind);
+    return (
+      page !== null &&
+      page.pageSize === this.#pageSize &&
+      this.#request.kinds.includes(page.kind)
+    );
   }
 
   /** This list's mounted pages in the cache, in offset order. */
   #pages(): Page[] {
     return this.#client
       .getQueryCache()
-      .findAll({ predicate: (query) => this.#isPage(query) && query.getObserversCount() > 0 })
+      .findAll({
+        predicate: (query) => this.#isPage(query) && query.getObserversCount() > 0,
+      })
       .flatMap((query) => pageOf(query) ?? [])
       .sort((a, b) => a.offset - b.offset);
   }
@@ -254,13 +284,34 @@ export class ListLive {
   async #reloadLoaded(changed: Set<string>, gap: boolean): Promise<void> {
     const { kinds, filters } = this.#request;
     const floor = oldestLoaded(this.#pages(), kinds);
-    const spanned: Filter[] = floor === null ? [...filters] : [...filters, { field: "created", op: "ge", value: serverText(floor) }];
+    const spanned: Filter[] =
+      floor === null
+        ? [...filters]
+        : [...filters, { field: "created", op: "ge", value: serverText(floor) }];
     const rows = await readOnce(this.#client, ["loaded", kinds, spanned], (signal) =>
-      listInquiries({ kinds: inquiryKinds(kinds), filters: spanned, limit: MAX_ROWS, offset: 0, fields: INQUIRY_ROW_FIELDS }, { signal }),
+      listInquiries(
+        {
+          kinds: inquiryKinds(kinds),
+          filters: spanned,
+          limit: MAX_ROWS,
+          offset: 0,
+          fields: INQUIRY_ROW_FIELDS,
+        },
+        { signal },
+      ),
     );
     const answered = new Set(rows.map((row) => row.id));
-    if (kinds.every((kind) => rows.filter((row) => row.kind === kind).length < MAX_ROWS)) {
-      await this.#take(rows, new Set([...answered, ...this.#held(this.#pages()).keys(), ...this.#arrivals.keys()]));
+    if (
+      kinds.every((kind) => rows.filter((row) => row.kind === kind).length < MAX_ROWS)
+    ) {
+      await this.#take(
+        rows,
+        new Set([
+          ...answered,
+          ...this.#held(this.#pages()).keys(),
+          ...this.#arrivals.keys(),
+        ]),
+      );
       changed.clear();
       this.#stale.clear();
       this.#waiting.clear();
@@ -270,26 +321,44 @@ export class ListLive {
     await this.#take(rows, answered);
     for (const id of answered) this.#waiting.delete(id);
     if (!gap) return;
-    for (const id of this.#held(this.#pages()).keys()) if (!answered.has(id)) changed.add(id);
-    for (const id of this.#arrivals.keys()) if (!answered.has(id)) this.#waiting.add(id);
+    for (const id of this.#held(this.#pages()).keys())
+      if (!answered.has(id)) changed.add(id);
+    for (const id of this.#arrivals.keys())
+      if (!answered.has(id)) this.#waiting.add(id);
   }
 
   /** Steps 1 and 2 for `changed` rows, and any stale row now on screen. */
   async #refreshHeld(changed: ReadonlySet<string>): Promise<void> {
     const held = this.#held(this.#pages());
     for (const id of this.#stale) if (!held.has(id)) this.#stale.delete(id);
-    const candidates = [...new Set([...changed, ...this.#stale])].filter((id) => held.has(id));
+    const candidates = [...new Set([...changed, ...this.#stale])].filter((id) =>
+      held.has(id),
+    );
     const shown = this.#rows.onScreen(candidates);
     for (const id of candidates) if (!shown.has(id)) this.#stale.add(id);
-    const asked = candidates.filter((id) => shown.has(id)).map((id) => held.get(id)!);
+    const asked = candidates
+      .filter((id) => shown.has(id))
+      .map((id) => must(held.get(id)));
     if (asked.length === 0) return;
     const { filters } = this.#request;
     const kinds = [...new Set(asked.map((row) => row.kind))];
     const seqs = new Set(asked.map((row) => row.seq));
     const ranges = seqRanges(seqs);
     // Every range applies to every kind, so each kind can match every seq asked.
-    const rows = await readOnce(this.#client, ["seq", kinds, filters, ranges], (signal) =>
-      listInquiriesBySeq({ kinds: inquiryKinds(kinds), filters, seqRanges: ranges, limit: seqs.size, fields: INQUIRY_ROW_FIELDS }, { signal }),
+    const rows = await readOnce(
+      this.#client,
+      ["seq", kinds, filters, ranges],
+      (signal) =>
+        listInquiriesBySeq(
+          {
+            kinds: inquiryKinds(kinds),
+            filters,
+            seqRanges: ranges,
+            limit: seqs.size,
+            fields: INQUIRY_ROW_FIELDS,
+          },
+          { signal },
+        ),
     );
     for (const row of asked) this.#stale.delete(row.id);
     await this.#take(rows, new Set(asked.map((row) => row.id)));
@@ -305,14 +374,26 @@ export class ListLive {
     if (this.#waiting.size === 0) return null;
     const wait = this.#lastCheckAt + CHECK_EVERY_MS - this.#now();
     if (wait > 0) return { afterMs: wait };
-    const checked = this.#collided.size > 0 ? [...this.#collided].slice(0, WHOLE_IDS) : [...this.#waiting].slice(0, CHECK_IDS);
+    const checked =
+      this.#collided.size > 0
+        ? [...this.#collided].slice(0, WHOLE_IDS)
+        : [...this.#waiting].slice(0, CHECK_IDS);
     this.#lastCheckAt = this.#now();
     const { kinds, filters } = this.#request;
     const withId = [...filters, idFilter(checked)];
     // Room for rows whose ids end like an asked one's (see `idFilter`).
     const limit = 2 * checked.length;
     const rows = await readOnce(this.#client, ["check", kinds, withId], (signal) =>
-      listInquiries({ kinds: inquiryKinds(kinds), filters: withId, limit, offset: 0, fields: INQUIRY_ROW_FIELDS }, { signal }),
+      listInquiries(
+        {
+          kinds: inquiryKinds(kinds),
+          filters: withId,
+          limit,
+          offset: 0,
+          fields: INQUIRY_ROW_FIELDS,
+        },
+        { signal },
+      ),
     );
     const back = new Set(rows.map((row) => row.id));
     for (const id of checked) {
@@ -338,7 +419,14 @@ export class ListLive {
     for (const row of rows) {
       if (held.has(row.id)) fresh.set(row.id, row);
       // A row merged away is still on its page, where it can come back.
-      else if (asked.has(row.id) && (loaded.has(row.id) || placeRow(pages.filter((page) => page.kind === row.kind), row))) {
+      else if (
+        asked.has(row.id) &&
+        (loaded.has(row.id) ||
+          placeRow(
+            pages.filter((page) => page.kind === row.kind),
+            row,
+          ))
+      ) {
         this.#arrive(row);
       }
     }
@@ -358,7 +446,8 @@ export class ListLive {
   /** Count `row` as arrived, keeping it only while there is at most a page of arrivals. */
   #arrive(row: InquiryRow): void {
     const kept = this.#arrivals.get(row.id);
-    const keep = kept === undefined ? this.#arrivals.size < this.#pageSize : kept !== null;
+    const keep =
+      kept === undefined ? this.#arrivals.size < this.#pageSize : kept !== null;
     this.#arrivals.set(row.id, keep ? row : null);
   }
 
@@ -369,14 +458,23 @@ export class ListLive {
    */
   async #freshen(fresh: ReadonlyMap<string, InquiryRow>): Promise<void> {
     if (fresh.size === 0) return;
-    const holding = () => this.#pages().filter((page) => page.rows?.some((row) => fresh.has(row.id)));
+    const holding = () =>
+      this.#pages().filter((page) => page.rows?.some((row) => fresh.has(row.id)));
     await Promise.all(
       holding()
         .filter((page) => page.fetching)
-        .map((page) => this.#client.refetchQueries({ queryKey: page.key, exact: true }, { cancelRefetch: false })),
+        .map((page) =>
+          this.#client.refetchQueries(
+            { queryKey: page.key, exact: true },
+            { cancelRefetch: false },
+          ),
+        ),
     );
     for (const page of holding()) {
-      this.#client.setQueryData(page.key, page.rows!.map((row) => newerRow(fresh.get(row.id), row)));
+      this.#client.setQueryData(
+        page.key,
+        must(page.rows).map((row) => newerRow(fresh.get(row.id), row)),
+      );
     }
   }
 
@@ -388,12 +486,14 @@ export class ListLive {
   #reloadPages(dropLeft: boolean): void {
     this.#arrivals.clear();
     this.#publish();
-    void this.#client.invalidateQueries({ predicate: (query) => this.#isPage(query) }).then(() => {
-      this.#joined = new Map();
-      this.#gone = new Set();
-      if (dropLeft) this.#left.clear();
-      this.#publish();
-    });
+    void this.#client
+      .invalidateQueries({ predicate: (query) => this.#isPage(query) })
+      .then(() => {
+        this.#joined = new Map();
+        this.#gone = new Set();
+        if (dropLeft) this.#left.clear();
+        this.#publish();
+      });
   }
 
   #publish(): void {
@@ -429,7 +529,9 @@ const NOTHING_ON_SCREEN: RowsOnScreen = { onScreen: () => new Set() };
 
 /** `later` and whatever came `earlier` as one batch. */
 function joinBatches(earlier: Batch | null, later: Batch): Batch {
-  return earlier ? { ids: new Set([...earlier.ids, ...later.ids]), gap: earlier.gap || later.gap } : later;
+  return earlier
+    ? { ids: new Set([...earlier.ids, ...later.ids]), gap: earlier.gap || later.gap }
+    : later;
 }
 
 /**

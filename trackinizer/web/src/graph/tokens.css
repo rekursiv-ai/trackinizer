@@ -26,6 +26,7 @@
   --g-edge-cites_paper: #8f7ba8;
   --g-status-active: #eceff5;
   --g-status-complete: #9aa5ce;
+  --g-status-stopped: #6e769e;
   --g-status-abandoned: #444b6e;
   --g-status-invalid: #ffb454;
   --g-fallback: var(--ink-tertiary);
@@ -55,6 +56,7 @@
   --g-edge-cites_paper: #8a7fa8;
   --g-status-active: #17212d;
   --g-status-complete: #8a97a8;
+  --g-status-stopped: #a6b1bf;
   --g-status-abandoned: #c3ccd6;
   --g-status-invalid: #c27a12;
   --g-fallback: var(--ink-tertiary);
@@ -66,6 +68,7 @@
   --g-kind-Paper: #1e92a1;
   --g-kind-WebResult: #a0831b;
   --g-status-complete: #7f8b9b;
+  --g-status-stopped: #9ba6b4;
   --g-status-abandoned: #b3bcc5;
   --g-status-invalid: #bc7611;
 }
@@ -75,6 +78,7 @@
   --g-kind-CodeChange: #bf6c29;
   --g-kind-WebResult: #997e19;
   --g-status-complete: #7b8696;
+  --g-status-stopped: #939eac;
   --g-status-abandoned: #aeb6be;
   --g-status-invalid: #b47111;
 }

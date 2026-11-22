@@ -17,32 +17,10 @@ message to an agent in the console, answered live.
 ## Quick Start
 
 ```bash
-# Mac:
-#   # Required for quick install.
-#   brew install uv
-#   # Optional for a real Postgres backend; default uses pglite engine.
-#   brew install postgresql@18 pgvector
-
-# Ubuntu/Debian:
-#   # Required for quick install.
-#   sudo apt-get install -y curl
-#   curl -LsSf https://astral.sh/uv/install.sh | sh
-#   # Optional for a real Postgres backend; default uses pglite engine.
-#   PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
-#   sudo apt-get install -y postgresql "postgresql-$PG_MAJOR-pgvector"
-
-# `trackinizer` alone installs `trax`, the client; the server is the `server` extra.
-uv tool install 'trackinizer[server]'
-
-# Optional: install authoring guidance for your agent (claude, codex, or cursor).
-trax doctor --fix --target codex --offline
-
-# Local server at http://127.0.0.1:8765.
-trackinizer
-
-# CLI to trackinizer server.
-trax
+uvx 'trackinizer[server]@latest'
 ```
+
+See [Install](#install) for additional details.
 
 Centralized agent database for inquiries (Issues + Artifacts), work, and
 knowledge. Three core tables (`inquiries`, `edges`, `change_log`) backed
@@ -55,13 +33,13 @@ that contract over Postgres + HTTP.
 
 New to the web app? [`docs/user_guide.md`](trackinizer/docs/user_guide.md)
 walks through it and `trax` end to end: signing in, Chat and the canvas,
-terminals on your own machine, and agent sessions.
+terminals on your own host, and agent sessions.
 
 The web app browses the same records the API serves. Its source is `web/`
 ([`web/README.md`](trackinizer/web/README.md)), and the package ships it
-built: `trackinizer` serves it at `/app/`, and `/` leads there. To use it on
-your own machine, run the server in single-user local mode, then open
-http://127.0.0.1:8765/app/:
+built: `trackinizer` serves it at `/trax/`, and `/` and its old address `/app/`
+lead there. To use it on your own host, run the server in single-user local
+mode, then open http://127.0.0.1:8765/trax/:
 
 ```bash
 trackinizer --no-auth
@@ -69,7 +47,7 @@ trackinizer --no-auth
 
 `--no-auth` makes every request an admin, so keep the server on localhost, its
 default `--host`. Without it, the API accepts only API tokens, which is how
-`trax` and agents connect, and `/app/` follows the same rule: a browser gets
+`trax` and agents connect, and `/trax/` follows the same rule: a browser gets
 the sign-in page, and the package ships no browser sign-in.
 
 `--app-dir DIR` serves the app built in `DIR` in place of the packaged one. In
@@ -105,8 +83,48 @@ children, a graph of what lies within two hops, and its activity.
 ### Chat
 
 A canvas's Chat talks to the server's shared assistant. An admin sets it with
-`trackinizer --assistant ACTOR=EMAIL`; with none live, Chat says so and sends
+`trackinizer --assistant ACTOR=EMAIL`, where `EMAIL` is a service account's
+(`NAME@service.invalid`); with none live, Chat says so and sends
 nothing. [`docs/api.md`](trackinizer/docs/api.md) has the rules.
+
+## Install
+
+```bash
+# `trackinizer` alone installs `trax`, the client; the server is the `server` extra.
+uv tool install 'trackinizer[server]'
+# Later: uv tool upgrade trackinizer
+
+# Optional: install authoring guidance for your agent (claude, codex, or cursor).
+trax doctor --fix --target codex --offline
+
+# Local server at http://127.0.0.1:8765.
+trackinizer
+
+# CLI to trackinizer server.
+trax
+```
+
+If you're missing `uvx`/`uv`,
+- Mac
+  ```bash
+  brew install uv
+  ```
+- Linux
+  ```bash
+  sudo apt install -y curl
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+
+Optionally, for a real Postgres backend (default uses the pglite engine),
+- Mac
+  ```bash
+  brew install postgresql@18 pgvector
+  ```
+- Linux
+  ```bash
+  PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
+  sudo apt install -y postgresql "postgresql-$PG_MAJOR-pgvector"
+  ```
 
 ## The model
 
@@ -247,11 +265,10 @@ back to `inquiries(id)` and deleted with it:
 | table | holds |
 |---|---|
 | `experiment_metrics` | `(key, step, value)` time series for an Experiment. CHECKs mirror the wire's validators -- non-blank bounded key, non-negative step, finite value -- so a stored row can always be read back. |
-| `session_records` | the ordered record log of an AgentSession, `(session_id, part, idx)`, each holding one `trackinizer.lib.agent` IR record as JSON. `part` is one source FILE (a session spans several); `idx` is DERIVED from position in it, which is what makes re-ingest idempotent. Backs the live console feed. |
+| `session_records` | the ordered record log of an AgentSession, `(session_id, part, idx)`, each holding one `trackinizer.sagent.session` IR record as JSON. `part` is one source FILE (a session spans several); `idx` is DERIVED from position in it, which is what makes re-ingest idempotent. Backs the live console feed. |
 | `session_manifests` | one row per `part`: what the file was called, what it declared, and how much of it is live. |
 | `session_ciphertext` | `Thinking.encrypted`, split off so retention can drop it without touching what search indexes. |
 | `session_slash_commands` | commands the human typed into the TUI. Not records: never written to any session log, so they hold no `idx`. |
-| `inquiry_embeddings` | one vector per `(inquiry_id, model)` for semantic search. |
 
 Auth is three more: `users`, `api_keys` (scrypt-hashed, prefix-indexed),
 and `allowlist`.
@@ -266,7 +283,7 @@ PGlite datadir it is not tied to the storage internals that wrote it, and an
 unchanged graph exports the same bytes twice. Line format:
 [`docs/api.md`](trackinizer/docs/api.md) section 3.24.
 
-`trax export labels is org:rekursiv labels nre '^machine:'` writes the
+`trax export labels is org:rekursiv labels nre '^host:'` writes the
 subgraph those clauses match instead. Clauses read like any other filter and
 AND together; the inquiries decide the subgraph, and an edge comes along only
 when both of its ends did. The header names the selector, so a reader can
@@ -274,7 +291,7 @@ tell a slice from a backup.
 
 ## Package dependency graph
 
-Four layers, two legs sharing one contract spine. An arrow means
+Four layers, two sockets sharing one contract spine. An arrow means
 "imports / depends on" and points toward the dependency.
 
 ```
@@ -285,8 +302,8 @@ Four layers, two legs sharing one contract spine. An arrow means
        │                                     │
        ▼                                     ▼
 ┌──────────────┐                      ┌──────────────┐
-│   client     │                      │     api      │   server leg adds
-│ (httpx SDK)  │                      │  (FastAPI    │   Store; client leg
+│   client     │                      │     api      │   server socket adds
+│ (httpx SDK)  │                      │  (FastAPI    │   Store; client socket
 │              │                      │   handlers)  │   adds httpx
 └──────┬───────┘                      └──────┬───────┘
        │                                     │
@@ -311,10 +328,10 @@ Four layers, two legs sharing one contract spine. An arrow means
               └───────────────┘
 ```
 
-Two legs, one shared spine:
+Two sockets, one shared spine:
 
-- client leg: `trax` → `client` → `wire` → `types`
-- server leg: `server/__main__` → `server/api` → `wire` → `types`
+- client socket: `trax` → `client` → `wire` → `types`
+- server socket: `server/__main__` → `server/api` → `wire` → `types`
 
 The whole point of this split: `types/` + `wire/` + `client/` form a
 self-contained client distribution. `wire/` and `client/` never import
@@ -403,10 +420,10 @@ Pick one of these orders depending on what you came in for.
 trackinizer                        # pglite (default)
 trackinizer --engine pg --dsn ...  # against real Postgres
 trackinizer --no-auth              # single-user local mode: everyone is admin
-trackinizer --app-dir DIR          # the web app built in DIR at /app/
-trackinizer --assistant ACTOR=EMAIL  # the shared Chat partner (or $TRACKINIZER_ASSISTANT)
+trackinizer --app-dir DIR          # the web app built in DIR at /trax/
+trackinizer --assistant ACTOR=EMAIL  # the service account that acts for an asker (or $TRACKINIZER_ASSISTANT)
 trackinizer --staff PATTERNS         # who is staff: user@host or *@domain (or $TRACKINIZER_STAFF)
-trackinizer --no-web               # without /api/web, /app/ or the login page
+trackinizer --no-web               # without /api/web, /trax/ or the login page
 ```
 
 `trax` is the client half and talks to any reachable server, so it is
@@ -417,7 +434,6 @@ trax help                          # grammar and subjects
 trax doctor                        # check skills, profile, and server access
 trax issue                         # list issues
 trax env                           # list the org's environment variables
-trax machine                       # list the machines campaigns may run on
 ```
 
 From a source checkout, both are `uv run python -m trackinizer.server`
@@ -427,8 +443,9 @@ See `example.sh` for a worked end-to-end submit/edit/query session.
 
 ## System dependencies
 
-Integration tests (`@pytest.mark.integration`) use a Postgres server backend
-via `pytest-postgresql` and also requires `pgvector`.
+Integration tests (`@pytest.mark.integration`) start a private Postgres server
+with the install's `pg_ctl`, found beside `pg_config --bindir` or on `PATH`,
+and also require `pgvector`.
 
 PGlite bundles its own `vector` extension, so the default `pglite` engine has
 no system deps.

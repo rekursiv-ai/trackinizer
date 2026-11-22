@@ -1,4 +1,12 @@
-import { type ComponentProps, createContext, type ReactNode, startTransition, use, useEffect, useState } from "react";
+import {
+  type ComponentProps,
+  createContext,
+  type ReactNode,
+  startTransition,
+  use,
+  useEffect,
+  useState,
+} from "react";
 import type { ExtraProps } from "react-markdown";
 import { chunk } from "../router/lazy";
 import { Icon } from "../ui/icons";
@@ -25,6 +33,7 @@ export function CodeBlock({ node, children }: ComponentProps<"pre"> & ExtraProps
       {json ? (
         <JsonView root={json} kinds={kinds} />
       ) : (
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: scrolling code, which the keyboard scrolls once it has focus
         <pre tabIndex={0} role="group" aria-label="Code">
           {children}
         </pre>
@@ -34,7 +43,15 @@ export function CodeBlock({ node, children }: ComponentProps<"pre"> & ExtraProps
 }
 
 /** Code or JSON in its box, with a Copy button that copies `text`, as written. */
-export function CodeFrame({ text, what, children }: { text: string; what: "code" | "JSON"; children: ReactNode }) {
+export function CodeFrame({
+  text,
+  what,
+  children,
+}: {
+  text: string;
+  what: "code" | "JSON";
+  children: ReactNode;
+}) {
   const copy = useCopy();
   return (
     <div className="md-code">

@@ -14,8 +14,8 @@ import re
 import sys
 
 from trackinizer.client.errors import ClientError
-from trackinizer.trax.commands import Command, HelpPage
-from trackinizer.trax.context import cwd
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
+from trackinizer.trax.context import check_local_input, cwd
 from trackinizer.trax.render import echo
 
 
@@ -75,7 +75,7 @@ class Variables(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog=f"trax {ENV_WORD}",
             description="List, set or delete the org's environment variables.",
         )
@@ -225,6 +225,7 @@ def _source_bytes(source: str, *, secret: bool) -> bytes:
     """Read the bytes of ``-`` (stdin) or ``@FILE``."""
     # Bytes, not text: text mode folds ``\r\n`` into ``\n``, which would hide the
     # pair that counts as one trailing newline.
+    check_local_input(source)
     if source == "-":
         return cast(bytes, sys.stdin.buffer.read())
     path = source[1:]

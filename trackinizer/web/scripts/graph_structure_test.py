@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+import sys
+
+import httpx2
 import pytest
 
+from trackinizer.client.client import Client
+from trackinizer.trax.profile import Profile
+from trackinizer.web.scripts import graph_structure
 from trackinizer.web.scripts.graph_structure import (
     GRAPH_STRUCTURE,
     Link,
@@ -13,6 +21,10 @@ from trackinizer.web.scripts.graph_structure import (
     load,
     scrub,
 )
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_scrub_keeps_kinds_statuses_edges_and_creation_order() -> None:
@@ -106,6 +118,56 @@ def test_nodes_made_at_the_same_moment_keep_the_servers_order() -> None:
         Node(kind="Belief", status="active"),
         Node(kind="Issue", status="active"),
     )
+
+
+def test_main_writes_the_profiles_servers_shape_with_its_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[httpx2.Request] = []
+
+    def serve(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, json=_GRAPH)
+
+    def client(url: str, *, api_key: str, timeout_sec: float) -> Client:
+        return Client(
+            url,
+            api_key=api_key,
+            timeout_sec=timeout_sec,
+            transport=httpx2.MockTransport(serve),
+        )
+
+    out = tmp_path / "structure.json"
+    monkeypatch.setattr(
+        graph_structure,
+        "load_profile",
+        lambda: Profile(url="https://tracker.test", api_key="trax_k"),
+    )
+    monkeypatch.setattr(graph_structure, "Client", client)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graph_structure", "--limit", "7", "--out", str(out)],
+    )
+
+    assert graph_structure.main() == 0
+
+    assert out.read_text() == dump(scrub(_GRAPH))
+    (request,) = seen
+    assert (request.method, request.url.path) == ("GET", "/api/web/graph")
+    assert request.url.params["limit"] == "7"
+    assert request.headers["authorization"] == "Bearer trax_k"
+    assert capsys.readouterr().out == (
+        f"{out}: 3 nodes {{'Issue': 1, 'Experiment': 1, 'Belief': 1}}, 2 edges\n"
+    )
+
+
+def test_a_row_of_the_wrong_width_is_refused() -> None:
+    text = dump(scrub(_GRAPH)).replace("[1,2,3,-1]", "[1,2,3]")
+    with pytest.raises(ValueError, match="is not 4 ints"):
+        load(text)
 
 
 def test_the_committed_structure_loads() -> None:

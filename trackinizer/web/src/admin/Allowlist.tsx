@@ -1,10 +1,23 @@
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
-import { type AllowlistEntry, addAllowlistEntry, removeAllowlistEntry, setAllowlistRole } from "../api/admin";
+import {
+  type AllowlistEntry,
+  addAllowlistEntry,
+  removeAllowlistEntry,
+  setAllowlistRole,
+} from "../api/admin";
 import type { Role } from "../api/me";
 import { useProfile } from "../app/boot";
 import { dateTime, relativeTime, useMinuteClock } from "../detail/time";
-import { accountEdit, ConfirmDialog, ReadError, RoleCell, RoleSelect, Section, useAccountWriter } from "../settings/account";
+import {
+  accountEdit,
+  ConfirmDialog,
+  ReadError,
+  RoleCell,
+  RoleSelect,
+  Section,
+  useAccountWriter,
+} from "../settings/account";
 import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { useToast } from "../ui/toast";
@@ -26,11 +39,14 @@ export function AllowlistSection() {
     <Section title="Allowlist">
       <AddEntryForm />
       <p className="st-note">
-        An entry's role applies to a user's first sign-in. After that, change the user's role above.
+        An entry's role applies to a user's first sign-in. After that, change the user's
+        role above.
       </p>
       <ReadError read={entries} />
       {entries.data === undefined ? (
-        entries.isError ? null : <p className="st-note">Loading…</p>
+        entries.isError ? null : (
+          <p className="st-note">Loading…</p>
+        )
       ) : entries.data.length === 0 ? (
         <p className="st-note">Nobody new can sign in: the allowlist is empty.</p>
       ) : (
@@ -86,7 +102,11 @@ function AddEntryForm() {
     }
   };
   return (
-    <form className="st-form" aria-label="Add to the allowlist" onSubmit={(event) => void submit(event)}>
+    <form
+      className="st-form"
+      aria-label="Add to the allowlist"
+      onSubmit={(event) => void submit(event)}
+    >
       <input
         className="field"
         aria-label="Email or pattern"
@@ -96,8 +116,19 @@ function AddEntryForm() {
         value={entry}
         onChange={(event) => setEntry(event.target.value)}
       />
-      <RoleSelect label="Role for new entry" value={role} ceiling={ceiling} disabled={sent} onChange={setRole} />
-      <WriteButton type="submit" className="btn primary" pending={sent} disabled={!online}>
+      <RoleSelect
+        label="Role for new entry"
+        value={role}
+        ceiling={ceiling}
+        disabled={sent}
+        onChange={setRole}
+      />
+      <WriteButton
+        type="submit"
+        className="btn primary"
+        pending={sent}
+        disabled={!online}
+      >
         Add
       </WriteButton>
       <WriteStatus state={writer.state} />
@@ -122,7 +153,12 @@ function EntryRow({ entry, now }: { entry: AllowlistEntry; now: number }) {
           ceiling={ceiling}
           disabled={!online}
           writer={roleWriter}
-          edit={(role) => accountEdit(() => setAllowlistRole(name, role), `${name}: role set to ${role}`)}
+          edit={(role) =>
+            accountEdit(
+              () => setAllowlistRole(name, role),
+              `${name}: role set to ${role}`,
+            )
+          }
         />
       </td>
       <td title={dateTime(entry.added_at)}>{relativeTime(entry.added_at, now)}</td>
@@ -143,11 +179,16 @@ function EntryRow({ entry, now }: { entry: AllowlistEntry; now: number }) {
             confirm="Remove"
             writer={removeWriter}
             disabled={!online}
-            onConfirm={() => removeWriter.run(accountEdit(() => removeAllowlistEntry(name), `Removed ${name}`))}
+            onConfirm={() =>
+              removeWriter.run(
+                accountEdit(() => removeAllowlistEntry(name), `Removed ${name}`),
+              )
+            }
             onClose={() => setConfirming(false)}
           >
-            Nobody new can sign in through it. Users it already let in keep their accounts, but their next sign-in is refused
-            unless another entry matches them.
+            Nobody new can sign in through it. Users it already let in keep their
+            accounts, but their next sign-in is refused unless another entry matches
+            them.
           </ConfirmDialog>
         ) : null}
       </td>

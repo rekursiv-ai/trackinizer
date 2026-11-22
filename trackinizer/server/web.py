@@ -3,17 +3,22 @@
 Mounted by ``trackinizer --web`` (or programmatically via :func:`attach`).
 Adds:
 
-- ``GET /app/*`` -- a separately built web app, for the callers the API answers
-  (``--app-dir``). With it, ``/`` answers 302 to ``/app/``, and ``/me``,
-  ``/admin``, ``/graph`` and ``/console`` lead into the app likewise.
+- ``GET /trax/*`` -- a separately built web app, for the callers the API answers
+  (``--app-dir``). With it, ``/`` answers 302 to ``/trax/``, and ``/me``,
+  ``/admin``, ``/graph`` and ``/console`` lead into the app likewise, as does
+  ``/app/*``, its old address.
 - ``GET /auth/login_page`` -- the sign-in page (``assets/login.html``).
 - ``GET /auth/device`` -- where a person approves a program's device login
   (``assets/device.html``), for a signed-in visitor; the others go to the sign-in
   page, which returns them here.
 - ``GET /static/*`` -- files from ``--static-dir``, to anyone.
 - ``GET /api/web/search`` -- cross-kind ILIKE search over title/description.
+- ``GET /api/web/search_inquiries`` -- inquiry texts and edge notes, by keyword and
+  by vector.
 - ``GET /api/web/recent_changes`` -- the most-recent ``change_log`` rows
   with their snapshots flattened to JSON.
+- ``GET /api/web/worked_on`` -- the records the reader changed last, for the
+  graph a new workspace opens on.
 - ``GET /api/web/lookup/{target_id}`` -- resolve a UUID to its kind.
 - ``GET /api/web/get/{target_id}`` -- one inquiry with edges + backlinks +
   recent changes attached, for the web app's detail view.
@@ -63,42 +68,44 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from treekle import from_plain, json_loads
-from treekle.absent import ABSENT
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import (
     get_assistant,
-    get_inbound,
     get_store,
     tag_row,
 )
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
-from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_identity import (
+    request_principal,
+    session_reader,
+)
 from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import (
     AuthIdentity,
     current_user,
     require_role,
 )
-from trackinizer.server.config import Config, ConfigError
-from trackinizer.server.embedders import registry
 from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
-from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.graph_focus import read_neighbourhood
+from trackinizer.server.store.named import parse_named, read_named
+from trackinizer.server.store.search import (
+    InquirySearchHit,
+    SessionSearchHit,
+    search_inquiries,
+    search_sessions,
+)
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
+    CanvasAgents,
     FeedScope,
-    StationAgents,
-)
-from trackinizer.server.store.session_search import (
-    SessionSearchHit,
-    search_session_records,
 )
 from trackinizer.server.values import vetted_sql
-from trackinizer.server.visuals.partners import live_run_states
-from trackinizer.types.change_log import Snapshot
+from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
+from trackinizer.types.session_records import served_kind
 from trackinizer.wire.json_types import UtcDatetime
 from trackinizer.wire.routes import MAX_LIST_LIMIT, inquiry_relation_fields
 from trackinizer.wire.wire_device import DEVICE_PAGE_PATH
@@ -106,8 +113,11 @@ from trackinizer.wire.wire_sessions import (
     FeedCursor,
     FeedFacetsResponse,
     FeedHistogramResponse,
+    FeedKindFacet,
     FeedResponse,
     FeedWhose,
+    SearchMode,
+    WorkedOn,
 )
 
 
@@ -117,11 +127,12 @@ if TYPE_CHECKING:
     import asyncpg
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.server.store.core import Store
-    from trackinizer.types.embedder import QueryEmbedder
+    from trackinizer.server.store.search import VectorSearch
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 _DEFAULT_APP_NAME: Final = "Trackinizer"
 """What the sign-in page calls the app when the served build names none."""
 
@@ -133,10 +144,9 @@ router = APIRouter()
 
 
 _SESSION_SEARCH_MAX_LIMIT: Final = 200
-_SESSION_SEARCH_MAPPER: Final = FootprintMapper().name
 
 
-# See ``_AppRoute``: shared caches must never store an /app/ response.
+# See ``_AppRoute``: shared caches must never store a /trax/ response.
 _APP_CACHE_CONTROL: Final = "private, no-cache"
 
 # See ``_AppRoute``: a built file under ``assets/`` never changes under one URL.
@@ -177,7 +187,6 @@ async def web_search(
       matches: Matching inquiries, each as ``self`` in ``/get`` renders it.
 
     """
-    del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
     names = parse_fields(fields)
@@ -193,16 +202,24 @@ async def web_search(
         kind_clause = f" AND kind = ${len(params)}"
     else:
         kind_clause = ""
+    store = get_store(request)
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=await request_principal(request, identity),
+        params=params,
+    )
     params.append(limit)
     sql = vetted_sql(
         "SELECT * FROM inquiries WHERE (",
         clause,
         ")",
         kind_clause,
+        "" if predicate == "TRUE" else f" AND ({predicate})",
         " ORDER BY created DESC, id DESC LIMIT $",
         str(len(params)),
     )
-    async with get_store(request).engine.acquire() as conn, tx(conn):
+    async with store.engine.acquire() as conn, tx(conn):
         # A field-scoped ``~*`` regex runs POSIX-side in Postgres, where a
         # pathological pattern (catastrophic backtracking) can pin the backend
         # for an unbounded time. Python ``re.compile`` only validates syntax,
@@ -233,37 +250,41 @@ async def web_search(
 @router.get("/search_sessions")
 async def web_search_sessions(
     request: Request,
-    q: str,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    q: str = "",
     *,
-    semantic: bool = True,
+    near: UUID | None = None,
+    spawned: str = "",
+    mode: SearchMode = "fused",
     limit: int = 20,
-    model: str = "",
-    dim: int | None = None,
     whose: FeedWhose | None = None,
     hidden: bool = False,
 ) -> WebView:
-    """Hybrid session search: embeddings + scoped tsvector, RRF-merged.
+    """Hybrid session search: the deployment's vector arm + scoped tsvector, RRF-merged.
 
-    Runs the full-text arm always, and the semantic arm only when ``semantic``
-    is requested AND a session embedder is available. With no embedder the route
-    degrades to full-text-only rather than 500 -- a keyword search must never
-    trigger a model load -- and flags the degrade in the response
-    (``degraded: true``, ``semantic: false``). The query embedding uses the
-    embedder's query-side prefix; the corpus stayed prefix-free at ingest.
+    ``mode`` picks the arms: ``fused`` (the default) runs both, ``keyword`` the
+    full-text arm alone, ``vector`` the vector arm alone. The vector arm runs only
+    when the deployment has one whose model is loaded. Without it the route answers
+    with what is left rather than fail -- a search never loads a model -- and flags
+    the degrade in the response (``degraded: true``, ``semantic: false``).
+
+    A search takes words (``q``) or a session (``near``), never both. Near a
+    session, the query is the vector of what that session last said: the hits are
+    the records of other sessions nearest it, by the vector arm alone. A session
+    the caller does not read, or one with no vector yet, has no hits. With
+    ``spawned``, the session is the one ``near`` spawned, at any depth, under that
+    CLI session id: an agent names another agent of its run so, knowing its own
+    session's id and the other's CLI id alone. With none such there are no hits.
 
     Args:
       request: FastAPI request object for middleware access.
-      q: The search query. Full-text terms feed ``websearch_to_tsquery``.
       identity: Authenticated user, validated to have viewer role.
-      semantic: Request the embedding arm (default true); ignored when no
-        session embedder is available.
+      q: The search query. Full-text terms feed ``websearch_to_tsquery``.
+      near: The session to search near, in place of ``q``.
+      spawned: The CLI session id of the session ``near`` spawned, to search
+        near in its place.
+      mode: The arms to run.
       limit: Maximum merged hits, 1-200.
-      model: Optional A/B override -- a bare slug or full ``slug@dim`` of an
-        embedder to query INSTEAD of the serving default (its rows must already
-        be swept). Unknown names are a 400. Empty uses the process default.
-      dim: Optional dim override paired with ``model`` (a Matryoshka model
-        accepts any dim in its range); must agree with any ``@dim`` in ``model``.
       whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a
         person searches their own, as the console opens on them, and the
         configured assistant every one it reads, since it holds none of the
@@ -282,21 +303,26 @@ async def web_search_sessions(
             status_code=400,
             detail=f"limit must be in [1, {_SESSION_SEARCH_MAX_LIMIT}]",
         )
-    if not q.strip():
+    if near is None and not q.strip():
         raise HTTPException(status_code=400, detail="q must be non-empty")
-    embedder = _search_embedder(request, semantic=semantic, model=model, dim=dim)
-    query_vector = await embedder.embed_query(q) if embedder is not None else None
-    degraded = semantic and embedder is None
-    hits = await search_session_records(
+    if near is not None and q.strip():
+        raise HTTPException(status_code=400, detail="give q or near, not both")
+    if near is not None and mode == "keyword":
+        raise HTTPException(
+            status_code=400,
+            detail="near is searched by vector, not by keyword",
+        )
+    if near is None and spawned:
+        raise HTTPException(
+            status_code=400,
+            detail="spawned names what near spawned; give near",
+        )
+    hits, searched = await search_sessions(
         get_store(request).engine,
-        query_vector=query_vector,
-        query_text=q,
-        mapper=_SESSION_SEARCH_MAPPER,
-        model=embedder.name if embedder is not None else "",
-        # The cast dim comes from the SELECTED embedder (override or default), so
-        # the cosine arm hits that model's partial index. Unused when the arm is
-        # skipped; 1 is a valid placeholder the query never reaches.
-        dim=embedder.dim if embedder is not None else 1,
+        query=q if near is None else near,
+        spawned=spawned,
+        vectors=_state(request).vector_search,
+        mode=mode,
         limit=limit,
         scope=feed_scope(
             request,
@@ -307,8 +333,60 @@ async def web_search_sessions(
     )
     return {
         "hits": [_session_hit_to_dict(hit) for hit in hits],
-        "semantic": query_vector is not None,
-        "degraded": degraded,
+        "semantic": searched,
+        "degraded": mode != "keyword" and not searched,
+    }
+
+
+@router.get("/search_inquiries")
+async def web_search_inquiries(
+    request: Request,
+    q: str,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    mode: SearchMode = "fused",
+    kind: Inquiry.InquiryKind | None = None,
+    limit: int = 20,
+) -> WebView:
+    """Hybrid inquiry search over inquiry texts and edge notes, RRF-merged.
+
+    ``mode`` picks the arms as on ``/search_sessions``, which degrades the same way.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      q: The search query. Keyword terms feed ``websearch_to_tsquery``.
+      identity: Authenticated user, validated to have viewer role.
+      mode: The arms to run; ``fused`` when unnamed.
+      kind: The one inquiry kind to search; unnamed, every kind.
+      limit: Maximum merged hits, 1-200.
+
+    Returns:
+      body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each hit
+        carries ``inquiry_id``, ``kind``, ``seq``, ``title``, ``field`` (``text``, or
+        ``edge:<edge_kind>:<to_id>`` for a note), ``score``, ``source`` and
+        ``snippet``. A hit the caller may not read, or a note with an end the
+        caller may not read, is not among them.
+
+    """
+    store = get_store(request)
+    try:
+        hits, searched = await search_inquiries(
+            store.engine,
+            query=q,
+            vectors=_state(request).vector_search,
+            policy=store.access_policy,
+            principal=await request_principal(request, identity),
+            sessions=session_reader(request, identity),
+            mode=mode,
+            kind=kind,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "hits": [_inquiry_hit_to_dict(hit) for hit in hits],
+        "semantic": searched,
+        "degraded": mode != "keyword" and not searched,
     }
 
 
@@ -329,15 +407,98 @@ async def web_recent_changes(
       changes: Change log deltas, newest first.
 
     """
-    del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
-    async with get_store(request).engine.acquire() as conn:
+    store = get_store(request)
+    params: list[object] = [limit]
+    predicate = store.change_read_filter(
+        "c",
+        params=params,
+        principal=await request_principal(request, identity),
+    )
+    async with store.engine.acquire() as conn:
         rows = await conn.fetch(
-            _CHANGE_SELECT + " ORDER BY c.created DESC, c.id DESC LIMIT $1",
-            limit,
+            vetted_sql(
+                _CHANGE_SELECT,
+                "" if predicate == "TRUE" else f" WHERE ({predicate})",
+                " ORDER BY c.created DESC, c.id DESC LIMIT $1",
+            ),
+            *params,
         )
     return [_change_to_dict(r) for r in rows]
+
+
+MOST_FOCI: Final = 10
+"""The most ``focus`` values one ``/api/web/graph`` read takes."""
+
+
+_NOT_WORK: Final[tuple[Change.Kind, ...]] = (
+    "marginal_cost",
+    "dependency_changed",
+    "implicit_subs_opened",
+    "implicit_subs_closed",
+    "purged",
+    *Change.PROTECTED_KINDS,
+)
+"""Changes the server makes around a record, not work on it: cost roll-ups, a child's
+alert to its parents, subscription hooks, a purge and an admin's lock."""
+
+
+@router.get("/worked_on")
+async def web_worked_on(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    limit: int = 10,
+) -> list[WorkedOn]:
+    """Return what the reader worked on last: what its changes of 30 days touched.
+
+    A change counts when the reader made it, its agents' by its keys among them, and it
+    is work on the record (not one of :data:`_NOT_WORK`). An agent session's own
+    record is left out: its changes are the run's bookkeeping, and its work shows on the
+    records it changed. A workspace's Issue is left out too: each chat placed in it
+    changes it, and its neighbours are every session of the workspace. Only records the
+    reader may still read are listed.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
+      limit: Most records to return, 1-100.
+
+    Returns:
+      records: Each record once, the one changed last first, with its ``kind``
+        and ``seq``, so a caller can tell it from the same record named by number.
+
+    Raises:
+      HTTPException: 400 for a ``limit`` outside 1-100.
+
+    """
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
+    store = get_store(request)
+    params: list[object] = [limit, identity.email, list(_NOT_WORK)]
+    predicate = store.change_read_filter(
+        "c",
+        params=params,
+        principal=await request_principal(request, identity),
+    )
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            vetted_sql(
+                "SELECT c.subject_id AS id, i.kind, i.seq ",
+                _CHANGE_FROM,
+                " JOIN inquiries i ON i.id = c.subject_id",
+                f" WHERE {_CHANGE_PRINCIPAL} = $2",
+                # The window bounds the walk of the log for one who changed little.
+                " AND c.created > now() - interval '30 days'",
+                " AND c.subject_kind <> 'AgentSession' AND c.kind <> ALL($3::text[])",
+                " AND NOT coalesce(i.labels, '{}') @> ARRAY['workspace']::text[]",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+                " GROUP BY c.subject_id, i.kind, i.seq",
+                " ORDER BY max(c.created) DESC, c.subject_id LIMIT $1",
+            ),
+            *params,
+        )
+    return [WorkedOn.model_validate(dict(row)) for row in rows]
 
 
 @router.get("/lookup/{target_id}")
@@ -357,11 +518,21 @@ async def web_lookup(
       view: Lightweight node with kind and id.
 
     """
-    del identity
-    async with get_store(request).engine.acquire() as conn:
+    store = get_store(request)
+    params: list[object] = [target_id]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=await request_principal(request, identity),
+        params=params,
+    )
+    async with store.engine.acquire() as conn:
         kind = await conn.fetchval(
-            "SELECT kind FROM inquiries WHERE id = $1",
-            target_id,
+            vetted_sql(
+                "SELECT kind FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
         )
     if kind is None:
         raise HTTPException(status_code=404, detail="id not found")
@@ -390,21 +561,49 @@ async def web_get(
       view: ``self``, ``edges``, ``backlinks`` and ``changes``.
 
     """
-    del identity
     store = get_store(request)
+    principal = await request_principal(request, identity)
+    params: list[object] = [target_id]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=principal,
+        params=params,
+    )
     async with store.engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM inquiries WHERE id = $1",
-            target_id,
+            vetted_sql(
+                "SELECT * FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
         )
         if row is None:
             raise HTTPException(status_code=404, detail="not found")
-        edges = await _edges_for(conn, target_id, direction="outbound")
-        backlinks = await _edges_for(conn, target_id, direction="inbound")
-        changes = await conn.fetch(
-            _CHANGE_SELECT + " WHERE c.subject_id = $1"
-            " ORDER BY c.created DESC, c.id DESC LIMIT 50",
+        edges = await _grouped_edges(
+            conn,
             target_id,
+            direction="outbound",
+            policy=store.access_policy,
+            principal=principal,
+        )
+        backlinks = await _grouped_edges(
+            conn,
+            target_id,
+            direction="inbound",
+            policy=store.access_policy,
+            principal=principal,
+        )
+        params = [target_id]
+        predicate = store.change_read_filter("c", params=params, principal=principal)
+        changes = await conn.fetch(
+            vetted_sql(
+                _CHANGE_SELECT,
+                " WHERE c.subject_id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+                " ORDER BY c.created DESC, c.id DESC LIMIT 50",
+            ),
+            *params,
         )
     return {
         "self": _row_to_dict(row),
@@ -430,14 +629,14 @@ _GRAPH_NODE_COLS: Final = (
 # caps every node drawn, and it draws only relationships between drawn nodes.
 _GRAPH_KEPT_IDS: Final = (
     "WITH recent AS ("
-    " SELECT id, created FROM inquiries ORDER BY created DESC, id DESC LIMIT $1"
+    " SELECT id, created FROM inquiries{recent_where} ORDER BY created DESC, id DESC LIMIT $1"
     "), reached AS ("
     " SELECT id, created AS seen FROM recent"
     " UNION ALL SELECT e.to_id, r.created FROM edges e"
     " JOIN recent r ON e.from_id = r.id"
     " UNION ALL SELECT e.from_id, r.created FROM edges e"
     " JOIN recent r ON e.to_id = r.id"
-    ") SELECT r.id FROM reached r JOIN inquiries i ON i.id = r.id"
+    ") SELECT r.id FROM reached r JOIN inquiries i ON i.id = r.id{reached_where}"
     " GROUP BY r.id, i.created"
     " ORDER BY max(r.seen) DESC, i.created DESC, r.id DESC LIMIT $1"
 )
@@ -448,7 +647,7 @@ async def web_graph(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     limit: int | None = None,
-    focus: UUID | None = None,
+    focus: Annotated[list[str] | None, Query(max_length=MOST_FOCI)] = None,
     hops: int = 2,
 ) -> WebView:
     """Return the inquiry graph as typed nodes + directed edges, for the SPA.
@@ -459,10 +658,11 @@ async def web_graph(
     belief proves) stays in view; selection stops at ``limit``. Every edge joins
     two returned nodes.
 
-    With ``focus``, the nodes are instead the focus and the inquiries nearest it
+    With ``focus``, the nodes are instead the foci and the inquiries nearest them
     (:func:`read_neighbourhood`): all within one edge, in either direction, before
     any two away, and so on to ``hops``, newest first within a hop, until
-    ``limit``. Each node then carries ``hops``, its distance from the focus.
+    ``limit``; with several foci, each has a share of hop 1. Each node then
+    carries ``hops``, its distance from the nearest focus, 0 for a focus.
 
     Nodes are the light projection (id, kind, seq, title, status, created,
     belief judgement/confidence), ordered by ``created`` ascending so the replay
@@ -475,18 +675,23 @@ async def web_graph(
       identity: Authenticated user, validated to have viewer role.
       limit: Most nodes to return, neighbours included, at least 1; 1000, or 60
         with a ``focus``, when unset.
-      focus: The inquiry whose neighbourhood to return; unset returns the newest.
-      hops: With ``focus``, the most edges to walk from it, 1 to 3.
+      focus: The inquiries whose neighbourhood to return, at most 10, each a UUID
+        or ``Kind/seq``; one that names nothing the reader may read is left out.
+        Unset returns the newest.
+      hops: With ``focus``, the most edges to walk from the foci, 1 to 3.
 
     Returns:
       graph: Nodes and edges for replay visualization, ordered by created time.
 
     Raises:
-      HTTPException: 400 for a ``limit`` below 1 or ``hops`` outside 1 to 3; 404
-        when ``focus`` names no inquiry.
+      HTTPException: 400 for a ``limit`` below 1, ``hops`` outside 1 to 3, or a
+        ``focus`` value that is neither a UUID nor ``Kind/seq`` of a known kind;
+        404 when no ``focus`` names an inquiry the reader may read. More than
+        ``MOST_FOCI`` values are refused before this runs, with 422.
 
     """
-    del identity
+    store = get_store(request)
+    principal = await request_principal(request, identity)
     # No top: the graph view lets a person type any count, All included, and asks
     # before drawing a large one. On a benchmark of about 100,000 nodes, All answered
     # 42 MB (10 MB gzipped) in 0.7 s, and 20,000 nodes 8.6 MB in 0.16 s. The answer
@@ -495,20 +700,65 @@ async def web_graph(
         raise HTTPException(status_code=400, detail="limit must be at least 1")
     if hops < 1 or hops > 3:
         raise HTTPException(status_code=400, detail="hops must be in [1, 3]")
-    async with get_store(request).engine.acquire() as conn:
+    named = [parse_named(each) for each in focus or ()]
+    wanted = [each for each in named if each is not None]
+    if len(wanted) < len(named):
+        raise HTTPException(
+            status_code=400,
+            detail="focus must be record ids or Kind/seq",
+        )
+    async with store.engine.acquire() as conn:
         distances: dict[UUID, int] = {}
-        if focus is None:
-            kept, bound = vetted_sql("IN (", _GRAPH_KEPT_IDS, ")"), limit or 1000
+        params: list[object] = [limit or 1000]
+        if not wanted:
+            recent_filter = inquiry_read_filter(
+                "inquiries.id",
+                policy=store.access_policy,
+                principal=principal,
+                params=params,
+            )
+            reached_filter = inquiry_read_filter(
+                "i.id",
+                policy=store.access_policy,
+                principal=principal,
+                params=params,
+            )
+            kept = vetted_sql(
+                "IN (",
+                _GRAPH_KEPT_IDS.format(
+                    recent_where=""
+                    if recent_filter == "TRUE"
+                    else f" WHERE ({recent_filter})",
+                    reached_where=""
+                    if reached_filter == "TRUE"
+                    else f" WHERE ({reached_filter})",
+                ),
+                ")",
+            )
         else:
+            # One query names the foci given by number; ids need none.
+            found = await read_named(
+                conn,
+                wanted=[each for each in wanted if not isinstance(each, UUID)],
+                policy=store.access_policy,
+                principal=principal,
+            )
             distances = await read_neighbourhood(
                 conn,
-                focus,
+                focus=[
+                    each if isinstance(each, UUID) else found[each].id
+                    for each in wanted
+                    if isinstance(each, UUID) or each in found
+                ],
                 hops=hops,
                 limit=limit or 60,
+                policy=store.access_policy,
+                principal=principal,
             )
             if not distances:
                 raise HTTPException(status_code=404, detail="focus not found")
-            kept, bound = "= ANY($1)", list(distances)
+            kept = "= ANY($1)"
+            params = [list(distances)]
         node_rows = await conn.fetch(
             vetted_sql(
                 "SELECT ",
@@ -517,7 +767,7 @@ async def web_graph(
                 kept,
                 " ORDER BY created ASC, id ASC",
             ),
-            bound,
+            *params,
         )
         edge_rows = await conn.fetch(
             "SELECT from_id, to_id, edge_kind, valence FROM edges "
@@ -642,7 +892,7 @@ def feed_scope(
     room: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     cli: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     kind: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
-    station: UUID | None = None,
+    canvas: UUID | None = None,
     whose: FeedWhose = "everyone",
     hidden: bool = False,
 ) -> FeedScope:
@@ -650,15 +900,15 @@ def feed_scope(
 
     Args:
       request: The request, which carries the configuration.
-      identity: Authenticated user, whose station ``station`` must be, and who
+      identity: Authenticated user, whose canvas ``canvas`` must be, and who
         reads.
       actor: Sessions by routing name.
       room: Sessions by a room they joined.
       cli: Sessions by the CLI they wrap.
       kind: Records by kind.
-      station: Only the agents of this station of the caller: the sessions below
+      canvas: Only the agents of this canvas of the caller: the sessions below
         its chat's by ``produced_by`` edges, to depth 4 and 500 sessions, never the
-        chat's own. A station that is not the caller's, or holds no chat, keeps
+        chat's own. A canvas that is not the caller's, or holds no chat, keeps
         nothing.
       whose: ``mine``, the sessions held under the caller's account; ``campaigns``,
         those of the campaigns the caller launched; ``everyone``, every session the
@@ -675,10 +925,10 @@ def feed_scope(
         rooms=tuple(room or ()),
         clis=tuple(cli or ()),
         kinds=tuple(kind or ()),
-        station=(
+        canvas=(
             None
-            if station is None
-            else StationAgents(workspace_id=station, user_id=identity.user_id)
+            if canvas is None
+            else CanvasAgents(canvas_id=canvas, user_id=identity.user_id)
         ),
         account=identity.email if whose == "mine" else "",
         asker=identity.email if whose == "campaigns" else "",
@@ -812,9 +1062,7 @@ async def web_feed_facets(
 
     The counts are of the records ``/feed`` returns for the same window and
     filters, so the console can list agents, rooms and verbosity levels with
-    their sizes before it loads any of them. An agent whose run is polling says
-    in ``state`` what the run is doing, such as ``taken_over`` after someone opened
-    its CLI in a terminal, which the console offers to reattach.
+    their sizes before it loads any of them.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -830,26 +1078,26 @@ async def web_feed_facets(
     """
     _check_window(since, until)
     del identity
-    store = get_store(request)
-    facets = await store.read_feed_facets(since=since, until=until, scope=scope)
-    if not facets.actors:
-        return facets
-    inbound = get_inbound(request)
-    polled = [
-        actor.session_id
-        for actor in facets.actors
-        if actor.ended is None and inbound.has_poller(actor.session_id)
-    ]
-    if not polled:
-        return facets
-    async with store.engine.acquire() as conn:
-        states = await live_run_states(conn, inbound=inbound, session_ids=polled)
+    facets = await get_store(request).read_feed_facets(
+        since=since,
+        until=until,
+        scope=scope,
+    )
+    # A renamed class's rows are stored under two kinds, and are one to a client:
+    # counted together, under the kind the feed serves them by.
+    counts: dict[str, int] = {}
+    for facet in facets.kinds:
+        served = served_kind(facet.kind)
+        counts[served] = counts.get(served, 0) + facet.count
     return facets.model_copy(
         update={
-            "actors": [
-                actor.model_copy(update={"state": states.get(actor.session_id, "idle")})
-                for actor in facets.actors
-            ],
+            "kinds": sorted(
+                (
+                    FeedKindFacet(kind=kind, count=count)
+                    for kind, count in counts.items()
+                ),
+                key=lambda facet: (-facet.count, facet.kind),
+            ),
         },
     )
 
@@ -916,19 +1164,30 @@ async def web_feed_histogram(
 
 _SNAPSHOT_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(Snapshot))
 
-_CHANGE_SELECT: Final = (
-    "SELECT c.*, COALESCE(k_user.email, actor_user.email) AS principal "
+_CHANGE_FROM: Final = (
     "FROM change_log c "
     "LEFT JOIN api_keys k ON k.id = c.api_key_id "
     "LEFT JOIN users k_user ON k_user.id = k.user_id "
     "LEFT JOIN users actor_user ON actor_user.email = c.actor AND c.api_key_id IS NULL"
+)
+"""``change_log`` as ``c``, joined to whoever made each change."""
+
+_CHANGE_PRINCIPAL: Final = "COALESCE(k_user.email, actor_user.email)"
+"""The email of the person who made a change: its key's owner, or its actor's."""
+
+_CHANGE_SELECT: Final = vetted_sql(
+    "SELECT c.*, ",
+    _CHANGE_PRINCIPAL,
+    " AS principal ",
+    _CHANGE_FROM,
 )
 
 
 _PEER_COLUMNS: Final = (
     "t.kind AS peer_kind, t.seq AS peer_seq, t.title AS peer_title, "
     "t.status AS peer_status, t.belief_judgement AS peer_judgement, "
-    "t.created AS peer_created, t.issue_priority AS peer_priority"
+    "t.created AS peer_created, t.issue_priority AS peer_priority, "
+    "t.agentsession_cli_session_id AS peer_cli_session_id"
 )
 """SELECT fragment for the joined inquiry on the far end of an edge."""
 
@@ -972,22 +1231,25 @@ def attach(
     static_dir: Path | None = None,
     app_dir: Path | None = None,
 ) -> None:
-    """Mount the read-API router, the sign-in page, ``/static/*`` and ``/app/*``.
+    """Mount the read-API router, the sign-in page, ``/static/*`` and ``/trax/*``.
 
     ``/static`` serves ``static_dir`` when given, so an operator can serve files
     written after deploy (e.g. a generated report) without copying them into
     the source tree; unset mounts none.
 
-    ``/app/`` serves a separately built web app from ``app_dir`` to the callers
+    ``/trax/`` serves a separately built web app from ``app_dir`` to the callers
     the API answers (every caller under ``--no-auth``), with ``index.html`` at
-    ``/app/``; any other caller's entry page redirects to the sign-in page, and
-    its other files answer 401. The directory is
-    resolved on every request, so it may be missing at startup (``/app/``
+    ``/trax/`` and at every path of the app's own routes (``/trax/ref/Issue/7``),
+    which name no file of the build; any other caller's entry page redirects to
+    the sign-in page, and its other files answer 401. The directory is
+    resolved on every request, so it may be missing at startup (``/trax/``
     answers 404) or be a symlink swapped to a new build without a restart.
-    With it, the old UI's paths answer 302 into the app: ``/`` to ``/app/``,
+    With it, the old UI's paths answer 302 into the app: ``/`` to ``/trax/``,
     and ``/me``, ``/admin``, ``/graph`` and ``/console`` to the app's
-    ``#/settings``, ``#/admin``, ``#/graph`` and ``#/console``. Without it,
-    nothing is served at those paths.
+    ``settings``, ``admin``, ``graph`` and ``console``. So does
+    ``/app/``, the app's address before ``/trax/``: each ``/app/<path>?<query>``
+    answers 302 to ``/trax/<path>?<query>``. Without it, nothing is served at
+    those paths.
 
     Idempotent: a second call is a no-op, so the first call's directories win.
     ``server._configure_app`` attaches the module-global app, and a test that
@@ -998,7 +1260,7 @@ def attach(
       assets_dir: Directory holding ``login.html`` and ``device.html`` (overrides the
         bundled ones).
       static_dir: Directory to serve at /static; unset mounts none.
-      app_dir: Directory of a built web app to serve at /app/; unset mounts none.
+      app_dir: Directory of a built web app to serve at /trax/; unset mounts none.
 
     """
     if app in _ATTACHED:
@@ -1011,17 +1273,18 @@ def attach(
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     if app_dir is not None:
-        _get(app, "/app/{path:path}", _AppRoute(files=_app_files(app_dir)))
-        # Stored links name ``/`` with a hash, which the browser keeps across a
-        # redirect whose ``Location`` has none, and the app's router reads the old
-        # hashes. 302, not 301: a browser keeps a 301 for good, which would pin
-        # these paths to ``/app/`` past any later move.
+        _get(app, "/trax/{path:path}", _AppRoute(files=_app_files(app_dir)))
+        _get(app, "/app/{path:path}", _moved_app)
+        # Stored links name ``/`` with a ``#/...`` route, which the browser keeps
+        # across a redirect whose ``Location`` has none, and the app's router moves
+        # an old route onto its path. 302, not 301: a browser keeps a 301 for good,
+        # which would pin these paths to ``/trax/`` past any later move.
         for path, location in (
-            ("/", "/app/"),
-            ("/me", "/app/#/settings"),
-            ("/admin", "/app/#/admin"),
-            ("/graph", "/app/#/graph"),
-            ("/console", "/app/#/console"),
+            ("/", "/trax/"),
+            ("/me", "/trax/settings"),
+            ("/admin", "/trax/admin"),
+            ("/graph", "/trax/graph"),
+            ("/console", "/trax/console"),
         ):
             _get(app, path, _RedirectRoute(location=location))
     _add_login_route(app, page_path=assets / "login.html", app_dir=app_dir)
@@ -1086,7 +1349,7 @@ class _AppRoute:
     ) -> Response:
         if identity is not None or path in _INSTALL_FILES:
             try:
-                return await self.files.get_response(path, scope=request.scope)
+                return await self._file(request, path)
             except StarletteHTTPException as err:
                 # Starlette answers 401 when it cannot read a file. For a signed-in
                 # caller that would read as "signed out"; an unreadable build is
@@ -1097,17 +1360,63 @@ class _AppRoute:
                     status_code=500,
                     detail="the app build is not readable by the server",
                 ) from err
-        # Refused where the API refuses the caller. Only the entry page redirects: a
-        # script or stylesheet cannot use a login page. It does so on a server that
-        # signs no browser in too, since the login page says so; a 401 there left a
-        # bare JSON error at the address a new user opens first.
-        if path != "index.html":
+        # Refused where the API refuses the caller. Only the entry page redirects, at
+        # any of the app's routes: a script or stylesheet cannot use a login page. It
+        # does so on a server that signs no browser in too, since the login page says
+        # so; a 401 there left a bare JSON error at the address a new user opens first.
+        # The path's shape alone decides here, so a signed-out caller learns nothing
+        # of what a build holds: a route's last part names no file type.
+        last = path.rsplit("/", 1)[-1]
+        if path != "index.html" and (not _is_route(path) or "." in last):
             raise HTTPException(status_code=401, detail="not authenticated")
         return _login_redirect(request)
 
+    async def _file(self, request: Request, path: str) -> Response:
+        """Return the build's file at ``path``, or its entry page for a route no file names."""
+        try:
+            return await self.files.get_response(path, scope=request.scope)
+        except StarletteHTTPException as err:
+            # A name in the build that is refused, such as a symlink out of it,
+            # stays refused.
+            named = Path(self.files.directory or "", path)
+            if (
+                err.status_code != 404
+                or not _is_route(path)
+                or await asyncio.to_thread(named.is_symlink)
+            ):
+                raise
+        return await self.files.get_response("index.html", scope=request.scope)
 
-# Signed in or not: ``/app/`` decides sign-in. ``no-cache`` as on ``/app/``, so a change
-# of where a path leads is seen at once.
+
+# A hashed asset an old page asks for after a deploy stays a 404, which the app answers
+# by loading again; the entry page in its place would fail as a script. A path that
+# would leave the build is no route either: it stays refused.
+def _is_route(path: str) -> bool:
+    """Return whether ``path`` may be one of the app's routes (``ref/Issue/7``)."""
+    parts = path.split("/")
+    return (
+        not path.startswith(("/", "\\", "assets/"))
+        and "." not in parts
+        and ".." not in parts
+    )
+
+
+# The app's address before ``/trax/``, which records, chats and docs still link to.
+# The same path and query under ``/trax/``, and the browser keeps the hash. 302 as on
+# the old UI's paths, and here it matters more: another app takes ``/app/`` next, which
+# a browser holding a 301 would never reach.
+async def _moved_app(request: Request, path: str) -> RedirectResponse:
+    """Return a 302 to ``/trax/<path>?<query>`` for ``/app/<path>?<query>``."""
+    query = request.url.query
+    return RedirectResponse(
+        f"/trax/{path}?{query}" if query else f"/trax/{path}",
+        status_code=302,
+        headers={"Cache-Control": _APP_CACHE_CONTROL},
+    )
+
+
+# Signed in or not: ``/trax/`` decides sign-in. ``no-cache`` as on ``/trax/``, so a
+# change of where a path leads is seen at once.
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _RedirectRoute:
     location: str
@@ -1313,8 +1622,8 @@ def _build_term_clause(
     return " AND ".join(clauses), params
 
 
-# Carries id, kind, seq, title, status (so the view can dim retired ``abandoned`` /
-# ``invalid`` nodes), created (the replay order key), and -- for Beliefs -- judgement +
+# Carries id, kind, seq, title, status (so the view can dim retired ``stopped`` /
+# ``abandoned`` / ``invalid`` nodes), created (the replay order key), and -- for Beliefs -- judgement +
 # confidence so the view can encode a claim's verdict and certainty. The two belief
 # fields are emitted only when present, so a non-Belief row stays clean.
 def _graph_node(row: asyncpg.Record) -> WebView:
@@ -1363,6 +1672,20 @@ def _session_hit_to_dict(hit: SessionSearchHit) -> WebView:
         "source": hit.source,
         "snippet": hit.snippet,
         "title": hit.title,
+    }
+
+
+def _inquiry_hit_to_dict(hit: InquirySearchHit) -> WebView:
+    """Flatten one ``InquirySearchHit`` to JSON."""
+    return {
+        "inquiry_id": str(hit.inquiry_id),
+        "kind": hit.kind,
+        "seq": hit.seq,
+        "title": hit.title,
+        "field": hit.field,
+        "score": hit.score,
+        "source": hit.source,
+        "snippet": hit.snippet,
     }
 
 
@@ -1434,7 +1757,9 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
 
 
 # ``peer_priority`` is the peer's own priority; ``priority`` on the same ref is the
-# edge's (``_add_edge_annotation``), which overrides it in that parent's list.
+# edge's (``_add_edge_annotation``), which overrides it in that parent's list. A
+# session's ``cli_session_id`` names a sub-agent as its parent's records do
+# (``agent-<id>``), so a client can match a child session to the call that ran it.
 def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
     """Build a UI ref ``{id, kind, seq, title, status, peer_created, ...}``."""
     out: WebView = {
@@ -1449,20 +1774,31 @@ def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
         out["judgement"] = row["peer_judgement"]
     if row["peer_priority"] is not None:
         out["peer_priority"] = row["peer_priority"]
+    if row["peer_cli_session_id"] is not None:
+        out["cli_session_id"] = row["peer_cli_session_id"]
     return out
 
 
-async def _edges_for(
+async def _grouped_edges(
     conn: Conn,
     target_id: UUID,
     *,
     direction: Literal["outbound", "inbound"],
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> WebView:
     """Edges grouped by edge_kind for ``target_id`` in the given direction."""
     if direction == "outbound":
         where_col, join_col, peer_col = "e.from_id", "e.to_id", "to_id"
     else:
         where_col, join_col, peer_col = "e.to_id", "e.from_id", "from_id"
+    params: list[object] = [target_id]
+    predicate = inquiry_read_filter(
+        "t.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     rows = await conn.fetch(
         vetted_sql(
             "SELECT e.from_id, e.to_id, e.edge_kind, "
@@ -1473,8 +1809,9 @@ async def _edges_for(
             " WHERE ",
             where_col,
             " = $1",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
         ),
-        target_id,
+        *params,
     )
     groups: dict[str, list[WebView]] = {}
     for row in rows:
@@ -1500,13 +1837,7 @@ def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:
 class _AppState(Protocol):
     store: Store
     engine: DatabaseEngine
-    # Populated lazily by ``_session_embedder``; ``config`` is set by the app
-    # lifespan (absent in the duck-typed test apps, hence the getattr reads).
-    config: object
-    session_embedder: QueryEmbedder | None
-    # A/B override embedders, cached per stored name by ``_override_embedder`` so
-    # repeated ``?model=`` queries reuse one loaded model.
-    session_embedder_overrides: dict[str, QueryEmbedder]
+    vector_search: VectorSearch | None
 
 
 class _AppLike(Protocol):
@@ -1553,81 +1884,6 @@ def _isoformat(value: object) -> str:
     return value.isoformat() if isinstance(value, datetime) else str(value)
 
 
-# Built once per process from ``config.session_embedder`` and cached on
-# ``app.state`` -- a real embedder still loads its weights lazily on the first
-# ``embed_query``, so caching the instance is cheap and only the first semantic
-# search pays the model load. ``None`` (unset knob or no config) means the
-# semantic arm is unavailable and the route degrades.
-def _session_embedder(request: Request) -> QueryEmbedder | None:
-    """Return the process's default session-search embedder, or ``None``."""
-    state = _state(request)
-    cached = getattr(state, "session_embedder", ABSENT)
-    if cached is not ABSENT:
-        return cast("QueryEmbedder | None", cached)
-    # ``isinstance`` narrowing, not ``getattr(config, ...)``: the lifespan
-    # stores a real ``Config`` (``api/app.py``), so a typed read means a field
-    # rename breaks type-checking here instead of silently disabling the
-    # semantic arm. Duck-typed test apps carry no config and read as None.
-    config: object = getattr(state, "config", None)
-    name = config.session_embedder if isinstance(config, Config) else ""
-    dim = config.session_embedder_dim if isinstance(config, Config) else None
-    embedder = registry.build_cached_session_embedder(name, dim=dim)
-    state.session_embedder = embedder
-    return embedder
-
-
-# The A/B override: ``?model=`` (optionally ``?dim=``) selects a challenger
-# embedder distinct from the serving default, WITHOUT disturbing
-# ``state.session_embedder``. Instances are cached per ``(name, dim)`` on
-# ``state.session_embedder_overrides`` so repeated A/B queries reuse one model --
-# a real model loads ~8 GB of weights on first ``embed_query``, so rebuilding per
-# request would reload them every query. Two dims of one model are DISTINCT cache
-# entries (different truncated vectors, different stored identity). The cache is
-# bounded by the registry (a handful of keys), so no eviction is needed. An
-# unknown name/dim is a client error (400), not a degrade -- degrade is for a
-# configured model whose weights are absent, which the lazy-load path handles.
-def _override_embedder(
-    request: Request,
-    name: str,
-    dim: int | None,
-) -> QueryEmbedder | None:
-    """Return the locally cached A/B model; degrade if uncached, 400 if unknown."""
-    state = _state(request)
-    if not hasattr(state, "session_embedder_overrides"):
-        state.session_embedder_overrides = {}
-    overrides = state.session_embedder_overrides
-    try:
-        key = (
-            name if registry.is_weightless(name) else registry.resolved_name(name, dim)
-        )
-        cached = overrides.get(key)
-        if cached is not None:
-            return cached
-        embedder = registry.build_cached_session_embedder(name, dim=dim)
-    except ConfigError as err:
-        raise HTTPException(status_code=400, detail=str(err)) from err
-    if embedder is not None:
-        overrides[key] = embedder
-    return embedder
-
-
-def _search_embedder(
-    request: Request,
-    *,
-    semantic: bool,
-    model: str,
-    dim: int | None,
-) -> QueryEmbedder | None:
-    """Select the query embedder: the ``model``/``dim`` override, else the default."""
-    if dim is not None and not model:
-        raise HTTPException(status_code=400, detail="dim requires model")
-    if not semantic:
-        return None
-    if model:
-        return _override_embedder(request, model, dim)
-    return _session_embedder(request)
-
-
 def _searched_by_default(request: Request, identity: AuthIdentity) -> FeedWhose:
     """Return whose sessions a search that names none reads: see the route."""
     assistant = get_assistant(request)
@@ -1647,13 +1903,19 @@ async def _probe_frames(
     due_sec = first_after_sec
     seq = 0
     while due_sec < for_sec:
-        await asyncio.sleep(due_sec - (time.monotonic() - start))
+        # Emits test frames on the schedule the route was asked for.
+        await asyncio.sleep(
+            due_sec - (time.monotonic() - start),
+        )  # house-ignore[sleep] -- See above.
         yield f'data: {{"seq": {seq}, "t": {time.monotonic() - start:.3f}}}\n\n'.encode()
         if every_sec == 0:
             break
         seq += 1
         due_sec += every_sec
-    await asyncio.sleep(for_sec - (time.monotonic() - start))
+    # Emits test frames on the schedule the route was asked for.
+    await asyncio.sleep(
+        for_sec - (time.monotonic() - start),
+    )  # house-ignore[sleep] -- See above.
 
 
 # Apps ``attach`` has already mounted; weak, so a discarded test app is freed.

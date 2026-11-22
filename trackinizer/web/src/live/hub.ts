@@ -5,6 +5,7 @@ import type { StreamStatus } from "../ui/bars";
 import { Batcher } from "./batcher";
 import { RELOAD_OVER } from "./rows";
 import { type LiveQuery, Serial } from "./serial";
+import { must } from "../must";
 
 /** A query's place in the hub: push ids to it directly, or leave. */
 export type Registration = {
@@ -65,20 +66,37 @@ export class LiveHub implements StreamListener {
    * others share it until the last leaves. Two views of one inquiry would
    * otherwise each refetch it, the second after joining the first's fetch.
    */
-  register(query: LiveQuery, { shareAs, readAt }: { shareAs?: string; readAt?: number } = {}): Registration {
-    const shared = shareAs === undefined ? undefined : this.#shared.get(shareAs);
-    if (shared) {
-      shared.users += 1;
-      return { push: shared.serial.push.bind(shared.serial), dispose: once(() => this.#leave(shareAs!)) };
+  register(
+    query: LiveQuery,
+    { shareAs, readAt }: { shareAs?: string; readAt?: number } = {},
+  ): Registration {
+    if (shareAs !== undefined) {
+      const key = shareAs;
+      const shared = this.#shared.get(key);
+      if (shared) {
+        shared.users += 1;
+        return {
+          push: shared.serial.push.bind(shared.serial),
+          dispose: once(() => this.#leave(key)),
+        };
+      }
     }
     const serial = new Serial(query, () => !this.#hidden);
     this.#serials.set(serial, readAt ?? Date.now());
     // A query that mounts once the hub has heard the stream open reads after it,
     // unless it took a read that started before.
-    if (this.#openSince !== null && readAt !== undefined && readAt <= this.#openSince) this.#recover([serial]);
-    if (shareAs === undefined) return { push: serial.push.bind(serial), dispose: once(() => this.#remove(serial)) };
+    if (this.#openSince !== null && readAt !== undefined && readAt <= this.#openSince)
+      this.#recover([serial]);
+    if (shareAs === undefined)
+      return {
+        push: serial.push.bind(serial),
+        dispose: once(() => this.#remove(serial)),
+      };
     this.#shared.set(shareAs, { serial, users: 1 });
-    return { push: serial.push.bind(serial), dispose: once(() => this.#leave(shareAs)) };
+    return {
+      push: serial.push.bind(serial),
+      dispose: once(() => this.#leave(shareAs)),
+    };
   }
 
   readonly change = (id: string): void => {
@@ -98,7 +116,11 @@ export class LiveHub implements StreamListener {
     if (this.#openSince !== null) return;
     this.#openSince = at;
     const serials = [...this.#serials.keys()];
-    this.#recover(this.#reopening ? serials : serials.filter((serial) => this.#serials.get(serial)! <= at));
+    this.#recover(
+      this.#reopening
+        ? serials
+        : serials.filter((serial) => must(this.#serials.get(serial)) <= at),
+    );
     this.#reopening = true;
   };
 
@@ -175,7 +197,7 @@ export class LiveHub implements StreamListener {
   readonly status = (): StreamStatus => this.#status;
 
   #leave(shareAs: string): void {
-    const shared = this.#shared.get(shareAs)!;
+    const shared = must(this.#shared.get(shareAs));
     shared.users -= 1;
     if (shared.users > 0) return;
     this.#shared.delete(shareAs);
@@ -194,9 +216,14 @@ export class LiveHub implements StreamListener {
     else this.#deliver(this.#batcher.take(), true, new Set(serials));
   }
 
-  #deliver(ids: ReadonlySet<string>, gap: boolean, gapFor: ReadonlySet<Serial> = new Set(this.#serials.keys())): void {
+  #deliver(
+    ids: ReadonlySet<string>,
+    gap: boolean,
+    gapFor: ReadonlySet<Serial> = new Set(this.#serials.keys()),
+  ): void {
     if (ids.size === 0 && !gap) return;
-    for (const serial of this.#serials.keys()) serial.push(ids, gap && gapFor.has(serial));
+    for (const serial of this.#serials.keys())
+      serial.push(ids, gap && gapFor.has(serial));
   }
 
   #stopPauseTimer(): void {

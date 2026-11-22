@@ -28,10 +28,19 @@ export class DetailLive {
   async update({ ids, gap }: Batch): Promise<Later | null> {
     const id = this.#id;
     if (gap || ids.has(id)) {
-      await refetchFresh(this.#client, { type: "active", predicate: (query) => keyedBy(query, id) });
+      await refetchFresh(this.#client, {
+        type: "active",
+        predicate: (query) => keyedBy(query, id),
+      });
     } else if (this.#showsNeighbour(ids)) {
-      const keys = [detailQueries.detail(id).queryKey, detailQueries.confidence(id).queryKey].map((key) => hashKey(key));
-      await refetchFresh(this.#client, { type: "active", predicate: (query) => keys.includes(query.queryHash) });
+      const keys = [
+        detailQueries.detail(id).queryKey,
+        detailQueries.confidence(id).queryKey,
+      ].map((key) => hashKey(key));
+      await refetchFresh(this.#client, {
+        type: "active",
+        predicate: (query) => keys.includes(query.queryHash),
+      });
     }
     return null;
   }
@@ -40,7 +49,10 @@ export class DetailLive {
   #showsNeighbour(ids: ReadonlySet<string>): boolean {
     const key = detailQueries.detail(this.#id).queryKey;
     const detail = this.#client.getQueryData<Detail>(key);
-    if (!detail) return ids.size > 0 && this.#client.getQueryState(key)?.fetchStatus === "fetching";
+    if (!detail)
+      return (
+        ids.size > 0 && this.#client.getQueryState(key)?.fetchStatus === "fetching"
+      );
     return [detail.edges, detail.backlinks].some((byEdge) =>
       Object.values(byEdge).some((peers) => peers.some((peer) => ids.has(peer.id))),
     );
@@ -58,5 +70,9 @@ export class DetailLive {
  */
 function keyedBy(query: Query, id: string): boolean {
   const [head, , read] = query.queryKey;
-  return head !== "search" && !(head === "session" && read === "records") && query.queryKey.includes(id);
+  return (
+    head !== "search" &&
+    !(head === "session" && read === "records") &&
+    query.queryKey.includes(id)
+  );
 }

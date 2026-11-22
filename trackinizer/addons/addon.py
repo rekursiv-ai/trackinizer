@@ -4,7 +4,7 @@ An addon is a trusted configgle-built object. Its manifest names the parts it
 contributes, and each part says where it runs:
 
 - A **server service** runs as a task inside the trackinizer server, beside
-  the subscriber push, with the server's own store.
+  the server's own sweeps, with the server's store.
 - A **standalone service** runs in its own process, as its own user, and
   reaches trax only through the HTTP API with a profile token. A service that
   holds third-party credentials or spawns agents belongs here.
@@ -13,6 +13,20 @@ contributes, and each part says where it runs:
 - An **open router** is a router whose routes check their own caller, such as a
   vendor's signed webhook, which cannot sign in. The server mounts it with no
   sign-in requirement.
+- A **migration** is SQL that builds the addon's own tables, kept apart from
+  trackinizer's, best in a Postgres schema of the addon's own. The server applies
+  each once per database at start, after its own schema.
+- An **access policy** answers who may read, write or run each resource
+  (:mod:`trackinizer.server.access_policy`). At most one addon of a
+  deployment sets one; with none, today's rules answer.
+- An **agent policy** decides the work of the server's remote agents: whom a remote
+  agent service serves beyond its admits, whether an agent's start or a line to it
+  goes ahead, and what follows the records one stored
+  (:mod:`trackinizer.server.agent_policy`). At most one addon of a deployment
+  sets one; with none, a service serves its admits and nothing is refused or halted.
+- A **vector search** is the vector arm of search
+  (:mod:`trackinizer.server.store.search`). At most one addon of a deployment
+  sets one; with none, search is keyword-only.
 
 A deployment (:mod:`trackinizer.addons.deployment`) names the addons it
 runs; leaving an addon out switches it off everywhere at once.
@@ -20,17 +34,20 @@ runs; leaving an addon out switches it off everywhere at once.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
+from uuid import UUID
 
 from fastapi import APIRouter
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from pydantic import BaseModel, Field
 
 from trackinizer.client.client import Client
-from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.access_policy import AccessPolicy
+from trackinizer.server.agent_policy import AgentPolicy
 from trackinizer.server.store.core import Store
+from trackinizer.server.store.search import VectorSearch
 
 
 __all__ = [
@@ -52,12 +69,20 @@ class ServerContext:
 
     Attributes:
       store: The server's graph store, opened and bootstrapped.
-      inbound: The live-session message queue, as the subscriber push uses it.
+      host_idle_sec: How long a host, by id, has had no tool call or result and
+        no terminal input or output, relayed or direct, as this process saw; a
+        host with none since the process started is counted from its start.
+      hosts_changed: Tells the followers of an owner's host listing, by email,
+        that it changed; called once the write has committed.
+      host_closed: Ends the tool pipes and terminals of a host, by id, taken
+        out of service.
 
     """
 
     store: Store
-    inbound: InboundQueue
+    host_idle_sec: Callable[[UUID], float]
+    hosts_changed: Callable[[str], None]
+    host_closed: Callable[[UUID], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -115,6 +140,15 @@ class AddonManifest:
       routers: HTTP routes mounted under ``/api/addons/<name>``, for viewers.
       open_routers: HTTP routes mounted there with no sign-in; each route must
         authenticate its own caller, as a webhook does by its signature.
+      migrations: SQL run once per database, in order, after trackinizer's own
+        migrations, as ``(name, SQL)``; each name is recorded with trackinizer's
+        own, so none may share one (``schema.NNN.sql`` is trackinizer's).
+      access_policy: The policy the server asks before each guarded write; a
+        deployment refuses two addons that each set one.
+      agent_policy: The policy the server asks about its remote agents' work; a
+        deployment refuses two addons that each set one.
+      vector_search: The vector arm of search; with none, search is keyword-only.
+        A deployment refuses two addons that each set one.
 
     """
 
@@ -124,6 +158,10 @@ class AddonManifest:
     standalone_services: Sequence[StandaloneService] = ()
     routers: Sequence[APIRouter] = ()
     open_routers: Sequence[APIRouter] = ()
+    migrations: Sequence[tuple[str, str]] = ()
+    access_policy: AccessPolicy | None = None
+    agent_policy: AgentPolicy | None = None
+    vector_search: VectorSearch | None = None
 
     def describe(self, name: str) -> AddonDescription:
         """Project the manifest to its inert wire description.

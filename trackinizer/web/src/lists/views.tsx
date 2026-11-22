@@ -15,7 +15,9 @@ export type StoredView = Exclude<View, "columns">;
 
 /** The views a list of `kinds` offers: the new views follow `narrows`, which joins Issue to Issue. */
 export function offeredViews(kinds: readonly string[]): readonly View[] {
-  return kinds.length === 1 && kinds[0] === "Issue" ? ["list", "streams", "outline", "columns"] : ["list"];
+  return kinds.length === 1 && kinds[0] === "Issue"
+    ? ["list", "streams", "outline", "columns"]
+    : ["list"];
 }
 
 /** Whether `value` is a view the stored state keeps, as one read back may not be. */
@@ -37,7 +39,12 @@ export function ViewSwitch({
   return (
     <div className="view-seg" role="group" aria-label="View">
       {offered.map((value) => (
-        <button key={value} type="button" aria-pressed={value === view} onClick={() => onChange(value)}>
+        <button
+          key={value}
+          type="button"
+          aria-pressed={value === view}
+          onClick={() => onChange(value)}
+        >
           {VIEW_NAMES[value]}
         </button>
       ))}

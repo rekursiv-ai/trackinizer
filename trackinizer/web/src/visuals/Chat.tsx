@@ -381,20 +381,20 @@ export function Chat({ workspace, onWaiting }: {
       const { page, trail } = whereFrom(location.hash);
       const sent = await sendChatLine({ workspaceId: workspace!.id, text, conversationId: forkOf ? null : sentTo,
         ...(forkOf && { fork: forkOf }), page, trail }, key);
-      setPending((held) => held.map((line) => (line.key === key ? { ...line, workspaceId: sent.workspace_id, conversationId: sent.conversation_id } : line)));
-      if (sent.workspace_id === workspace!.id) {
+      setPending((held) => held.map((line) => (line.key === key ? { ...line, workspaceId: sent.canvas_id, conversationId: sent.conversation_id } : line)));
+      if (sent.canvas_id === workspace!.id) {
         // The first line binds the conversation to the station; the station's state says so from here.
-        queryClient.setQueryData<WorkspaceState>(["workspace", sent.workspace_id], (held) => held && { ...held, conversation_id: sent.conversation_id });
+        queryClient.setQueryData<WorkspaceState>(["workspace", sent.canvas_id], (held) => held && { ...held, conversation_id: sent.conversation_id });
         if (mounted.current && shownStation.current === workspaceId) {
           setForkAt(null);
           setSentAt(Date.now());
         }
       } else {
         // A fork is a station of its own, which this tab now shows, on the page it is on.
-        const state = await getWorkspace(sent.workspace_id);
+        const state = await getWorkspace(sent.canvas_id);
         acceptWorkspace(queryClient, state);
         if (mounted.current && current?.()) {
-          forkLanding.current = sent.workspace_id;
+          forkLanding.current = sent.canvas_id;
           showStation(queryClient, state, window.location.hash);
         }
       }

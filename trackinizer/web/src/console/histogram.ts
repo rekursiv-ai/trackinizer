@@ -13,10 +13,19 @@ import type { Bucketing } from "./timeline";
  * window holds its end, so an end on a bucket's edge opens that bucket too, and
  * with one too few buckets the server would widen them all.
  */
-export function spanRead(filters: FeedFilters, { since, until, seconds }: Bucketing, earliest: number): HistogramRead {
+export function spanRead(
+  filters: FeedFilters,
+  { since, until, seconds }: Bucketing,
+  earliest: number,
+): HistogramRead {
   const ms = seconds * 1000;
   const first = Math.max(since, Math.ceil(earliest / ms) * ms);
-  return { ...filters, since: iso(first), until: iso(until), buckets: (until - first) / ms + 1 };
+  return {
+    ...filters,
+    since: iso(first),
+    until: iso(until),
+    buckets: (until - first) / ms + 1,
+  };
 }
 
 /**
@@ -74,7 +83,8 @@ export class HistogramLive {
     }
     const held = this.#client.getQueryState(key);
     // The band's read under way may predate the change: ask once it has loaded.
-    if (held?.data === undefined) return held?.fetchStatus === "fetching" ? { afterMs: FIRST_READ_WAIT_MS } : null;
+    if (held?.data === undefined)
+      return held?.fetchStatus === "fetching" ? { afterMs: FIRST_READ_WAIT_MS } : null;
     const wait = this.#lastAskAt + ASK_EVERY_MS - this.#now();
     if (wait > 0) return { afterMs: wait };
     this.#lastAskAt = this.#now();
@@ -82,8 +92,15 @@ export class HistogramLive {
     const bucketMs = held.data.bucket_seconds * 1000;
     const current = Math.floor(this.#now() / bucketMs) * bucketMs;
     // Three buckets, for the one the window's end opens.
-    const newest = { ...read, since: iso(current - bucketMs), until: iso(current + bucketMs), buckets: 3 };
-    const fresh = await readOnce(this.#client, ["histogram", newest], (signal) => readHistogram(newest, { signal }));
+    const newest = {
+      ...read,
+      since: iso(current - bucketMs),
+      until: iso(current + bucketMs),
+      buckets: 3,
+    };
+    const fresh = await readOnce(this.#client, ["histogram", newest], (signal) =>
+      readHistogram(newest, { signal }),
+    );
     this.#client.setQueryData(key, (data) => data && merged(data, fresh));
     return null;
   }
@@ -96,8 +113,16 @@ export function iso(time: number): string {
 
 /** `held`'s buckets with `fresh`'s counts in place, and any newer bucket after them. */
 function merged(held: Histogram, fresh: Histogram): Histogram {
-  const byStart = new Map([...held.counts, ...fresh.counts].map((bucket) => [Date.parse(bucket.start), bucket]));
-  return { ...held, counts: [...byStart].toSorted(([a], [b]) => a - b).map(([, bucket]) => bucket) };
+  const byStart = new Map(
+    [...held.counts, ...fresh.counts].map((bucket) => [
+      Date.parse(bucket.start),
+      bucket,
+    ]),
+  );
+  return {
+    ...held,
+    counts: [...byStart].toSorted(([a], [b]) => a - b).map(([, bucket]) => bucket),
+  };
 }
 
 /** The least time between two reads of the newest buckets, the live layer's "at most every 2 s". */

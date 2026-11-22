@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.api.locks import require_writable
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.artifact_capture import with_capture_script
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.reports import (
@@ -54,7 +55,8 @@ async def publish_artifact_content_route(
     linked = [body.issue_id]
     if body.previous_artifact_id is not None:
         linked.append(body.previous_artifact_id)
-    await require_unlocked(request, identity, linked)
+    await require_writable(request, identity, linked)
+    principal = await request_principal(request, identity)
     try:
         return await publish_artifact_content(
             get_store(request),
@@ -63,6 +65,7 @@ async def publish_artifact_content_route(
             api_key_id=identity.api_key_id,
             body=body,
             key=key,
+            principal=principal,
         )
     except ArtifactContentConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -79,7 +82,9 @@ async def read_artifact_content_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> ArtifactContentRevision:
-    """Read the content held by one Artifact with team access.
+    """Read the content held by one Artifact the caller reads.
+
+    An Artifact the caller may not read answers 404, as a missing one does.
 
     Args:
       artifact_id: Canonical Artifact identity for the publication.
@@ -90,8 +95,11 @@ async def read_artifact_content_route(
       artifact: Exact revision and its frozen citations.
 
     """
-    del identity
-    artifact = await read_artifact_content(get_store(request), artifact_id)
+    artifact = await read_artifact_content(
+        get_store(request),
+        artifact_id,
+        principal=await request_principal(request, identity),
+    )
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact content not found.")
     return artifact
@@ -113,6 +121,8 @@ async def read_artifact_html_route(
     gives the page an opaque origin even when opened directly, so its scripts
     cannot read Trackinizer cookies or storage, nor call the API.
 
+    An Artifact the caller may not read answers 404, as a missing one does.
+
     Args:
       artifact_id: Canonical Artifact identity for the revision.
       request: Request carrying the graph Store.
@@ -123,8 +133,11 @@ async def read_artifact_html_route(
         a picture, under the sandbox Content Security Policy.
 
     """
-    del identity
-    artifact = await read_artifact_content(get_store(request), artifact_id)
+    artifact = await read_artifact_content(
+        get_store(request),
+        artifact_id,
+        principal=await request_principal(request, identity),
+    )
     if artifact is None or artifact.html is None:
         raise HTTPException(status_code=404, detail="HTML Artifact not found.")
     # ``private``: no shared cache may keep team content. ``no-transform``:

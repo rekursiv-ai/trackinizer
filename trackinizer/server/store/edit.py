@@ -19,11 +19,9 @@ from treekle import from_plain
 
 import asyncpg
 
+from trackinizer.server.access_policy import Resource, inquiry_read_filter
 from trackinizer.server.notify import notify_after_commit, tx
-from trackinizer.server.primitives import (
-    upsert_embedding,
-    validate_list_references,
-)
+from trackinizer.server.primitives import validate_list_references
 from trackinizer.server.projection import fetch_edges, materialize
 from trackinizer.server.setter_dispatch import (
     COLUMN_SPECS,
@@ -56,6 +54,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import Principal
 
 
 __all__ = [
@@ -91,52 +90,17 @@ class _EditMixin(_CascadeAuditMixin):
             # ``min_length=1`` + non-blank validator so a direct Store caller
             # can't blank a required field that the route validates. A
             # whitespace-only title is no title.
-            raise ConflictError("title cannot be empty")
-        # Embed *before* opening the transaction. The submit path does
-        # the same: a network embedder would otherwise hold the row's
-        # ``FOR UPDATE`` lock for the round-trip, blocking every other
-        # writer touching this Inquiry. The cost of a wasted embed on
-        # the rare dedup-hit is dominated by the lock-contention win.
-        new_vecs = await self._embed_all(value)
-        async with (
-            notify_after_commit(),
-            self.engine.acquire() as conn,
-            tx(conn),
-        ):
-            replay = await self._replay_field_change(
-                conn,
-                target_id,
-                "title",
-                actor=actor,
+            raise ConflictError(
+                "title cannot be empty",  # pragma: no mutate[diagnostic-text]
             )
-            if replay is not None:
-                return replay
-            row = await self._read_field(conn, target_id, "title")
-            replay = await self._replay_field_change(
-                conn,
-                target_id,
-                "title",
-                actor=actor,
-            )
-            if replay is not None:
-                return replay
-            if row["title"] == value:
-                return None
-            await self._update_field(conn, target_id, "title", value)
-            for model, vec in new_vecs:
-                await upsert_embedding(conn, target_id, model, vec)
-            change_id, _ = await self._emit_field_change(
-                conn,
-                target_id,
-                cast(Inquiry.InquiryKind, row["kind"]),
-                "title",
-                Snapshot(title=from_plain(row["title"], str)),
-                new=Snapshot(title=value),
-                api_key_id=api_key_id,
-                actor=actor,
-                reason=reason,
-            )
-            return change_id
+        return await self._set_field(
+            target_id,
+            value,
+            column="title",
+            api_key_id=api_key_id,
+            actor=actor,
+            reason=reason,
+        )
 
     # ``FOR UPDATE`` is load-bearing: every ``set_X`` reads then decides whether to
     # write; without the lock a concurrent purge or competing edit between the two steps
@@ -360,6 +324,15 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if replay is not None:
                 return replay
+            if column == "account":
+                await self.access_policy.prepare_account_change(
+                    conn,
+                    resource=Resource(
+                        kind="inquiry",
+                        id=str(target_id),
+                        account=from_plain(new_value, str),
+                    ),
+                )
             row = await self._read_field(
                 conn,
                 target_id,
@@ -385,6 +358,15 @@ class _EditMixin(_CascadeAuditMixin):
                 raise ConflictError(
                     f"check constraint violated: {exc.detail or exc!s}",
                 ) from exc
+            if column == "account":
+                await self.access_policy.validate(
+                    conn,
+                    resource=Resource(
+                        kind="inquiry",
+                        id=str(target_id),
+                        account=from_plain(new_value, str),
+                    ),
+                )
             # ``old_value`` is None when subscribers was unset (NULL); the
             # notify fan-out wants the concrete pre-edit set, so coalesce.
             extra_subs = (
@@ -505,6 +487,7 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
         reason: str = "",
+        principal: Principal | None = None,
     ) -> Issue | None:
         """Atomically select and claim the next available Issue for ``owner``.
 
@@ -513,7 +496,8 @@ class _EditMixin(_CascadeAuditMixin):
         leaves a window -- seconds wide, with an agent thinking in between --
         in which every caller sees the same unowned row and each silently
         overwrites the last, so N agents duplicate one issue while the rest
-        go untouched.
+        go untouched. Only an Issue ``principal`` may read is a candidate, and
+        the claimed Issue's relations name only the rows it may read.
 
         ``None`` means "nothing claimable right now", NOT "all work is
         finished": an eligible row may simply be locked by another in-flight
@@ -529,6 +513,7 @@ class _EditMixin(_CascadeAuditMixin):
           api_key_id: Authenticated credential recorded in the audit entry.
           actor: Identity recorded in the audit entry.
           reason: Optional audit context, stored on the change log entry.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           issue: The claimed Issue, or ``None`` when nothing is available.
@@ -566,10 +551,27 @@ class _EditMixin(_CascadeAuditMixin):
             # Probe AFTER the lock: probing first lets overlapping retries
             # miss a commit that is still in flight, which matters most when
             # it claimed the last available issue.
-            replayed = await self._replay_claim(conn, owner=owner, actor=actor)
+            replayed = await self._replay_claim(
+                conn,
+                owner=owner,
+                actor=actor,
+                principal=principal,
+            )
             if replayed is not None:
                 return replayed
-            row = await conn.fetchrow(CLAIM_NEXT_ISSUE_SQL, owner)
+            params: list[object] = [owner]
+            predicate = inquiry_read_filter(
+                "issue.id",
+                policy=self.access_policy,
+                principal=principal,
+                params=params,
+            )
+            row = await conn.fetchrow(
+                CLAIM_NEXT_ISSUE_SQL.format(
+                    readable="" if predicate == "TRUE" else f" AND ({predicate})",
+                ),
+                *params,
+            )
             if row is None:
                 return None
             claimed_id = cast(UUID, row["id"])
@@ -587,7 +589,12 @@ class _EditMixin(_CascadeAuditMixin):
                 actor=actor,
                 reason=reason,
             )
-            outbound, inbound = await fetch_edges(conn, claimed_id)
+            outbound, inbound = await fetch_edges(
+                conn,
+                claimed_id,
+                policy=self.access_policy,
+                principal=principal,
+            )
         issue = materialize(row, {claimed_id: outbound}, {claimed_id: inbound})
         assert isinstance(issue, Issue)
         return issue
@@ -600,6 +607,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         owner: Inquiry.Actor,
         actor: Inquiry.Actor,
+        principal: Principal | None,
     ) -> Issue | None:
         """Return the issue a committed claim under this key already took."""
         client_change_id = _peek_client_change_id()
@@ -630,9 +638,19 @@ class _EditMixin(_CascadeAuditMixin):
                 "different operation",
             )
         subject_id = cast(UUID, existing["subject_id"])
+        params: list[object] = [subject_id]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
         row = await conn.fetchrow(
-            "SELECT * FROM inquiries WHERE id = $1",
-            subject_id,
+            vetted_sql(
+                "SELECT * FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
         )
         if row is None:
             raise NotFoundError(f"claimed issue {subject_id} no longer exists")
@@ -643,7 +661,12 @@ class _EditMixin(_CascadeAuditMixin):
                 f"claimed issue {subject_id} is no longer active and owned by "
                 f"{owner!r}",
             )
-        outbound, inbound = await fetch_edges(conn, subject_id)
+        outbound, inbound = await fetch_edges(
+            conn,
+            subject_id,
+            policy=self.access_policy,
+            principal=principal,
+        )
         issue = materialize(row, {subject_id: outbound}, {subject_id: inbound})
         assert isinstance(issue, Issue)
         return issue
@@ -669,6 +692,9 @@ class _EditMixin(_CascadeAuditMixin):
         a real account), so a direct Store caller cannot blank a required field
         the route validates.
 
+        After the change, in its transaction, the access policy validates the row
+        as it now stands, so a refusal rolls the move back.
+
         Args:
           target_id: ID of the Inquiry to edit.
           value: The new account identifier (non-empty string).
@@ -680,7 +706,8 @@ class _EditMixin(_CascadeAuditMixin):
           result: The UUID | None.
 
         Raises:
-          ConflictError: ``value`` is empty or whitespace-only.
+          ConflictError: ``value`` is empty or whitespace-only, or the access policy
+            refuses the row's new state.
 
         """
         if not value.strip():
@@ -737,7 +764,7 @@ class _EditMixin(_CascadeAuditMixin):
         Args:
           target_id: ID of the Inquiry to edit.
           expected_from: Current status that must match before transition.
-          to: Desired terminal status (complete, abandoned, or invalidate).
+          to: Desired terminal status (complete, stopped, abandoned, or invalid).
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
           reason: Optional explanation of the status change.

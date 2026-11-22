@@ -21,7 +21,7 @@ from treekle import from_plain, immutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import UserMessage
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import OPEN, STAFF
@@ -121,7 +121,7 @@ async def filed(pglite_route_client: _Client) -> _Filed:
         for who in (SUMMARIZER, WRITER, VIEWER):
             await conn.execute(
                 "INSERT INTO users (id, email, name, role, status, "
-                "visual_workspace_enabled) VALUES ($1, $2, 'n', 'writer', 'active', "
+                "visual_canvas_enabled) VALUES ($1, $2, 'n', 'writer', 'active', "
                 "TRUE)",
                 who.user_id,
                 who.email,

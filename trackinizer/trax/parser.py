@@ -270,7 +270,7 @@ _Clause = _KindClause | _RangeClause | _FilterClause | _MutationClause | _Unknow
 
 # Its own parser rather than ``parse_list_query``'s: that one reads kinds and seq
 # ranges too, and an export selector takes neither. Same CLI spelling though, so
-# ``labels nre '^machine:'`` means here exactly what it means in a list query.
+# ``labels nre '^host:'`` means here exactly what it means in a list query.
 def parse_export_selector(tokens: Sequence[str]) -> tuple[Filter, ...]:
     """Parse ``<field> <op> [value]`` triples into export selector clauses.
 
@@ -390,16 +390,17 @@ def parse_bulk_apply(
             return None
     if not has_selector or not mutation_tokens:
         return None
+    # The selector half re-emits only kind, range and filter clauses, which always
+    # re-parse as a list query.
     query = parse_list_query(kind, query_tokens)
-    if query is None:
-        return None
-    # ``_is_mutation_head`` gates ``mutation_tokens`` to scalar/list fields, so
-    # ``parse_actions`` can only yield field mutations; ``_as_bulk_action``
-    # raises if that ever ceases to hold.
-    actions = tuple(
-        _as_bulk_action(action) for action in parse_actions(mutation_tokens)
-    )
-    return BulkApply(query=query, actions=actions)
+    assert isinstance(query, ListQuery)
+    # ``_is_mutation_head`` gates ``mutation_tokens`` to ``field to/add/del value``
+    # on scalar/list fields, so ``parse_actions`` yields only field mutations.
+    actions: list[SetField | AddList | RemoveList] = []
+    for action in parse_actions(mutation_tokens):
+        assert isinstance(action, SetField | AddList | RemoveList)
+        actions.append(action)
+    return BulkApply(query=query, actions=tuple(actions))
 
 
 def parse_actions(tokens: Sequence[str]) -> list[Action]:
@@ -449,10 +450,6 @@ def parse_actions(tokens: Sequence[str]) -> list[Action]:
             index += consumed
         elif relation := RELATION_ALIASES.get(word):
             action, consumed = _parse_relation_or_edge(tokens, index, word, relation)
-            actions.append(action)
-            index += consumed
-        elif edge := EDGE_ALIASES.get(word):
-            action, consumed = _parse_edge_action(tokens, index, edge)
             actions.append(action)
             index += consumed
         else:
@@ -723,7 +720,7 @@ def edge_metadata(
             # this branch handling every remaining valid field.
             if op not in ("to", "add", "del"):
                 raise ClientError("edge label uses to, add, or del")
-            labels = from_plain(metadata.get("labels"), list[str], default=[])
+            labels = from_plain(metadata.get("labels"), list[str], default=list[str]())
             if op == "to":
                 labels = resolve_labels((value,))
             elif op == "add":
@@ -946,8 +943,6 @@ def _consume_inline_create(
         if edge is None:
             break  # Neither field, cost, metadata, nor edge: rebinds to the caller.
         action, consumed = _parse_edge_action(args, cursor, edge)
-        if not isinstance(action, EdgeAction):  # pragma: no cover -- always EdgeAction
-            raise ClientError("inline-create tail must be an edge")
         edges.append(action)
         cursor += consumed
 
@@ -1100,25 +1095,16 @@ def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
             yield _MutationClause(tokens=tuple(tokens[index : index + span]))
             index += span
         else:
-            bad_op = (op_next or "") if token_text in _ALL_FILTER_FIELDS else ""
-            yield _UnknownClause(token=tokens[index], bad_filter_op=bad_op)
-            index += 1
-
-
-# The inverse of :func:`_parse_range` for re-parsing purposes: the bulk-apply selector
-# half is re-emitted as one token that :func:`parse_list_query` re-parses. Each interval
-# uses the wire spelling (a single-row interval renders ``n..n``), which
-# :func:`_parse_interval` accepts identically to the bare ``n`` the user may have typed.
-# ``_is_mutation_head`` already gates the mutation tokens to scalar and list fields, so
-# this never fires in practice; it is the tripwire that keeps the two in lockstep if
-# either changes.
-def _as_bulk_action(action: Action) -> SetField | AddList | RemoveList:
-    """Narrow a parsed action to a field mutation, raising on anything else."""
-    if isinstance(action, SetField | AddList | RemoveList):
-        return action
-    raise ClientError(
-        "bulk apply supports only field mutations (FIELD to/add/del VALUE)",
+            break
+    else:
+        return
+    # Every consumer stops at the first token that opens no clause, so it ends the walk.
+    bad_op = (
+        (token(tokens, index + 1) or "")
+        if tokens[index].lower() in _ALL_FILTER_FIELDS
+        else ""
     )
+    yield _UnknownClause(token=tokens[index], bad_filter_op=bad_op)
 
 
 # Returns the mask and the index just past it. A bareword (a token not in
@@ -1144,7 +1130,7 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
     # take no value and apply only to the ``step`` axis (metric-grammar.md
     # Grammar summary).
     if op in frozenset(
-        get_args(wire_metrics_query.MetricReduce.__value__),
+        get_args(cast(object, wire_metrics_query.MetricReduce.__value__)),
     ):
         if field != "step":
             raise ClientError(f"{op} applies to step only, not {field!r}")
@@ -1326,9 +1312,8 @@ def _parse_list_action(
 
 
 # A digit, UUID, or no-token tail means "list rows in this relation" (or select one by
-# index). Anything else looks like a ref, so dispatch to ``_parse_edge_action`` if the
-# keyword is also an edge alias. A relation-only alias followed by a ref is a grammar
-# error, not a KeyError.
+# index). Anything else looks like a ref, so dispatch to ``_parse_edge_action``: every
+# relation alias is also an edge alias (``grammar_test`` pins the two key sets equal).
 def _parse_relation_or_edge(
     tokens: Sequence[str],
     index: int,
@@ -1343,19 +1328,14 @@ def _parse_relation_or_edge(
             index=value or "",
             against=word in AGAINST_RELATION_SPELLINGS,
         ), 2 if value is not None else 1
-    edge = EDGE_ALIASES.get(word)
-    if edge is None:
-        raise ClientError(
-            f"{word!r} is a relation, not an edge; it does not accept a ref",
-        )
-    return _parse_edge_action(tokens, index, edge)
+    return _parse_edge_action(tokens, index, EDGE_ALIASES[word])
 
 
 def _parse_edge_action(
     tokens: Sequence[str],
     index: int,
     edge: Edge,
-) -> tuple[Action, int]:
+) -> tuple[EdgeAction, int]:
     # PRE-target metadata: words between the edge keyword and its target annotate
     # the edge unambiguously (no target yet for them to mean), so even the
     # collision words are accepted bare here. ``narrows priority to high issue 3``

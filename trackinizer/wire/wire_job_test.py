@@ -13,14 +13,18 @@ from trackinizer.wire.wire_job import (
     GATE_RO_VERBS,
     GATE_RW_VERBS,
     MAX_ARGV_CHARS,
+    MAX_GPUS,
+    MAX_MINUTES,
     NODE_PATTERN,
     TERMINAL_STATES,
     Grant,
     GrantStatus,
+    JobView,
     NodeAddress,
     ReadGrantBody,
     SubmitBody,
     ed25519_public_key,
+    job_user,
     key_sha256,
 )
 
@@ -52,7 +56,7 @@ def _node(**fields: object) -> NodeAddress:
             "name": "gpu-node-b",
             "host": "203.0.113.7",
             "port": 22,
-            "user": "gj7",
+            "user": "rai-ext-job-7",
             "host_key": _HOST_KEY,
             **fields,
         },
@@ -154,6 +158,27 @@ def test_a_submit_refuses_a_bad_field(fields: dict[str, object]) -> None:
         _submit(**fields)
 
 
+def test_a_submit_names_its_campaign_by_its_brief_or_none() -> None:
+    assert not _submit().campaign
+    assert _submit(campaign="Issue#7").campaign == "Issue#7"
+    # A server older than the field refuses it, so no campaign leaves it off.
+    assert "campaign" not in _submit().model_dump(mode="json")
+    assert _submit(campaign="Issue#7").model_dump(mode="json")["campaign"] == "Issue#7"
+    for campaign in ("campaign/Issue#7", "Issue#0", "Issue#07", "issue#7", "Issue#"):
+        with pytest.raises(pydantic.ValidationError):
+            _submit(campaign=campaign)
+
+
+def test_a_submit_may_ask_for_a_whole_node_for_six_hours_and_no_more() -> None:
+    assert (MAX_GPUS, MAX_MINUTES) == (8, 360)
+    body = _submit(gpus=MAX_GPUS, minutes=MAX_MINUTES)
+
+    assert (body.gpus, body.minutes) == (MAX_GPUS, MAX_MINUTES)
+    for fields in ({"gpus": MAX_GPUS + 1}, {"minutes": MAX_MINUTES + 1}):
+        with pytest.raises(pydantic.ValidationError):
+            _submit(**fields)
+
+
 def test_the_command_line_is_capped_with_one_separator_per_word() -> None:
     longest = "a" * (MAX_ARGV_CHARS - 1)
 
@@ -184,8 +209,15 @@ def test_a_node_name_outside_the_pattern_is_refused(name: str) -> None:
     "fields",
     [
         {"user": "root"},
-        {"user": "gj"},
-        {"user": "gj1234567890123"},
+        {"user": "rai-ext-job-"},
+        {"user": "rai-ext-job-1234567890123"},
+        {"user": "gj7"},
+        {"user": "rai-ext-owner-7"},
+        {"user": "rai-ext-staging-owner-7"},
+        {"user": "rai-ext-Staging-job-7"},
+        {"user": "rai-ext-a-b-job-7"},
+        {"user": "rai-ext-a2345678901-job-7"},
+        {"user": "rai-ext-staging-job-1234567890123"},
         {"port": 0},
         {"port": 65_536},
         {"host": ""},
@@ -195,6 +227,19 @@ def test_a_node_name_outside_the_pattern_is_refused(name: str) -> None:
 def test_a_node_address_refuses_a_bad_field(fields: dict[str, object]) -> None:
     with pytest.raises(pydantic.ValidationError):
         _node(**fields)
+
+
+@pytest.mark.parametrize("job_id", [1, 7, 999_999_999_999])
+def test_a_jobs_node_user_is_one_a_node_address_accepts(job_id: int) -> None:
+    assert job_user(job_id) == f"rai-ext-job-{job_id}"
+    assert _node(user=job_user(job_id)).user == job_user(job_id)
+
+
+def test_a_tagged_servers_job_user_is_one_a_node_address_accepts() -> None:
+    user = job_user(7, tag="staging")
+
+    assert user == "rai-ext-staging-job-7"
+    assert _node(user=user).user == user
 
 
 def _grant(**fields: object) -> dict[str, object]:
@@ -216,7 +261,7 @@ def test_a_grant_status_carries_a_grant_only_when_ready() -> None:
     refused = GrantStatus.model_validate({"state": "refused", "reason": "no credit"})
 
     assert ready.grant is not None
-    assert ready.grant.node.user == "gj7"
+    assert ready.grant.node.user == "rai-ext-job-7"
     assert ready.grant.valid_before.year == 2026
     assert (pending.grant, pending.reason) == (None, "")
     assert refused.reason == "no credit"
@@ -243,9 +288,43 @@ def test_a_read_grant_body_validates_the_key_like_a_submit() -> None:
         ReadGrantBody(public_key=_RSA)
 
 
+@pytest.mark.parametrize(
+    ("gpu_seconds", "gpu_minutes"),
+    [(None, None), (0, 0), (1, 1), (60, 1), (61, 2), (480, 8)],
+)
+def test_a_job_view_sends_its_gpu_seconds_rounded_up_to_the_minute(
+    gpu_seconds: int | None,
+    gpu_minutes: int | None,
+) -> None:
+    view = JobView.model_validate(
+        {
+            "id": 7,
+            "state": "completed",
+            "node": None,
+            "gpus": 1,
+            "minutes": 5,
+            "label": "",
+            "argv": ["python", "x.py"],
+            "commit": _COMMIT,
+            "bundle_sha256": None,
+            "created_at": "2026-10-21T12:00:00Z",
+            "started_at": None,
+            "ended_at": None,
+            "gpu_seconds": gpu_seconds,
+            "gpu_minutes": 999,
+            "usd": None,
+            "reason": "",
+            "upload_serial": None,
+        },
+    )
+
+    assert view.model_dump(mode="json")["gpu_minutes"] == gpu_minutes
+
+
 def test_the_read_verbs_are_a_subset_of_the_upload_verbs() -> None:
     assert set(GATE_RO_VERBS) < set(GATE_RW_VERBS)
     assert "upload" not in GATE_RO_VERBS
+    assert not {"shell", "port"} & set(GATE_RO_VERBS)
     assert "completed" in TERMINAL_STATES
     assert "running" not in TERMINAL_STATES
 

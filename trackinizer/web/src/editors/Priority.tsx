@@ -1,7 +1,12 @@
 import { Popover } from "radix-ui";
 import { type ReactElement, useRef, useState } from "react";
 import { Menu, type MenuOption } from "../lists/Menu";
-import { PRIORITY_NAMES, PriorityGlyph, priorityBand, priorityName } from "../ui/glyphs";
+import {
+  PRIORITY_NAMES,
+  PriorityGlyph,
+  priorityBand,
+  priorityName,
+} from "../ui/glyphs";
 
 /**
  * Pick an Issue priority: one of the four named bands, No priority, or an exact
@@ -34,8 +39,17 @@ export function PriorityPicker({
       icon: <PriorityGlyph priority={index * 10} />,
       checked: !mixed && band === index,
     })),
-    { value: NONE, label: "No priority", icon: <PriorityGlyph priority={null} />, checked: !mixed && value === undefined },
-    { value: EXACT, label: "Exact number…", hint: value === undefined ? "integer" : String(value) },
+    {
+      value: NONE,
+      label: "No priority",
+      icon: <PriorityGlyph priority={null} />,
+      checked: !mixed && value === undefined,
+    },
+    {
+      value: EXACT,
+      label: "Exact number…",
+      hint: value === undefined ? "integer" : String(value),
+    },
   ];
   const pick = (picked: string) => {
     if (picked === EXACT) setExact(true);
@@ -47,7 +61,12 @@ export function PriorityPicker({
     <Popover.Root open={exact} onOpenChange={setExact} modal>
       <Popover.Anchor asChild>
         <span className="ed-anchor" ref={anchor}>
-          <Menu label="Set priority…" trigger={trigger} options={options} onPick={pick} />
+          <Menu
+            label="Set priority…"
+            trigger={trigger}
+            options={options}
+            onPick={pick}
+          />
         </span>
       </Popover.Anchor>
       <Popover.Portal>
@@ -76,14 +95,22 @@ export function PriorityPicker({
 
 /** A priority as text: `P1 High (10)`, or `No priority`. */
 export function priorityText(value: unknown): string {
-  return typeof value === "number" ? `${priorityName(value)} (${value})` : "No priority";
+  return typeof value === "number"
+    ? `${priorityName(value)} (${value})`
+    : "No priority";
 }
 
 /**
  * The exact number: any integer the server accepts. Empty means no priority.
  * The server checks the rest (a whole number, at least 0) and says what is wrong.
  */
-function ExactPriority({ value, onSave }: { value: number | undefined; onSave: (value: number | null) => void }) {
+function ExactPriority({
+  value,
+  onSave,
+}: {
+  value: number | undefined;
+  onSave: (value: number | null) => void;
+}) {
   const [text, setText] = useState(value === undefined ? "" : String(value));
   return (
     <form

@@ -14,7 +14,7 @@ import pytest
 from trackinizer.wire.bodies import SubmitAgentSession, SubmitPaper
 from trackinizer.wire.json_types import UtcDatetime
 from trackinizer.wire.wire_metrics import MetricPoint
-from trackinizer.wire.wire_session_ir import RecordBody, SlashCommandBody
+from trackinizer.wire.wire_session_ir import RecordBody
 from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
@@ -43,11 +43,6 @@ _NAIVE_FIELDS: Final[dict[str, Callable[[str], datetime | None]]] = {
     ),
     "RecordBody.timestamp": lambda v: (
         RecordBody.model_validate({"idx": 0, "kind": "K", "timestamp": v}).timestamp
-    ),
-    "SlashCommandBody.timestamp": lambda v: (
-        SlashCommandBody.model_validate(
-            {"timestamp": v, "command": "c", "idx": 0},
-        ).timestamp
     ),
 }
 

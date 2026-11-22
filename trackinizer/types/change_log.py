@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, Self, cast
 from typing_extensions import TypedDict
 from uuid import UUID, uuid4
 
@@ -123,6 +123,8 @@ class Snapshot:
     agentsession_ended: datetime | None = None
     agentsession_rooms: tuple[str, ...] | None = None
     agentsession_audience: str | None = None
+    accessgroup_read_group: UUID | None = None
+    accessgroup_write_group: UUID | None = None
 
     subscribers: tuple[Inquiry.Actor, ...] | None = None
     """Mirrors :attr:`Inquiry.subscribers`."""
@@ -247,6 +249,9 @@ class Change:
         "agentsession_ended",
         "agentsession_rooms",
         "agentsession_audience",
+        # AccessGroup-only.
+        "accessgroup_read_group",
+        "accessgroup_write_group",
         # Edge-table mutations (decomposition, sequencing, provenance,
         # citations, supersedes); the peer triple rides on the Snapshot's
         # peer_* fields. These name an event, not a column, so they keep their
@@ -259,9 +264,23 @@ class Change:
         # Foreman hooks for implicit subscription bundles.
         "implicit_subs_opened",
         "implicit_subs_closed",
+        # Protected history (:attr:`Change.PROTECTED_KINDS`): an admin set or cleared a
+        # row's ``locked`` flag. No delta; the kind is the new state.
+        "locked",
+        "unlocked",
     ]
     """Closed set; the schema CHECK enforces which columns each kind may
     populate."""
+
+    PROTECTED_KINDS: ClassVar[tuple[Kind, ...]] = ("locked", "unlocked")
+    """History kinds with their own visibility and retention.
+
+    Only an admin reads them, through the change-log routes, and no export, push or
+    other subscription carries them. They name no subject text, so the redaction of a
+    deleted chat leaves them, and, the subject being FK-free, they outlive its purge.
+    Every reader of ``change_log`` takes this one list: a new protected kind joins it
+    here and nowhere else.
+    """
 
     id: UUID = field(default_factory=uuid4)
     """Row identifier."""
@@ -392,6 +411,8 @@ class _SnapshotKwargs(TypedDict, total=False, closed=True):
     agentsession_ended: datetime | None
     agentsession_rooms: tuple[str, ...] | None
     agentsession_audience: str | None
+    accessgroup_read_group: UUID | None
+    accessgroup_write_group: UUID | None
     subscribers: tuple[Inquiry.Actor, ...] | None
     marginal_cost: Cost | None
 

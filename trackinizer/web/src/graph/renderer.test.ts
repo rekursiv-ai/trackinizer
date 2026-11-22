@@ -2,12 +2,17 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { type DrawNode, GraphModel } from "./model";
 import { forceGraphRenderer, type Renderer } from "./renderer";
 import { node, PALETTE } from "./testing";
+import { must } from "../must";
 
 // jsdom has no canvas: force-graph is replaced by one that keeps what the
 // renderer gives it and where it puts the camera.
 const { FakeForceGraph } = vi.hoisted(() => {
   /** A d3 force's settings, each of which chains. */
-  const FORCE = { strength: () => FORCE, distance: () => FORCE, distanceMax: () => FORCE };
+  const FORCE = {
+    strength: () => FORCE,
+    distance: () => FORCE,
+    distanceMax: () => FORCE,
+  };
   /** Settings the renderer makes once and these tests never read; each chains. */
   const CHAINED = [
     "nodeVisibility",
@@ -104,7 +109,11 @@ beforeEach(() => {
       disconnect() {}
     },
   );
-  renderer = forceGraphRenderer(document.createElement("div"), { hover: () => {}, click: () => {}, doubleClick: () => {} }, () => ({ right: 0 }));
+  renderer = forceGraphRenderer(
+    document.createElement("div"),
+    { hover: () => {}, click: () => {}, doubleClick: () => {} },
+    () => ({ right: 0 }),
+  );
 });
 
 afterEach(() => {
@@ -114,14 +123,16 @@ afterEach(() => {
 
 /** The graph's camera. */
 function graph(): InstanceType<typeof FakeForceGraph> {
-  return FakeForceGraph.last!;
+  return must(FakeForceGraph.last);
 }
 
 /** Drawn nodes at `places`, numbered from 1. */
 function placed(places: readonly (readonly [number, number])[]): DrawNode[] {
   const model = new GraphModel(PALETTE);
   model.apply({ nodes: places.map((_, n) => node(n + 1)), edges: [] });
-  return model.nodes.map((drawn, n) => Object.assign(drawn, { x: places[n]![0], y: places[n]![1] }));
+  return model.nodes.map((drawn, n) =>
+    Object.assign(drawn, { x: must(places[n])[0], y: must(places[n])[1] }),
+  );
 }
 
 test("the layout stops by cooling alone, never by the clock: a tab opened in the background, given no frames for 15 s, still lays out once shown", () => {
@@ -130,7 +141,12 @@ test("the layout stops by cooling alone, never by the clock: a tab opened in the
 
 test("a fit frames 150,000 nodes, more than a call can take as arguments", () => {
   const [first] = placed([[0, 0]]);
-  const nodes = Array.from({ length: 150_000 }, (_, n) => ({ ...first!, id: String(n), x: n, y: -n }));
+  const nodes = Array.from({ length: 150_000 }, (_, n) => ({
+    ...must(first),
+    id: String(n),
+    x: n,
+    y: -n,
+  }));
   renderer.setData(nodes, [], null);
   renderer.fit();
   expect(graph().centre).toEqual([149_999 / 2, -149_999 / 2]);
@@ -142,7 +158,7 @@ test("grouping keeps what the view asked to frame: a focus's nodes, not every no
     [10, 0],
     [1_000, 1_000],
   ]);
-  const near = (drawn: DrawNode) => drawn.x! < 100;
+  const near = (drawn: DrawNode) => must(drawn.x) < 100;
   renderer.setData(nodes, [], () => true);
   renderer.fit(near);
   renderer.group(null);

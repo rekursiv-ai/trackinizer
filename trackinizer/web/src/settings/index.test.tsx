@@ -1,10 +1,17 @@
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import noAuth from "../../test/testdata/me/getProfile.json";
-import type { OrgMode, Profile } from "../api/me";
+import type { Profile } from "../api/me";
+import { SIGNED_IN_KEY } from "../api/signedIn";
 import { LOGIN_URL } from "../app/session";
 import { DEFAULT_PREFERENCES, receivePreferences, sendWaiting } from "../preferences";
-import { startTrail } from "../router/trail";
 import { chooseTheme, installTheme } from "../theme";
 import { SettingsView } from ".";
 import { FAST, profile, renderScreen, serveAccount } from "./testing";
@@ -25,88 +32,23 @@ afterEach(async () => {
   receivePreferences(DEFAULT_PREFERENCES);
 });
 
-test("Settings includes Campaign defaults before API tokens", async () => {
-  const server = serveAccount(ADA);
-  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const sections = [...document.querySelectorAll<HTMLElement>(".st-sec")].map((section) => section.getAttribute("aria-label"));
-  expect(sections.indexOf("Campaign defaults")).toBeLessThan(sections.indexOf("API tokens"));
-  await waitFor(() => expect(server.reads("/api/me/profile")).toBe(1), FAST);
-});
-
-test("Close goes back to the last page before Settings, or to the graph when there was none", async () => {
-  serveAccount(ADA);
-  const close = () => screen.getByRole("link", { name: "Close settings" }).getAttribute("href");
-  history.replaceState(null, "", "#/settings");
-  let stop = startTrail();
-  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  expect(close()).toBe("#/graph");
-  cleanup();
-  stop();
-  history.replaceState(null, "", "#/list/Paper");
-  stop = startTrail();
-  for (const hash of ["#/admin", "#/settings"]) {
-    location.hash = hash;
-    await waitFor(() => expect(location.hash).toBe(hash));
-    window.dispatchEvent(new HashChangeEvent("hashchange"));
-  }
-  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  expect(close()).toBe("#/list/Paper");
-  stop();
-  history.replaceState(null, "", "#/");
-});
-
-test("agent workspace opt-in updates the account preference", async () => {
-  const server = serveAccount(ADA);
-  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const workspace = within(screen.getByRole("region", { name: "Agent workspace" }));
-  const toggle = workspace.getByRole("checkbox", { name: "Enable agent-guided workbench" });
-  expect((toggle as HTMLInputElement).checked).toBe(false);
-  fireEvent.click(toggle);
-  await waitFor(() => expect(server.writes()).toContainEqual({
-    call: "PUT /api/me/visual-workspace", body: { enabled: true },
-  }), FAST);
-  await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(true), FAST);
-});
-
 /** The preference changes sent to the server, in order. */
 const preferenceWrites = (server: ReturnType<typeof serveAccount>) =>
-  server.sent.filter((request) => request.path === "/api/me/preferences").map((request) => [request.method, request.body]);
-
-test("the switch for highlighting what the assistant mentions is on, and turns off at once, kept in the user's preferences", async () => {
-  const server = serveAccount(ADA);
-  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const workspace = within(screen.getByRole("region", { name: "Agent workspace" }));
-  const toggle = workspace.getByRole("checkbox", { name: "Highlight rows the assistant mentions" }) as HTMLInputElement;
-  expect(toggle.checked).toBe(true);
-  fireEvent.click(toggle);
-  expect(toggle.checked).toBe(false);
-  fireEvent.click(toggle);
-  expect(toggle.checked).toBe(true);
-  await waitFor(() => expect(preferenceWrites(server)).toEqual([
-    ["PATCH", { highlight_mentions: false }],
-    ["PATCH", { highlight_mentions: true }],
-  ]));
-  expect(localStorage.getItem(`trackinizer.v2.highlight-mentions.${ADA.email}`)).toBeNull();
-});
-
-test("the switch for showing tool calls in Chat is off, and turning it on is kept in the user's preferences", async () => {
-  const server = serveAccount(ADA);
-  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const workspace = within(screen.getByRole("region", { name: "Agent workspace" }));
-  const toggle = workspace.getByRole<HTMLInputElement>("checkbox", { name: "Show tool calls in Chat" });
-  expect(toggle.checked).toBe(false);
-  fireEvent.click(toggle);
-  expect(toggle.checked).toBe(true);
-  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { chat_tool_calls: true }]]));
-});
+  server.sent
+    .filter((request) => request.path === "/api/me/preferences")
+    .map((request) => [request.method, request.body]);
 
 test("a theme chosen updates the page at once and is kept in the user's preferences", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
   const appearance = within(screen.getByRole("region", { name: "Appearance" }));
-  fireEvent.change(appearance.getByRole("combobox", { name: "Theme" }), { target: { value: "light" } });
+  fireEvent.change(appearance.getByRole("combobox", { name: "Theme" }), {
+    target: { value: "light" },
+  });
   expect(document.documentElement.dataset.theme).toBe("light");
-  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { theme: "light" }]]));
+  await waitFor(() =>
+    expect(preferenceWrites(server)).toEqual([["PATCH", { theme: "light" }]]),
+  );
   expect(localStorage.getItem("trackinizer.theme")).toBeNull();
 });
 
@@ -119,45 +61,54 @@ test("a skin chosen in Appearance shows at once and is kept; under a fixed skin 
   expect(skin.value).toBe("default");
   expect(theme.disabled).toBe(false);
   expect(Array.from(skin.options, (option) => option.textContent)).toEqual([
-    "Default", "Retro 70s", "Sci-fi", "DOS 80s", "8-bit Console", "Matrix", "Hacker", "Minimalist", "Brutalist",
+    "Default",
+    "Retro 70s",
+    "Sci-fi",
+    "DOS 80s",
+    "8-bit Console",
+    "Matrix",
+    "Hacker",
+    "Minimalist",
+    "Brutalist",
   ]);
   fireEvent.change(skin, { target: { value: "dos" } });
   expect(document.documentElement.dataset.skin).toBe("dos");
   expect(theme.disabled).toBe(true);
   expect(appearance.getByText("The theme colours the Default skin only.")).toBeTruthy();
-  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { skin: "dos" }]]));
+  await waitFor(() =>
+    expect(preferenceWrites(server)).toEqual([["PATCH", { skin: "dos" }]]),
+  );
   fireEvent.change(skin, { target: { value: "default" } });
   expect(document.documentElement.dataset.skin).toBeUndefined();
   expect(theme.disabled).toBe(false);
 });
 
-test("Terminal font size is 13px until another is picked, and is kept in the user's preferences", async () => {
-  const server = serveAccount(ADA);
-  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const size = within(screen.getByRole("region", { name: "Appearance" })).getByRole<HTMLSelectElement>("combobox", { name: "Terminal font size" });
-  expect(size.value).toBe("13px");
-  fireEvent.change(size, { target: { value: "16px" } });
-  expect(size.value).toBe("16px");
-  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { terminal_font_size: "16px" }]]));
-});
-
 test("the theme picked elsewhere, as by the sidebar's button, shows in Appearance at once", () => {
   serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const theme = within(screen.getByRole("region", { name: "Appearance" })).getByRole("combobox", { name: "Theme" });
+  const theme = within(screen.getByRole("region", { name: "Appearance" })).getByRole(
+    "combobox",
+    { name: "Theme" },
+  );
   expect((theme as HTMLSelectElement).value).toBe("dark");
   act(() => chooseTheme("light"));
   expect((theme as HTMLSelectElement).value).toBe("light");
 });
 
 test("a theme chosen holds, in Appearance too, and the OS's appearance leaves it be", () => {
-  const os = { matches: false, changed: () => {}, addEventListener: (_: string, listener: () => void) => (os.changed = listener) };
+  const os = {
+    matches: false,
+    changed: () => {},
+    addEventListener: (_: string, listener: () => void) => (os.changed = listener),
+  };
   vi.stubGlobal("matchMedia", () => os);
   serveAccount(ADA);
   installTheme();
   chooseTheme("system");
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const theme = within(screen.getByRole("region", { name: "Appearance" })).getByRole<HTMLSelectElement>("combobox", { name: "Theme" });
+  const theme = within(
+    screen.getByRole("region", { name: "Appearance" }),
+  ).getByRole<HTMLSelectElement>("combobox", { name: "Theme" });
   expect(theme.value).toBe("system");
   fireEvent.change(theme, { target: { value: "light" } });
   expect(theme.value).toBe("light");
@@ -181,24 +132,29 @@ test("a failed profile refetch shows its error and Retry beside the profile alre
   expect(server.reads("/api/me/profile")).toBe(2);
 });
 
-test("Sign out posts to /auth/logout, then loads the login page", async () => {
+test("Sign out posts to /auth/logout, then loads the login page, once it told every other tab", async () => {
   const server = serveAccount(ADA);
-  const assign = vi.fn();
+  // Whom the browser says it is signed in as, to every other tab (`signedIn.ts`), as the login page loads.
+  const told: (string | null)[] = [];
+  const assign = vi.fn(() => void told.push(localStorage.getItem(SIGNED_IN_KEY)));
+  localStorage.setItem(SIGNED_IN_KEY, ADA.email);
   renderScreen(<SettingsView assign={assign} />, ADA);
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   await waitFor(() => expect(assign).toHaveBeenCalledWith(LOGIN_URL), FAST);
   expect(server.writes()).toEqual([{ call: "POST /auth/logout", body: undefined }]);
+  expect(told).toEqual([""]);
 });
 
 test("under --no-auth, where nobody signs in, the page offers no sign out", () => {
   // The fixture is the profile a server run with --no-auth answers; a JSON import
-  // widens its preferences' and org mode's words to `string`, where they are the
-  // server's own.
+  // widens its preferences' words to `string`, where they are the server's own.
   const body = noAuth.response.body;
   const everyone: Profile = {
     ...body,
-    preferences: { ...DEFAULT_PREFERENCES, ...body.preferences } as Profile["preferences"],
-    org_mode: body.org_mode as OrgMode,
+    preferences: {
+      ...DEFAULT_PREFERENCES,
+      ...body.preferences,
+    } as Profile["preferences"],
   };
   serveAccount(everyone);
   renderScreen(<SettingsView assign={vi.fn()} />, everyone);
@@ -209,21 +165,17 @@ test("under --no-auth, where nobody signs in, the page offers no sign out", () =
 
 test("a refused sign-out shows why, and stays on the page", async () => {
   const server = serveAccount(ADA);
-  server.answers.push(() => Response.json({ detail: "cross-origin logout rejected" }, { status: 403 }));
+  server.answers.push(() =>
+    Response.json({ detail: "cross-origin logout rejected" }, { status: 403 }),
+  );
   const assign = vi.fn();
+  localStorage.setItem(SIGNED_IN_KEY, ADA.email);
   renderScreen(<SettingsView assign={assign} />, ADA);
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   const session = within(screen.getByRole("region", { name: "Session" }));
-  expect((await session.findByRole("alert")).textContent).toBe("Could not sign out. cross-origin logout rejected");
+  expect((await session.findByRole("alert")).textContent).toBe(
+    "Could not sign out. cross-origin logout rejected",
+  );
   expect(assign).not.toHaveBeenCalled();
-});
-
-test("the terminal tab chords are off until chosen, and the choice is kept in the user's preferences", async () => {
-  const server = serveAccount(ADA);
-  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const box = within(screen.getByRole("region", { name: "Appearance" })).getByRole<HTMLInputElement>("checkbox", { name: "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal tabs" });
-  expect(box.checked).toBe(false);
-  fireEvent.click(box);
-  expect(box.checked).toBe(true);
-  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { terminal_tab_chords: true }]]));
+  expect(localStorage.getItem(SIGNED_IN_KEY)).toBe(ADA.email);
 });

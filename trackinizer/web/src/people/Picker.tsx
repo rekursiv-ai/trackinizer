@@ -48,23 +48,50 @@ export function PeoplePicker({
   const queryClient = useQueryClient();
   const { email } = useProfile();
   const [{ people }] = useBrowserState();
-  const [adding, setAdding] = useState<{ readonly draft: PersonDraft; readonly add: (actor: string) => void } | null>(null);
+  const [adding, setAdding] = useState<{
+    readonly draft: PersonDraft;
+    readonly add: (actor: string) => void;
+  } | null>(null);
   const anchor = useRef<HTMLSpanElement>(null);
   const many = field === "subscribers";
-  const actors = [...current, ...loadedValues(queryClient, "owner"), ...loadedValues(queryClient, "subscribers"), ...Object.keys(people)];
-  const options: MenuOption[] = offered(email, actors, people).map(({ actor, label, hint }) => ({
-    value: actor,
-    label,
-    hint,
-    icon: <Avatar actor={actor} size={16} />,
-    checked: checked(actor),
-  }));
-  if (none !== undefined) options.push({ value: NONE, label: none, icon: <Icon name="user" size={14} />, checked: checked(null) });
+  const actors = [
+    ...current,
+    ...loadedValues(queryClient, "owner"),
+    ...loadedValues(queryClient, "subscribers"),
+    ...Object.keys(people),
+  ];
+  const options: MenuOption[] = offered(email, actors, people).map(
+    ({ actor, label, hint }) => ({
+      value: actor,
+      label,
+      hint,
+      icon: <Avatar actor={actor} size={16} />,
+      checked: checked(actor),
+    }),
+  );
+  if (none !== undefined)
+    options.push({
+      value: NONE,
+      label: none,
+      icon: <Icon name="user" size={14} />,
+      checked: checked(null),
+    });
   const fixed = (typed: string): MenuOption[] => {
     const needle = typed.toLowerCase();
-    const known = options.some((option) => option.value.toLowerCase() === needle || option.label.toLowerCase() === needle);
+    const known = options.some(
+      (option) =>
+        option.value.toLowerCase() === needle || option.label.toLowerCase() === needle,
+    );
     return [
-      ...(typed && !known ? [{ value: `${ADD}${typed}`, label: `Add “${typed}”…`, icon: <Icon name="plus" size={14} /> }] : []),
+      ...(typed && !known
+        ? [
+            {
+              value: `${ADD}${typed}`,
+              label: `Add “${typed}”…`,
+              icon: <Icon name="plus" size={14} />,
+            },
+          ]
+        : []),
       { value: NEW_PERSON, label: "New person…", icon: <Icon name="user" size={14} /> },
       { value: NEW_AGENT, label: "New agent…", icon: <Icon name="bot" size={14} /> },
     ];
@@ -91,7 +118,11 @@ export function PeoplePicker({
     <>
       <span className="np-anchor" ref={anchor}>
         <Menu
-          label={many ? "Add subscribers: people or agents…" : "Assign owner: a person or an agent…"}
+          label={
+            many
+              ? "Add subscribers: people or agents…"
+              : "Assign owner: a person or an agent…"
+          }
           multi={many}
           trigger={trigger}
           options={options}

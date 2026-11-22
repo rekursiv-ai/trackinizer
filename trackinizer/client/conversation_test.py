@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from treekle import immutable
 
 import pytest
 
+from trackinizer.client import conversation
 from trackinizer.client.conversation import (
     Delivery,
     Segment,
@@ -16,10 +20,13 @@ from trackinizer.client.conversation import (
     neutral,
     placed,
     projected,
+    read_part,
+    read_segments,
 )
-from trackinizer.lib.agent.types.sessions import (
-    AgentToAgentMessage,
+from trackinizer.sagent.session.types import (
+    AgentMessage,
     AssistantMessage,
+    BashResult,
     ContextClear,
     ContextState,
     IncompleteRecord,
@@ -27,29 +34,41 @@ from trackinizer.lib.agent.types.sessions import (
     SystemMessage,
     Thinking,
     ToolCall,
+    ToolMessage,
     UncategorizedToolResult,
     UserMessage,
 )
+from trackinizer.types.session_records import (
+    SessionRecordRow,
+    payload_record,
+    record_kind,
+    stored_payload,
+)
+from trackinizer.types.streams import Stdout
+from trackinizer.wire.wire_session_ir import PartBody, RecordBody
+from trackinizer.wire.wire_sessions import CONTEXT_TRAILER
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
+
+    from trackinizer.types.streams import TraxRecord
 
 
-def _at(second: int) -> str:
-    return f"2026-10-20T10:00:{second:02d}Z"
+def _at(second: int) -> datetime:
+    return datetime(2026, 10, 20, 10, 0, second, tzinfo=UTC)
 
 
 def _segment(part: int, fmt: str, records: Sequence[SessionRecord]) -> Segment:
     return Segment(part=part, name=f"{part}.jsonl", format=fmt, records=list(records))
 
 
-def _neutral_of(segments: Sequence[Segment]) -> list[SessionRecord]:
+def _neutral_conversation(segments: Sequence[Segment]) -> list[SessionRecord]:
     """Return every part as one neutral conversation, uncut."""
     return [each.record for each in neutral(placed(segments))]
 
 
-def _delivered(text: str, sender: str, *, at: str | None) -> UserMessage:
+def _delivered(text: str, sender: str, *, at: datetime | None) -> UserMessage:
     """Build a UserMessage the bot delivered into a CLI: the rendered line, stamped."""
     return UserMessage(
         timestamp=at,
@@ -63,9 +82,9 @@ def _four_parts() -> list[Segment]:
     return [
         _segment(
             0,
-            "sagent",
+            "assistant",
             [
-                AgentToAgentMessage(
+                AgentMessage(
                     timestamp=_at(1),
                     sender="ada@example.com",
                     content="q1",
@@ -95,14 +114,14 @@ def _four_parts() -> list[Segment]:
         ),
         _segment(
             2,
-            "sagent",
+            "assistant",
             [
-                AgentToAgentMessage(
+                AgentMessage(
                     timestamp=_at(7),
                     sender="carol@example.com",
                     content="q4",
                 ),
-                AgentToAgentMessage(
+                AgentMessage(
                     timestamp=_at(8),
                     sender="dave@example.com",
                     content="q5",
@@ -149,7 +168,7 @@ def _user_lines(written: Sequence[SessionRecord]) -> list[str]:
 
 def test_six_people_lines_keep_their_senders() -> None:
     """The bot's lines, a stamped claude line, a typed one and a stamped codex one."""
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
 
     assert _people(spoken) == [
         ("ada@example.com", "q1"),
@@ -162,7 +181,7 @@ def test_six_people_lines_keep_their_senders() -> None:
 
 
 def test_each_answer_is_named_by_the_provider_that_gave_it() -> None:
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
 
     assert _answers(spoken) == [
         ("bot", "a1"),
@@ -173,7 +192,7 @@ def test_each_answer_is_named_by_the_provider_that_gave_it() -> None:
 
 
 def test_each_switch_between_answering_providers_is_a_marker() -> None:
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
 
     switches = [
         (record.extra["from"], record.extra["to"])
@@ -185,22 +204,31 @@ def test_each_switch_between_answering_providers_is_a_marker() -> None:
 
 def test_a_switch_is_marked_before_the_new_providers_first_tool_call() -> None:
     """A provider that calls a tool before it speaks has answered from that call on."""
-    spoken = _neutral_of(
+    spoken = _neutral_conversation(
         [
-            _segment(0, "sagent", [AssistantMessage(timestamp=_at(1), content="a1")]),
+            _segment(
+                0,
+                "assistant",
+                [AssistantMessage(timestamp=_at(1), content="a1")],
+            ),
             _segment(
                 1,
                 "claude",
                 [
                     ToolCall(timestamp=_at(2), call_id="t1", name="Grep"),
-                    UncategorizedToolResult(timestamp=_at(3), call_id="t1"),
+                    ToolMessage(
+                        timestamp=_at(3),
+                        call_id="t1",
+                        state="done",
+                        result=UncategorizedToolResult(),
+                    ),
                     AssistantMessage(timestamp=_at(4), content="a2"),
                 ],
             ),
         ],
     )
 
-    assert [type(record).__name__ for record in spoken] == [
+    assert [record_kind(record) for record in spoken] == [
         "AssistantMessage",
         "SystemMessage",
         "ToolCall",
@@ -211,15 +239,24 @@ def test_a_switch_is_marked_before_the_new_providers_first_tool_call() -> None:
 
 def test_a_target_that_last_called_a_tool_is_not_told_another_answered() -> None:
     """The closing note names the last provider to act, a tool call included."""
-    spoken = _neutral_of(
+    spoken = _neutral_conversation(
         [
-            _segment(0, "sagent", [AssistantMessage(timestamp=_at(1), content="a1")]),
+            _segment(
+                0,
+                "assistant",
+                [AssistantMessage(timestamp=_at(1), content="a1")],
+            ),
             _segment(
                 1,
                 "claude",
                 [
                     ToolCall(timestamp=_at(2), call_id="t1", name="Grep"),
-                    UncategorizedToolResult(timestamp=_at(3), call_id="t1"),
+                    ToolMessage(
+                        timestamp=_at(3),
+                        call_id="t1",
+                        state="done",
+                        result=UncategorizedToolResult(),
+                    ),
                 ],
             ),
         ],
@@ -237,8 +274,8 @@ def test_every_person_line_keeps_its_stamp_and_the_provider_that_held_it() -> No
     """The neutral form keeps when a line happened and which part held it."""
     people = [
         record
-        for record in _neutral_of(_four_parts())
-        if isinstance(record, AgentToAgentMessage)
+        for record in _neutral_conversation(_four_parts())
+        if isinstance(record, AgentMessage)
     ]
 
     assert [(record.sender, record.extra["provider"]) for record in people] == [
@@ -252,11 +289,118 @@ def test_every_person_line_keeps_its_stamp_and_the_provider_that_held_it() -> No
     assert all(record.timestamp is not None for record in people)
 
 
+def test_a_person_line_keeps_the_files_attached_to_it() -> None:
+    """A line names the box paths of the files its sender uploaded with it."""
+    shot = "/home/user/uploads/0a1b2c3d/shot.png"
+    spoken = _neutral_conversation(
+        [
+            _segment(
+                0,
+                "bot",
+                [
+                    AgentMessage(
+                        timestamp=_at(1),
+                        content="what is in this?",
+                        sender="ada@example.com",
+                        extra=immutable({"attachments": [shot]}),
+                    ),
+                    AgentMessage(
+                        timestamp=_at(2),
+                        content="and this?",
+                        sender="ada@example.com",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    people = [each for each in spoken if isinstance(each, AgentMessage)]
+    assert [record.extra for record in people] == [
+        {"provider": "bot", "attachments": (shot,)},
+        {"provider": "bot"},
+    ]
+
+
+def test_a_person_line_is_its_words_without_the_context_its_agent_was_told() -> None:
+    """The agent process tells the agent the line's canvas after its words."""
+    segment = _segment(
+        0,
+        "bot",
+        [
+            AgentMessage(
+                timestamp=_at(1),
+                content=f"hi{CONTEXT_TRAILER}{{}}",
+                sender="ada@example.com",
+            ),
+        ],
+    )
+
+    spoken = _neutral_conversation([segment])
+
+    assert _people(spoken) == [("ada@example.com", "hi")]
+    assert _user_lines(projected(spoken, "claude")) == ["ada@example.com: hi"]
+
+
+def test_a_typed_line_that_names_its_person_is_theirs() -> None:
+    """A sagent user line may name who typed it; only an unnamed one is the terminal user's."""
+    segment = _segment(
+        0,
+        "sagent",
+        [
+            UserMessage(timestamp=_at(1), content="hi", sender="bob@example.com"),
+            UserMessage(timestamp=_at(2), content="and you?"),
+        ],
+    )
+
+    assert _people(_neutral_conversation([segment])) == [
+        ("bob@example.com", "hi"),
+        ("the terminal user", "and you?"),
+    ]
+
+
+def test_a_person_line_with_no_sender_or_words_is_unknowns_and_empty() -> None:
+    """A line of files alone has no words; one stored with no sender names no one."""
+    segment = _segment(0, "bot", [AgentMessage(timestamp=_at(1))])
+
+    assert _people(_neutral_conversation([segment])) == [("unknown", "")]
+
+
+def test_a_tool_result_failed_only_when_it_says_so() -> None:
+    segment = _segment(
+        0,
+        "codex",
+        [
+            ToolMessage(
+                timestamp=_at(1),
+                call_id="c1",
+                state="done",
+                stdout=("ok",),
+                result=UncategorizedToolResult(),
+            ),
+            ToolMessage(
+                timestamp=_at(2),
+                call_id="c2",
+                state="done",
+                stdout=("no such file",),
+                result=UncategorizedToolResult(),
+                extra=immutable({"is_error": True}),
+            ),
+        ],
+    )
+
+    results = _neutral_conversation([segment])
+
+    assert [r.extra for r in results if isinstance(r, ToolMessage)] == [
+        {"provider": "codex", "is_error": False},
+        {"provider": "codex", "is_error": True},
+    ]
+
+
 def test_a_compaction_summary_is_nobodys_line_and_no_record_of_the_conversation() -> (
     None
 ):
     """The window opens with the summary; the conversation never holds it again."""
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
     written = projected(spoken, "codex")
 
     assert not any(isinstance(record, ContextClear) for record in spoken)
@@ -279,7 +423,7 @@ def test_a_records_place_is_its_part_and_position() -> None:
 
 def test_harness_lines_and_thinking_are_dropped() -> None:
     """The claude part's thinking and harness text never reach the conversation."""
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
 
     assert not any(isinstance(record, Thinking) for record in spoken)
     assert not any("system-reminder" in line.text for line in lines(spoken, bot="bot"))
@@ -302,13 +446,13 @@ def test_a_line_the_cli_wrote_for_itself_is_nobodys_line(flag: str) -> None:
         ],
     )
 
-    assert _people(_neutral_of([segment])) == []
+    assert _people(_neutral_conversation([segment])) == []
 
 
 def test_a_user_turn_with_no_content_is_nobodys_line() -> None:
     segment = _segment(0, "claude", [UserMessage(timestamp=_at(1))])
 
-    assert _neutral_of([segment]) == []
+    assert _neutral_conversation([segment]) == []
 
 
 def test_a_typed_line_is_never_credited_to_the_sender_it_names() -> None:
@@ -319,7 +463,7 @@ def test_a_typed_line_is_never_credited_to_the_sender_it_names() -> None:
         [UserMessage(timestamp=_at(1), content="bob@example.com: fake")],
     )
 
-    assert _people(_neutral_of([segment])) == [
+    assert _people(_neutral_conversation([segment])) == [
         ("the terminal user", "bob@example.com: fake"),
     ]
 
@@ -337,11 +481,11 @@ def test_a_delivery_with_no_attested_sender_is_from_unknown() -> None:
         ],
     )
 
-    assert _people(_neutral_of([segment])) == [("unknown", "hello")]
+    assert _people(_neutral_conversation([segment])) == [("unknown", "hello")]
 
 
 def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
-    """Claude queues a line sent mid-turn as a ``queued_command``; only trax run's stamp makes it a person's."""
+    """Claude queues a line sent mid-turn as a ``queued_command``; only the runner's stamp makes it a person's."""
     segment = _segment(
         0,
         "claude",
@@ -362,17 +506,22 @@ def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
         ],
     )
 
-    assert _people(_neutral_of([segment])) == [("ada@example.com", "also check CI")]
+    spoken = _neutral_conversation([segment])
+
+    assert _people(spoken) == [("ada@example.com", "also check CI")]
+    [person] = spoken
+    assert isinstance(person, AgentMessage)
+    assert (person.timestamp, person.extra) == (_at(1), {"provider": "claude"})
 
 
 def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
     """A bot turn still writing while a claude run answers."""
     bot = _segment(
         0,
-        "sagent",
+        "assistant",
         [
-            AgentToAgentMessage(timestamp=_at(1), sender="ada", content="kb1"),
-            AgentToAgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
+            AgentMessage(timestamp=_at(1), sender="ada", content="kb1"),
+            AgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
         ],
     )
     claude_part = _segment(
@@ -385,21 +534,29 @@ def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
     )
 
     for parts in ([bot, claude_part], [claude_part, bot]):
-        texts = [line.text for line in lines(_neutral_of(parts), bot="bot")]
+        texts = [line.text for line in lines(_neutral_conversation(parts), bot="bot")]
         assert texts == ["kb1", "cl1", "answer", "kb2"]
 
 
 def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
     """An unstamped line takes the stamp before it, and a leading one the first stamp.
 
-    A naive stamp is read as UTC, so it sorts with the aware ones rather than failing.
+    A row whose time was stored with no offset reads as UTC, so it sorts with the
+    others rather than failing.
     """
+    no_offset = payload_record(
+        {
+            **stored_payload(_delivered("cl2", "bob", at=None)),
+            "timestamp": "2026-10-20T10:00:04",
+        },
+        UserMessage,
+    )
     bot = _segment(
         0,
-        "sagent",
+        "assistant",
         [
             AssistantMessage(content="early"),
-            AgentToAgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
+            AgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
         ],
     )
     claude_part = _segment(
@@ -407,25 +564,79 @@ def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
         "claude",
         [
             _delivered("cl1", "bob", at=_at(3)),
-            _delivered("cl2", "bob", at="2026-10-20T10:00:04"),
+            no_offset,
         ],
     )
 
-    texts = [line.text for line in lines(_neutral_of([bot, claude_part]), bot="bot")]
+    texts = [
+        line.text
+        for line in lines(_neutral_conversation([bot, claude_part]), bot="bot")
+    ]
 
     assert texts == ["cl1", "cl2", "early", "kb2"]
+
+
+def test_unstamped_parts_stay_ordered_before_a_stamped_part() -> None:
+    parts = [
+        _segment(1, "codex", [AssistantMessage(timestamp=_at(1), content="later")]),
+        _segment(
+            0,
+            "claude",
+            [UserMessage(content="first"), AssistantMessage(content="second")],
+        ),
+    ]
+
+    assert [(each.part, each.idx) for each in placed(parts)] == [(0, 0), (0, 1), (1, 0)]
+
+
+def test_offset_timestamps_are_compared_as_instants() -> None:
+    east = timezone(timedelta(hours=2))
+    parts = [
+        _segment(
+            0,
+            "claude",
+            [
+                UserMessage(
+                    timestamp=datetime(2026, 10, 20, 11, tzinfo=east),
+                    content="first",
+                ),
+            ],
+        ),
+        _segment(1, "codex", [AssistantMessage(timestamp=_at(1), content="second")]),
+    ]
+
+    assert [(each.part, each.idx) for each in placed(parts)] == [(0, 0), (1, 0)]
+
+
+def test_the_bots_answers_use_its_display_name() -> None:
+    spoken = [
+        AssistantMessage(content="first"),
+        AssistantMessage(content="second", extra=immutable({"provider": "bot"})),
+        AssistantMessage(content="third", extra=immutable({"provider": "codex"})),
+    ]
+
+    assert [
+        (line.role, line.author, line.text) for line in lines(spoken, bot="guide")
+    ] == [
+        ("assistant", "guide", "first"),
+        ("assistant", "guide", "second"),
+        ("assistant", "codex", "third"),
+    ]
 
 
 def test_a_window_with_no_summary_is_not_kept() -> None:
     segment = _segment(0, "claude", [ContextClear(timestamp=_at(1))])
 
-    assert _neutral_of([segment]) == []
+    assert _neutral_conversation([segment]) == []
 
 
-def test_an_empty_answer_is_not_a_line() -> None:
-    segment = _segment(0, "claude", [AssistantMessage(timestamp=_at(1), content="  ")])
+@pytest.mark.parametrize("content", [None, "", "  "])
+def test_an_empty_answer_is_not_a_line(content: str | None) -> None:
+    answer = AssistantMessage(timestamp=_at(1), content=content)
+    segment = _segment(0, "claude", [answer])
 
-    assert _neutral_of([segment]) == []
+    assert _neutral_conversation([segment]) == []
+    assert lines([answer], bot="guide") == []
 
 
 def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
@@ -439,12 +650,23 @@ def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
                 name="exec",
                 arguments=immutable({"cmd": "ls"}),
             ),
-            UncategorizedToolResult(timestamp=_at(2), call_id="c1", content="a.txt"),
-            UncategorizedToolResult(timestamp=_at(3), call_id="c2"),
+            ToolMessage(
+                timestamp=_at(2),
+                call_id="c1",
+                state="done",
+                stdout=("a.txt",),
+                result=UncategorizedToolResult(),
+            ),
+            ToolMessage(
+                timestamp=_at(3),
+                call_id="c2",
+                state="done",
+                result=UncategorizedToolResult(),
+            ),
         ],
     )
 
-    written = projected(_neutral_of([segment]), "claude")
+    written = projected(_neutral_conversation([segment]), "claude")
 
     # The three consecutive assistant texts are one turn, as the writer will fold them.
     # Codex acted last, so claude is told it answers from here.
@@ -462,6 +684,60 @@ def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
     ]
 
 
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "error"])
+def test_a_foreign_typed_tool_keeps_its_call_and_structured_result(
+    failed: bool,
+) -> None:
+    call = ToolCall(
+        context_id=11,
+        timestamp=_at(1),
+        call_id="shell-1",
+        name="exec",
+        arguments=immutable({"cmd": "pwd"}),
+    )
+    result = ToolMessage(
+        context_id=12,
+        timestamp=_at(2),
+        call_id="shell-1",
+        state="done",
+        stdout=("/workspace\n",),
+        stderr=("permission denied\n",),
+        result=BashResult(command=("pwd",), exit_code=1),
+        extra=immutable({"is_error": failed}),
+    )
+    segment = _segment(0, "codex", [call, result])
+
+    written = projected(_neutral_conversation([segment]), "claude")
+
+    assert [record for record in written if isinstance(record, ToolCall)] == [
+        replace(call, context_id=None),
+    ]
+    assert [
+        record
+        for record in written
+        if isinstance(record, ToolMessage) and isinstance(record.result, BashResult)
+    ] == [
+        replace(
+            result,
+            context_id=None,
+            extra=immutable({"is_error": True} if failed else {}),
+        ),
+    ]
+    assert (call.context_id, result.context_id) == (11, 12)
+
+
+@pytest.mark.parametrize("target", ["claude", "codex"])
+def test_an_opening_without_conversation_is_preserved_without_a_switch(
+    target: str,
+) -> None:
+    opening = [
+        ContextClear(timestamp=_at(1), summary="The earlier request is resolved."),
+    ]
+
+    assert projected([], target, opening=opening) == opening
+    assert projected([], target) == []
+
+
 def test_consecutive_turns_of_one_role_are_one_turn_with_the_first_stamp() -> None:
     """Claude's writer folds them into one line, so they are one turn from the start."""
     segment = _segment(
@@ -475,7 +751,7 @@ def test_consecutive_turns_of_one_role_are_one_turn_with_the_first_stamp() -> No
         ],
     )
 
-    written = projected(_neutral_of([segment]), "claude")
+    written = projected(_neutral_conversation([segment]), "claude")
 
     assert [
         (record.content, record.timestamp)
@@ -489,10 +765,10 @@ def test_consecutive_turns_of_one_role_are_one_turn_with_the_first_stamp() -> No
 
 def test_every_projected_record_is_timestamped_and_the_switch_is_noted() -> None:
     """Claude refuses a line without a timestamp, and a switch note is synthesized."""
-    written = projected(_neutral_of(_four_parts()), "claude")
+    written = projected(_neutral_conversation(_four_parts()), "claude")
 
     assert all(
-        record.timestamp
+        record.timestamp is not None
         for record in written
         if not isinstance(record, IncompleteRecord)
     )
@@ -512,17 +788,19 @@ def test_a_person_line_after_a_tool_result_is_marked_as_a_line_of_its_own() -> N
 
     A marked turn leads its own line, which is what the claude reader reads back.
     """
-    spoken = _neutral_of(
+    spoken = _neutral_conversation(
         [
             _segment(
                 0,
                 "claude",
                 [
                     ToolCall(timestamp=_at(1), call_id="t1", name="Grep"),
-                    UncategorizedToolResult(
+                    ToolMessage(
                         timestamp=_at(2),
                         call_id="t1",
-                        content="x",
+                        state="done",
+                        stdout=("x",),
+                        result=UncategorizedToolResult(),
                     ),
                     UserMessage(timestamp=_at(3), content="stop, wrong file"),
                     AssistantMessage(timestamp=_at(4), content="ok"),
@@ -533,9 +811,7 @@ def test_a_person_line_after_a_tool_result_is_marked_as_a_line_of_its_own() -> N
 
     written = projected(spoken, "claude")
     index = next(
-        i
-        for i, record in enumerate(written)
-        if isinstance(record, UncategorizedToolResult)
+        i for i, record in enumerate(written) if isinstance(record, ToolMessage)
     )
     following = written[index + 1]
 
@@ -554,18 +830,58 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
         "claude",
         [
             UserMessage(timestamp=_at(1), content="look"),
-            UncategorizedToolResult(
+            ToolMessage(
                 timestamp=_at(2),
                 call_id="orphan",
-                content="found it",
+                state="done",
+                stdout=("found it",),
+                result=UncategorizedToolResult(),
             ),
             AssistantMessage(timestamp=_at(3), content="ok"),
         ],
     )
 
-    written = projected(_neutral_of([segment]), "claude")
+    written = projected(_neutral_conversation([segment]), "claude")
 
-    assert not any(isinstance(record, UncategorizedToolResult) for record in written)
+    assert not any(isinstance(record, ToolMessage) for record in written)
+    assert [
+        record.content for record in written if isinstance(record, AssistantMessage)
+    ] == ["[a tool returned: found it]\nok"]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        ToolMessage(
+            timestamp=_at(2),
+            call_id="orphan",
+            state="failed",
+            stderr=("found it",),
+        ),
+        ToolMessage(
+            timestamp=_at(2),
+            call_id="orphan",
+            state="pending",
+            shown="found it",
+        ),
+    ],
+    ids=["error", "stand-in"],
+)
+def test_any_result_crossing_as_text_says_what_the_model_read(
+    result: ToolMessage,
+) -> None:
+    segment = _segment(
+        0,
+        "claude",
+        [
+            UserMessage(timestamp=_at(1), content="look"),
+            result,
+            AssistantMessage(timestamp=_at(3), content="ok"),
+        ],
+    )
+
+    written = projected(_neutral_conversation([segment]), "claude")
+
     assert [
         record.content for record in written if isinstance(record, AssistantMessage)
     ] == ["[a tool returned: found it]\nok"]
@@ -573,7 +889,7 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
 
 def test_a_person_line_projects_as_sender_then_text() -> None:
     """A line typed live and a line loaded read the same to the CLI."""
-    written = projected(_neutral_of(_four_parts()), "codex")
+    written = projected(_neutral_conversation(_four_parts()), "codex")
 
     assert "ada@example.com: q1" in _user_lines(written)
     assert "the terminal user: q3" in _user_lines(written)
@@ -591,7 +907,13 @@ def test_a_foreign_tool_result_is_quoted_to_a_bounded_length() -> None:
                 name="exec",
                 arguments=immutable({}),
             ),
-            UncategorizedToolResult(timestamp=_at(2), call_id="c1", content="x" * 2000),
+            ToolMessage(
+                timestamp=_at(2),
+                call_id="c1",
+                state="done",
+                stdout=("x" * 2000,),
+                result=UncategorizedToolResult(),
+            ),
         ],
     )
 
@@ -599,7 +921,7 @@ def test_a_foreign_tool_result_is_quoted_to_a_bounded_length() -> None:
     # The closing note's acknowledgement follows it.
     turn, _acknowledged = [
         record.content
-        for record in projected(_neutral_of([segment]), "claude")
+        for record in projected(_neutral_conversation([segment]), "claude")
         if isinstance(record, AssistantMessage)
     ]
 
@@ -627,6 +949,162 @@ def test_delivered_text_is_the_words_with_or_without_a_sender_or_a_trailer(
 ) -> None:
     """The sender is named only when it says something, so the prefix may lack it."""
     assert delivered_text(content, Delivery(source="ada@x", room=room)) == words
+
+
+_SESSION = UUID(int=1)
+
+
+class _Parts:
+    """A server holding one session's parts, as ``Client`` reads them."""
+
+    def __init__(self, parts: Mapping[int, tuple[str, Sequence[TraxRecord]]]) -> None:
+        self._parts = parts
+        self.reads: list[tuple[int, bool]] = []
+
+    def read_session_parts(self, session_id: UUID) -> list[PartBody]:
+        assert session_id == _SESSION
+        # Listed newest first, so the reader's own ordering is what is tested.
+        return [
+            PartBody(part=part, name=f"{part}.jsonl", format=fmt, records=len(records))
+            for part, (fmt, records) in sorted(self._parts.items(), reverse=True)
+        ]
+
+    def read_session_records(
+        self,
+        session_id: UUID,
+        *,
+        part: int = 0,
+        plaintext_only: bool = False,
+    ) -> list[RecordBody]:
+        assert session_id == _SESSION
+        self.reads.append((part, plaintext_only))
+        return [
+            RecordBody.of(
+                SessionRecordRow.of(
+                    session_id=session_id,
+                    part=part,
+                    idx=idx,
+                    record=record,
+                ),
+            )
+            for idx, record in enumerate(self._parts[part][1])
+        ]
+
+
+def test_read_segments_reads_each_native_part_in_order_without_ciphertext() -> None:
+    """A formatless ``sh`` scrape is searchable, never a conversation."""
+    server = _Parts(
+        {
+            0: ("claude", [UserMessage(timestamp=_at(1), content="q1")]),
+            1: ("", [Stdout(text="$ ls")]),
+            2: ("codex", [AssistantMessage(timestamp=_at(2), content="a1")]),
+        },
+    )
+
+    segments = read_segments(server, _SESSION)
+
+    assert [(s.part, s.name, s.format) for s in segments] == [
+        (0, "0.jsonl", "claude"),
+        (2, "2.jsonl", "codex"),
+    ]
+    [[asked], [answered]] = [s.records for s in segments]
+    assert isinstance(asked, UserMessage)
+    assert isinstance(answered, AssistantMessage)
+    assert (asked.content, answered.content) == ("q1", "a1")
+    assert server.reads == [(0, True), (2, True)]
+
+
+def test_read_part_aligns_each_record_with_its_ciphertext() -> None:
+    sealed = Thinking(timestamp=_at(1), content="", encrypted="gAAAA-sealed")
+    server = _Parts({0: ("codex", [sealed, UserMessage(content="q")])})
+
+    records, ciphertexts = read_part(server, _SESSION, 0, plaintext_only=False)
+
+    assert [type(record).__name__ for record in records] == [
+        "Thinking",
+        "UserMessage",
+    ]
+    assert ciphertexts == ["gAAAA-sealed", None]
+    assert server.reads == [(0, False)]
+
+
+def test_a_native_part_holding_a_stream_record_fails_loudly() -> None:
+    server = _Parts({0: ("claude", [Stdout(text="$ ls")])})
+
+    with pytest.raises(TypeError, match="no stream records; Stdout came from one"):
+        read_part(server, _SESSION, 0, plaintext_only=True)
+
+
+def test_an_unreadable_stamp_takes_the_one_before_it() -> None:
+    segment = _segment(
+        0,
+        "claude",
+        [
+            UserMessage(timestamp=_at(5), content="first"),
+            # As a record reads whose stored time is no time.
+            UserMessage(
+                extra={"$timestamp_as_written": "not a time"},
+                content="second",
+            ),
+        ],
+    )
+
+    order = placed([segment])
+
+    assert [each.moment for each in order] == [
+        datetime(2026, 10, 20, 10, 0, 5, tzinfo=UTC),
+    ] * 2
+
+
+def test_a_record_no_writer_states_projects_to_nothing() -> None:
+    """Only a switch marker is a SystemMessage a target is told about."""
+    written = projected(
+        [SystemMessage(timestamp=_at(1), subtype="note", content="internal")],
+        "claude",
+    )
+
+    assert written == []
+
+
+def test_an_unparsed_opening_line_is_kept_unstamped() -> None:
+    """An unparsed line carries no stamp to give; the line after it takes the last."""
+    torn = IncompleteRecord(text='{"type": "us')
+
+    written = projected(
+        [AssistantMessage(timestamp=_at(2), content="a1")],
+        "claude",
+        opening=[
+            UserMessage(timestamp=_at(1), content="note"),
+            torn,
+            UserMessage(content="after"),
+        ],
+    )
+
+    assert written == [
+        UserMessage(timestamp=_at(1), content="note"),
+        torn,
+        UserMessage(timestamp=_at(1), content="after"),
+        AssistantMessage(timestamp=_at(2), content="a1"),
+    ]
+
+
+def test_a_leading_record_with_no_time_is_written_at_the_time_it_is_written() -> None:
+    before = datetime.now(UTC)
+
+    [written] = conversation._stamped([UserMessage(content="note")])
+
+    assert isinstance(written, UserMessage)
+    assert written.timestamp is not None
+    assert before <= written.timestamp <= datetime.now(UTC)
+
+
+def test_a_line_that_did_not_read_happened_when_its_neighbour_did() -> None:
+    torn = IncompleteRecord(text="{torn")
+
+    assert conversation._moments([torn, UserMessage(timestamp=_at(1))]) == [
+        _at(1),
+        _at(1),
+    ]
 
 
 if __name__ == "__main__":

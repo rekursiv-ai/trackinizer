@@ -7,47 +7,56 @@ landing in its own table, and the generated tsvector never seeing it.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import asyncio
+import re
 
+from asyncpg import CheckViolationError, ForeignKeyViolationError
 from treekle import immutable, json_loads
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.conftest import executed_sql, make_store, set_field_row
+from trackinizer.lib import zstd_compat
+from trackinizer.sagent.session.types import (
+    SessionContext,
     SessionRecord,
     Thinking,
     ToolCall,
-    TurnContext,
     UserMessage,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store import session_ir
-from trackinizer.server.store.core import Store
-from trackinizer.server.store.session_ir import SlashCommandRow
+from trackinizer.server.store.session_bodies import STUB_PAYLOAD
+from trackinizer.server.store.session_ir import (
+    AppendedPart,
+    PartFile,
+    SlashCommandRow,
+    StalePartError,
+)
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Mapping, Sequence
 
-    from trackinizer.lib.postgres import PostgresEngine
+    from treekle import PlainTree
+
+    from trackinizer.lib.postgres import Conn
+    from trackinizer.server.store.core import Store
 
 
 _CIPHERTEXT = "gAAAAABqPBiCY9-vjMraAiiOTNS8xKmaodTJ4D2l6XR2pMszVFyz"
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store on the shared integration database."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session(store: Store) -> UUID:
@@ -204,11 +213,9 @@ async def test_a_shrunk_part_reads_only_its_live_prefix(store: Store) -> None:
     """A file that shrank leaves its tail INERT, not readable.
 
     ``session_manifests.records`` is the live prefix bound, and a compaction
-    is what produces one: claude rewrites the transcript shorter, so the
-    re-derived batch overwrites positions 0..n while the old rows at n.. stay
-    on disk. Nothing deletes them -- ``restart`` is an overwrite, not a
-    truncate -- so the bound is the only thing separating the current file
-    from the one it replaced.
+    is what produces one: claude rewrote the transcript shorter, while the old
+    rows past its new length stay on disk. Nothing deletes them, so the bound is
+    the only thing separating the current file from the one it replaced.
 
     A reader that ignores it returns a transcript that never existed: the new
     prefix followed by the old suffix. ``resume`` rebuilds the native file
@@ -238,15 +245,10 @@ async def test_a_shrunk_part_reads_only_its_live_prefix(store: Store) -> None:
         format="claude",
         records=2,
     )
-    await store.append_session_records(
-        session_id,
-        _rows(session_id, [UserMessage(content=f"after-{i}") for i in range(2)]),
-        restart=True,
-    )
 
     read = await store.read_session_records(session_id, part=part)
 
-    assert [row.text for row in read] == ["after-0", "after-1"]
+    assert [row.text for row in read] == ["before-0", "before-1"]
 
 
 @pytest.mark.db_pglite
@@ -301,34 +303,6 @@ async def test_an_ended_session_refuses_new_records(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_slash_command_alone_also_respects_the_end(store: Store) -> None:
-    """The guard covers the whole append, not only its records.
-
-    A command rides the same request as the turns around it, so admitting one
-    into an ended session stores half a transcript the records half refused.
-    """
-    session_id = await _session(store)
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE inquiries SET agentsession_ended = now(), status = 'complete' "
-            "WHERE id = $1",
-            session_id,
-        )
-
-    with pytest.raises(ConflictError, match="has ended"):
-        _ = await store.append_session_records(
-            session_id,
-            [],
-            slash_commands=[
-                SlashCommandRow(timestamp=datetime.now(UTC), command="exit"),
-            ],
-        )
-
-    assert not await store.read_session_slash_commands(session_id)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
 async def test_a_missing_session_is_not_found(store: Store) -> None:
     """A purged session is a 404, never a leaked constraint name."""
     with pytest.raises(NotFoundError):
@@ -358,33 +332,8 @@ async def test_re_appending_the_same_records_writes_nothing(store: Store) -> Non
     first = await store.append_session_records(session_id, rows)
     second = await store.append_session_records(session_id, rows)
 
-    assert first == (2, 0, 0)
-    assert second == (0, 2, 0)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_restart_overwrites_because_disk_is_truth(store: Store) -> None:
-    """A restarted part UPDATES: a compaction rewrites what a record holds.
-
-    Claude keeps the turns it did not summarize away, so a record re-derived
-    at a given ``idx`` may legitimately differ from the stored one. On a
-    restart the file is authoritative.
-    """
-    session_id = await _session(store)
-    await store.append_session_records(
-        session_id,
-        await _bounded(store, session_id, [UserMessage(content="before")]),
-    )
-
-    await store.append_session_records(
-        session_id,
-        await _bounded(store, session_id, [UserMessage(content="after")]),
-        restart=True,
-    )
-    read = await store.read_session_records(session_id, part=0)
-
-    assert [row.record() for row in read] == [UserMessage(content="after")]
+    assert first == (2, 0)
+    assert second == (0, 2)
 
 
 @pytest.mark.db_pglite
@@ -504,8 +453,8 @@ async def test_search_never_indexes_ciphertext(store: Store) -> None:
 async def test_manifest_upserts_per_batch(store: Store) -> None:
     """The manifest is re-written as the file grows, not once at the end.
 
-    ``metadata`` is only correct for the prefix consumed -- claude's ascii
-    majority is not final until EOF -- so every batch re-upserts it.
+    ``metadata`` is only correct for the prefix consumed -- claude's escaped
+    lines keep arriving -- so every batch re-upserts it.
     """
     session_id = await _session(store)
     await store.upsert_session_manifest(
@@ -592,7 +541,8 @@ async def test_concurrent_new_files_keep_distinct_parts(store: Store) -> None:
                     assert isinstance(blocked, int)
                     if blocked == 2:
                         break
-                    await asyncio.sleep(0.001)
+                    # Lock waits live in Postgres; only pg_stat_activity and pg_locks report them.
+                    await asyncio.sleep(0.001)  # house-ignore[sleep] -- See above.
         finally:
             await conn.execute("COMMIT")
             parts = await asyncio.gather(*tasks)
@@ -641,9 +591,9 @@ async def test_purging_the_session_cascades_every_table(store: Store) -> None:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_context_naming_itself_is_accepted(store: Store) -> None:
-    """A claude ``TurnContext`` sits at its own ``idx`` and names it."""
+    """A claude ``SessionContext`` sits at its own ``idx`` and names it."""
     session_id = await _session(store)
-    record = TurnContext(context_id=0, model="opus")
+    record = SessionContext(context_id=0, model="opus")
 
     await store.append_session_records(
         session_id,
@@ -732,7 +682,7 @@ async def _upsert(
     name: str,
     key: UUID | None,
     records: int = 1,
-    exclusive: bool = False,
+    format: str = "claude",
 ) -> int:
     """Upsert one part's manifest as ``key`` writes it."""
     return await store.upsert_session_manifest(
@@ -740,10 +690,9 @@ async def _upsert(
         name=name,
         metadata=immutable({}),
         ir_id=uuid4(),
-        format="claude",
+        format=format,
         records=records,
         api_key_id=key,
-        exclusive=exclusive,
     )
 
 
@@ -771,123 +720,169 @@ async def test_a_part_keeps_the_key_whose_first_write_opened_it(store: Store) ->
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_an_exclusive_write_refuses_another_keys_part(store: Store) -> None:
-    """A science chat's part is its opener's: another key's batch changes nothing.
+async def test_a_sagent_part_takes_writes_only_while_it_is_the_newest(
+    store: Store,
+) -> None:
+    """Another process continued the session in a newer part: the older one is stale.
 
-    A part with no recorded opener is left to the route's rule, so it is written.
+    The newest is the highest part of any format, and a new file is always a new part.
+    A part of another format is the old runner's, which this does not touch.
     """
     session_id = await _session(store)
-    opener, stranger = uuid4(), uuid4()
-    _ = await _upsert(store, session_id, name="a.jsonl", key=opener)
-    _ = await _upsert(store, session_id, name="old.jsonl", key=None)
+    _ = await _upsert(store, session_id, name="old.jsonl", key=None, format="claude")
+    first = await _upsert(store, session_id, name="a.jsonl", key=None, format="sagent")
+    assert await _upsert(
+        store,
+        session_id,
+        name="a.jsonl",
+        key=None,
+        format="sagent",
+    ) == (first)
+    _ = await _upsert(store, session_id, name="b.jsonl", key=None, format="claude")
 
-    with pytest.raises(ConflictError, match="opened by another key"):
+    with pytest.raises(StalePartError, match="not its newest") as stale:
         _ = await _upsert(
             store,
             session_id,
             name="a.jsonl",
-            key=stranger,
+            key=None,
             records=9,
-            exclusive=True,
+            format="sagent",
         )
-    own = await _upsert(
-        store,
-        session_id,
-        name="a.jsonl",
-        key=opener,
-        records=2,
-        exclusive=True,
-    )
-    old = await _upsert(
-        store,
-        session_id,
-        name="old.jsonl",
-        key=stranger,
-        records=5,
-        exclusive=True,
-    )
+    assert stale.value.code == "stale_part"
+    old = await _upsert(store, session_id, name="old.jsonl", key=None, records=4)
+    newest = await _upsert(store, session_id, name="c.jsonl", key=None, format="sagent")
 
-    assert (own, old) == (0, 1)
-    assert [
-        (m.records, m.opened_by_api_key_id)
-        for m in await store.read_session_manifests(session_id)
-    ] == [(2, opener), (5, None)]
+    assert (old, newest) == (0, 3)
+    assert [m.records for m in await store.read_session_manifests(session_id)] == [
+        4,
+        1,
+        1,
+        1,
+    ]
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_slash_commands_commit_with_their_records(store: Store) -> None:
-    """One transaction: a command sits BETWEEN the turns around it.
-
-    Storing one half would record a transcript that never happened.
-    """
+async def test_a_stale_part_stores_none_of_its_records(store: Store) -> None:
     session_id = await _session(store)
-    at = datetime(2026, 6, 1, tzinfo=UTC)
-
-    written, _skipped, slash = await store.append_session_records(
+    stale = _file("a.jsonl", records=2)
+    _ = await store.append_session_part(
         session_id,
-        await _bounded(store, session_id, [UserMessage(content="before")]),
-        slash_commands=[SlashCommandRow(timestamp=at, command="model", args="opus")],
+        file=stale,
+        rows=_rows(session_id, [UserMessage(content="a")]),
     )
-    stored = await store.read_session_slash_commands(session_id)
-
-    assert (written, slash) == (1, 1)
-    assert [(c.command, c.args) for c in stored] == [("model", "opus")]
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_resumed_runs_slash_seq_continues(store: Store) -> None:
-    """``seq`` is server-assigned, so a resumed run does not collide at 0.
-
-    A sink counter restarts with the process; numbering from the session's own
-    ``max(seq)+1`` is what keeps the second run's commands from landing on the
-    first run's keys and being dropped by the primary key.
-    """
-    session_id = await _session(store)
-    at = datetime(2026, 6, 1, tzinfo=UTC)
-    await store.append_session_records(
+    _ = await store.append_session_part(
         session_id,
-        [],
-        slash_commands=[SlashCommandRow(timestamp=at, command="first")],
+        file=_file("b.jsonl"),
+        rows=_rows(session_id, [UserMessage(content="b")]),
     )
 
-    # A second run: its own sink would mint seq 0 again.
-    _w, _s, slash = await store.append_session_records(
-        session_id,
-        [],
-        slash_commands=[SlashCommandRow(timestamp=at, command="second")],
-    )
-
-    assert slash == 1, "the resumed run's command was dropped as a duplicate"
-    stored = await store.read_session_slash_commands(session_id)
-    assert [c.command for c in stored] == ["first", "second"]
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_slash_command_consumes_no_record_position(store: Store) -> None:
-    """It is absent from the log, so it holds no ``idx``.
-
-    Consuming one would renumber every record after it, and a replay -- which
-    re-derives positions from the file, where the command does not appear --
-    would then disagree with what was stored.
-    """
-    session_id = await _session(store)
-    at = datetime(2026, 6, 1, tzinfo=UTC)
-
-    await store.append_session_records(
-        session_id,
-        await _bounded(
-            store,
+    with pytest.raises(StalePartError):
+        _ = await store.append_session_part(
             session_id,
-            [UserMessage(content="a"), UserMessage(content="b")],
-        ),
-        slash_commands=[SlashCommandRow(timestamp=at, command="exit")],
-    )
-    read = await store.read_session_records(session_id, part=0)
+            file=stale,
+            rows=_rows(
+                session_id,
+                [UserMessage(content="a"), UserMessage(content="x")],
+            ),
+        )
 
-    assert [row.idx for row in read] == [0, 1]
+    assert [
+        row.text for row in await store.read_session_records(session_id, part=0)
+    ] == [
+        "a",
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_part_and_its_records_are_stored_together_or_not_at_all(
+    store: Store,
+) -> None:
+    """A record insert that fails leaves the part's ``records`` where it was."""
+    session_id = await _session(store)
+    _ = await store.append_session_part(
+        session_id,
+        file=_file("a.jsonl", records=1),
+        rows=_rows(session_id, [UserMessage(content="a")]),
+    )
+    good = SessionRecordRow.of(
+        session_id=session_id,
+        part=0,
+        idx=1,
+        record=UserMessage(content="b"),
+    )
+
+    # A row naming a context after itself fails its CHECK, inside the transaction.
+    with pytest.raises(CheckViolationError):
+        _ = await store.append_session_part(
+            session_id,
+            file=_file("a.jsonl", records=2),
+            rows=[replace(good, context_id=5)],
+        )
+    (manifest,) = await store.read_session_manifests(session_id)
+    assert manifest.records == 1
+
+    again = await store.append_session_part(
+        session_id,
+        file=_file("a.jsonl", records=2),
+        rows=[good],
+    )
+
+    assert (again.part, len(again.written)) == (0, 1)
+    assert [
+        row.text for row in await store.read_session_records(session_id, part=0)
+    ] == [
+        "a",
+        "b",
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_append_returns_the_key_of_each_record_it_wrote_once(
+    store: Store,
+) -> None:
+    session_id = await _session(store)
+    rows = _rows(
+        session_id,
+        [
+            UserMessage(content="a\x00"),
+            Thinking(content="t", encrypted=_CIPHERTEXT),
+        ],
+        part=7,
+    )
+
+    first = await store.append_session_part(
+        session_id,
+        file=_file("a.jsonl", records=2),
+        rows=rows,
+        api_key_id=None,
+    )
+    second = await store.append_session_part(
+        session_id,
+        file=_file("a.jsonl", records=2),
+        rows=rows,
+    )
+
+    assert first.part == 0
+    assert first.written == tuple(
+        row.idx for row in await store.read_session_records(session_id, part=0)
+    )
+    assert first.written == (0, 1)
+    assert (len(second.written), second.skipped) == (0, 2)
+
+
+def _file(name: str, *, records: int = 1) -> PartFile:
+    """Return the file a sagent journal's write names."""
+    return PartFile(
+        name=name,
+        metadata=immutable({}),
+        ir_id=uuid4(),
+        format="sagent",
+        records=records,
+    )
 
 
 @pytest.mark.db_pglite
@@ -895,13 +890,12 @@ async def test_a_slash_command_consumes_no_record_position(store: Store) -> None
 async def test_a_captured_nul_is_stored_as_a_replacement_character(
     store: Store,
 ) -> None:
-    """A NUL in a record or a slash command must not fail the append.
+    """A NUL in a record must not fail the append.
 
     Postgres text cannot hold NUL. A refused batch is re-sent by the capturing
     client forever, so the append stores U+FFFD in its place.
     """
     session_id = await _session(store)
-    at = datetime(2026, 6, 1, tzinfo=UTC)
     records: list[SessionRecord] = [
         UserMessage(content="a\x00b"),
         ToolCall(call_id="c1", name="Read", arguments={"pa\x00th": "x\x00"}),
@@ -910,11 +904,9 @@ async def test_a_captured_nul_is_stored_as_a_replacement_character(
     await store.append_session_records(
         session_id,
         await _bounded(store, session_id, records),
-        slash_commands=[SlashCommandRow(timestamp=at, command="model", args="o\x00")],
     )
     read = await store.read_session_records(session_id, part=0)
     turns = await store.read_recent_session_turns(session_id, limit=20)
-    stored = await store.read_session_slash_commands(session_id)
 
     assert [row.record() for row in read] == [
         UserMessage(content="a\ufffdb"),
@@ -922,7 +914,6 @@ async def test_a_captured_nul_is_stored_as_a_replacement_character(
     ]
     assert read[0].text == "a\ufffdb"
     assert [turn.content for turn in turns] == ["a\ufffdb"]
-    assert [command.args for command in stored] == ["o\ufffd"]
 
 
 @pytest.mark.db_pglite
@@ -932,7 +923,7 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
 ) -> None:
     """Positions, stamps, ciphertext and bodies come along; the rest of a part stays."""
     source, target, key = await _session(store), await _session(store), uuid4()
-    at = datetime(2026, 10, 20, 9, tzinfo=UTC).isoformat()
+    at = datetime(2026, 10, 20, 9, tzinfo=UTC)
     parts: list[list[SessionRecord]] = [
         [
             UserMessage(content="a0", timestamp=at),
@@ -948,7 +939,7 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
             name=f"{name}.jsonl",
             metadata=immutable({"newline_terminated": part == 2}),
             ir_id=uuid4(),
-            format="sagent" if part == 2 else "claude",
+            format="assistant" if part == 2 else "claude",
             records=len(records),
         )
         _ = await store.append_session_records(
@@ -993,7 +984,7 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
         for m in copied
     ] == [
         (0, "a.jsonl", "claude", 2, key, sources[0].ir_id),
-        (1, "c.jsonl", "sagent", 1, key, sources[2].ir_id),
+        (1, "c.jsonl", "assistant", 1, key, sources[2].ir_id),
     ]
     assert copied[1].metadata == {"newline_terminated": True}
     assert [
@@ -1012,6 +1003,131 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
     assert moments[::2] == moments[1::2]
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_row_of_another_session_is_not_found_not_a_leaked_constraint(
+    store: Store,
+) -> None:
+    session_id = await _session(store)
+
+    with pytest.raises(NotFoundError, match="not found"):
+        _ = await store.append_session_records(
+            session_id,
+            _rows(uuid4(), [UserMessage(content="stray")]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_append_touches_nothing() -> None:
+    store, engine = make_store()
+
+    assert await store.append_session_records(uuid4(), []) == (0, 0)
+    assert engine.conn.mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_records_attach_only_to_a_session() -> None:
+    store, engine = make_store()
+    set_field_row(
+        engine.conn,
+        {"kind": "Issue", "agentsession_ended": None, "agentsession_audience": "open"},
+    )
+    session_id = uuid4()
+
+    with pytest.raises(ConflictError, match="is not an AgentSession"):
+        _ = await store.append_session_records(
+            session_id,
+            _rows(session_id, [UserMessage(content="hi")]),
+        )
+
+    assert not [sql for sql in executed_sql(engine.conn) if "session_records" in sql]
+
+
+@pytest.mark.asyncio
+async def test_a_manifest_for_no_session_is_not_found() -> None:
+    store, engine = make_store()
+
+    with pytest.raises(NotFoundError, match="not found"):
+        _ = await store.upsert_session_manifest(
+            uuid4(),
+            name="s.jsonl",
+            metadata=immutable({}),
+            ir_id=uuid4(),
+            format="claude",
+            records=0,
+        )
+
+    assert not [sql for sql in executed_sql(engine.conn) if "session_manifests" in sql]
+
+
+def _stored(**over: object) -> dict[str, object]:
+    """Return one ``read_session_records`` result row, overridable per test."""
+    return {
+        "session_id": uuid4(),
+        "part": 0,
+        "idx": 0,
+        "kind": "UserMessage",
+        "context_id": None,
+        "timestamp": None,
+        "model": None,
+        "payload": '{"content": "hi"}',
+        "text": "hi",
+        "bytes": None,
+        "body_payload": None,
+        "body_text": None,
+    } | over
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("context_id", "0"),
+        ("timestamp", "2026-11-06"),
+        ("model", 7),
+        ("bytes", "not bytes"),
+        ("body_payload", "not bytes"),
+        ("body_text", "not bytes"),
+    ],
+)
+async def test_a_stored_row_of_the_wrong_type_is_refused(
+    column: str,
+    value: object,
+) -> None:
+    store, engine = make_store()
+    engine.conn.fetch.return_value = [_stored(**{column: value})]
+
+    with pytest.raises(ValueError, match=f"Expected {column}"):
+        _ = await store.read_session_records(uuid4(), part=0)
+
+
+@pytest.mark.asyncio
+async def test_a_replay_read_splices_an_offloaded_body_back_over_its_head() -> None:
+    store, engine = make_store()
+    whole = '{"content": "the whole body"}'
+    engine.conn.fetch.return_value = [
+        _stored(
+            payload=STUB_PAYLOAD,
+            text="the who",
+            body_payload=zstd_compat.compress(whole.encode()),
+            body_text=zstd_compat.compress(b"the whole body"),
+        ),
+    ]
+
+    (row,) = await store.read_session_records(uuid4(), part=0)
+
+    assert (row.payload, row.text) == ({"content": "the whole body"}, "the whole body")
+
+
+@pytest.mark.asyncio
+async def test_a_stored_payload_that_is_not_an_object_is_refused() -> None:
+    store, engine = make_store()
+    engine.conn.fetch.return_value = [_stored(payload="[1, 2]")]
+
+    with pytest.raises(TypeError, match="not a JSON object"):
+        _ = await store.read_session_records(uuid4(), part=0, plaintext_only=True)
+
+
 def test_a_payload_nul_is_replaced_in_keys_and_nested_strings() -> None:
     r"""Only NUL changes: an escaped ``\u0000`` written as text stays as it was."""
     payload = immutable({"a\x00": ["x\x00", {"k": "\x00"}], "n": 1, "lit": "\\u0000"})
@@ -1022,6 +1138,352 @@ def test_a_payload_nul_is_replaced_in_keys_and_nested_strings() -> None:
         "a\ufffd": ["x\ufffd", {"k": "\ufffd"}],
         "n": 1,
         "lit": "\\u0000",
+    }
+
+
+@pytest.mark.asyncio
+async def test_append_stores_sanitized_records_and_ciphertext_and_skips_a_stored_key() -> (
+    None
+):
+    store, engine = make_store()
+    session_id = uuid4()
+    set_field_row(
+        engine.conn,
+        {
+            "kind": "AgentSession",
+            "agentsession_ended": None,
+            "agentsession_audience": "staff",
+        },
+    )
+    row = SessionRecordRow(
+        session_id=session_id,
+        part=1,
+        idx=2,
+        kind="Thinking",
+        model="m\x00",
+        payload=immutable({"content": "a\x00"}),
+        text="a\x00",
+        ciphertext="sealed_+/=",
+    )
+    engine.conn.fetch.side_effect = [[_returned(row)]]
+
+    assert await store.append_session_records(session_id, [row]) == (1, 0)
+
+    record = engine.conn.fetch.await_args_list[0].args
+    assert "ON CONFLICT (session_id, part, idx) DO NOTHING" in str(record[0])
+    assert record[1:4] == ([session_id], [1], [2])
+    assert record[7] == ["m\ufffd"]
+    assert record[8] == ['{"content":"a\\ufffd"}']
+    assert record[9] == ["a\ufffd"]
+    encrypted = next(
+        call
+        for call in engine.conn.execute.await_args_list
+        if "INSERT INTO session_ciphertext" in str(call.args[0])
+    )
+    assert encrypted.args[1:] == ([session_id], [1], [2], [b"sealed_+/="])
+    assert engine.conn.fetch.await_count == 1
+    assert len(engine.notify_calls) == 1
+    assert json_loads(engine.notify_calls[0][1]) == {
+        "id": str(session_id),
+        "audience": "staff",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", [False, True])
+async def test_append_refuses_missing_or_ended_sessions_before_record_writes(
+    missing: bool,
+) -> None:
+    store, engine = make_store()
+    if not missing:
+        set_field_row(
+            engine.conn,
+            {
+                "kind": "AgentSession",
+                "agentsession_ended": datetime(2026, 1, 1, tzinfo=UTC),
+            },
+        )
+    session_id = uuid4()
+    with pytest.raises(NotFoundError if missing else ConflictError):
+        await store.append_session_records(
+            session_id,
+            _rows(session_id, [UserMessage(content="hi")]),
+        )
+    assert engine.notify_calls == []
+    assert not any(
+        "INSERT INTO session_records" in sql for sql in executed_sql(engine.conn)
+    )
+
+
+@pytest.mark.asyncio
+async def test_slash_and_recent_turn_readers_keep_stored_order_and_fields() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 6, 1, tzinfo=UTC)
+    engine.conn.fetch.side_effect = [
+        [{"timestamp": at, "command": "model", "args": "opus"}],
+        [
+            {"part": 1, "idx": 2, "kind": "AssistantMessage", "content": "new"},
+            {"part": 0, "idx": 3, "kind": "UserMessage", "content": "old"},
+        ],
+    ]
+    assert await store.read_session_slash_commands(session_id) == [
+        SlashCommandRow(timestamp=at, command="model", args="opus"),
+    ]
+    assert await store.read_recent_session_turns(session_id, limit=2) == [
+        session_ir.RecentSessionTurn(part=0, idx=3, kind="UserMessage", content="old"),
+        session_ir.RecentSessionTurn(
+            part=1,
+            idx=2,
+            kind="AssistantMessage",
+            content="new",
+        ),
+    ]
+    assert engine.conn.fetch.await_args_list[1].args[1:] == (session_id, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [None, 2])
+async def test_manifest_reuses_its_part_or_allocates_the_next_for_any_key(
+    existing: int | None,
+) -> None:
+    store, engine = make_store()
+    session_id, ir_id, key = uuid4(), uuid4(), uuid4()
+    part = 3 if existing is None else existing
+    engine.conn.fetchval.side_effect = [
+        session_id,
+        existing,
+        *([part] if existing is None else []),
+    ]
+
+    assert (
+        await store.upsert_session_manifest(
+            session_id,
+            name="a.jsonl",
+            metadata=immutable({}),
+            ir_id=ir_id,
+            format="claude",
+            records=2,
+            api_key_id=key,
+        )
+        == part
+    )
+
+    write = engine.conn.execute.await_args_list[-2].args
+    assert "ON CONFLICT (session_id, name) DO UPDATE" in str(write[0])
+    assert " WHERE " not in str(write[0])
+    assert write[1:] == (session_id, part, "a.jsonl", "{}", ir_id, "claude", 2, key)
+
+
+@pytest.mark.asyncio
+async def test_a_manifest_for_a_session_that_is_gone_is_not_found() -> None:
+    store, engine = make_store()
+    engine.conn.fetchval.side_effect = [None]
+
+    with pytest.raises(NotFoundError):
+        _ = await _upsert(store, uuid4(), name="a.jsonl", key=None)
+
+
+@pytest.mark.asyncio
+async def test_an_append_that_names_nothing_writes_nothing() -> None:
+    store, engine = make_store()
+
+    appended = await store.append_session_part(uuid4(), file=None, rows=())
+
+    assert appended == session_ir.AppendedPart(part=None, written=(), skipped=0)
+    assert executed_sql(engine.conn) == []
+
+
+@pytest.mark.asyncio
+async def test_manifest_readers_decode_metadata_and_keep_the_opening_key() -> None:
+    store, engine = make_store()
+    session_id, ir_id, key = uuid4(), uuid4(), uuid4()
+    row = {
+        "part": 2,
+        "name": "a.jsonl",
+        "metadata": '{"newline_terminated":true}',
+        "ir_id": ir_id,
+        "format": "claude",
+        "records": 3,
+        "opened_by_api_key_id": key,
+    }
+    engine.conn.fetch.return_value = [row]
+    set_field_row(engine.conn, row)
+    expected = session_ir.SessionManifest(
+        part=2,
+        name="a.jsonl",
+        metadata=immutable({"newline_terminated": True}),
+        ir_id=ir_id,
+        format="claude",
+        records=3,
+        opened_by_api_key_id=key,
+    )
+    assert await store.read_session_manifests(session_id) == [expected]
+    assert await store.read_session_manifest(session_id, name="a.jsonl") == expected
+    set_field_row(engine.conn, None)
+    assert await store.read_session_manifest(session_id, name="missing") is None
+
+
+@pytest.mark.asyncio
+async def test_copy_parts_remaps_each_table_with_the_same_prefix_bounds() -> None:
+    store, engine = make_store()
+    source, target, key = uuid4(), uuid4(), uuid4()
+    await store.copy_session_parts(
+        cast("Conn", engine.conn),
+        source=source,
+        target=target,
+        prefixes=[session_ir.PartPrefix(part=3, records=2)],
+        api_key_id=key,
+    )
+    writes = [call.args for call in engine.conn.execute.await_args_list]
+    assert len(writes) == 4
+    assert writes[0][1:] == (source, target, [3], [2], [0], key)
+    assert all(write[1:] == (source, target, [3], [2], [0]) for write in writes[1:])
+    copies = [_copied_columns(str(write[0])) for write in writes]
+    assert [(table, bounded) for table, _, bounded in copies] == [
+        ("session_manifests", False),
+        ("session_records", True),
+        ("session_ciphertext", True),
+        ("session_bodies", True),
+    ]
+
+
+_COPY = re.compile(
+    r"INSERT INTO (?P<table>\w+) \((?P<columns>[^)]*)\) SELECT (?P<values>.+) "
+    r"FROM (?P=table) AS (?P<alias>\w+) JOIN "
+    r"unnest\(\$3::int\[\], \$4::int\[\], \$5::int\[\]\) "
+    r"AS copied\(part, records, into_part\) "
+    r"ON copied\.part = (?P=alias)\.part WHERE (?P=alias)\.session_id = \$1"
+    r"(?P<bound> AND (?P=alias)\.idx < copied\.records)?",
+    re.IGNORECASE,
+)
+
+# What a copied row takes in place of the source's own column: the target session,
+# the renumbered part, the prefix length, and the key that opened the copy.
+_REMAPPED = {
+    "session_id": "$2",
+    "part": "copied.into_part",
+    "records": "copied.records",
+    "opened_by_api_key_id": "$6",
+}
+
+
+# The statement must copy rows of the source session from the same table, joined to the
+# part mapping, each column from its own source column but the remapped ones.
+def _copied_columns(sql: str) -> tuple[str, tuple[str, ...], bool]:
+    """Return a copy statement's table, columns and whether it bounds by prefix."""
+    matched = _COPY.fullmatch(sql)
+    assert matched is not None, sql
+    table = str(matched["table"])
+    listed = str(matched["columns"])
+    selected = str(matched["values"])
+    alias = str(matched["alias"])
+    columns = tuple(column.strip() for column in listed.split(","))
+    values = [value.strip() for value in selected.split(",")]
+    assert columns[:2] == ("session_id", "part")
+    assert values == [_REMAPPED.get(column, f"{alias}.{column}") for column in columns]
+    return table, columns, matched["bound"] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_purge_during_record_insertion_is_not_found_and_rolls_back() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    set_field_row(
+        engine.conn,
+        {
+            "kind": "AgentSession",
+            "agentsession_ended": None,
+            "agentsession_audience": "open",
+        },
+    )
+    violation = ForeignKeyViolationError("session removed")
+    engine.conn.fetch.side_effect = [violation, []]
+
+    with pytest.raises(NotFoundError, match=str(session_id)) as caught:
+        await store.append_session_records(
+            session_id,
+            _rows(session_id, [UserMessage(content="hi")]),
+        )
+
+    assert caught.value.__cause__ is violation
+    assert engine.conn.fetch.await_args_list[-1].args == ("ROLLBACK",)
+    engine.conn.execute.assert_awaited_once_with("BEGIN")
+    assert engine.notify_calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_record_append_writes_its_records_in_one_statement() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    set_field_row(
+        engine.conn,
+        {
+            "kind": "AgentSession",
+            "agentsession_ended": None,
+            "agentsession_audience": "open",
+        },
+    )
+    rows = _rows(session_id, [UserMessage(content="hi")])
+    engine.conn.fetch.return_value = [_returned(rows[0])]
+
+    assert await store.append_session_records(session_id, rows) == (1, 0)
+
+    assert engine.conn.fetch.await_count == 1
+    assert "INSERT INTO session_records" in str(
+        engine.conn.fetch.await_args_list[0].args[0],
+    )
+    assert [call.args for call in engine.conn.execute.await_args_list] == [
+        ("BEGIN",),
+        ("COMMIT",),
+    ]
+    assert len(engine.notify_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_append_returns_the_key_of_each_row_it_inserted() -> None:
+    """The insert returns keys alone: a caller that shows the records reads them."""
+    store, engine = make_store()
+    session_id = uuid4()
+    set_field_row(
+        engine.conn,
+        {
+            "kind": "AgentSession",
+            "agentsession_ended": None,
+            "agentsession_audience": "open",
+        },
+    )
+    rows = _rows(session_id, [UserMessage(content="a"), UserMessage(content="b")])
+    engine.conn.fetch.return_value = [{"idx": 1}]
+
+    appended = await store.append_session_part(session_id, file=None, rows=rows)
+
+    assert appended == AppendedPart(part=None, written=(1,), skipped=1)
+    assert engine.conn.fetch.await_args is not None
+    assert str(engine.conn.fetch.await_args.args[0]).endswith("RETURNING idx")
+
+
+def test_a_payload_is_encoded_from_its_frozen_form_with_its_key_order() -> None:
+    payload = immutable({"z": [1, {"b": None, "a": (2.5, "x")}], "a": {}})
+
+    assert session_ir._encoded_payload(payload) == (
+        '{"z":[1,{"b":null,"a":[2.5,"x"]}],"a":{}}'
+    )
+    with pytest.raises(TypeError, match=r"^set is not JSON"):
+        _ = session_ir._encoded_payload(cast("Mapping[str, PlainTree]", {"s": {1}}))
+
+
+def _returned(row: SessionRecordRow) -> dict[str, object]:
+    """Return what the record insert returns for ``row``, as the database stores it."""
+    return {
+        "part": row.part,
+        "idx": row.idx,
+        "kind": row.kind,
+        "context_id": row.context_id,
+        "timestamp": row.timestamp,
+        "model": row.model,
+        "payload": session_ir._encoded_payload(row.payload),
+        "text": row.text,
     }
 
 

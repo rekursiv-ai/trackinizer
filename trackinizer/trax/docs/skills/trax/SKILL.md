@@ -1,8 +1,8 @@
 ---
 name: trax
 description: >
-  ALWAYS invoke this skill for Trackinizer/trax work tracking, inquiry records, and visual workspaces: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board, workspace. Do not hand-write trax records directly -- invoke this skill first.
-argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|machine|job|workspace|<kind>] ..."
+  ALWAYS invoke this skill for Trackinizer/trax work tracking, inquiry records, and visual canvases: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board, canvas. Do not hand-write trax records directly -- invoke this skill first.
+argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|canvas|<kind>] ..."
 user-invocable: true
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---
@@ -88,11 +88,12 @@ by default so priority retains a clear dynamic range.
 
 ## Status model
 
-Statuses are `active|complete|abandoned|invalid`. `active` with no `owner` is
-open; with an `owner` it is in progress. `trax next`, `board`, and `blocked`
-operate over `active` rows. `abandoned` = work stopped before completion;
-`invalid` = should not have been opened. Prefer either over `del` when history
-matters.
+Statuses are `active|complete|stopped|abandoned|invalid`. `active` with no
+`owner` is open; with an `owner` it is in progress. `trax next`, `board`, and
+`blocked` operate over `active` rows. `complete` = the work finished;
+`stopped` = a budget or usage limit ended the work before it finished;
+`abandoned` = a person gave the work up before completion; `invalid` = should
+not have been opened. Prefer any of these over `del` when history matters.
 
 ## Kinds and artifacts
 
@@ -130,7 +131,7 @@ When changing Trackinizer, keep the skill aligned with the owning contracts:
 - Treat `types/inquiries.py`, `types/edges.py`, `types/change_log.py`, and
   `types/session_records.py` as the DB/domain source of truth. API docs
   explain the wire surface; types win on names and structure. The record
-  VOCABULARY is not trackinizer's: it is `trackinizer.lib.agent.types.sessions`.
+  VOCABULARY is not trackinizer's: it is `trackinizer.sagent.session.types`.
 - Follow `docs/api.md` and `docs/api_session_records.md` for API naming.
   Do not invent aliases or parallel names.
 - Preserve the `session_records` asymmetry: it is deliberately outside
@@ -651,37 +652,20 @@ with `trax env secret NAME to -` or point at a file with `to @FILE`. A literal
 secret on the command line is refused, and a listing shows `(secret)`, never a
 value. Never echo a secret into a command, a row or your own output.
 
-## Machines
+## Hosts
 
-`trax machine` lists the machines campaigns may run on and `trax machine NAME`
-shows one, with its role, labels, `how` line and status (writer role). `trax
-machine NAME role to ROLE` and `how to TEXT` set a field and create the machine;
-`label add|del LABEL` and `del` change or unregister it (admin role). Read
-`how` before using one. The registry only records machines; it never reaches
-one. A person's own computer is a `personal` machine, which only they and admins
-see; `trax machine connect` (no name) enrolls the computer you are on and serves a
-terminal in the web app. A shell the web app opens sets `TRAX_WORKSTREAM` and
-`TRAX_WORKSPACE`, and `LC_TRAX_*` copies that survive `ssh`; `trax` reads
-`TRAX_X`, else `LC_TRAX_X`, and uses the saved profile whose URL is
-`LC_TRAX_SERVER`.
+The registry of hosts campaigns may run on, and GPU jobs, moved out of trax:
+`trax host` and `trax job` say so. A shell the web app opens sets
+`TRAX_WORKSPACE` and `TRAX_CANVAS`, and
+`LC_TRAX_*` copies that survive `ssh`; `trax` reads `TRAX_X`, else `LC_TRAX_X`, and
+uses the saved profile whose URL is `LC_TRAX_SERVER`.
 
-## GPU jobs
+## Agent runs
 
-`trax job submit [--gpus N] [--minutes M] [--label TEXT] [--follow]
-[--include-untracked] -- CMD...`
-runs CMD on a GPU node from the repository you are in, and prints the job id.
-Everything after the first `--` is the job's command, even `--help`. It
-snapshots the worktree (uncommitted and untracked files included, and it says
-which untracked ones; an untracked `.env*`, `*.pem`, `id_*`, `*credentials*`,
-`.netrc` or `*.key` is refused unless `.gitignore` covers it or
-`--include-untracked` is given) without touching it and uploads the code
-straight to the node; no code or result bytes
-pass through the server, and no credential is kept on this computer. `trax job
-status [JOB]`, `logs JOB [-f]`, `results JOB [--to DIR]` and `cancel JOB` read
-and stop the job; `results` fills `out/` and keeps `src.bundle`, the exact code
-that ran, beside it. `--to` inside the repository is refused. Set a job's
-Hugging Face or Weights & Biases token with `trax job secret NAME set` and the
-value on stdin; the job never holds it. Never put a secret on a command line.
+Running Claude Code and Codex recorded, as an AgentSession reachable from Chat,
+moved out of trax; `trax run` says so. `trax` reads the records they write
+(`trax agentsession N`, `trax agentsession N records`) and sends a message into a
+live session with `trax send @NAME TEXT`.
 
 ## Recovery
 

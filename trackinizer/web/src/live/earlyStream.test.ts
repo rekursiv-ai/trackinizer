@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { attachStream, openEarlyStream, type OpenListener } from "./earlyStream";
 import { FakeEventSource } from "./testing";
+import { must } from "../must";
 
 beforeEach(() => {
   FakeEventSource.reset();
@@ -62,8 +63,8 @@ test("the early stream goes to the first listener; without one, attaching opens 
   const second = recorder();
   attachStream(second.listener);
   expect(FakeEventSource.made).toHaveLength(2);
-  FakeEventSource.made[1]!.open();
+  must(FakeEventSource.made[1]).open();
   expect(second.heard).toEqual(["open"]);
   close();
-  expect(FakeEventSource.made[0]!.readyState).toBe(2);
+  expect(must(FakeEventSource.made[0]).readyState).toBe(2);
 });

@@ -20,6 +20,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.secrets import (
     FileSecrets,
@@ -78,14 +79,14 @@ def vault(
 ) -> FileSecrets:
     """Serve the app's secrets from a temporary directory."""
     backend = FileSecrets(tmp_path / "vault")
-    monkeypatch.setattr(app.state, "secrets", backend, raising=False)
+    patch_state(monkeypatch, "secrets", backend)
     return backend
 
 
 @pytest.fixture
 def no_vault(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve the app with secret storage disabled."""
-    monkeypatch.setattr(app.state, "secrets", None, raising=False)
+    patch_state(monkeypatch, "secrets", None)
 
 
 def test_listing_asks_for_the_org_layer_by_name(
@@ -427,7 +428,7 @@ def test_a_backend_that_cannot_store_rolls_the_row_back(
     client, _, engine = route_client
     _as("admin")
     _answer(engine, "TOKEN")
-    monkeypatch.setattr(app.state, "secrets", _FullDisk(tmp_path), raising=False)
+    patch_state(monkeypatch, "secrets", _FullDisk(tmp_path))
 
     with pytest.raises(OSError, match="no space left"):
         client.put(_path("TOKEN"), json={"value": _HIDDEN, "secret": True})
@@ -444,7 +445,7 @@ def test_a_backend_that_cannot_delete_rolls_the_row_back(
     client, _, engine = route_client
     _as("admin")
     _answer(engine, True)
-    monkeypatch.setattr(app.state, "secrets", _FullDisk(tmp_path), raising=False)
+    patch_state(monkeypatch, "secrets", _FullDisk(tmp_path))
 
     with pytest.raises(OSError, match="no space left"):
         client.delete(_path("TOKEN"))

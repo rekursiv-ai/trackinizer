@@ -1,11 +1,16 @@
-"""Tests for engine/embedder construction helpers."""
+"""Tests for runtime config and engine construction."""
 
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, cast
+from functools import partial
+from pathlib import Path
+from typing import cast
 
 import argparse
+import os
+import re
+import time
 
 import pytest
 
@@ -16,37 +21,27 @@ from trackinizer.server.config import (
     Config,
     ConfigError,
     ConfigFlags,
+    RemoteAgentService,
+    ServiceKeys,
     _prune_stale_ephemeral_dirs,
     auth_disabled_from_env,
-    build_embedder,
     build_engine,
     parse_assistant,
     parse_chat_orgs,
-    parse_chat_streaming,
     parse_compute,
+    parse_default_remote_agent_service,
     parse_engine,
+    parse_remote_agent_services,
+    parse_service_keys,
     parse_staff,
     parse_terminal_stun,
+    session_secret_from_file,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.wire.wire_terminals import MAX_ICE_SERVERS
 
 
 class TestPureFunctions:
-    def testbuild_embedder_stub(self) -> None:
-        emb = build_embedder("stub")
-        assert isinstance(emb, StubEmbedder)
-
-    def testbuild_embedder_unknown(self) -> None:
-        # A bad config value raises ConfigError (a plain Exception), not
-        # SystemExit: these helpers run inside the app lifespan, where a
-        # BaseException would bypass normal error handling (API-18).
-        with pytest.raises(ConfigError):
-            build_embedder("nope")
-
     def testbuild_engine_pglite(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -104,6 +99,8 @@ class TestPureFunctions:
             == tmp_path / "rekursiv-ai" / "trackinizer" / "pgdata-ephemeral"
         )
         assert a._persist is False
+        assert a._own_workdir is True
+        assert b._own_workdir is True
 
     def test_ephemeral_explicit_datadir_wins(
         self,
@@ -116,6 +113,7 @@ class TestPureFunctions:
         engine = build_engine(Config(ephemeral=True, datadir=chosen))
         assert isinstance(engine, PGliteEngine)
         assert engine._workdir == chosen
+        assert engine._own_workdir is False
 
     def test_persistent_uses_shared_default_datadir(
         self,
@@ -128,12 +126,15 @@ class TestPureFunctions:
         assert isinstance(engine, PGliteEngine)
         assert engine._workdir == tmp_path / "rekursiv-ai" / "trackinizer" / "pgdata"
         assert engine._persist is True
+        assert engine._own_workdir is False
 
     def testbuild_engine_pg(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TRACKINIZER_ENGINE", "pg")
         monkeypatch.setenv("TRACKINIZER_DSN", "postgresql:///x")
         engine = build_engine()
         assert isinstance(engine, PostgresEngine)
+        assert engine._dsn == "postgresql:///x"
+        assert engine.listen_channel == NOTIFY_CHANNEL
 
     def testbuild_engine_pg_missing_dsn(
         self,
@@ -141,7 +142,10 @@ class TestPureFunctions:
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_ENGINE", "pg")
         monkeypatch.setenv("TRACKINIZER_DSN", "")
-        with pytest.raises(ConfigError):
+        with pytest.raises(
+            ConfigError,
+            match=r"^--engine pg requires --dsn \(or \$TRACKINIZER_DSN\)\.$",
+        ):
             build_engine()
 
     def testbuild_engine_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,6 +160,34 @@ class TestPureFunctions:
     @pytest.mark.parametrize("name", ["pglite", "pg"])
     def test_parse_engine_accepts_each_engine(self, name: str) -> None:
         assert parse_engine(name) == name
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "257", "not-a-number"])
+def test_tool_stream_cap_rejects_invalid_or_above_wire_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", raw)
+    with pytest.raises(
+        ConfigError,
+        match="TRACKINIZER_TOOL_STREAMS_PER_HOST must be an integer between 1 and 256",
+    ):
+        _ = Config.from_env()
+
+
+def test_tool_capacity_uses_the_same_env_for_both_config_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", raising=False)
+    monkeypatch.delenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", raising=False)
+    default = Config.from_env()
+    assert default.tool_agent_sockets_per_host == 1024
+    assert default.tool_streams_per_host == 128
+    monkeypatch.setenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", "2048")
+    monkeypatch.setenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", "256")
+    for config in (Config.from_env(), Config.from_args(_server_args())):
+        assert config.tool_agent_sockets_per_host == 2048
+        assert config.tool_streams_per_host == 256
 
 
 class TestSessionMaxAge:
@@ -200,31 +232,6 @@ class TestSessionMaxAge:
             Config.from_env()
 
 
-class TestSessionEmbedderDim:
-    """``session_embedder_dim`` is an optional int from env and CLI."""
-
-    def test_from_env_reads_the_dim(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "512")
-        assert Config.from_env().session_embedder_dim == 512
-
-    def test_from_env_absent_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER_DIM", raising=False)
-        assert Config.from_env().session_embedder_dim is None
-
-    def test_from_env_non_integer_raises(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
-        with pytest.raises(ConfigError):
-            Config.from_env()
-
-    def test_from_args_reads_the_dim(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER_DIM", raising=False)
-        config = Config.from_args(_server_args(session_embedder_dim=256))
-        assert config.session_embedder_dim == 256
-
-
 class TestFromEnv:
     """Every environment variable reaches its own field, and each has its default."""
 
@@ -234,16 +241,13 @@ class TestFromEnv:
         "TRACKINIZER_EPHEMERAL",
         "TRACKINIZER_PGLITE_TCP",
         "TRACKINIZER_DSN",
-        "TRACKINIZER_EMBEDDER",
-        "TRACKINIZER_SESSION_EMBEDDER",
-        "TRACKINIZER_SESSION_EMBEDDER_DIM",
-        "TRACKINIZER_SESSION_EMBEDDERS",
         "TRACKINIZER_WEB",
         "TRACKINIZER_SESSION_SECRET",
         "TRACKINIZER_SESSION_MAX_AGE_SECONDS",
         "TRACKINIZER_NO_AUTH",
         "TRACKINIZER_ASSISTANT",
-        "TRACKINIZER_CHAT_STREAMING",
+        "TRACKINIZER_REMOTE_AGENT_SERVICES",
+        "TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE",
     )
 
     def test_unset_environment_is_the_default_config(
@@ -252,6 +256,19 @@ class TestFromEnv:
     ) -> None:
         for name in self._VARIABLES:
             monkeypatch.delenv(name, raising=False)
+        assert Config.from_env() == Config()
+
+    def test_the_variables_of_no_setting_change_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An environment file still naming these boots as one that does not."""
+        for name in self._VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("TRACKINIZER_EMBEDDER", "other")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER", "m@1024")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDERS", "a@8,b@8")
         assert Config.from_env() == Config()
 
     def test_every_variable_reaches_its_field(
@@ -265,16 +282,11 @@ class TestFromEnv:
             "TRACKINIZER_EPHEMERAL": "1",
             "TRACKINIZER_PGLITE_TCP": "1",
             "TRACKINIZER_DSN": "postgresql://h/db",
-            "TRACKINIZER_EMBEDDER": "other",
-            "TRACKINIZER_SESSION_EMBEDDER": "m@1024",
-            "TRACKINIZER_SESSION_EMBEDDER_DIM": "7",
-            "TRACKINIZER_SESSION_EMBEDDERS": "a, b ,,c",
             "TRACKINIZER_WEB": "1",
             "TRACKINIZER_SESSION_SECRET": "s3cret",
             "TRACKINIZER_SESSION_MAX_AGE_SECONDS": "99",
             "TRACKINIZER_NO_AUTH": "1",
-            "TRACKINIZER_ASSISTANT": "kb=K@x.y",
-            "TRACKINIZER_CHAT_STREAMING": "off",
+            "TRACKINIZER_ASSISTANT": "kb=KB@Service.Invalid",
         }
         for name, value in values.items():
             monkeypatch.setenv(name, value)
@@ -286,15 +298,46 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            embedder="other",
-            session_embedder="m@1024",
-            session_embedder_dim=7,
-            session_embedders=("a", "b", "c"),
             web=True,
             session_max_age_seconds=99,
             auth_disabled=True,
-            assistant=Assistant(actor="kb", email="k@x.y"),
-            chat_streaming=False,
+            assistant=Assistant(actor="kb", email="kb@service.invalid"),
+        )
+
+    def test_every_flag_reaches_its_field(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        for name in self._VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        assert Config.from_args(_server_args()).session_secret == ""
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET", "s3cret")
+        flags = _server_args(
+            engine="pg",
+            datadir=tmp_path,
+            ephemeral=True,
+            pglite_tcp=True,
+            dsn="postgresql://h/db",
+            web=True,
+            session_max_age_seconds=99,
+            auth=False,
+            assistant="kb=KB@Service.Invalid",
+            staff="a@x.y",
+        )
+        config = Config.from_args(flags)
+        assert config.session_secret == os.environ["TRACKINIZER_SESSION_SECRET"]
+        assert replace(config, session_secret="") == Config(
+            engine="pg",
+            datadir=tmp_path,
+            ephemeral=True,
+            pglite_tcp=True,
+            dsn="postgresql://h/db",
+            web=True,
+            session_max_age_seconds=99,
+            auth_disabled=True,
+            assistant=Assistant(actor="kb", email="kb@service.invalid"),
+            staff=("a@x.y",),
         )
 
 
@@ -304,26 +347,6 @@ class TestParsers:
         assert parse_engine("pg") == "pg"
         with pytest.raises(ConfigError, match="unknown engine 'mysql'"):
             parse_engine("mysql")
-
-    def test_blank_dim_is_none_and_padding_is_trimmed(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "   ")
-        assert Config.from_env().session_embedder_dim is None
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", " 5 ")
-        assert Config.from_env().session_embedder_dim == 5
-
-    def test_a_bad_dim_says_which_variable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
-        with pytest.raises(
-            ConfigError,
-            match="TRACKINIZER_SESSION_EMBEDDER_DIM must be an integer, got 'big'",
-        ):
-            Config.from_env()
 
     def test_no_auth_is_read_from_its_own_variable(
         self,
@@ -338,6 +361,55 @@ class TestParsers:
 
     def test_pruning_a_missing_root_is_a_no_op(self, tmp_path: Path) -> None:
         _prune_stale_ephemeral_dirs(tmp_path / "missing")
+
+    def test_pruning_reclaims_only_old_dirs_of_dead_owners(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Past any pid_max, so no process owns it; kill(2) answers ESRCH.
+        dead = 2**30
+        old = time.time() - 2 * 60 * 60
+        names = {
+            "dead_old": f"{dead}-a",
+            "dead_fresh": f"{dead}-b",
+            "alive_old": f"{os.getpid()}-c",
+            "no_pid_old": "scratch-d",
+        }
+        for key, name in names.items():
+            (tmp_path / name).mkdir()
+            if key != "dead_fresh":
+                os.utime(tmp_path / name, (old, old))
+        (tmp_path / "loose-file").write_text("")
+
+        _prune_stale_ephemeral_dirs(tmp_path)
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            [
+                names["dead_fresh"],
+                names["alive_old"],
+                names["no_pid_old"],
+                "loose-file",
+            ],
+        )
+
+    def test_a_dir_owned_by_another_users_process_is_kept(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def refuse(pid: int, signal: int) -> None:
+            del pid, signal
+            raise PermissionError
+
+        monkeypatch.setattr(os, "kill", refuse)
+        owned = tmp_path / "4242-e"
+        owned.mkdir()
+        old = time.time() - 2 * 60 * 60
+        os.utime(owned, (old, old))
+
+        _prune_stale_ephemeral_dirs(tmp_path)
+
+        assert owned.is_dir()
 
 
 class TestChatOrgs:
@@ -374,35 +446,6 @@ class TestChatOrgs:
         assert Config.from_args(_server_args(assistant="")).chat_orgs == "single"
 
 
-class TestChatStreaming:
-    """``$TRACKINIZER_CHAT_STREAMING`` holds a chat's answer in writing; on unless off."""
-
-    @pytest.mark.parametrize(("raw", "streaming"), [("", True), (" on ", True)])
-    def test_a_server_streams_unless_it_says_off(
-        self,
-        raw: str,
-        streaming: bool,
-    ) -> None:
-        assert parse_chat_streaming(raw) is streaming
-        assert parse_chat_streaming("off") is False
-        assert Config().chat_streaming is True
-
-    @pytest.mark.parametrize("raw", ["no", "1", "On", "false"])
-    def test_anything_else_is_a_config_error(self, raw: str) -> None:
-        with pytest.raises(ConfigError, match="CHAT_STREAMING must be on or off"):
-            parse_chat_streaming(raw)
-
-    def test_both_ways_to_build_a_config_read_the_environment(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_CHAT_STREAMING", "off")
-        assert Config.from_env().chat_streaming is False
-        assert Config.from_args(_server_args()).chat_streaming is False
-        monkeypatch.delenv("TRACKINIZER_CHAT_STREAMING")
-        assert Config.from_args(_server_args()).chat_streaming is True
-
-
 class TestAssistant:
     """``--assistant ACTOR=EMAIL`` names the one shared partner."""
 
@@ -411,6 +454,28 @@ class TestAssistant:
         with pytest.raises(ConfigError, match="ACTOR=EMAIL"):
             Config.from_args(_server_args(assistant=raw))
 
+    @pytest.mark.parametrize(
+        "raw",
+        ["scout=ada@example.com", "kb=kb@service.invalid.example.com"],
+    )
+    def test_a_person_is_never_the_assistant(
+        self,
+        raw: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every key of the account is the assistant's, so it must be a program's."""
+        with pytest.raises(
+            ConfigError,
+            match=(
+                r"^--assistant \(TRACKINIZER_ASSISTANT\) must name a service account, "
+                r"NAME@service\.invalid, got "
+            ),
+        ):
+            Config.from_args(_server_args(assistant=raw))
+        monkeypatch.setenv("TRACKINIZER_ASSISTANT", raw)
+        with pytest.raises(ConfigError, match="TRACKINIZER_ASSISTANT"):
+            Config.from_env()
+
     def test_blank_means_no_assistant(self) -> None:
         assert parse_assistant("") is None
         assert parse_assistant("   ") is None
@@ -418,25 +483,28 @@ class TestAssistant:
 
     def test_assistant_email_is_lowercased_like_stored_users(self) -> None:
         """users.email is stored lowercase, so the configured one must match it."""
-        assert parse_assistant("scout=Ada@Example.COM") == Assistant(
+        assert parse_assistant("scout=Scout@Service.INVALID") == Assistant(
             actor="scout",
-            email="ada@example.com",
+            email="scout@service.invalid",
         )
-        config = Config.from_args(_server_args(assistant="kb=Kb@X.Y"))
-        assert config.assistant == Assistant(actor="kb", email="kb@x.y")
+        config = Config.from_args(_server_args(assistant="kb=Kb@Service.Invalid"))
+        assert config.assistant == Assistant(actor="kb", email="kb@service.invalid")
 
     def test_the_first_equals_splits_and_whitespace_is_trimmed(self) -> None:
-        assert parse_assistant(" kb = a=b@x.y ") == Assistant(
+        assert parse_assistant(" kb = a=b@service.invalid ") == Assistant(
             actor="kb",
-            email="a=b@x.y",
+            email="a=b@service.invalid",
         )
 
     def test_environment_supplies_the_assistant(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "a=x@y.z")
-        assert Config.from_env().assistant == Assistant(actor="a", email="x@y.z")
+        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "a=x@service.invalid")
+        assert Config.from_env().assistant == Assistant(
+            actor="a",
+            email="x@service.invalid",
+        )
 
     def test_unset_environment_means_no_assistant(
         self,
@@ -549,10 +617,6 @@ def _server_args(**overrides: object) -> ConfigFlags:
         "ephemeral": False,
         "pglite_tcp": False,
         "dsn": "",
-        "embedder": "stub",
-        "session_embedder": "",
-        "session_embedder_dim": None,
-        "session_embedders": "",
         "web": False,
         "auth": True,
         "session_max_age_seconds": 30 * 24 * 60 * 60,
@@ -574,6 +638,10 @@ class TestTerminalStun:
         )
         assert Config().terminal_stun == ()
 
+    def test_the_maximum_number_of_stun_servers_is_allowed(self) -> None:
+        servers = tuple(f"stun:host{index}" for index in range(MAX_ICE_SERVERS))
+        assert parse_terminal_stun(", ".join(servers)) == servers
+
     @pytest.mark.parametrize(
         "value",
         [
@@ -584,7 +652,11 @@ class TestTerminalStun:
         ],
     )
     def test_anything_but_a_few_stun_urls_is_a_config_error(self, value: str) -> None:
-        with pytest.raises(ConfigError, match="TRACKINIZER_TERMINAL_STUN"):
+        expected = (
+            f"TRACKINIZER_TERMINAL_STUN takes at most {MAX_ICE_SERVERS} "
+            f"comma separated stun:HOST[:PORT] URLs, got {value!r}"
+        )
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
             parse_terminal_stun(value)
 
     def test_both_ways_to_build_a_config_read_the_environment(
@@ -599,7 +671,7 @@ class TestTerminalStun:
 
 
 class TestCompute:
-    """``$TRACKINIZER_COMPUTE``: what this server provides, for the Machines menu."""
+    """``$TRACKINIZER_COMPUTE``: what this server provides, for the Hosts menu."""
 
     def test_unset_or_an_empty_list_means_no_notes(self) -> None:
         assert parse_compute("") == ()
@@ -650,6 +722,260 @@ class TestCompute:
         monkeypatch.setenv("TRACKINIZER_COMPUTE", "not json")
         with pytest.raises(ConfigError, match="TRACKINIZER_COMPUTE"):
             Config.from_env()
+
+
+class TestRemoteAgentServices:
+    """Where agents run: ``$TRACKINIZER_REMOTE_AGENT_SERVICES`` and its default."""
+
+    _SERVICE = (
+        '{"name": " remote-agents ", "account": "Agents@Service.Invalid", "admits": %s}'
+    )
+
+    def test_unset_means_no_service_and_no_default(self) -> None:
+        assert parse_remote_agent_services(" ") == ()
+        assert parse_default_remote_agent_service(" ", services=()) == ""
+        assert (
+            Config().remote_agent_services,
+            Config().default_remote_agent_service,
+        ) == ((), "")
+
+    def test_each_service_reads_trimmed_with_its_admits_read_as_staff_patterns(
+        self,
+    ) -> None:
+        raw = "[" + self._SERVICE % '["*@X.Y", " ada@z.w ", "*@x.y"]' + ","
+        raw += '{"name": "lab", "account": "lab@service.invalid"}]'
+
+        assert parse_remote_agent_services(raw) == (
+            RemoteAgentService(
+                name="remote-agents",
+                account="agents@service.invalid",
+                admits=("*@x.y", "ada@z.w"),
+            ),
+            RemoteAgentService(name="lab", account="lab@service.invalid"),
+        )
+
+    _SHAPE = (
+        "TRACKINIZER_REMOTE_AGENT_SERVICES must be a JSON list of "
+        '{"name", "account", "admits"} objects'
+    )
+    _NAMED = (
+        f"{_SHAPE}, each named and enrolled under a service account, "
+        "NAME@service.invalid: got "
+    )
+
+    @pytest.mark.parametrize(
+        ("raw", "says"),
+        [
+            ("remote-agents", f"{_SHAPE}: "),
+            ('[{"name": "remote-agents"}]', f"{_SHAPE}: "),
+            ('[{"name": "c", "account": "a@service.invalid", "x": 1}]', f"{_SHAPE}: "),
+            ('[{"name": " ", "account": "a@service.invalid"}]', _NAMED),
+            ('[{"name": "c", "account": "ada@x.y"}]', _NAMED),
+            (
+                '[{"name": "c", "account": "a@service.invalid", "admits": ["*"]}]',
+                "--staff",
+            ),
+            (
+                (
+                    '[{"name": "c", "account": "a@service.invalid"},'
+                    ' {"name": "c", "account": "b@service.invalid"}]'
+                ),
+                "TRACKINIZER_REMOTE_AGENT_SERVICES names a service twice",
+            ),
+        ],
+    )
+    def test_anything_else_is_a_config_error(self, raw: str, says: str) -> None:
+        """Each refusal names the variable and the shape it wants."""
+        with pytest.raises(ConfigError, match=f"^{re.escape(says)}"):
+            _ = parse_remote_agent_services(raw)
+
+    def test_the_default_must_be_a_service_the_server_names(self) -> None:
+        services = (
+            RemoteAgentService(name="remote-agents", account="a@service.invalid"),
+        )
+
+        assert (
+            parse_default_remote_agent_service(" remote-agents ", services=services)
+            == "remote-agents"
+        )
+        with pytest.raises(ConfigError) as refused:
+            _ = parse_default_remote_agent_service("lab", services=services)
+        assert str(refused.value) == (
+            "TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE names 'lab', which "
+            "TRACKINIZER_REMOTE_AGENT_SERVICES does not name"
+        )
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(
+            "TRACKINIZER_REMOTE_AGENT_SERVICES",
+            "[" + self._SERVICE % "[]" + "]",
+        )
+        monkeypatch.setenv("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", "remote-agents")
+        services = (
+            RemoteAgentService(name="remote-agents", account="agents@service.invalid"),
+        )
+        for config in (Config.from_env(), Config.from_args(_server_args())):
+            assert (
+                config.remote_agent_services,
+                config.default_remote_agent_service,
+            ) == (services, "remote-agents")
+        monkeypatch.setenv("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", "lab")
+        for build in (Config.from_env, partial(Config.from_args, _server_args())):
+            with pytest.raises(
+                ConfigError,
+                match="TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE",
+            ):
+                _ = build()
+
+
+class TestServiceKeys:
+    """``$TRACKINIZER_SERVICE_KEYS`` names the service accounts the server keys."""
+
+    def test_pairs_are_read_in_order_with_their_directory(self, tmp_path: Path) -> None:
+        assert parse_service_keys(
+            " chat:writer, ,gpu-broker:viewer ",
+            f" {tmp_path} ",
+        ) == ServiceKeys(
+            accounts=(("chat", "writer"), ("gpu-broker", "viewer")),
+            directory=tmp_path,
+        )
+
+    def test_none_named_needs_no_directory(self) -> None:
+        assert parse_service_keys(" , ", "") is None
+        assert Config().service_keys is None
+
+    @pytest.mark.parametrize(
+        ("accounts", "says"),
+        [
+            ("chat", "'chat' is not NAME:viewer or NAME:writer"),
+            ("chat:admin", "'chat:admin' is not NAME:viewer or NAME:writer"),
+            ("Chat:writer", "'Chat:writer' is not NAME:viewer or NAME:writer"),
+            ("chat:writer,chat:viewer", "'chat' is named twice"),
+        ],
+    )
+    def test_a_malformed_pair_is_a_config_error(self, accounts: str, says: str) -> None:
+        expected = f"TRACKINIZER_SERVICE_KEYS: {says}"
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            parse_service_keys(accounts, "/srv/keys")
+
+    def test_accounts_without_a_directory_are_a_config_error(self) -> None:
+        expected = (
+            "TRACKINIZER_SERVICE_KEYS names accounts; set TRACKINIZER_SERVICE_KEY_DIR"
+        )
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            parse_service_keys("chat:writer", "  ")
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SERVICE_KEYS", "chat:writer")
+        monkeypatch.setenv("TRACKINIZER_SERVICE_KEY_DIR", str(tmp_path))
+        keys = ServiceKeys(accounts=(("chat", "writer"),), directory=tmp_path)
+        assert Config.from_env().service_keys == keys
+        assert Config.from_args(_server_args()).service_keys == keys
+        monkeypatch.delenv("TRACKINIZER_SERVICE_KEY_DIR")
+        with pytest.raises(ConfigError, match=r"set TRACKINIZER_SERVICE_KEY_DIR$"):
+            Config.from_env()
+        with pytest.raises(ConfigError, match=r"set TRACKINIZER_SERVICE_KEY_DIR$"):
+            Config.from_args(_server_args())
+
+
+class TestSessionSecretFile:
+    """``$TRACKINIZER_SESSION_SECRET_FILE``: a key the first start makes and later ones keep."""
+
+    def test_the_first_start_makes_it_and_a_later_one_reads_it(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+
+        made = session_secret_from_file(str(path))
+
+        assert re.fullmatch(r"[0-9a-f]{64}", made)
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert list(tmp_path.iterdir()) == [path]
+        assert session_secret_from_file(str(path)) == made
+
+    def test_a_stage_a_crashed_start_left_does_not_stop_the_next(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+        left = tmp_path / f".session-secret.{os.getpid()}"
+        left.write_text("partial\n")
+
+        made = session_secret_from_file(str(path))
+
+        assert re.fullmatch(r"[0-9a-f]{64}", made)
+        assert sorted(tmp_path.iterdir()) == [left, path]
+
+    def test_a_start_that_loses_the_race_keeps_the_winners(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+        staged: list[Path] = []
+
+        def link(source: str, target: Path) -> None:
+            # Another first start links its own secret in between.
+            staged.append(Path(source))
+            target.write_text("won\n")
+            raise FileExistsError(target)
+
+        monkeypatch.setattr(os, "link", link)
+
+        assert session_secret_from_file(str(path)) == "won"
+        assert [(s.parent, s.name.startswith(".session-secret.")) for s in staged] == [
+            (tmp_path, True),
+        ]
+        assert list(tmp_path.iterdir()) == [path]
+
+    def test_a_kept_one_is_read_as_written(self, tmp_path: Path) -> None:
+        path = tmp_path / "session-secret"
+        path.write_text(" kept \n")
+
+        assert session_secret_from_file(f" {path} ") == "kept"
+
+    def test_none_named_is_none(self) -> None:
+        assert session_secret_from_file("  ") == ""
+
+    def test_both_ways_to_build_a_config_read_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_SESSION_SECRET", raising=False)
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET_FILE", str(tmp_path / "s"))
+
+        made = Config.from_env().session_secret
+
+        assert made == (tmp_path / "s").read_text().strip()
+        assert Config.from_args(_server_args()).session_secret == made
+
+    def test_the_secret_and_its_file_together_are_a_config_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET", "typed")
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET_FILE", str(tmp_path / "s"))
+        expected = "set TRACKINIZER_SESSION_SECRET or TRACKINIZER_SESSION_SECRET_FILE, not both"
+
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            Config.from_env()
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            Config.from_args(_server_args())
+        assert not (tmp_path / "s").exists()
+
+
+def test_tools_default_to_a_minute_between_access_sweeps() -> None:
+    assert Config().tool_sweep_sec == 60.0
 
 
 if __name__ == "__main__":

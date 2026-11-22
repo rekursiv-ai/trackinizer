@@ -1,4 +1,10 @@
-import { createContext, type ReactNode, useContext, useState, useSyncExternalStore } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 
 /** Whether the live stream is delivering changes. */
@@ -38,7 +44,13 @@ export function BarStack({ children }: { children: ReactNode }) {
  * One bar: a status line, with a button such as Retry when given one. `kind`
  * names it: `offline` (drawn red), `paused`, or `stale` for a failed refresh.
  */
-export function Bar({ kind, children }: { kind: "offline" | "paused" | "stale"; children: ReactNode }) {
+export function Bar({
+  kind,
+  children,
+}: {
+  kind: "offline" | "paused" | "stale";
+  children: ReactNode;
+}) {
   const stack = useContext(BarStackContext);
   const bar = (
     <div className={`bar ${kind}`} role="status">
@@ -58,7 +70,11 @@ export function useOnline(): boolean {
 /** A bar saying the browser is offline: reads come from the cache, writes wait. */
 export function OfflineBar() {
   if (useOnline()) return null;
-  return <Bar kind="offline">You are offline. Showing loaded data; changes are off until you reconnect.</Bar>;
+  return (
+    <Bar kind="offline">
+      You are offline. Showing loaded data; changes are off until you reconnect.
+    </Bar>
+  );
 }
 
 /** A bar saying live updates are paused while the stream reconnects. */

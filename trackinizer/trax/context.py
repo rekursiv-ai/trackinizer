@@ -15,15 +15,12 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO, cast
+from typing import TextIO, cast
 
 import os
 import sys
-import uuid
 
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+from trackinizer.client.errors import ClientError
 
 
 OUT_STREAM: ContextVar[TextIO | None] = ContextVar("trax_out_stream", default=None)
@@ -52,6 +49,13 @@ shell's profile -- writing to another server under another token."""
 CWD: ContextVar[str] = ContextVar("trax_cwd", default="")
 """Caller's working directory, or ``""`` for this process's own."""
 
+LOCAL_INPUT: ContextVar[bool] = ContextVar("trax_local_input", default=True)
+"""Whether a ``-`` value may read stdin and an ``@path`` value a file.
+
+An agent's tool runs trax inside the agent's own process, whose stdin may be the
+person's terminal and whose files are not the caller's to send; there it is
+``False``, and either value is refused before anything is read."""
+
 
 def out_stream() -> TextIO:
     """Return the stream ``echo`` should write to."""
@@ -66,6 +70,26 @@ def err_stream() -> TextIO:
     if (stream := ERR_STREAM.get()) is not None:
         return stream
     return cast(TextIO, sys.stderr)
+
+
+def check_local_input(source: str) -> None:
+    """Refuse a ``-`` or ``@path`` value where :data:`LOCAL_INPUT` is off.
+
+    Args:
+      source: The value as typed; anything else passes.
+
+    Raises:
+      ClientError: ``source`` would read stdin or a file, and this invocation
+        reads neither. The message names the form, never the path: a literal
+        secret may start with ``@``.
+
+    """
+    if LOCAL_INPUT.get():
+        return
+    if source == "-":
+        raise ClientError("- reads no local input here")
+    if source.startswith("@"):
+        raise ClientError("@FILE reads no local input here")
 
 
 def env(name: str) -> str | None:
@@ -96,7 +120,7 @@ def trax_env(name: str) -> str | None:
 
     The ``LC_`` spelling is the one that survives ``ssh``: stock clients send ``LC_*``
     and stock servers accept it, so a shell that came through ``ssh`` from a trax
-    terminal still knows its station and server.
+    terminal still knows its canvas and server.
 
     Args:
       name: The variable name without its ``TRAX_`` prefix.
@@ -112,23 +136,3 @@ def trax_env(name: str) -> str | None:
 def cwd() -> Path:
     """Return the directory relative paths in this invocation resolve against."""
     return Path(bound) if (bound := CWD.get()) else Path.cwd()
-
-
-def workspace_from_env(environ: Mapping[str, str]) -> uuid.UUID | None:
-    """Return the station a run started from: ``TRAX_WORKSPACE``, else its ``LC_`` twin.
-
-    Args:
-      environ: The process environment.
-
-    Returns:
-      workspace: The station id; ``None`` when neither names a valid one.
-
-    """
-    for name in ("TRAX_WORKSPACE", "LC_TRAX_WORKSPACE"):
-        value = environ.get(name, "").strip()
-        if value:
-            try:
-                return uuid.UUID(value)
-            except ValueError:
-                return None
-    return None

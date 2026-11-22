@@ -7,8 +7,44 @@ import type { ToolExchange } from "./chatLines";
 
 /** A record as a chat part holds it, stamped `at` so a call and its result can be timed. */
 function record(idx: number, kind: string, payload: { [field: string]: unknown }, at: string): SessionRecord {
+  let body: { [field: string]: unknown };
+  if (kind === "BashResult") {
+    body = {
+      "py/object": "ToolResult",
+      call_id: payload.call_id,
+      stdout: typeof payload.stdout === "string" ? (payload.stdout ? [payload.stdout] : []) : ((payload.stdout as unknown[]) ?? []),
+      stderr: typeof payload.stderr === "string" ? (payload.stderr ? [payload.stderr] : []) : ((payload.stderr as unknown[]) ?? []),
+      result: {
+        "py/object": "BashResult",
+        command: payload.command,
+        ...(payload.exit_code !== undefined ? { exit_code: payload.exit_code } : {}),
+      },
+      ...(payload.extra ? { extra: payload.extra } : {}),
+    };
+  } else if (kind === "WebSearchResult") {
+    const content = (payload.content as readonly { [k: string]: unknown }[]) ?? [];
+    body = {
+      "py/object": "ToolResult",
+      call_id: payload.call_id,
+      stdout: content.map((hit) => ({ "py/object": "WebSearchHit", ...hit })),
+      result: {
+        "py/object": "WebSearchResult",
+        query: payload.query,
+      },
+    };
+  } else if (kind === "UncategorizedToolResult") {
+    body = {
+      "py/object": "ToolResult",
+      call_id: payload.call_id,
+      stdout: typeof payload.content === "string" ? [payload.content] : [],
+      result: null,
+      ...(payload.extra ? { extra: payload.extra } : {}),
+    };
+  } else {
+    body = { "py/object": `trackinizer.sagent.session.types.${kind}`, ...payload };
+  }
   return {
-    idx, kind, payload: { "py/object": `trackinizer.lib.agent.types.sessions.${kind}`, ...payload },
+    idx, kind, payload: body,
     text: "", context_id: null, timestamp: at, model: null, ciphertext: null,
   } as unknown as SessionRecord;
 }
@@ -33,7 +69,7 @@ function card(step: ToolExchange) {
 // row's margin prints.
 const claude: ToolExchange = {
   call: record(1, "ToolCall", { call_id: "toolu_01", name: "Bash", arguments: { command: "ls -la /home", description: "List home" } }, "2026-10-21T10:00:00Z"),
-  result: record(2, "ShellCommandResult", { call_id: "toolu_01", command: ["ls -la /home"], stdout: "total 8\nada\n", stderr: "", exit_code: 0 }, "2026-10-21T10:00:01.62Z"),
+  result: record(2, "BashResult", { call_id: "toolu_01", command: ["ls -la /home"], stdout: "total 8\nada\n", stderr: "", exit_code: 0 }, "2026-10-21T10:00:01.62Z"),
 };
 
 test("a claude call is the CLI's own row: its tool, what it ran, how long it took, and what came back under a └", () => {
@@ -52,7 +88,7 @@ test("a claude call is the CLI's own row: its tool, what it ran, how long it too
 test("a codex call is the same row: its shell's argv reads as the command it ran", () => {
   const shown = card({
     call: record(1, "ToolCall", { call_id: "call_9", name: "shell", arguments: { command: ["bash", "-lc", "ls -la /home"], workdir: "/home" } }, "2026-10-21T10:00:00Z"),
-    result: record(2, "ShellCommandResult", { call_id: "call_9", command: ["bash", "-lc", "ls -la /home"], stdout: "total 8\nada\n", stderr: "", exit_code: 0 }, "2026-10-21T10:00:00.44Z"),
+    result: record(2, "BashResult", { call_id: "call_9", command: ["bash", "-lc", "ls -la /home"], stdout: "total 8\nada\n", stderr: "", exit_code: 0 }, "2026-10-21T10:00:00.44Z"),
   });
   expect([shown.name(), shown.target(), shown.gutter()]).toEqual(["shell", "ls -la /home", "0.44 s"]);
   expect(shown.output()).toBe("total 8\nada\n");
@@ -62,7 +98,7 @@ test("a codex call is the same row: its shell's argv reads as the command it ran
 test("a sagent call is the same row: sagent's shell result, and a tool of its own with the text it returned", () => {
   const shell = card({
     call: record(1, "ToolCall", { call_id: "kb1", name: "Bash", arguments: { command: "sleep 200; echo done &" } }, "2026-10-21T10:00:00Z"),
-    result: record(2, "ShellCommandResult", { call_id: "kb1", command: ["sleep 200; echo done &"], stdout: "[1] 4242\n", extra: { is_error: false } }, "2026-10-21T10:00:00.11Z"),
+    result: record(2, "BashResult", { call_id: "kb1", command: ["sleep 200; echo done &"], stdout: "[1] 4242\n", extra: { is_error: false } }, "2026-10-21T10:00:00.11Z"),
   });
   expect([shell.name(), shell.target(), shell.gutter()]).toEqual(["Bash", "sleep 200; echo done &", "0.11 s"]);
   expect(shell.output()).toBe("[1] 4242\n");
@@ -81,7 +117,7 @@ test("a sagent call is the same row: sagent's shell result, and a tool of its ow
 test("a failed call says how, and its error shows: a nonzero exit, and sagent's is_error flag", () => {
   const exited = card({
     call: claude.call,
-    result: record(2, "ShellCommandResult", { call_id: "toolu_01", command: ["ls /nope"], stdout: "", stderr: "ls: cannot access '/nope'\n", exit_code: 2 }, "2026-10-21T10:00:01.62Z"),
+    result: record(2, "BashResult", { call_id: "toolu_01", command: ["ls /nope"], stdout: "", stderr: "ls: cannot access '/nope'\n", exit_code: 2 }, "2026-10-21T10:00:01.62Z"),
   });
   expect(exited.state()).toBe("failed");
   expect(exited.gutter()).toBe("exit 2");
@@ -106,7 +142,7 @@ test("a call no result has answered yet says so in its margin, and holds no payl
 
 test("a long payload is clipped to its head and tail, and the rest shows in place on request", () => {
   const stdout = Array.from({ length: 100 }, (_, k) => `line ${k}`).join("\n");
-  const shown = card({ call: claude.call, result: record(2, "ShellCommandResult", { call_id: "toolu_01", command: ["ls"], stdout, stderr: "", exit_code: 0 }, "2026-10-21T10:00:01.62Z") });
+  const shown = card({ call: claude.call, result: record(2, "BashResult", { call_id: "toolu_01", command: ["ls"], stdout, stderr: "", exit_code: 0 }, "2026-10-21T10:00:01.62Z") });
   expect(shown.output()).toContain("line 19");
   expect(shown.output()).not.toContain("line 20\n");
   fireEvent.click(within(shown.root).getByRole("button", { name: "Show 40 more lines" }));
@@ -127,7 +163,7 @@ test("what a call returned starts as one line, and its ▸ opens the rest in pla
   const stdout = Array.from({ length: 12 }, (_, k) => `line ${k}`).join("\n");
   const { container } = render(<ToastProvider><ChatToolCard kinds={[]} step={{
     call: claude.call,
-    result: record(2, "ShellCommandResult", { call_id: "toolu_01", command: ["ls"], stdout, stderr: "", exit_code: 0 }, "2026-10-21T10:00:01.62Z"),
+    result: record(2, "BashResult", { call_id: "toolu_01", command: ["ls"], stdout, stderr: "", exit_code: 0 }, "2026-10-21T10:00:01.62Z"),
   }} /></ToastProvider>);
   const out = container.querySelector<HTMLElement>(".out")!;
   const run = container.querySelector<HTMLElement>(".chat-run")!;
@@ -148,7 +184,7 @@ test("what a call returned starts as one line, and its ▸ opens the rest in pla
 test("a call that returned one line offers nothing to open", () => {
   const { container } = render(<ToastProvider><ChatToolCard kinds={[]} step={{
     call: claude.call,
-    result: record(2, "ShellCommandResult", { call_id: "toolu_01", command: ["pwd"], stdout: "/home\n", stderr: "", exit_code: 0 }, "2026-10-21T10:00:01.62Z"),
+    result: record(2, "BashResult", { call_id: "toolu_01", command: ["pwd"], stdout: "/home\n", stderr: "", exit_code: 0 }, "2026-10-21T10:00:01.62Z"),
   }} /></ToastProvider>);
   expect(container.querySelector(".fold")).toBeNull();
   expect(container.querySelector<HTMLElement>(".chat-run")!.className).toBe("chat-run");
@@ -185,7 +221,7 @@ test("a command wider than its row gets its own ▸, and it opens the command al
 // address is not a scheme that fetches, because a stored record is not a trusted author of `href`.
 const searched: ToolExchange = {
   call: record(1, "ToolCall", { call_id: "toolu_02", name: "WebSearch", arguments: { query: "momentum crash volatility scaling" } }, "2026-10-21T10:00:00Z"),
-  result: record(2, "WebSearchResults", {
+  result: record(2, "WebSearchResult", {
     call_id: "toolu_02", query: "momentum crash volatility scaling",
     content: [
       { url: "https://www.crsp.com/momentum", title: "Momentum Crashes", snippet: "Daniel and Moskowitz, 2016." },

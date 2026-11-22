@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, override
+
+import argparse
+import sys
 
 from trackinizer.client.errors import ClientError
 from trackinizer.trax.render import echo
@@ -12,7 +15,7 @@ from trackinizer.trax.render import echo
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    import argparse
+    from _typeshed import SupportsWrite
 
     from trackinizer.client.client import Client
 
@@ -81,6 +84,45 @@ class HelpPage:
             examples=self.examples if examples is None else examples,
             notes=self.notes,
         )
+
+
+class TraxArgumentParser(argparse.ArgumentParser):
+    """An ``ArgumentParser`` that writes only through ``echo``, in plain text.
+
+    argparse prints usage, help and errors to the process's own ``sys.stdout`` and
+    ``sys.stderr``. Run inside another program (the daemon, an agent's tool), that
+    text would land on the host's terminal, not the caller's, so every trax parser
+    writes through ``echo`` instead. Colour is off: Python 3.14 colours usage on a
+    TTY, and the escape codes would reach a caller that is no terminal. A parse
+    error still ends in ``SystemExit(2)``, as argparse's does.
+    """
+
+    # A property, not a keyword set in ``__init__``: ``color`` is a 3.14 keyword and
+    # trax ships for 3.12, and ``add_subparsers`` builds each subparser from this
+    # class with argparse's own keywords, so an ``__init__`` here would have to take
+    # every one of them.
+    @property
+    def color(self) -> bool:
+        """Never colour: the text may reach a caller that is no terminal."""
+        return False
+
+    @color.setter
+    def color(self, value: bool) -> None:
+        """Ignore argparse's own setting, which follows the terminal."""
+        del value
+
+    # The one writer every argparse print goes through: usage, help, errors, warnings.
+    @override
+    def _print_message(
+        self,
+        message: str,
+        file: SupportsWrite[str] | None = None,
+    ) -> None:
+        """Write ``message`` through ``echo`` where argparse names a process stream."""
+        if file is None or file is sys.stdout or file is sys.stderr:
+            echo(message, err=file is not sys.stdout, nl=False)
+        else:
+            file.write(message)
 
 
 class Command:
@@ -170,10 +212,10 @@ class Command:
           result: The str.
 
         """
-        return cls.help_text_for(next(iter(cls.names)))
+        return cls.verb_help_text(next(iter(cls.names)))
 
     @classmethod
-    def help_text_for(cls, verb: str) -> str:
+    def verb_help_text(cls, verb: str) -> str:
         """Help text for one handled verb.
 
         Args:
@@ -207,4 +249,4 @@ class Command:
 
         """
         del prefix
-        return cls.help_text_for(verb)
+        return cls.verb_help_text(verb)

@@ -1,7 +1,19 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useProfile } from "../app/boot";
-import { choosePreferences, type Preferences, preferences, usePreferences } from "../preferences";
-import { type BrowserState, EMPTY_STATE, parseState, sameJson, stateOf, storageKey } from "./value";
+import {
+  choosePreferences,
+  type Preferences,
+  preferences,
+  usePreferences,
+} from "../preferences";
+import {
+  type BrowserState,
+  EMPTY_STATE,
+  parseState,
+  sameJson,
+  stateOf,
+  storageKey,
+} from "./value";
 
 /** A change to the state: the new state, given the one shown now. */
 export type StateChange = (state: BrowserState) => BrowserState;
@@ -17,7 +29,10 @@ export type StateChange = (state: BrowserState) => BrowserState;
  * the browser refuses to store (storage off or full), or the stored value is one
  * this build cannot read, rather than overwrite it.
  */
-export function useBrowserState(): readonly [BrowserState, (change: StateChange) => void] {
+export function useBrowserState(): readonly [
+  BrowserState,
+  (change: StateChange) => void,
+] {
   const { email } = useProfile();
   const key = storageKey(email);
   const stored = useSyncExternalStore(subscribe, () => readStored(key));
@@ -28,14 +43,22 @@ export function useBrowserState(): readonly [BrowserState, (change: StateChange)
     (change: StateChange) => {
       const now = localStorage.getItem(key);
       // Unreadable local text blocks a change to the tiles only, below.
-      const local = attempt(() => (now === null ? EMPTY_STATE : parseState(JSON.parse(now))));
-      const before = stateOf(preferences(), local instanceof Error ? {} : local.ui.tiles);
+      const local = attempt(() =>
+        now === null ? EMPTY_STATE : parseState(JSON.parse(now)),
+      );
+      const before = stateOf(
+        preferences(),
+        local instanceof Error ? {} : local.ui.tiles,
+      );
       const after = change(before);
       const moved = changedPreferences(before, after);
       if (Object.keys(moved).length > 0) void choosePreferences(moved);
       if (after.ui.tiles === before.ui.tiles) return;
       if (local instanceof Error) throw local;
-      localStorage.setItem(key, JSON.stringify({ ...local, ui: { ...local.ui, tiles: after.ui.tiles } }));
+      localStorage.setItem(
+        key,
+        JSON.stringify({ ...local, ui: { ...local.ui, tiles: after.ui.tiles } }),
+      );
       // A `storage` event reaches other tabs only; this tells this one's hooks.
       dispatchEvent(new Event(CHANGED));
     },
@@ -45,14 +68,19 @@ export function useBrowserState(): readonly [BrowserState, (change: StateChange)
 }
 
 /** The preferences `after` changes from `before`; a value rebuilt equal to the old one is no change. */
-function changedPreferences(before: BrowserState, after: BrowserState): Partial<Preferences> {
+function changedPreferences(
+  before: BrowserState,
+  after: BrowserState,
+): Partial<Preferences> {
   return {
     ...(sameJson(after.stars, before.stars) ? {} : { stars: after.stars }),
     ...(sameJson(after.views, before.views) ? {} : { views: after.views }),
     ...(sameJson(after.aliases, before.aliases) ? {} : { aliases: after.aliases }),
     ...(sameJson(after.people, before.people) ? {} : { people: after.people }),
     ...(sameJson(after.read, before.read) ? {} : { read: after.read }),
-    ...(sameJson(after.ui.collapsed, before.ui.collapsed) ? {} : { collapsed: after.ui.collapsed }),
+    ...(sameJson(after.ui.collapsed, before.ui.collapsed)
+      ? {}
+      : { collapsed: after.ui.collapsed }),
     ...(after.ui.lens === before.ui.lens ? {} : { lens: after.ui.lens }),
   };
 }

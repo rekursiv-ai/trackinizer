@@ -1,5 +1,6 @@
 import type { Graph, GraphNode } from "../api/graph";
 import { micros } from "../live/rows";
+import { must } from "../must";
 
 /** The key of the group of nodes under no root; no inquiry's id is this. */
 export const UNROOTED = "unrooted";
@@ -47,27 +48,50 @@ export function findRoots({ nodes, edges }: Graph): Roots {
   const below = new Map<string, string[]>();
   const narrowing = new Set<string>();
   for (const { from_id: from, to_id: to, edge_kind: kind } of edges) {
-    if ((kind !== "narrows" && kind !== "produced_by") || !byId.has(from) || !byId.has(to)) continue;
+    if (
+      (kind !== "narrows" && kind !== "produced_by") ||
+      !byId.has(from) ||
+      !byId.has(to)
+    )
+      continue;
     if (kind === "narrows") narrowing.add(from);
     const children = below.get(to) ?? [];
     children.push(from);
     below.set(to, children);
   }
-  const roots = nodes.filter((found) => found.kind === "Issue" && !narrowing.has(found.id) && below.has(found.id)).toSorted(newestFirst);
-  const above = new Map(nodes.map((found) => [found.id, [] as { root: string; hops: number }[]]));
+  const roots = nodes
+    .filter(
+      (found) =>
+        found.kind === "Issue" && !narrowing.has(found.id) && below.has(found.id),
+    )
+    .toSorted(newestFirst);
+  const above = new Map(
+    nodes.map((found) => [found.id, [] as { root: string; hops: number }[]]),
+  );
   const groups = roots.map((root) => {
     // Breadth first, so each node's first count is its fewest hops; a node met
     // again, as in a cycle, is not walked again.
     const hops = new Map([[root.id, 0]]);
     for (const [id, depth] of hops) {
-      for (const child of below.get(id) ?? []) if (!hops.has(child)) hops.set(child, depth + 1);
+      for (const child of below.get(id) ?? [])
+        if (!hops.has(child)) hops.set(child, depth + 1);
     }
-    for (const [id, depth] of hops) above.get(id)!.push({ root: root.id, hops: depth });
-    return group(root.id, root, [...hops.keys()].map((id) => byId.get(id)!));
+    for (const [id, depth] of hops)
+      must(above.get(id)).push({ root: root.id, hops: depth });
+    return group(
+      root.id,
+      root,
+      [...hops.keys()].map((id) => must(byId.get(id))),
+    );
   });
   // Each node's roots came newest first; a stable sort by hops keeps that among the as near.
-  const under = new Map([...above].map(([id, tops]) => [id, tops.toSorted((a, b) => a.hops - b.hops).map(({ root }) => root)]));
-  const unrooted = nodes.filter((found) => under.get(found.id)!.length === 0);
+  const under = new Map(
+    [...above].map(([id, tops]) => [
+      id,
+      tops.toSorted((a, b) => a.hops - b.hops).map(({ root }) => root),
+    ]),
+  );
+  const unrooted = nodes.filter((found) => must(under.get(found.id)).length === 0);
   return {
     groups: [
       // Stable: of two groups whose newest node is the same, the newer root first.
@@ -79,9 +103,13 @@ export function findRoots({ nodes, edges }: Graph): Roots {
   };
 }
 
-function group(key: string, root: GraphNode | null, members: readonly GraphNode[]): RootGroup {
+function group(
+  key: string,
+  root: GraphNode | null,
+  members: readonly GraphNode[],
+): RootGroup {
   const kinds = new Map<string, number>();
-  let newest = members[0]!.created;
+  let newest = must(members[0]).created;
   for (const { kind, created } of members) {
     kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
     if (micros(created) > micros(newest)) newest = created;

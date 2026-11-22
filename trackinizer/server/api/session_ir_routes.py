@@ -16,35 +16,45 @@ who neither opened the session nor reads it. A read takes an ``asker`` and a ``c
 the configured assistant reads for that user, on the user's rights and never its own,
 into the chat it answers them in (see ``require_session_access``), and anyone else's
 ``asker`` and ``chat`` are ignored. Tenant scope is derived by joining to
-``inquiries``, as every session route does.
+``inquiries``, as every session route does. An append by a remote agent's process
+key is shown, once stored, to the deployment's agent policy (``agent_policy_gate``).
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain, immutable
 
-from trackinizer.server.api._deps import get_assistant, get_inbound, get_store
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._deps import (
+    get_session_relay,
+    get_store,
+)
+from trackinizer.server.api._routes_shared import refusal
+from trackinizer.server.api.agent_policy_gate import after_stored
 from trackinizer.server.api.session_access import (
-    is_a_science_chat,
-    require_part_writer,
-    require_session,
     require_session_access,
     require_session_write_access,
     resolve_asker,
 )
+from trackinizer.server.api.session_identity import require_session
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
-from trackinizer.server.store.session_ir import SlashCommandRow
-from trackinizer.server.visuals.science_chats import counts_in_chat
+from trackinizer.server.store.session_ir import (
+    PartFile,
+    StalePartError,
+)
+from trackinizer.server.visuals.session_usage import SessionUsage, session_usage
+from trackinizer.types.session_records import served_kind, served_payload
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
-from trackinizer.wire.wire_science_chat import chat_conversation_id
 from trackinizer.wire.wire_session_ir import (
+    CLIENT_OUTDATED,
     AppendRecordsRequest,
     AppendRecordsResponse,
     PartBody,
@@ -54,10 +64,13 @@ from trackinizer.wire.wire_session_ir import (
     RecentTurnBody,
     RecordBody,
 )
+from trackinizer.wire.wire_session_relay import STALE_PART
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from trackinizer.types.session_records import SessionRecordRow
 
 
 router = APIRouter()
@@ -74,23 +87,19 @@ async def append_session_records_route(
 ) -> AppendRecordsResponse:
     """Append one file's records, resolving its part server-side.
 
-    The manifest is upserted BEFORE the records, deliberately: it is what
-    assigns the part number the records are keyed by, and it bounds every
-    reader (``idx < records``). Writing records first would briefly expose
-    rows no manifest accounts for.
+    The manifest and the records are stored in one transaction, the manifest
+    first: it assigns the part number the records are keyed by, and it bounds
+    every reader (``idx < records``). Once it commits, each record it wrote is
+    pushed to the session's open viewers, as ``GET .../records`` returns it.
 
-    A body naming no file carries only slash commands -- a command is typed
-    into the SESSION, and one submitted before the CLI has written a
-    transcript has no part to belong to.
-
-    A science chat holds one part per run that answered in it, and the key whose
-    first write opened a part alone writes it after: another key's write is 403,
-    so one run never rewrites another's lines.
+    A ``sagent`` journal is written only to the session's newest part or a new
+    one: another process continued the session in a newer part, and an older one
+    is refused with 409 ``stale_part``.
 
     Args:
       session_id: AgentSession ID to append to.
       request: FastAPI request (carries auth and store).
-      body: Records, manifest, and slash commands to append.
+      body: Records and manifest to append.
       identity: Authenticated writer or viewer who opened this session.
 
     Returns:
@@ -101,63 +110,65 @@ async def append_session_records_route(
     session = await require_session(store, session_id)
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
-    await require_part_writer(request, identity, session=session, name=body.name)
+    _refuse_outdated_records(body.records)
     # A run closed for silence that uploads again was alive all along; reopen
     # its session first, or the append is refused as a write to an ended one.
     if session.ended is not None:
         _ = await revive_if_reaped(store, session_id=session_id)
     manifest = body.manifest
-    part = (
-        None
-        if manifest is None
-        else await store.upsert_session_manifest(
+    try:
+        appended = await store.append_session_part(
             session_id,
-            name=body.name,
-            metadata=immutable(from_plain(manifest.metadata, dict[str, object])),
-            ir_id=manifest.ir_id,
-            format=manifest.format,
-            records=manifest.records,
+            file=None
+            if manifest is None
+            else PartFile(
+                name=body.name,
+                metadata=immutable(from_plain(manifest.metadata, dict[str, object])),
+                ir_id=manifest.ir_id,
+                format=manifest.format,
+                records=manifest.records,
+            ),
+            # The part each row names is the one its file resolves to.
+            rows=[record.row(session_id, 0) for record in body.records],
             api_key_id=identity.api_key_id,
-            exclusive=is_a_science_chat(session),
         )
-    )
-    written, skipped, slash = await store.append_session_records(
-        session_id,
-        [record.row(session_id, part or 0) for record in body.records],
-        restart=body.restart,
-        slash_commands=[
-            SlashCommandRow(
-                timestamp=command.timestamp,
-                command=command.command,
-                args=command.args,
-            )
-            for command in body.slash_commands
-        ],
-    )
+    except StalePartError as error:
+        raise refusal(409, code=STALE_PART, message=str(error)) from error
+    # Stored first, then read back and pushed: a viewer is told only of what a read
+    # returns, the part's bound included. Only when one watches: rebuilding every
+    # record of an upload no one follows was most of an append's time.
+    relay = get_session_relay(request)
+    if appended.part is not None and appended.written and relay.watched(session_id):
+        shown = set(appended.written)
+        stored = await store.read_session_records(
+            session_id,
+            part=appended.part,
+            after_idx=min(shown) - 1,
+            limit=max(shown) - min(shown) + 1,
+        )
+        relay.publish_records(
+            session_id,
+            part=appended.part,
+            records=[_served(row) for row in stored if row.idx in shown],
+        )
+    # After the store commits, so the policy is shown only records that are kept.
+    if appended.part is not None:
+        await after_stored(
+            request,
+            identity,
+            session_id=session_id,
+            part=appended.part,
+            records=body.records,
+        )
     await store.record_session_seen(
         session_id,
         at=datetime.now(UTC),
         polled=False,
     )
-    # A chat's line its assistant took from the queue is counted as posted until here,
-    # where only a session whose lines the chat counts records it.
-    conversation = chat_conversation_id(session.cli_session_id)
-    senders = _posters(body.records)
-    if conversation is not None and senders:
-        async with engine_of(request).acquire() as conn:
-            counted = await counts_in_chat(
-                conn,
-                assistant=get_assistant(request),
-                session_id=session_id,
-                conversation_id=conversation,
-            )
-        if counted:
-            get_inbound(request).recorded(conversation, senders=senders)
     return AppendRecordsResponse(
-        part=part,
-        written=written,
-        skipped=skipped,
-        slash_commands=slash,
+        part=appended.part,
+        written=len(appended.written),
+        skipped=appended.skipped,
     )
 
 
@@ -189,8 +200,7 @@ async def read_session_parts_route(
         identity,
         session=await require_session(store, session_id),
         mode="read",
-        asker=await resolve_asker(request, identity, email=asker),
-        chat=chat,
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
     )
     manifests = await store.read_session_manifests(session_id)
     return ReadPartsResponse(
@@ -207,6 +217,61 @@ async def read_session_parts_route(
             )
             for m in manifests
         ],
+    )
+
+
+@router.get("/api/sessions/{session_id}/usage")
+async def read_session_usage_route(
+    session_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    asker: str | None = None,
+    chat: UUID | None = None,
+) -> SessionUsage:
+    """Say what the session's model calls used and cost, as sagent's status line does.
+
+    Args:
+      session_id: AgentSession ID to total.
+      request: FastAPI request (carries auth and store).
+      identity: Authenticated reader.
+      asker: The account the configured assistant reads for.
+      chat: The conversation the configured assistant reads into.
+
+    Returns:
+      usage: The tokens its calls sent and got, how full its window is, and the cost.
+
+    """
+    store = get_store(request)
+    await require_session_access(
+        request,
+        identity,
+        session=await require_session(store, session_id),
+        mode="read",
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
+    )
+    # The records are read here, beside the check, rather than in a helper: a helper
+    # that returns a session's records is one more reader a later route could call
+    # without the check.
+    manifests = await store.read_session_manifests(session_id)
+    rows: list[SessionRecordRow] = []
+    for manifest in manifests:
+        after_idx = -1
+        while page := await store.read_session_records(
+            session_id,
+            part=manifest.part,
+            after_idx=after_idx,
+            limit=MAX_LIST_LIMIT,
+            plaintext_only=True,
+        ):
+            rows.extend(page)
+            if len(page) < MAX_LIST_LIMIT:
+                break
+            after_idx = page[-1].idx
+    return session_usage(
+        rows,
+        formats={manifest.part: manifest.format for manifest in manifests},
+        today=datetime.now(UTC).date(),
     )
 
 
@@ -263,8 +328,7 @@ async def read_session_records_route(
         identity,
         session=await require_session(store, session_id),
         mode="read",
-        asker=await resolve_asker(request, identity, email=asker),
-        chat=chat,
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
     )
     rows = await store.read_session_records(
         session_id,
@@ -273,7 +337,90 @@ async def read_session_records_route(
         limit=limit,
         plaintext_only=plaintext_only,
     )
-    return ReadRecordsResponse(part=part, records=[RecordBody.of(row) for row in rows])
+    return ReadRecordsResponse(part=part, records=[_served(row) for row in rows])
+
+
+@router.get("/api/sessions/{session_id}/download")
+async def download_session_route(
+    session_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    asker: str | None = None,
+    chat: UUID | None = None,
+) -> Response:
+    """Answer every part's records as one JSON-lines file, for a person to keep.
+
+    The first line names the session and its parts; each later line is one record
+    as ``GET .../records`` serves it, with its ``part``. Bodies are read as a replay
+    reads them, so an offloaded body comes back whole; the ciphertext is left out,
+    since no person can use it.
+
+    Args:
+      session_id: AgentSession ID to download.
+      request: FastAPI request (carries auth and store).
+      identity: Authenticated reader.
+      asker: The account the configured assistant reads for.
+      chat: The conversation the configured assistant reads into.
+
+    Returns:
+      response: The file, as an attachment named for the session's number.
+
+    """
+    store = get_store(request)
+    session = await require_session(store, session_id)
+    await require_session_access(
+        request,
+        identity,
+        session=session,
+        mode="read",
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
+    )
+    # Read here, beside the check, as the usage route reads: a helper returning a
+    # session's records is one more reader a later route could call unchecked.
+    manifests = await store.read_session_manifests(session_id)
+    header = {
+        "session_id": str(session_id),
+        "seq": session.seq,
+        "parts": [
+            {"part": m.part, "name": m.name, "format": m.format, "records": m.records}
+            for m in manifests
+        ],
+    }
+    lines = [json.dumps(header)]
+    for manifest in manifests:
+        after_idx = -1
+        while page := await store.read_session_records(
+            session_id,
+            part=manifest.part,
+            after_idx=after_idx,
+            limit=MAX_LIST_LIMIT,
+            plaintext_only=False,
+        ):
+            lines.extend(
+                json.dumps(
+                    {
+                        "part": manifest.part,
+                        **_served(row).model_dump(
+                            mode="json",
+                            exclude={"ciphertext"},
+                        ),
+                    },
+                )
+                for row in page
+            )
+            if len(page) < MAX_LIST_LIMIT:
+                break
+            after_idx = page[-1].idx
+    return Response(
+        content="".join(f"{line}\n" for line in lines),
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="AgentSession-{session.seq}.jsonl"'
+            ),
+        },
+    )
 
 
 @router.get("/api/sessions/{session_id}/turns")
@@ -308,8 +455,7 @@ async def read_recent_session_turns_route(
         identity,
         session=await require_session(store, session_id),
         mode="read",
-        asker=await resolve_asker(request, identity, email=asker),
-        chat=chat,
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
     )
     turns = await store.read_recent_session_turns(session_id, limit=limit)
     return ReadRecentTurnsResponse(
@@ -325,29 +471,40 @@ async def read_recent_session_turns_route(
     )
 
 
-def _posters(records: Sequence[RecordBody]) -> list[str]:
-    """Name the poster of each person's line among ``records``, in order."""
-    return [sender for record in records if (sender := _poster(record)) is not None]
+# A legacy tool-call row holds a retired record class's payload, and clients read
+# only the current ``ToolMessage`` shape, so each payload is converted on the way
+# out, to a reader and to a viewer alike. The stored row is not rewritten.
+def _served(row: SessionRecordRow) -> RecordBody:
+    """Return ``row`` as a client reads it, a legacy payload in the current shape."""
+    return RecordBody.of(
+        replace(
+            row,
+            kind=served_kind(row.kind),
+            payload=served_payload(row.kind, row.payload),
+        ),
+    )
 
 
-# The loader's rule for a person's line: the assistant records one as an
-# ``AgentToAgentMessage`` with its sender, and a CLI run as a ``UserMessage`` that
-# `trax run` stamped ``$inbound`` with the attested sender on delivery, or that carries
-# an ``author``. Reading the first shape alone missed every line a CLI part records,
-# which then kept counting as on its way into the chat until its hand-out expired.
-def _poster(record: RecordBody) -> str | None:
-    """Name who posted ``record`` if it is a person's line, from its stored payload."""
-    payload = record.payload
-    if not isinstance(payload, dict):
-        return None
-    if record.kind == "AgentToAgentMessage":
-        sender = payload.get("sender")
-    elif record.kind == "UserMessage" and isinstance(
-        extra := payload.get("extra"),
-        dict,
+# A client older than short class tags names each class by its import path, which no
+# reader of the stored record accepts. Its encoder tags the record itself that way, so
+# the top-level tag alone tells it apart: a dotted tag deeper down may be provider JSON.
+# 426 rather than 400 or 422: a client takes those as one record it can never store and
+# sends a stand-in in its place, while any other refusal keeps its run capturing to a
+# local file and shows the person this message.
+def _refuse_outdated_records(records: Sequence[RecordBody]) -> None:
+    """Refuse a batch any of whose records names its class by an import path."""
+    if any(
+        "." in tag
+        for record in records
+        if isinstance(tag := record.payload.get("py/object"), str)
     ):
-        stamp = extra.get("$inbound")
-        sender = stamp.get("source") if isinstance(stamp, dict) else extra.get("author")
-    else:
-        return None
-    return sender if isinstance(sender, str) else None
+        raise HTTPException(
+            status_code=426,
+            detail={
+                "code": CLIENT_OUTDATED,
+                "message": (
+                    "Update this client and trax (uv tool upgrade --all): it writes "
+                    "session records in a retired format"
+                ),
+            },
+        )

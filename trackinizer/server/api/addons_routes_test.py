@@ -17,12 +17,12 @@ from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import make_store
 from trackinizer.server.api import addons_routes, app
-from trackinizer.server.api.addons_routes import attach_deployment, deployment_of
+from trackinizer.server.api.addons_routes import app_deployment, attach_deployment
 from trackinizer.server.api.app import _build_app, lifespan
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
-from trackinizer.server.visuals.catalog import StaticVisual, Workspace
+from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
 if TYPE_CHECKING:
@@ -52,6 +52,7 @@ class Probe:
             description="Reports what the server gave it.",
             server_services=[self.service],
             routers=[router],
+            migrations=[("probe.0001.sql", "SELECT 1")],
         )
 
 
@@ -100,6 +101,13 @@ def test_the_catalog_is_empty_without_a_deployment(
     assert json_loads(response.content, dict[str, object]) == {"addons": []}
 
 
+def test_an_app_with_nothing_attached_runs_the_deployment_of_no_addons() -> None:
+    bare = FastAPI()
+    bare.state.deployment = "not a deployment"
+    assert app_deployment(bare).manifests == {}
+    assert app_deployment(bare).catalog().addons == []
+
+
 def test_the_module_app_always_has_a_visual_catalog() -> None:
     assert _visual_catalog(app.app).catalog().visuals
 
@@ -140,9 +148,9 @@ def test_an_open_router_mounts_without_a_sign_in_and_a_viewer_router_still_needs
     assert client.get("/api/addons/hooked/ping").status_code == 401
 
 
-def _notes_visuals() -> Workspace.Config:
+def _notes_visuals() -> Canvas.Config:
     """Return a catalog of one visual, which is not the default catalog's."""
-    return Workspace.Config(
+    return Canvas.Config(
         visuals=[
             StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
         ],
@@ -159,14 +167,18 @@ def test_attaching_sets_the_deployments_visual_catalog() -> None:
     assert _visual_catalog(app).default_visual == "x.notes"
 
 
-def test_a_real_deployment_replaces_the_default_one_of_a_built_app() -> None:
+def test_a_real_deployment_replaces_the_default_one_of_a_built_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unrelated core routes need no re-registration to test deployment replacement.
+    monkeypatch.setattr(app, "ROUTERS", (addons_routes.router,))
     built = _build_app()
-    assert deployment_of(built).manifests == {}
+    assert app_deployment(built).manifests == {}
     cfg = ProbeSite()
     cfg.visuals = _notes_visuals()
     real = cfg.make()
     attach_deployment(built, deployment=real)
-    assert deployment_of(built) is real
+    assert app_deployment(built) is real
     assert _visual_catalog(built) is real.visuals
     assert _visual_catalog(built).default_visual == "x.notes"
     built.state.store, _ = make_store()
@@ -180,7 +192,7 @@ def test_attaching_twice_keeps_the_first_deployment_and_its_routes() -> None:
     routes = list(app.routes)
     attach_deployment(app, deployment=_probe_deployment())
     assert app.routes == routes
-    assert deployment_of(app) is first
+    assert app_deployment(app) is first
     app.state.store, _ = make_store()
     app.dependency_overrides[current_user] = _viewer
     assert TestClient(app).get("/api/addons/probe/ping").status_code == 200
@@ -199,6 +211,43 @@ def test_the_lifespan_runs_server_services_with_the_store(
     asyncio.run(_serve_until_probed(fastapi_app, service=service))
     assert service.stores == [store]
     assert service.cancelled
+
+
+def test_the_lifespan_bootstraps_the_store_with_the_addons_migrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    bootstrap = AsyncMock(return_value=None)
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", bootstrap)
+    fastapi_app = _app_with(_probe_deployment())
+    fastapi_app.state.config = Config()
+    asyncio.run(
+        _serve_until_probed(fastapi_app, service=_running_service(fastapi_app)),
+    )
+    bootstrap.assert_awaited_once_with(
+        addon_migrations=[("probe.0001.sql", "SELECT 1")],
+    )
+
+
+def test_the_lifespan_hands_the_deployments_policy_to_the_app_and_the_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    built = Mock(return_value=store)
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "Store", built)
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+    deployment = _probe_deployment()
+    fastapi_app = _app_with(deployment)
+    fastapi_app.state.config = Config()
+    asyncio.run(
+        _serve_until_probed(fastapi_app, service=_running_service(fastapi_app)),
+    )
+    held: object = getattr(fastapi_app.state, "access_policy", None)
+    assert held is deployment.access_policy
+    assert built.call_args.kwargs["access_policy"] is deployment.access_policy
 
 
 class _ProbeService:
@@ -224,15 +273,15 @@ class _ProbeService:
 
 def _running_service(app: FastAPI) -> _ProbeService:
     """Return the probe's one server service, reached through the deployment."""
-    service = deployment_of(app).manifests["probe"].server_services[0]
+    service = app_deployment(app).manifests["probe"].server_services[0]
     assert isinstance(service, _ProbeService)
     return service
 
 
-def _visual_catalog(app: FastAPI) -> Workspace:
+def _visual_catalog(app: FastAPI) -> Canvas:
     """Return the visual catalog the visual routes would read from ``app.state``."""
     catalog: object = getattr(app.state, "visual_catalog", None)
-    assert isinstance(catalog, Workspace)
+    assert isinstance(catalog, Canvas)
     return catalog
 
 
@@ -262,6 +311,15 @@ async def _viewer() -> AuthIdentity:
 
 async def _ping() -> dict[str, bool]:
     return {"pong": True}
+
+
+def test_app_without_a_deployment_gets_an_empty_catalog_without_mounting() -> None:
+    isolated = FastAPI()
+    routes = list(isolated.routes)
+    assert app_deployment(isolated).catalog().addons == []
+    isolated.state.deployment = "invalid"
+    assert app_deployment(isolated).manifests == {}
+    assert isolated.routes == routes
 
 
 if __name__ == "__main__":

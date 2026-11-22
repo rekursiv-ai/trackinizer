@@ -93,7 +93,7 @@ def test_each_layer_and_owner_has_its_own_value(tmp_path: Path) -> None:
     store = FileSecrets(tmp_path / "secrets")
     refs = {
         _ref(): "org",
-        _ref(layer="machine", owner="box-1"): "machine",
+        _ref(layer="host", owner="box-1"): "host",
         _ref(layer="user", owner="ana@example.com"): "user",
     }
     for ref, value in refs.items():
@@ -261,12 +261,12 @@ def test_an_owner_too_long_for_a_directory_name_is_refused(tmp_path: Path) -> No
     store = FileSecrets(tmp_path / "secrets")
     longest = "x" * 200
 
-    store.put(_ref(layer="machine", owner=longest), _VALUE)
+    store.put(_ref(layer="host", owner=longest), _VALUE)
 
     for owner in (longest + "x", "é" * 70):
         with pytest.raises(ValueError, match="secret owner"):
-            store.put(_ref(layer="machine", owner=owner), _VALUE)
-    assert store.get(_ref(layer="machine", owner=longest)) == _VALUE
+            store.put(_ref(layer="host", owner=owner), _VALUE)
+    assert store.get(_ref(layer="host", owner=longest)) == _VALUE
 
 
 def test_parse_file_uses_the_user_data_directory() -> None:

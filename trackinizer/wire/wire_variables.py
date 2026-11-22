@@ -3,7 +3,7 @@
 A variable is a name a launch puts in its environment. A plain variable's
 value is stored and read back. A secret's value lives in the server's secret
 backend and no route returns it, so a secret on the wire always has
-``value=None``. Layers order the values: org, then machine, then user, each
+``value=None``. Layers order the values: org, then host, then user, each
 later one winning. Only the org layer has routes today.
 
 This package is part of the publishable client distribution, so it must
@@ -29,8 +29,8 @@ __all__ = [
     "VariablePut",
 ]
 
-Layer = Literal["org", "machine", "user"]
-"""Where a value is set: org, then machine, then user, each later one winning."""
+Layer = Literal["org", "host", "user"]
+"""Where a value is set: org, then host, then user, each later one winning."""
 
 NAME_PATTERN: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,127}$"
 """An environment-variable name, as the store accepts it."""
@@ -51,7 +51,7 @@ class Variable(BaseModel):
     """The layer the value is set in."""
 
     owner: str
-    """Empty for the org layer; the machine's name or the user's email otherwise."""
+    """Empty for the org layer; the host's name or the user's email otherwise."""
 
     name: str = Field(pattern=NAME_PATTERN)
     """The environment-variable name."""

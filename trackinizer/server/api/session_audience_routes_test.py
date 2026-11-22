@@ -9,7 +9,9 @@ session moves for no one, and every move is audited.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 from treekle import from_plain, json_loads
@@ -18,11 +20,13 @@ import httpx2
 import pytest
 import pytest_asyncio
 
+from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.store.core import Store
-from trackinizer.wire.wire_science_chat import chat_session_id
+from trackinizer.types.errors import ConflictError
+from trackinizer.types.inquiries import AgentSession
 
 
 if TYPE_CHECKING:
@@ -69,17 +73,22 @@ class _Served:
         """Insert a session of ``account``, opened by ``opener``'s key when named."""
         session_id = uuid4()
         async with self.store.engine.acquire() as conn:
+            # Stamped here, not by PGlite's clock: it ticks once a millisecond, so two
+            # sessions opened within one tick tie on ``created``, and the read of a
+            # chat's starter orders a tie by random id.
             await conn.execute(
                 "INSERT INTO inquiries (id, kind, seq, status, account, title, owner, "
                 "agentsession_audience, agentsession_cli_session_id, "
-                "agentsession_opened_by_api_key_id) VALUES ($1, 'AgentSession', "
-                "nextval('seq_agentsession'), 'active', $2, 'a run', $3, $4, $5, $6)",
+                "agentsession_opened_by_api_key_id, created) VALUES ($1, "
+                "'AgentSession', nextval('seq_agentsession'), 'active', $2, 'a run', "
+                "$3, $4, $5, $6, $7)",
                 session_id,
                 account,
                 f"run-{session_id.hex[:8]}",
                 audience,
                 cli_session_id,
                 None if opener is None else self.keys[opener],
+                datetime.now(UTC),
             )
         return session_id
 
@@ -90,7 +99,7 @@ class _Served:
             json={"audience": audience},
         )
 
-    async def audience_of(self, session_id: UUID) -> str:
+    async def session_audience(self, session_id: UUID) -> str:
         """Return the audience the database holds for ``session_id``."""
         async with self.store.engine.acquire() as conn:
             return from_plain(
@@ -121,11 +130,10 @@ async def served(
 ) -> AsyncIterator[_Served]:
     """Serve one organisation, with the assistant, over Ann's, Bob's and Scout's keys."""
     client, store = pglite_route_client
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(assistant=_SCOUT, chat_orgs="single"),
-        raising=False,
     )
     keys: dict[str, UUID] = {}
     async with store.engine.acquire() as conn:
@@ -174,7 +182,7 @@ async def test_the_owner_hides_a_session_and_shows_it_again(served: _Served) -> 
         200,
     )
     assert (shown.status_code, after.status_code) == (200, 200)
-    assert await served.audience_of(session) == "open"
+    assert await served.session_audience(session) == "open"
 
 
 async def test_the_user_whose_key_opened_it_is_an_owner_too(served: _Served) -> None:
@@ -183,7 +191,7 @@ async def test_the_user_whose_key_opened_it_is_an_owner_too(served: _Served) -> 
     served.act_as(_BOB)
 
     assert (await served.move(session, "private")).status_code == 200
-    assert await served.audience_of(session) == "private"
+    assert await served.session_audience(session) == "private"
 
 
 @pytest.mark.parametrize(
@@ -201,7 +209,7 @@ async def test_only_the_owner_hides(served: _Served, caller: str, role: Role) ->
         403,
         {"detail": {"code": "session_not_owner"}},
     )
-    assert await served.audience_of(session) == "open"
+    assert await served.session_audience(session) == "open"
 
 
 async def test_an_admin_cannot_take_a_hidden_session_to_show_it(
@@ -226,9 +234,32 @@ async def test_an_admin_cannot_take_a_hidden_session_to_show_it(
     assert (taken.status_code, unhidden.status_code, moved.status_code) == (
         403,
         403,
-        200,
+        403,
     )
-    assert await served.audience_of(hidden) == "private"
+    assert await served.session_audience(hidden) == "private"
+
+
+async def test_an_admin_cannot_reassign_a_run_to_inject_commands(
+    served: _Served,
+) -> None:
+    session_id = await served.session(opener=_ANN)
+    session = await served.store.get_inquiry(session_id)
+    assert isinstance(session, AgentSession)
+    served.act_as(_ADA, "admin")
+
+    reassigned = await served.http.put(
+        f"/api/inquiries/{session_id}/account",
+        json={"value": _ADA},
+    )
+    routed = await served.http.post(
+        "/api/messages",
+        json={"actor": session.owner, "text": "AUDIT_PROMPT"},
+    )
+
+    assert [r.status_code for r in (reassigned, routed)] == [403, 403]
+    kept = await served.store.get_inquiry(session_id)
+    assert isinstance(kept, AgentSession)
+    assert kept.account == _ANN
 
 
 async def test_a_staff_session_is_never_hidden(served: _Served) -> None:
@@ -241,39 +272,7 @@ async def test_a_staff_session_is_never_hidden(served: _Served) -> None:
         409,
         {"detail": {"code": "session_staff"}},
     )
-    assert await served.audience_of(session) == "staff"
-
-
-async def test_hiding_a_chat_hides_every_session_under_its_id(served: _Served) -> None:
-    """Ann began the chat with the assistant; Bob's key opened a session under it later."""
-    conversation = uuid4()
-    first = await served.session(
-        opener=_SCOUT.email,
-        cli_session_id=chat_session_id(conversation),
-    )
-    later = await served.session(
-        account=_BOB,
-        opener=_BOB,
-        cli_session_id=chat_session_id(conversation),
-    )
-    served.act_as(_BOB)
-    refused = await served.move(first, "private")
-    served.act_as(_ANN)
-
-    hidden = await served.move(later, "private")
-
-    assert refused.status_code == 403
-    assert hidden.status_code == 200, hidden.text
-    assert sorted(
-        from_plain(
-            json_loads(hidden.content, dict[str, object])["sessions"],
-            list[str],
-        ),
-    ) == sorted([str(first), str(later)])
-    assert [await served.audience_of(each) for each in (first, later)] == [
-        "private",
-        "private",
-    ]
+    assert await served.session_audience(session) == "staff"
 
 
 async def test_each_change_is_audited(served: _Served) -> None:
@@ -293,6 +292,38 @@ async def test_each_change_is_audited(served: _Served) -> None:
         (_ANN, "open", "private"),
         (_ANN, "private", "open"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("raised", "status", "code"),
+    [
+        (AccessDeniedError("denied"), 403, "session_not_owner"),
+        (ConflictError("now staff"), 409, "session_staff"),
+    ],
+    ids=["policy refuses", "became staff"],
+)
+async def test_a_move_the_store_refuses_answers_as_the_routes_own_refusal(
+    served: _Served,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Exception,
+    status: int,
+    code: str,
+) -> None:
+    """The policy, or a concurrent move to ``staff``, refuses under the row lock."""
+    session = await served.session()
+    served.act_as(_ANN)
+    monkeypatch.setattr(
+        served.store,
+        "set_session_audience",
+        AsyncMock(side_effect=raised),
+    )
+
+    refused = await served.move(session, "private")
+
+    assert (refused.status_code, json_loads(refused.content, dict[str, object])) == (
+        status,
+        {"detail": {"code": code}},
+    )
 
 
 async def test_an_audience_that_is_neither_open_nor_private_is_refused(

@@ -3,6 +3,7 @@ import { type ChangeKind, type LoggedChange, listChanges } from "../api/changes"
 import { activityQueries } from "../activity/queries";
 import { readOnce, refetchFresh } from "./cache";
 import type { Batch, Later } from "./serial";
+import { must } from "../must";
 
 /**
  * The Activity feed, kept current by the stream (the plan's rule for it).
@@ -29,7 +30,11 @@ export class ActivityLive {
   readonly #now: () => number;
   #lastAskAt = -Infinity;
 
-  constructor(client: QueryClient, kinds: readonly ChangeKind[], now: () => number = Date.now) {
+  constructor(
+    client: QueryClient,
+    kinds: readonly ChangeKind[],
+    now: () => number = Date.now,
+  ) {
     this.#client = client;
     this.#kinds = kinds;
     this.#now = now;
@@ -52,19 +57,28 @@ export class ActivityLive {
   /** Ask for the changes since the newest shown (`since` is inclusive, so that one comes back too). */
   async #ask(): Promise<void> {
     const kinds = this.#kinds;
-    const since = (this.#head()[0] ?? this.#firstPage()![0])?.created;
+    const since = (this.#head()[0] ?? must(this.#firstPage())[0])?.created;
     const rows = await readOnce(this.#client, ["activity", kinds, since], (signal) =>
       listChanges({ kind: kinds, since, limit: ASK_LIMIT, brief: true }, { signal }),
     );
     const head = this.#head();
     const shown = new Set([...head, ...(this.#firstPage() ?? [])].map((row) => row.id));
     const fresh = rows.filter((row) => !shown.has(row.id));
-    if (rows.length >= ASK_LIMIT || head.length + fresh.length > ASK_LIMIT) return this.#reload();
-    if (fresh.length > 0) this.#client.setQueryData(activityQueries.head(kinds).queryKey, [...fresh, ...head]);
+    if (rows.length >= ASK_LIMIT || head.length + fresh.length > ASK_LIMIT)
+      return this.#reload();
+    if (fresh.length > 0)
+      this.#client.setQueryData(activityQueries.head(kinds).queryKey, [
+        ...fresh,
+        ...head,
+      ]);
   }
 
   async #reload(): Promise<void> {
-    await refetchFresh(this.#client, { type: "active", queryKey: activityQueries.page(this.#kinds, null).queryKey, exact: true });
+    await refetchFresh(this.#client, {
+      type: "active",
+      queryKey: activityQueries.page(this.#kinds, null).queryKey,
+      exact: true,
+    });
     this.#client.setQueryData(activityQueries.head(this.#kinds).queryKey, []);
   }
 
@@ -74,8 +88,12 @@ export class ActivityLive {
 
   /** Whether the first page has no rows yet and a read of it is under way. */
   #firstPageLoading(): boolean {
-    const state = this.#client.getQueryState(activityQueries.page(this.#kinds, null).queryKey);
-    return state !== undefined && state.data === undefined && state.fetchStatus !== "idle";
+    const state = this.#client.getQueryState(
+      activityQueries.page(this.#kinds, null).queryKey,
+    );
+    return (
+      state !== undefined && state.data === undefined && state.fetchStatus !== "idle"
+    );
   }
 
   #head(): readonly LoggedChange[] {

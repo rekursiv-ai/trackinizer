@@ -10,18 +10,31 @@ afterEach(() => {
 });
 
 test("each detail read is a bodiless GET of its route", async () => {
-  const detail = { self: { id: ID, kind: "Issue", seq: 7 }, edges: {}, backlinks: {}, changes: [] };
+  const detail = {
+    self: { id: ID, kind: "Issue", seq: 7 },
+    edges: {},
+    backlinks: {},
+    changes: [],
+  };
   const bodies: { [path: string]: unknown } = {
     [`/api/web/get/${ID}`]: detail,
     "/api/inquiries/Issue/7": { id: ID, kind: "Issue", seq: 7, narrows: [] },
     [`/api/inquiries/${ID}/confidence`]: { confidence: 0.73 },
   };
-  const sent = stubFetch((request) => Response.json(bodies[new URL(request.url).pathname]));
+  const sent = stubFetch((request) =>
+    Response.json(bodies[new URL(request.url).pathname]),
+  );
   expect(await getDetail(ID)).toEqual(detail);
   expect(await findRef("Issue", 7)).toBe(ID);
   expect(await getEvidenceConfidence(ID)).toBe(0.73);
   expect(sent).toEqual(
-    Object.keys(bodies).map((path) => ({ method: "GET", path, query: "", headers: {}, body: undefined })),
+    Object.keys(bodies).map((path) => ({
+      method: "GET",
+      path,
+      query: "",
+      headers: {},
+      body: undefined,
+    })),
   );
 });
 
@@ -34,7 +47,9 @@ test("a missing row is an ApiError carrying the server's 404 message", async () 
 
 test("a Kind#seq of a kind this build does not know fails before any request (R2-X3)", async () => {
   const sent = stubFetch(() => Response.json({ id: ID }));
-  await expect(findRef("Ticket", 9)).rejects.toThrow("This build does not know the inquiry kind Ticket");
+  await expect(findRef("Ticket", 9)).rejects.toThrow(
+    "This build does not know the inquiry kind Ticket",
+  );
   expect(sent).toEqual([]);
 });
 

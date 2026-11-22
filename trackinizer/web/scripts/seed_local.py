@@ -2,7 +2,7 @@
 # ruff: noqa: EXE003, D300, D205 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Seed the local web app preview with a small, representative graph.
 
 The graph covers what the UI must render: an Issue tree with a prerequisite and
@@ -31,12 +31,13 @@ import time
 import uuid
 
 from trackinizer.client.client import Client
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AssistantMessage,
-    ShellCommandResult,
+    BashResult,
+    SessionContext,
     Thinking,
     ToolCall,
-    TurnContext,
+    ToolMessage,
     UserMessage,
 )
 from trackinizer.types.session_records import SessionRecordRow
@@ -222,11 +223,16 @@ def _seed_transcript(client: Client) -> None:
         ),
     )
     turns = (
-        TurnContext(model="claude-opus-5-5", extra={"cwd": "/work"}),
+        SessionContext(model="claude-opus-5-5", extra={"cwd": "/work"}),
         UserMessage(content="What does **Issue#1** ask for?"),
         Thinking(content="Reading the seeded root first."),
         ToolCall(call_id="c1", name="Bash", arguments={"command": "trax issue 1"}),
-        ShellCommandResult(call_id="c1", stdout="Issue#1 [active]\n", exit_code=0),
+        ToolMessage(
+            call_id="c1",
+            state="done",
+            stdout=("Issue#1 [active]\n",),
+            result=BashResult(exit_code=0),
+        ),
         AssistantMessage(content="It is the seeded root; see `Issue#1`."),
     )
     records = [
@@ -299,7 +305,8 @@ def _issue(
 
 def _write_forever(client: Client, root: uuid.UUID, *, interval: float) -> None:
     for n in itertools.count():
-        time.sleep(interval)
+        # Writes on the requested interval to seed a live view.
+        time.sleep(interval)  # house-ignore[sleep] -- See above.
         rows = client.list_kind(
             "Issue",
             limit=50,

@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, cast, override
 
-import argparse
-
 from treekle import ReadError, from_plain
 
 from trackinizer.client.errors import ClientError
-from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
 from trackinizer.trax.context import cwd
 from trackinizer.trax.install import (
     TARGETS,
@@ -23,6 +21,8 @@ from trackinizer.trax.render import echo
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    import argparse
 
     from trackinizer.client.client import Client
 
@@ -62,7 +62,7 @@ class Doctor(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax doctor", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax doctor", description=cls.__doc__)
         _add_arguments(parser)
         return parser
 

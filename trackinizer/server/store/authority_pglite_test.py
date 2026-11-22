@@ -10,28 +10,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.wire.bodies import SubmitBelief, SubmitIssue, SubmitPaper
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
     from uuid import UUID
 
-    from trackinizer.lib.postgres import PGliteEngine
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+    from trackinizer.server.store.core import Store
 
 
 async def _authority(store: Store, target_id: UUID, column: str) -> float | None:
@@ -135,10 +121,10 @@ async def test_authority_is_stable_under_unrelated_rows(store: Store) -> None:
     await store.recompute_authority()
     before = await _authority(store, claim, "proves_authority")
 
-    for i in range(40):
-        await store.submit_issue(
-            SubmitIssue(account="t@example.com", title=f"unrelated noise {i}"),
-        )
+    # One row is enough: ranking the whole table gives it a share of the teleport mass.
+    await store.submit_issue(
+        SubmitIssue(account="t@example.com", title="unrelated noise"),
+    )
     await store.recompute_authority()
     after = await _authority(store, claim, "proves_authority")
 

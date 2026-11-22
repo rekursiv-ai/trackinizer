@@ -1,4 +1,5 @@
 import { ApiError, failureFields } from "../api/client";
+import { currentRoute } from "../router/addressBar";
 import { formatEvent, recentEvents } from "./log";
 
 /**
@@ -18,7 +19,9 @@ export function errorDetails(message: string, error: unknown): string {
     `browser: ${navigator.userAgent}`,
     ...failureLines(error),
     "recent events:",
-    ...recentEvents().map(({ at, level, event, fields }) => `${at} ${level} ${formatEvent(event, fields)}`),
+    ...recentEvents().map(
+      ({ at, level, event, fields }) => `${at} ${level} ${formatEvent(event, fields)}`,
+    ),
   ].join("\n");
 }
 
@@ -27,13 +30,24 @@ export function errorDetails(message: string, error: unknown): string {
  * query (the old UI's `#/search?q=`) goes too.
  */
 export function pageRoute(): string {
-  return location.hash.replace(/\?.*$/, "").replace(/^(#\/search\/).+$/, "$1…") || "#/";
+  return (
+    currentRoute()
+      .replace(/\?.*$/, "")
+      .replace(/^(#\/search\/).+$/, "$1…") || "#/"
+  );
 }
 
 /** What `error` says about itself. */
 function failureLines(error: unknown): string[] {
-  if (error instanceof ApiError) return [`failed: ${formatEvent("request", { ...failureFields(error), at: error.sent?.at })}`];
-  if (error instanceof Error) return [`error: ${error.name}: ${error.message}`, ...(error.stack ? [`stack: ${error.stack}`] : [])];
+  if (error instanceof ApiError)
+    return [
+      `failed: ${formatEvent("request", { ...failureFields(error), at: error.sent?.at })}`,
+    ];
+  if (error instanceof Error)
+    return [
+      `error: ${error.name}: ${error.message}`,
+      ...(error.stack ? [`stack: ${error.stack}`] : []),
+    ];
   return error === null || error === undefined ? [] : [`error: ${String(error)}`];
 }
 

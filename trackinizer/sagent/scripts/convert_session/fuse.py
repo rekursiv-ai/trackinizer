@@ -1,0 +1,339 @@
+"""Join session files into the one conversation a person actually had.
+
+A CLI splits a long conversation across files, and neither the transcript nor
+the IR records the seam -- the session simply stops in one file and resumes in
+another. Fusing puts the seam back as the record that already means it: a
+:class:`ContextClear`, which is what opens every context window whatever caused
+the reset. A part that carried a summary across the seam states it there, and
+one that opened fresh does not.
+
+Unfusing is the inverse: split at those records and every part is the record
+stream it came from. That is the invariant this module is built around --
+``unfuse(fuse(parts)) == parts`` -- so a fused session is a lossless view, not
+a lossy merge.
+
+Streams on BOTH sides, never sequences (axiom 11): a part is an iterable and
+both functions yield, so joining a 273 MB conversation holds the seam records
+rather than a copy of the files.
+
+What a boundary states is decided from the PREFIX of the part it introduces,
+up to its first user turn: a summary that crossed the seam is written as that
+turn, so once it arrives the question is settled. The prefix is buffered, the
+boundary emitted, and the rest of the part streams straight through behind it.
+Measured on the captured fixtures, the deepest that prefix ran was 11 records
+of a 137-record file -- but a part with NO user turn is buffered whole.
+
+Unfusing yields one ITERATOR per part, consumed in order: a part is the records
+between two seams, so the third file cannot be handed back before the first two
+have gone past. Abandoning a part still walks it -- that is what asking for the
+next one costs -- but it is walked, not held.
+
+Which file follows which is the provider's own bookkeeping, and it lives in
+the residual the adapters kept: codex names ``forked_from_id`` on its launch
+settings, claude marks the carried-over summary with ``isCompactSummary``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from itertools import count
+from pathlib import PurePath
+from typing import TYPE_CHECKING
+
+from treekle import from_plain, immutable
+
+from trackinizer.sagent.scripts.convert_session.provider_fields import stamped
+from trackinizer.sagent.session.types import (
+    ContextClear,
+    SessionContext,
+    SessionRecord,
+    UserMessage,
+    stated_timestamp,
+)
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
+
+
+__all__ = ["fuse", "part_names", "unfuse"]
+
+
+def fuse(
+    parts: Iterable[Iterable[SessionRecord]],
+    names: Sequence[str] = (),
+    *,
+    seam: str = "$seam",
+) -> Iterator[SessionRecord]:
+    """Join record streams into one, a boundary record at every seam.
+
+    Args:
+      parts: Each file's records, in the order they were written. Iterated
+        lazily, so a part is walked once and never held.
+      names: What each part was called on disk, so unfusing can put the files
+        back where they came from. Optional: a caller that only wants the
+        conversation does not need them.
+      seam: Residual key marking a boundary THIS function inserted. A part may
+        contain a reset of its own -- codex compacts in place -- and splitting
+        there would invent a file that never existed.
+
+    Yields:
+      record: Every part's records in order, separated by the
+        :class:`ContextClear` naming each seam.
+
+    """
+    for index, part in enumerate(parts):
+        stream = iter(part)
+        if not index:
+            if names:
+                # The root's own name has nowhere else to ride: there is no
+                # seam before the first part, so it rides that part's opening
+                # context.
+                yield from _named(stream, names[0], seam=seam)
+                continue
+            yield from stream
+            continue
+        prefix, boundary = _boundary(
+            stream,
+            names[index] if index < len(names) else "",
+            seam=seam,
+        )
+        yield boundary
+        yield from prefix
+        yield from stream
+
+
+def unfuse(
+    records: Iterable[SessionRecord],
+    *,
+    seam: str = "$seam",
+) -> Iterator[Iterator[SessionRecord]]:
+    """Split a fused stream back into the files it was joined from.
+
+    Yields one ITERATOR per part, and they are consumed IN ORDER: a part is
+    the records between two seams, so nothing of the third file exists until
+    the first two have gone past. A caller that abandons a part still walks
+    it -- asking for the next one is what walks it -- but it is walked rather
+    than held.
+
+    Args:
+      records: A fused record stream carrying boundary records.
+      seam: Residual key marking a boundary :func:`fuse` inserted. Must match
+        what fusing used, or a part carrying its own reset splits into a file
+        that never existed.
+
+    Yields:
+      part: One source file's records, in the order they were written.
+
+    """
+    stream = iter(records)
+    # Whether a seam ended the part, because the boundary that ENDS a part is
+    # only seen by trying to read past it.
+    seamed: list[bool] = []
+    for index in count():
+        part = _until_seam(stream, seamed, seam=seam, root=index == 0)
+        yield part
+        # Drained here rather than trusted to the caller: the next part starts
+        # where this one stopped, and a caller that took two records and moved
+        # on would otherwise splice this file's tail onto the next.
+        for _ in part:
+            pass
+        if not any(seamed):
+            return
+        seamed.clear()
+
+
+def part_names(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[str]:
+    """Return the file name each part of a fused stream came from.
+
+    The root's name rides on the settings it opens with; every part after it
+    rides on the seam that introduced it.
+
+    Args:
+      records: A fused record stream.
+      seam: Residual key marking a boundary :func:`fuse` inserted.
+
+    Returns:
+      names: One file name per part, in the order they were written.
+
+    Raises:
+      ValueError: A name is not a bare file name. It came from the stream, and
+        a caller joins it to a directory, so ``../x`` or ``/x`` would write
+        outside it.
+
+    """
+    out: list[str] = []
+    for record in records:
+        if isinstance(record, SessionContext) and seam in record.extra and not out:
+            out.append(_bare(record.extra[seam]))
+        elif isinstance(record, ContextClear) and seam in record.extra:
+            if not out:
+                out.append("")
+            out.append(_bare(record.extra[seam]))
+    return out
+
+
+def chain(
+    parts: Iterable[Sequence[SessionRecord]],
+    *,
+    forked_from: str = "forked_from_id",
+) -> list[Sequence[SessionRecord]]:
+    """Return parts ordered by which one continues which.
+
+    Codex names the thread a rollout forked from, and 1495 of 1495 captured
+    links resolve inside the tree -- so the order is the provider's, not a
+    guess from timestamps.
+
+    Args:
+      parts: Each file's records.
+      forked_from: Launch-settings key naming the thread a rollout continued.
+
+    Returns:
+      ordered: Each root followed by the chain that continues it.
+
+    """
+    found = list(parts)
+    # Every thread id a part declares, which a fork names to continue it.
+    ids = {own for part in found if (own := _declared(part).get("id")) is not None}
+    # A LIST per parent: a thread may be resumed more than once, and keeping
+    # one successor apiece dropped every earlier fork -- 16 of 392 rollouts on
+    # one captured day, which rebuilt 84 MB short and reported no error.
+    successors: dict[str, list[Sequence[SessionRecord]]] = {}
+    roots: list[Sequence[SessionRecord]] = []
+    for part in found:
+        parent = _declared(part).get(forked_from)
+        if parent in ids:
+            successors.setdefault(parent, []).append(part)
+        else:
+            roots.append(part)
+    ordered: list[Sequence[SessionRecord]] = []
+    seen: set[int] = set()
+    for root in roots:
+        # Depth-first, so a fork's own continuation follows it rather than
+        # every sibling being emitted first.
+        stack = [root]
+        while stack:
+            part = stack.pop()
+            if id(part) in seen:
+                # A cycle in the provider's own links: visiting twice would
+                # duplicate the part rather than order it.
+                continue
+            seen.add(id(part))
+            ordered.append(part)
+            own = _declared(part).get("id")
+            if own is not None:
+                stack.extend(reversed(successors.get(own, [])))
+    # A component whose links form a CYCLE has no root, so the walk above never
+    # started on it -- the ``seen`` guard only stops a re-visit, it cannot reach
+    # an unreachable node. Those parts were dropped silently, and a file that
+    # forks from itself emptied the list entirely, which the caller then
+    # indexed. Emitted in input order, after the rooted chains, so ``chain`` is
+    # total.
+    ordered.extend(part for part in found if id(part) not in seen)
+    return ordered
+
+
+def _bare(value: object) -> str:
+    """Return a seam's file name, refusing one that names another directory."""
+    name = from_plain(value, str)
+    # ``.`` is no name of its own (``PurePath(".").name`` is ``""``); ``..`` is.
+    if name != PurePath(name).name or name == "..":
+        raise ValueError(f"seam names a path, not a file: {name!r}")
+    return name
+
+
+# The first context CARRYING a payload, not merely the first context: a rollout whose
+# first line is blank states its encoding before it declares itself, and that opening
+# context holds no launch settings -- the rule ``codex.denormalize`` applies too.
+def _declared(part: Sequence[SessionRecord]) -> dict[str, str]:
+    """Return the launch settings' string fields a part declared, by wire key."""
+    for record in part:
+        if isinstance(record, SessionContext) and "payload" in record.extra:
+            payload = from_plain(
+                record.extra["payload"],
+                dict[str, object],
+                default=dict[str, object](),
+            )
+            return {k: v for k, v in payload.items() if isinstance(v, str)}
+    return {}
+
+
+def _named(
+    part: Iterator[SessionRecord],
+    name: str,
+    *,
+    seam: str,
+) -> Iterator[SessionRecord]:
+    """Yield a part with its file name on the settings it opens with."""
+    for index, record in enumerate(part):
+        if index or not isinstance(record, SessionContext):
+            yield record
+            continue
+        extra = dict(record.extra)
+        extra[seam] = name
+        yield _restated(record, extra)
+
+
+def _until_seam(
+    stream: Iterator[SessionRecord],
+    seamed: list[bool],
+    *,
+    seam: str,
+    root: bool,
+) -> Iterator[SessionRecord]:
+    """Yield one part's records, stopping at the boundary that ends it."""
+    for record in stream:
+        if isinstance(record, ContextClear) and seam in record.extra:
+            # Noted, so the loop above can tell "a seam followed" from "the
+            # stream ended" -- one more part exists in the first case only.
+            seamed.append(True)
+            return
+        yield _unnamed(record, seam=seam) if root else record
+
+
+def _unnamed(record: SessionRecord, *, seam: str) -> SessionRecord:
+    """Return the root's opening settings without the name fusing added."""
+    if not isinstance(record, SessionContext) or seam not in record.extra:
+        return record
+    return _restated(
+        record,
+        {key: value for key, value in dict(record.extra).items() if key != seam},
+    )
+
+
+def _restated(record: SessionContext, extra: Mapping[str, object]) -> SessionContext:
+    """Return one context with a different residual and nothing else moved."""
+    return replace(record, extra=immutable(extra))
+
+
+# A window opens either way, so the boundary IS a clear -- carrying the summary when one
+# crossed the seam. It stores nothing else: the part keeps its OWN opening records, so
+# unfusing drops the boundary and the file reassembles from what it already had.
+#
+# Reads ahead to the first user turn: claude compacts by writing the earlier
+# conversation's summary as the file's FIRST user turn, flagged as such, so that turn
+# settles the question and everything before it is the state the file opens with. The
+# prefix comes back rather than being re-read, so the part is walked once.
+def _boundary(
+    part: Iterator[SessionRecord],
+    name: str,
+    *,
+    seam: str,
+    forked_from: str = "forked_from_id",
+    summary: str = "isCompactSummary",
+) -> tuple[list[SessionRecord], SessionRecord]:
+    """Return the prefix read and the record naming what ``part`` resumed."""
+    prefix: list[SessionRecord] = []
+    carried: str | None = None
+    for record in part:
+        prefix.append(record)
+        if isinstance(record, UserMessage):
+            # Codex names the thread it continued on its LAUNCH settings, never
+            # on a turn, so a fork's first user turn is what crossed its seam.
+            if forked_from in _declared(prefix) or summary in record.extra:
+                carried = record.content
+            break
+    boundary = ContextClear(summary=carried, extra={seam: name})
+    opened = next((r for r in prefix if isinstance(r, SessionContext)), None)
+    spelled = None if opened is None else stated_timestamp(opened)
+    return prefix, boundary if spelled is None else stamped(boundary, spelled)

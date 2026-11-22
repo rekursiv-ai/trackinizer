@@ -2,7 +2,7 @@
 # ruff: noqa: EXE003, D300, D205 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Dump the server's OpenAPI schema to src/api/openapi.json, which types the web app.
 
 Run it after any change to a route, a parameter or a body, then run
@@ -12,7 +12,7 @@ trackinizer.server` serves it (`--web` is the default), so the dump equals
 the live /openapi.json at the same commit, less its addons. A deployment's addons
 add routes under /api/addons/<name>/, which the web app types against each
 addon's own schema, so the dump leaves them out, with the component schemas only
-they use. Output is normalised (sorted keys, two-space indent) and the sha256 of
+they use. Output is normalised (sorted keys, one-space indent) and the sha256 of
 the written text is printed; version.json carries the same hash, so `--url`
 compares a live server with a build whatever addons the server runs.
 
@@ -54,9 +54,7 @@ else:
     # The module, not its attributes: an attribute proxy of a tuple cannot be
     # iterated, while an attribute read through a module proxy is the real value.
     app = lazy_import("trackinizer.server.api.app")
-
-
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 OPENAPI_JSON: Final = _CWD.parent / "src" / "api" / "openapi.json"
 """The committed dump the web app's client is generated from."""
@@ -86,7 +84,8 @@ def main() -> int:
         if flags.url
         else from_plain(web_app_schema(), dict[str, MutablePlainTree])
     )
-    text = render(core_schema(schema))
+    left_out = frozenset[tuple[str, str]]()
+    text = render(core_schema(schema, left_out=left_out))
     if flags.output == "-":
         sys.stdout.write(text)
     else:
@@ -118,7 +117,11 @@ def web_app_schema() -> Mapping[str, object]:
     return served.openapi()
 
 
-def core_schema(schema: Mapping[str, MutablePlainTree]) -> dict[str, MutablePlainTree]:
+def core_schema(
+    schema: Mapping[str, MutablePlainTree],
+    *,
+    left_out: frozenset[tuple[str, str]] = frozenset(),
+) -> dict[str, MutablePlainTree]:
     """Return ``schema`` without its addon routes and the components only they use.
 
     A component an addon route uses stays when anything else uses it too, and one
@@ -126,26 +129,40 @@ def core_schema(schema: Mapping[str, MutablePlainTree]) -> dict[str, MutablePlai
 
     Args:
       schema: An OpenAPI document, as ``GET /openapi.json`` returns it.
+      left_out: The ``(path, method)`` of more operations to leave out as an addon's
+        are: those the server serves that the web app is not typed against.
 
     Returns:
       core: The document the web app is typed against.
 
     """
     paths = _object(schema.get("paths"))
-    addon = {path: op for path, op in paths.items() if path.startswith(ADDON_ROUTES)}
-    kept_paths: dict[str, MutablePlainTree] = {
-        path: op for path, op in paths.items() if path not in addon
+    gone: dict[str, MutablePlainTree] = {
+        path: op for path, op in paths.items() if path.startswith(ADDON_ROUTES)
     }
+    kept_paths: dict[str, MutablePlainTree] = {}
+    for path, item in paths.items():
+        if path in gone:
+            continue
+        operations = _object(item)
+        taken = {m: op for m, op in operations.items() if (path, m) in left_out}
+        if not taken:
+            kept_paths[path] = item
+            continue
+        gone[path] = taken
+        rest = {m: op for m, op in operations.items() if (path, m) not in left_out}
+        if rest:
+            kept_paths[path] = rest
     core: dict[str, MutablePlainTree] = {**schema, "paths": kept_paths}
     if "components" not in schema:
         return core
     components = _object(schema.get("components"))
     named = _object(components.get("schemas"))
-    by_addons = _closure(_references(addon), named=named)
+    by_gone = _closure(_references(gone), named=named)
     outside: dict[str, MutablePlainTree] = {
         key: value for key, value in core.items() if key != "components"
     }
-    kept = _closure(_references(outside) | (named.keys() - by_addons), named=named)
+    kept = _closure(_references(outside) | (named.keys() - by_gone), named=named)
     schemas: dict[str, MutablePlainTree] = {
         name: value for name, value in named.items() if name in kept
     }
@@ -153,8 +170,8 @@ def core_schema(schema: Mapping[str, MutablePlainTree]) -> dict[str, MutablePlai
 
 
 def render(schema: Mapping[str, object]) -> str:
-    """Normalise a schema to the committed text: sorted keys, two-space indent."""
-    return json.dumps(schema, indent=2, sort_keys=True) + "\n"
+    """Normalise a schema to the committed text: sorted keys, one-space indent."""
+    return json.dumps(schema, indent=1, sort_keys=True) + "\n"
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:

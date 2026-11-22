@@ -1,4 +1,4 @@
-"""The neighbourhood of one inquiry, read on PGlite.
+"""The neighbourhood of one inquiry or several, read on PGlite.
 
 Every test reads the one small graph the ``graph`` fixture builds, drawn below
 with each node's ``created`` minute. An arrow is a stored ``requires`` edge,
@@ -21,9 +21,6 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.graph_focus import read_neighbourhood
 
 
@@ -50,11 +47,9 @@ _EDGES: Final = (
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def graph(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
+async def graph(pglite_db: PGliteEngine) -> AsyncIterator[PGliteEngine]:
     """Return a PGlite engine holding the graph the module docstring draws."""
-    await reset_schema(pglite_engine)
-    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         for seq, (node, minute) in enumerate(_MINUTE.items(), start=1):
             await conn.execute(
                 "INSERT INTO inquiries (id, kind, seq, account, title, created)"
@@ -72,7 +67,7 @@ async def graph(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
                 to_id,
                 edge_kind,
             )
-    yield pglite_engine
+    yield pglite_db
 
 
 @pytest.mark.db_pglite
@@ -172,16 +167,86 @@ async def test_an_unknown_focus_has_no_neighbourhood(graph: PGliteEngine) -> Non
     assert await _walk(graph, uuid4(), hops=3, limit=100) == []
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_every_focus_starts_at_hop_zero_and_an_unknown_one_is_left_out(
+    graph: PGliteEngine,
+) -> None:
+    assert await _walk(graph, U, uuid4(), B, hops=1, limit=100) == [
+        (U, 0),
+        (B, 0),
+        (F, 1),
+        (E, 1),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_focus_with_newer_neighbours_leaves_room_for_the_others(
+    graph: PGliteEngine,
+) -> None:
+    # One newest-first cut over A's and E's neighbours would keep D(9) and F(5),
+    # leaving E alone; each focus takes its share, so E keeps B(3).
+    assert await _walk(graph, A, E, hops=1, limit=4) == [
+        (A, 0),
+        (E, 0),
+        (D, 1),
+        (B, 1),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_room_a_focus_leaves_unused_passes_to_the_ones_after_it(
+    graph: PGliteEngine,
+) -> None:
+    # U has no neighbours, so A takes all three places left, not its half.
+    assert await _walk(graph, U, A, hops=1, limit=5) == [
+        (U, 0),
+        (A, 0),
+        (D, 1),
+        (F, 1),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_room_left_after_every_share_goes_to_the_newest_of_the_rest(
+    graph: PGliteEngine,
+) -> None:
+    # F's share, two of the four places, takes C and B; E's one neighbour, B, is
+    # taken; the two places still left go to the newest of the rest, A alone.
+    assert await _walk(graph, F, E, hops=1, limit=6) == [
+        (F, 0),
+        (E, 0),
+        (C, 1),
+        (B, 1),
+        (A, 1),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_later_hops_walk_on_from_every_focus_neighbour(
+    graph: PGliteEngine,
+) -> None:
+    assert await _walk(graph, U, E, hops=2, limit=100) == [
+        (U, 0),
+        (E, 0),
+        (B, 1),
+        (F, 2),
+    ]
+
+
 async def _walk(
     engine: PGliteEngine,
-    focus: UUID,
-    *,
+    *focus: UUID,
     hops: int,
     limit: int,
 ) -> list[tuple[UUID, int]]:
-    """Return ``focus``'s neighbourhood as ``(id, hops)`` pairs, in its order."""
+    """Return the neighbourhood of ``focus`` as ``(id, hops)`` pairs, in its order."""
     async with engine.acquire() as conn:
-        found = await read_neighbourhood(conn, focus, hops=hops, limit=limit)
+        found = await read_neighbourhood(conn, focus=focus, hops=hops, limit=limit)
     return list(found.items())
 
 

@@ -1,22 +1,36 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { SIGNED_IN_KEY } from "../api/signedIn";
 import { stubFetch } from "../api/testing";
 import { logRenderError } from "../debug/install";
 import { recentEvents } from "../debug/log";
 import { stubClipboard } from "../debug/testing";
+import { openEarlyStream } from "../live/earlyStream";
 import { FakeEventSource } from "../live/testing";
 import { ActivityView, GraphView, SearchView } from "../router/views";
 import { App } from "./App";
 import * as boot from "./boot";
-import { LOGIN_URL } from "./session";
+import { loginUrl } from "./session";
+import { currentRoute } from "../router/addressBar";
 
 // The graph draws on a canvas, which jsdom lacks; its own tests replace its renderer.
 vi.mock("../graph", () => ({ GraphView: () => <h1>Graph</h1> }));
 
 const BODIES: { [path: string]: unknown } = {
-  "/api/meta/enums": { inquiry_kind_all: ["Issue", "Belief", "CodeChange"], status: ["active"] },
+  "/api/meta/enums": {
+    inquiry_kind_all: ["Issue", "Belief", "CodeChange"],
+    status: ["active"],
+  },
   "/api/meta/fields": { priority: "issue" },
   "/api/meta/edges": {},
   "/api/me/profile": {
@@ -36,27 +50,18 @@ function serve(answer: { [path: string]: () => Response } = {}) {
   });
 }
 
-function topBar() {
-  return within(screen.getByRole("banner", { name: "App" }));
-}
-
-/** The top bar's Go menu, opened. */
-function goMenu() {
-  if (!screen.queryByRole("navigation", { name: "Go to" })) fireEvent.click(topBar().getByRole("button", { name: "Go to" }));
-  return within(screen.getByRole("navigation", { name: "Go to" }));
-}
-
-/** A page's entry in the Go menu, by its label. */
-function goLink(label: string) {
-  return goMenu().getAllByRole("link").find((link) => link.querySelector(".label")?.textContent === label)!;
+function sidebar() {
+  return within(screen.getByRole("navigation", { name: "Sidebar" }));
 }
 
 // Activity, the graph and search are chunks of their own; loaded first, each
 // shows at once, as it does once the app has loaded it.
-beforeAll(() => Promise.all([ActivityView.preload(), GraphView.preload(), SearchView.preload()]));
+beforeAll(() =>
+  Promise.all([ActivityView.preload(), GraphView.preload(), SearchView.preload()]),
+);
 
 beforeEach(() => {
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", "/");
   sessionStorage.clear();
   vi.stubGlobal("EventSource", FakeEventSource);
 });
@@ -73,19 +78,29 @@ test("boot reads all four calls in parallel, then shows the kinds and the profil
     // Answer nothing until all four are in flight: one after another would hang.
     await new Promise<void>((resolve) => {
       waiting.push(resolve);
-      if (waiting.length === 4) waiting.forEach((release) => release());
+      if (waiting.length === 4)
+        waiting.forEach((release) => {
+          release();
+        });
     });
     return Response.json(BODIES[new URL(request.url).pathname]);
   });
   render(<App assign={vi.fn()} />);
-  const me = await screen.findByRole("button", { name: "Account: ada@example.com, writer" });
-  expect(goMenu().getAllByRole("link").map((link) => link.querySelector(".label")?.textContent)).toEqual([
+  // A group, so a screen reader reads its name: ARIA forbids a name on a plain div.
+  const me = await screen.findByRole("group", { name: "Signed in" });
+  expect(
+    sidebar()
+      .getAllByRole("link")
+      .map((link) => link.textContent),
+  ).toEqual([
+    "Trackinizer",
     "Graph",
     "Console",
     "Activity",
     "Issues",
     "Beliefs",
     "Code changes",
+    "Your settings",
   ]);
   expect(within(me).getByText("ada@example.com")).toBeTruthy();
   expect(within(me).getByText("writer")).toBeTruthy();
@@ -101,7 +116,10 @@ test("the app's first render draws its frame alone; boot and the rest draw in a 
   // Each commit, with how often boot had rendered by then.
   const commits: string[] = [];
   render(
-    <Profiler id="app" onRender={(_id, phase) => commits.push(`${phase} ${useBoot.mock.calls.length}`)}>
+    <Profiler
+      id="app"
+      onRender={(_id, phase) => commits.push(`${phase} ${useBoot.mock.calls.length}`)}
+    >
       <App assign={vi.fn()} />
     </Profiler>,
   );
@@ -119,7 +137,7 @@ test("the shell draws in a render after the one the boot reads land in, which sh
       id="app"
       onRender={() => {
         const ready = useBoot.mock.results.at(-1)?.value.state === "ready";
-        const shown = document.querySelector(".account-button") !== null;
+        const shown = document.querySelector('[aria-label="Signed in"]') !== null;
         const commit = `ready ${ready}, shell ${shown}`;
         if (commit !== commits.at(-1)) commits.push(commit);
       }}
@@ -127,35 +145,62 @@ test("the shell draws in a render after the one the boot reads land in, which sh
       <App assign={vi.fn()} />
     </Profiler>,
   );
-  await screen.findByRole("button", { name: /^Account:/ });
-  expect(commits).toEqual(["ready false, shell false", "ready true, shell false", "ready true, shell true"]);
+  await screen.findByLabelText("Signed in");
+  expect(commits).toEqual([
+    "ready false, shell false",
+    "ready true, shell false",
+    "ready true, shell true",
+  ]);
 });
 
 test("an empty hash opens the graph, the home view", async () => {
   serve();
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Graph");
-  expect(location.hash).toBe("#/graph");
-  expect(goLink("Graph").getAttribute("aria-current")).toBe("page");
+  expect(currentRoute()).toBe("#/graph");
+  expect(
+    sidebar().getByRole("link", { name: "Graph" }).getAttribute("aria-current"),
+  ).toBe("page");
+});
+
+test("Escape closes the navigation drawer, as its scrim does for a pointer", async () => {
+  serve();
+  history.replaceState(null, "", "#/list/codechange");
+  const user = userEvent.setup();
+  const { container } = render(<App assign={vi.fn()} />);
+  await screen.findByRole("heading", { level: 1 });
+  const app = () => container.querySelector(".app")?.classList.contains("drawer-open");
+  await user.click(screen.getByRole("button", { name: "Open navigation" }));
+  expect(app()).toBe(true);
+  await user.keyboard("{Escape}");
+  expect(app()).toBe(false);
 });
 
 test("a deep link opens its view", async () => {
   serve();
   history.replaceState(null, "", "#/list/codechange");
   render(<App assign={vi.fn()} />);
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Code changes");
-  expect(location.hash).toBe("#/list/CodeChange");
-  expect(goLink("Code changes").getAttribute("aria-current")).toBe("page");
+  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+    "Code changes",
+  );
+  expect(currentRoute()).toBe("#/list/CodeChange");
+  expect(
+    sidebar().getByRole("link", { name: "Code changes" }).getAttribute("aria-current"),
+  ).toBe("page");
 });
 
-test("a 401 at boot saves the hash and goes to the login page once", async () => {
-  serve({ "/api/me/profile": () => Response.json({ detail: "not signed in" }, { status: 401 }) });
+test("a 401 at boot goes to the login page once, which returns to the page", async () => {
+  serve({
+    "/api/me/profile": () =>
+      Response.json({ detail: "not signed in" }, { status: 401 }),
+  });
   history.replaceState(null, "", "#/ref/Issue/7");
   const assign = vi.fn();
   render(<App assign={assign} />);
-  await waitFor(() => expect(assign).toHaveBeenCalledWith(LOGIN_URL));
+  await waitFor(() =>
+    expect(assign).toHaveBeenCalledWith(loginUrl("/trax/ref/Issue/7")),
+  );
   expect(assign).toHaveBeenCalledTimes(1);
-  expect(sessionStorage.getItem("trackinizer.v2.return_hash")).toBe("#/ref/Issue/7");
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
@@ -171,18 +216,23 @@ test("a failed boot shows the server's message, and Retry starts the app", async
   expect((await screen.findByRole("alert")).textContent).toBe("account disabled");
   refuse = false;
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-  expect(await screen.findByRole("button", { name: /^Account:/ })).toBeTruthy();
+  expect(await screen.findByLabelText("Signed in")).toBeTruthy();
 });
 
 test("a failed boot offers Copy details with the failed request's id", async () => {
   const copied = stubClipboard();
-  serve({ "/api/meta/edges": () => Response.json({ detail: "schema mismatch" }, { status: 400 }) });
+  serve({
+    "/api/meta/edges": () =>
+      Response.json({ detail: "schema mismatch" }, { status: 400 }),
+  });
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("alert")).textContent).toBe("schema mismatch");
   fireEvent.click(screen.getByRole("button", { name: "Copy details" }));
   await waitFor(() => expect(copied).toHaveLength(1));
   expect(copied[0]).toMatch(/^Trackinizer web app: Could not start: schema mismatch\n/);
-  expect(copied[0]).toMatch(/\nfailed: request method=GET path=\/api\/meta\/edges status=400 ms=\d+ request_id=[0-9a-f-]{36} attempt=\d+ at=/);
+  expect(copied[0]).toMatch(
+    /\nfailed: request method=GET path=\/api\/meta\/edges status=400 ms=\d+ request_id=[0-9a-f-]{36} attempt=\d+ at=/,
+  );
 });
 
 test("a render crash shows what happened, with Copy details and Reload, in place of a blank page", async () => {
@@ -192,13 +242,21 @@ test("a render crash shows what happened, with Copy details and Reload, in place
   serve({ "/api/meta/enums": () => Response.json({ inquiry_kind_all: 5 }) });
   const reload = vi.fn();
   render(<App assign={vi.fn()} reload={reload} />, { onCaughtError: logRenderError });
-  expect((await screen.findByRole("alert")).textContent).toBe("kinds.find is not a function");
-  expect(screen.getByRole("heading", { name: "Trackinizer stopped on an error" })).toBeTruthy();
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "kinds.find is not a function",
+  );
+  expect(
+    screen.getByRole("heading", { name: "Trackinizer stopped on an error" }),
+  ).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Copy details" }));
   await waitFor(() => expect(copied).toHaveLength(1));
-  expect(copied[0]).toContain("Trackinizer web app: The page crashed: kinds.find is not a function\n");
+  expect(copied[0]).toContain(
+    "Trackinizer web app: The page crashed: kinds.find is not a function\n",
+  );
   expect(copied[0]).toContain("\nerror: TypeError: kinds.find is not a function\n");
-  expect(copied[0]).toMatch(/\n\S+ error render.crash error=TypeError message="kinds.find is not a function"/);
+  expect(copied[0]).toMatch(
+    /\n\S+ error render.crash error=TypeError message="kinds.find is not a function"/,
+  );
   fireEvent.click(screen.getByRole("button", { name: "Reload" }));
   expect(reload).toHaveBeenCalledTimes(1);
 });
@@ -206,8 +264,12 @@ test("a render crash shows what happened, with Copy details and Reload, in place
 test("boot logs the build's commit and the role", async () => {
   serve();
   render(<App assign={vi.fn()} />);
-  await screen.findByRole("button", { name: /^Account:/ });
-  expect(recentEvents().filter(({ event }) => event === "boot").at(-1)?.fields).toEqual({ commit: __COMMIT__, role: "writer" });
+  await screen.findByLabelText("Signed in");
+  expect(
+    recentEvents()
+      .filter(({ event }) => event === "boot")
+      .at(-1)?.fields,
+  ).toEqual({ commit: __COMMIT__, role: "writer" });
 });
 
 /** The command palette, when it is open. */
@@ -217,7 +279,7 @@ test("⌘K toggles the palette", async () => {
   serve();
   const user = userEvent.setup();
   render(<App assign={vi.fn()} />);
-  await screen.findByRole("button", { name: /^Account:/ });
+  await screen.findByLabelText("Signed in");
   await user.keyboard("{Control>}k{/Control}");
   expect(palette()).not.toBeNull();
   await user.keyboard("{Control>}k{/Control}");
@@ -228,25 +290,29 @@ test("⌘P opens the palette, and so does the search button", async () => {
   serve();
   const user = userEvent.setup();
   render(<App assign={vi.fn()} />);
-  await screen.findByRole("button", { name: /^Account:/ });
+  await screen.findByLabelText("Signed in");
   await user.keyboard("{Control>}p{/Control}");
   expect(palette()).not.toBeNull();
   await user.keyboard("{Escape}");
   expect(palette()).toBeNull();
-  await user.click(topBar().getByRole("button", { name: "Search" }));
+  await user.click(sidebar().getByRole("button", { name: "Search" }));
   expect(palette()).not.toBeNull();
 });
 
 test("the search button names this platform's shortcut: Ctrl+K off a Mac, ⌘K on one (WEB-19)", async () => {
   serve();
   render(<App assign={vi.fn()} />);
-  await screen.findByRole("button", { name: /^Account:/ });
-  expect(topBar().getByRole("button", { name: "Search" }).title).toBe("Search and commands (Ctrl+K)");
+  await screen.findByLabelText("Signed in");
+  expect(sidebar().getByRole("button", { name: "Search" }).title).toBe(
+    "Search and commands (Ctrl+K)",
+  );
   cleanup();
   vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
   render(<App assign={vi.fn()} />);
-  await screen.findByRole("button", { name: /^Account:/ });
-  expect(topBar().getByRole("button", { name: "Search" }).title).toBe("Search and commands (⌘K)");
+  await screen.findByLabelText("Signed in");
+  expect(sidebar().getByRole("button", { name: "Search" }).title).toBe(
+    "Search and commands (⌘K)",
+  );
   vi.restoreAllMocks();
 });
 
@@ -254,13 +320,18 @@ test("a search link opens the search page on its query, over no palette", async 
   serve({ "/api/web/search": () => Response.json([]) });
   history.replaceState(null, "", "#/list/Belief");
   render(<App assign={vi.fn()} />);
-  await screen.findByRole("button", { name: /^Account:/ });
+  await screen.findByLabelText("Signed in");
 
   act(() => {
     location.hash = "#/search/what%3F";
   });
-  expect((await screen.findByRole("heading", { level: 1, name: "Search: what? (0)" })).textContent).toBe("Search: what? (0)");
-  expect((screen.getByRole("searchbox", { name: "Search query" }) as HTMLInputElement).value).toBe("what?");
+  expect(
+    (await screen.findByRole("heading", { level: 1, name: "Search: what? (0)" }))
+      .textContent,
+  ).toBe("Search: what? (0)");
+  expect(
+    (screen.getByRole("searchbox", { name: "Search query" }) as HTMLInputElement).value,
+  ).toBe("what?");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
@@ -269,43 +340,55 @@ test("g then a goes to Activity; an old UI link lands on its v2 route", async ()
   const user = userEvent.setup();
   history.replaceState(null, "", "#/recent");
   render(<App assign={vi.fn()} />);
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Activity");
-  expect(location.hash).toBe("#/activity");
+  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+    "Activity",
+  );
+  expect(currentRoute()).toBe("#/activity");
 
-  await user.click(goLink("Issues"));
-  await waitFor(() => expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Issues"));
+  await user.click(sidebar().getByRole("link", { name: "Issues" }));
+  await waitFor(() =>
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Issues"),
+  );
   await user.keyboard("ga");
-  await waitFor(() => expect(location.hash).toBe("#/activity"));
+  await waitFor(() => expect(currentRoute()).toBe("#/activity"));
   expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Activity");
 });
 
-test("g then g goes to the graph, and its entry in Go marks it current", async () => {
+test("g then g goes to the graph, and its sidebar entry marks it current", async () => {
   serve();
   const user = userEvent.setup();
   history.replaceState(null, "", "#/list/Issue");
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Issues");
   await user.keyboard("gg");
-  await waitFor(() => expect(location.hash).toBe("#/graph"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"));
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Graph");
-  expect(goLink("Graph").getAttribute("aria-current")).toBe("page");
+  expect(
+    sidebar().getByRole("link", { name: "Graph" }).getAttribute("aria-current"),
+  ).toBe("page");
 });
 
 test("a link that names nothing says so and offers the graph, the home view", async () => {
   serve();
   history.replaceState(null, "", "#/nowhere");
   render(<App assign={vi.fn()} />);
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Not found");
-  expect(location.hash).toBe("#/nowhere");
-  expect(screen.getByRole("link", { name: "Go to the graph" }).getAttribute("href")).toBe("#/graph");
+  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+    "Not found",
+  );
+  expect(currentRoute()).toBe("#/nowhere");
+  expect(
+    screen.getByRole("link", { name: "Go to the graph" }).getAttribute("href"),
+  ).toBe("/trax/graph");
 });
 
 test("the logo leads home, to the graph", async () => {
   serve();
   history.replaceState(null, "", "#/list/Issue");
   render(<App assign={vi.fn()} />);
-  await screen.findByRole("button", { name: /^Account:/ });
-  expect(topBar().getByRole("link", { name: "Trackinizer, the graph" }).getAttribute("href")).toBe("#/graph");
+  await screen.findByLabelText("Signed in");
+  expect(
+    sidebar().getByRole("link", { name: "Trackinizer" }).getAttribute("href"),
+  ).toBe("/trax/graph");
 });
 
 test("a link straight to the create form opens it over the graph, the home view", async () => {
@@ -313,6 +396,120 @@ test("a link straight to the create form opens it over the graph, the home view"
   history.replaceState(null, "", "#/new/Issue");
   render(<App assign={vi.fn()} />);
   // Hidden from the accessibility tree once the form's dialog has opened over it.
-  expect((await screen.findByRole("heading", { level: 1, hidden: true })).textContent).toBe("Graph");
-  expect(location.hash).toBe("#/new/Issue");
+  expect(
+    (await screen.findByRole("heading", { level: 1, hidden: true })).textContent,
+  ).toBe("Graph");
+  expect(currentRoute()).toBe("#/new/Issue");
+});
+
+/** Ada, whose this tab is, and Sam, whom another tab of the same browser signs in as. */
+const ADA = "ada@example.com";
+const SAM = "sam@example.com";
+
+/**
+ * A site this tab and another share one session with, Ada's until the other tab signs in as Sam (`session.email`):
+ * it answers that account's profile, and refuses a request from a page read as another account, 409, as the server
+ * does (`auth.py`).
+ */
+function sharedSession() {
+  const session = { email: ADA };
+  const sent = stubFetch((request) => {
+    const path = new URL(request.url).pathname;
+    const page = request.headers.get("X-Page-Account");
+    if (page !== null && page !== session.email) {
+      return Response.json(
+        {
+          detail: { code: "other_account", message: `This page was read as ${page}.` },
+        },
+        { status: 409 },
+      );
+    }
+    if (path === "/api/me/profile")
+      return Response.json({ ...(BODIES[path] as object), email: session.email });
+    return Response.json(BODIES[path] ?? {});
+  });
+  return { session, sent };
+}
+
+/** Another tab signs the browser in as `email`, or out with "", which it says in this browser's storage. */
+function anotherTabSays(email: string) {
+  localStorage.setItem(SIGNED_IN_KEY, email);
+  dispatchEvent(new StorageEvent("storage", { key: SIGNED_IN_KEY, newValue: email }));
+}
+
+test("a tab left open as Ada stops showing her once another tab signs the browser in as Sam, and Reload reloads", async () => {
+  const { session, sent } = sharedSession();
+  const reload = vi.fn();
+  render(<App assign={vi.fn()} reload={reload} />);
+  await screen.findByRole("group", { name: "Signed in" });
+  const before = sent.length;
+  act(() => {
+    session.email = SAM;
+    anotherTabSays(SAM);
+  });
+  expect(
+    screen.getByRole("heading", { name: "Signed in as another account" }),
+  ).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toBe(
+    `This tab was opened as ${ADA}, and this browser is signed in as ${SAM} now. Nothing more is sent from it.`,
+  );
+  expect(screen.queryByRole("group", { name: "Signed in" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  expect(reload).toHaveBeenCalledOnce();
+  expect(sent.slice(before)).toEqual([]);
+});
+
+test("a tab left open as Ada says so once another tab signs the browser out", async () => {
+  sharedSession();
+  render(<App assign={vi.fn()} />);
+  await screen.findByRole("group", { name: "Signed in" });
+  act(() => anotherTabSays(""));
+  expect(screen.getByRole("heading", { name: "No longer signed in" })).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toBe(
+    `This tab was opened as ${ADA}, and this browser is no longer signed in as it. Nothing more is sent from it.`,
+  );
+});
+
+test("a read from a tab left open as Ada, before any tab says the browser is Sam's, is refused and shows the notice", async () => {
+  const { session, sent } = sharedSession();
+  render(<App assign={vi.fn()} />);
+  const user = userEvent.setup();
+  await screen.findByRole("group", { name: "Signed in" });
+  // The other tab's word has not come, as when the browser signed in where no tab of the app booted.
+  session.email = SAM;
+  await user.click(sidebar().getByRole("link", { name: "Issues" }));
+  expect(
+    await screen.findByRole("heading", { name: "No longer signed in" }),
+  ).toBeTruthy();
+  const after = sent.filter(
+    ({ path }) => path !== "/api/me/profile" && !(path in BODIES),
+  );
+  expect(after.length).toBeGreaterThan(0);
+  expect(new Set(after.map(({ headers }) => headers["x-page-account"]))).toEqual(
+    new Set([ADA]),
+  );
+});
+
+test("a tab whose browser signs in as Sam before its shell mounts closes the stream main.tsx opened", async () => {
+  localStorage.clear();
+  FakeEventSource.reset();
+  openEarlyStream();
+  const early = FakeEventSource.last;
+  // One boot read never lands, so the live layer, which would take the stream, has not mounted yet.
+  stubFetch((request) => {
+    const path = new URL(request.url).pathname;
+    return path === "/api/meta/edges"
+      ? new Promise<Response>(() => {})
+      : Response.json(BODIES[path]);
+  });
+  render(<App assign={vi.fn()} />);
+  await waitFor(() => expect(localStorage.getItem(SIGNED_IN_KEY)).toBe(ADA));
+  act(() => anotherTabSays(SAM));
+  expect(
+    screen.getByRole("heading", { name: "Signed in as another account" }),
+  ).toBeTruthy();
+  expect(early.readyState).toBe(2);
+  // Open, it would reconnect as the browser dropped it, naming Ada, and be refused for good.
+  early.drop();
+  expect(FakeEventSource.made).toEqual([early]);
 });

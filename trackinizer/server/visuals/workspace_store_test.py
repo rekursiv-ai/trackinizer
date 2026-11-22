@@ -17,21 +17,21 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, executed_sql, make_conn
-from trackinizer.lib.agent.types.sessions import (
-    AgentToAgentMessage,
+from trackinizer.sagent.session.types import (
+    AgentMessage,
     AssistantMessage,
     UserMessage,
 )
 from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.audience import reader_for
+from trackinizer.server.audience import caller_reader
 from trackinizer.server.config import Assistant
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import (
     IdempotencyReuseError,
     Inbound,
     InboundQueue,
 )
 from trackinizer.server.primitives import insert_inquiry
+from trackinizer.server.sql import load_sql
 from trackinizer.server.store.core import Store
 from trackinizer.server.visuals import workspace_store
 from trackinizer.server.visuals.catalog import default_catalog
@@ -85,7 +85,7 @@ if TYPE_CHECKING:
 
     from asyncpg import Record
 
-    from trackinizer.lib.agent.types.sessions import SessionRecord
+    from trackinizer.sagent.session.types import SessionRecord
     from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine
     from trackinizer.server.visuals.workspaces import WorkspaceState
     from trackinizer.wire.wire_science_chat import (
@@ -96,7 +96,7 @@ if TYPE_CHECKING:
 
 
 _USER: Final = uuid.UUID("11111111-1111-1111-1111-111111111111")
-_WORKSPACE: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
+_CANVAS: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
 _OTHER_USER: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
 _SOURCE_SQL: Final = (
     "SELECT id, revision, state, station FROM visual_workspaces "
@@ -160,7 +160,7 @@ def _set_flags(
         set_station_flags(
             cast("DatabaseEngine", engine),
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             hidden=hidden,
             pinned=pinned,
             inbound=InboundQueue(),
@@ -171,8 +171,9 @@ def _set_flags(
 
 async def _seed(engine: PGliteEngine) -> None:
     await reset_schema(engine)
-    await Store(engine, embed=StubEmbedder()).bootstrap()
+    await Store(engine).bootstrap()
     async with engine.acquire() as conn:
+        await conn.execute(load_sql("canvas_rename_down"))
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, 'user@example.com', 'T', 'writer', 'active')",
@@ -181,7 +182,7 @@ async def _seed(engine: PGliteEngine) -> None:
         await conn.execute(
             "INSERT INTO visual_workspaces (id, user_id, station, state) "
             "VALUES ($1, $2, $3, $4)",
-            _WORKSPACE,
+            _CANVAS,
             _USER,
             {"name": "unnamed-workstream#1"},
             {"visuals": []},
@@ -199,7 +200,9 @@ async def seeded_workspace(pglite_engine: PGliteEngine) -> PGliteEngine:
 async def empty_workspace_schema(pglite_engine: PGliteEngine) -> PGliteEngine:
     """Bootstrap only the schema; focused tests insert their rows directly."""
     await reset_schema(pglite_engine)
-    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    await Store(pglite_engine).bootstrap()
+    async with pglite_engine.acquire() as conn:
+        await conn.execute(load_sql("canvas_rename_down"))
     return pglite_engine
 
 
@@ -249,7 +252,7 @@ async def _apply(
     return await apply_workspace_operation(
         engine,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         key=key,
         body=body,
         catalog=default_catalog(),
@@ -315,7 +318,7 @@ async def test_the_provider_is_stored_and_a_replay_answers_with_it(
     read = await read_workspace(
         pglite_engine,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         inbound=inbound,
         assistant=None,
     )
@@ -367,7 +370,7 @@ async def _set_provider(engine: PGliteEngine, provider: str) -> None:
         await conn.execute(
             "UPDATE visual_workspaces SET state = state || "
             "jsonb_build_object('provider', $2::text) WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
             provider,
         )
 
@@ -379,12 +382,12 @@ async def test_a_cli_station_gets_a_chat_and_a_session_before_any_line(
 ) -> None:
     """The station's owner opens it under their key; a second call finds the same."""
     await _seed(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
+    store = Store(pglite_engine)
     assert (
         await open_chat_session(
             store,
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             assistant=None,
         )
         is None
@@ -394,7 +397,7 @@ async def test_a_cli_station_gets_a_chat_and_a_session_before_any_line(
         await open_chat_session(
             store,
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             assistant=None,
         )
         is None
@@ -404,13 +407,13 @@ async def test_a_cli_station_gets_a_chat_and_a_session_before_any_line(
     opened = await open_chat_session(
         store,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         assistant=None,
     )
     again = await open_chat_session(
         store,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         assistant=None,
     )
 
@@ -419,7 +422,7 @@ async def test_a_cli_station_gets_a_chat_and_a_session_before_any_line(
     read = await read_workspace(
         pglite_engine,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         inbound=InboundQueue(),
         assistant=None,
     )
@@ -504,7 +507,7 @@ def test_set_station_flags_hides_an_owned_station(
 
     assert changed is not None
     assert changed.hidden is True
-    assert calls == [(_WORKSPACE, _USER, {"hidden": True})]
+    assert calls == [(_CANVAS, _USER, {"hidden": True})]
 
 
 def test_set_station_flags_unhides_without_changing_pin(
@@ -541,7 +544,7 @@ def test_set_station_flags_is_owner_scoped(monkeypatch: pytest.MonkeyPatch) -> N
         set_station_flags(
             cast("DatabaseEngine", engine),
             user_id=uuid.UUID("99999999-9999-9999-9999-999999999999"),
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             hidden=True,
             inbound=InboundQueue(),
             assistant=None,
@@ -551,7 +554,7 @@ def test_set_station_flags_is_owner_scoped(monkeypatch: pytest.MonkeyPatch) -> N
     assert changed is None
     assert calls == [
         (
-            _WORKSPACE,
+            _CANVAS,
             uuid.UUID("99999999-9999-9999-9999-999999999999"),
             {"hidden": True},
         ),
@@ -568,7 +571,7 @@ async def test_workspace_operations_and_replays_keep_station_flags(
     changed = await set_station_flags(
         seeded_workspace,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         hidden=True,
         pinned=True,
         inbound=inbound,
@@ -594,7 +597,7 @@ def test_open_latest_skips_hidden_stations() -> None:
 
     state = _open(engine)
 
-    assert state.id == _STATION
+    assert state.id == _CANVAS
     assert asked == [(_LATEST, (_USER,))]
 
 
@@ -618,7 +621,7 @@ def test_open_latest_creates_a_scratch_station_when_all_existing_stations_are_hi
     engine.conn.fetch.side_effect = names
     state = _open(engine, workstream_id=workstream_id)
 
-    assert state.id == _STATION
+    assert state.id == _CANVAS
     assert [sql for sql, _ in asked] == [
         _LATEST,
         _LATEST,
@@ -645,7 +648,7 @@ async def test_opening_a_chat_unhides_its_station(
             "UPDATE visual_workspaces SET station = station || "
             "jsonb_build_object('conversation_id', $2::text, 'hidden', TRUE) "
             "WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
             str(conversation_id),
         )
 
@@ -658,7 +661,7 @@ async def test_opening_a_chat_unhides_its_station(
         assistant=None,
     )
 
-    assert opened.id == _WORKSPACE
+    assert opened.id == _CANVAS
     assert opened.hidden is False
 
 
@@ -714,7 +717,7 @@ async def test_clear_chat_copies_source_state_and_station_fields(
         await _insert_clear_source(
             conn,
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             station=source_station,
             state=source_state,
         )
@@ -723,7 +726,7 @@ async def test_clear_chat_copies_source_state_and_station_fields(
     copied = await clear_chat_station(
         empty_workspace_schema,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         key=key,
         inbound=InboundQueue(),
         assistant=None,
@@ -765,7 +768,7 @@ async def test_clear_chat_same_key_reuses_station_without_another_row(
         await _insert_clear_source(
             conn,
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             station={"name": "Source"},
             state={"visuals": []},
         )
@@ -773,7 +776,7 @@ async def test_clear_chat_same_key_reuses_station_without_another_row(
     first = await clear_chat_station(
         empty_workspace_schema,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         key=key,
         inbound=InboundQueue(),
         assistant=None,
@@ -781,7 +784,7 @@ async def test_clear_chat_same_key_reuses_station_without_another_row(
     second = await clear_chat_station(
         empty_workspace_schema,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         key=key,
         inbound=InboundQueue(),
         assistant=None,
@@ -820,7 +823,7 @@ async def test_clear_chat_different_keys_make_distinct_stations(
         await _insert_clear_source(
             conn,
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             station={"name": "Source"},
             state={"visuals": []},
         )
@@ -829,7 +832,7 @@ async def test_clear_chat_different_keys_make_distinct_stations(
         await clear_chat_station(
             empty_workspace_schema,
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             key=key,
             inbound=InboundQueue(),
             assistant=None,
@@ -870,14 +873,14 @@ async def test_clear_chat_returns_none_for_another_users_source(
         await _insert_clear_source(
             conn,
             user_id=_OTHER_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             station={"name": "Foreign source"},
             state={"visuals": []},
         )
     copied = await clear_chat_station(
         empty_workspace_schema,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         key=uuid.uuid4(),
         inbound=InboundQueue(),
         assistant=None,
@@ -901,7 +904,7 @@ def test_a_clear_copies_the_canvas_without_its_marks_into_a_new_station(
         "at": "2026-10-20T00:00:00Z",
     }
     source = _ROW | {
-        "id": _WORKSPACE,
+        "id": _CANVAS,
         "state": {"visuals": [], "marks": [mark], "marks_seq": 3},
         "station": {
             "name": "source",
@@ -920,10 +923,10 @@ def test_a_clear_copies_the_canvas_without_its_marks_into_a_new_station(
     copied = _clear_scripted(engine, key=key, inbound=inbound, assistant=assistant)
 
     assert copied is not None
-    assert copied.id == _STATION
+    assert copied.id == _CANVAS
     fetched = engine.conn.fetchrow.await_args_list
     assert fetched == [
-        call(_SOURCE_SQL, _WORKSPACE, _USER),
+        call(_SOURCE_SQL, _CANVAS, _USER),
         call(_CLEARED_SQL, _USER, str(key)),
         call(
             _INSERT_SQL,
@@ -973,12 +976,12 @@ def _clear_scripted(
     inbound: InboundQueue,
     assistant: Assistant | None = None,
 ) -> WorkspaceState | None:
-    """Clear ``_WORKSPACE`` for ``_USER`` through the fast store."""
+    """Clear ``_CANVAS`` for ``_USER`` through the fast store."""
     return asyncio.run(
         clear_chat_station(
             cast("DatabaseEngine", engine),
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             key=key,
             inbound=inbound,
             assistant=assistant,
@@ -992,7 +995,7 @@ def test_a_retried_clear_returns_the_station_its_key_made(
     """A key already used answers with its station, and inserts nothing."""
     key = uuid.uuid4()
     made = _ROW | {"station": {"name": "made", "clear_key": str(key)}}
-    engine, partner = _clear_store(monkeypatch, _ROW | {"id": _WORKSPACE}, made)
+    engine, partner = _clear_store(monkeypatch, _ROW | {"id": _CANVAS}, made)
     inbound = InboundQueue()
     assistant = Assistant(actor="scout", email="kb@example.com")
 
@@ -1001,7 +1004,7 @@ def test_a_retried_clear_returns_the_station_its_key_made(
     assert copied is not None
     assert copied.name == "made"
     assert engine.conn.fetchrow.await_args_list == [
-        call(_SOURCE_SQL, _WORKSPACE, _USER),
+        call(_SOURCE_SQL, _CANVAS, _USER),
         call(_CLEARED_SQL, _USER, str(key)),
     ]
     assert partner.await_args_list == [
@@ -1023,7 +1026,7 @@ def test_a_clear_of_a_station_the_user_does_not_own_reads_nothing_more(
 
     assert _clear_scripted(engine, key=uuid.uuid4(), inbound=InboundQueue()) is None
     assert engine.conn.fetchrow.await_args_list == [
-        call(_SOURCE_SQL, _WORKSPACE, _USER),
+        call(_SOURCE_SQL, _CANVAS, _USER),
     ]
     assert partner.await_args_list == []
 
@@ -1032,7 +1035,7 @@ def test_a_clear_whose_copy_never_lands_is_an_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An insert that no read ever sees raises instead of returning a missing station."""
-    engine, _ = _clear_store(monkeypatch, _ROW | {"id": _WORKSPACE}, None, *[None] * 8)
+    engine, _ = _clear_store(monkeypatch, _ROW | {"id": _CANVAS}, None, *[None] * 8)
 
     with pytest.raises(RuntimeError, match=r"^clear station insert was not visible$"):
         _ = _clear_scripted(engine, key=uuid.uuid4(), inbound=InboundQueue())
@@ -1065,7 +1068,7 @@ async def test_session_campaign_keeps_other_app_settings(
                 "agentsession_opened_by_api_key_id": None,
             },
         )
-    store = Store(empty_workspace_schema, embed=StubEmbedder())
+    store = Store(empty_workspace_schema)
 
     written = await set_session_campaign(
         store,
@@ -1094,7 +1097,7 @@ def test_settings_refs_carry_the_stored_workstream_suggestion(
     conn: AsyncMock = make_conn()
     conn.fetchrow = AsyncMock(
         return_value={
-            "id": _WORKSPACE,
+            "id": _CANVAS,
             "station": {
                 "name": "Charm",
                 "conversation_id": str(conversation_id),
@@ -1108,7 +1111,7 @@ def test_settings_refs_carry_the_stored_workstream_suggestion(
     )
     personal_settings = AsyncMock(return_value=personal)
     monkeypatch.setattr(workspace_store, "open_personal_settings", personal_settings)
-    store = Store(cast("DatabaseEngine", FakeEngine(conn)), embed=StubEmbedder())
+    store = Store(cast("DatabaseEngine", FakeEngine(conn)))
 
     refs = asyncio.run(
         settings_refs_for_chat(
@@ -1121,7 +1124,7 @@ def test_settings_refs_carry_the_stored_workstream_suggestion(
     )
 
     assert refs == WorkspaceSettingsRefs(
-        station_id=_WORKSPACE,
+        station_id=_CANVAS,
         workstream_issue_id=workstream_id,
         personal_artifact_id=personal,
         name="Charm",
@@ -1150,7 +1153,7 @@ def test_settings_refs_drop_a_suggestion_of_the_workstream_the_chat_is_in(
     conn: AsyncMock = make_conn()
     conn.fetchrow = AsyncMock(
         return_value={
-            "id": _WORKSPACE,
+            "id": _CANVAS,
             "station": {
                 "name": "Charm",
                 "conversation_id": str(conversation_id),
@@ -1167,7 +1170,7 @@ def test_settings_refs_drop_a_suggestion_of_the_workstream_the_chat_is_in(
         "open_personal_settings",
         AsyncMock(return_value=uuid.uuid4()),
     )
-    store = Store(cast("DatabaseEngine", FakeEngine(conn)), embed=StubEmbedder())
+    store = Store(cast("DatabaseEngine", FakeEngine(conn)))
 
     refs = asyncio.run(
         settings_refs_for_chat(
@@ -1187,7 +1190,7 @@ def test_a_settings_artifact_is_submitted_as_its_owners_pinned_row() -> None:
     """The settings row is submitted owned by its user and labelled as settings."""
     conn = cast("Conn", object())
     store = MagicMock()
-    store.submit_artifact = AsyncMock(return_value=_STATION)
+    store.submit_artifact = AsyncMock(return_value=_CANVAS)
 
     made = asyncio.run(
         workspace_store._make_settings_artifact(
@@ -1200,7 +1203,7 @@ def test_a_settings_artifact_is_submitted_as_its_owners_pinned_row() -> None:
         ),
     )
 
-    assert made == _STATION
+    assert made == _CANVAS
     assert store.submit_artifact.await_args == call(
         SubmitArtifact(
             title="Settings: user@example.com",
@@ -1241,7 +1244,7 @@ def test_a_fork_copies_every_layout_tab_page_and_the_provider() -> None:
     async def insert(sql: str, *args: object) -> object:
         assert sql.startswith("INSERT INTO visual_workspaces")
         inserted.append(args)
-        return {"id": _STATION}
+        return {"id": _CANVAS}
 
     engine.conn.fetchval.return_value = None
     engine.conn.fetch.return_value = list[dict[str, object]]()
@@ -1256,7 +1259,7 @@ def test_a_fork_copies_every_layout_tab_page_and_the_provider() -> None:
         ),
     )
 
-    assert made == _STATION
+    assert made == _CANVAS
     copied = StationData.model_validate(inserted[0][2])
     assert copied.conversation_id == conversation_id
     assert copied.page == "#/source"
@@ -1305,7 +1308,7 @@ async def _original(engine: PGliteEngine, *, audience: str = OPEN) -> _Original:
             assistant_key,
             _OTHER_USER,
         )
-    store = Store(engine, embed=StubEmbedder())
+    store = Store(engine)
     session = await store.submit_agentsession(
         SubmitAgentSession(
             title="Science chat",
@@ -1324,7 +1327,7 @@ async def _original(engine: PGliteEngine, *, audience: str = OPEN) -> _Original:
         (
             "sagent",
             [
-                AgentToAgentMessage(sender=_ME, content="q1", timestamp=_minute(1)),
+                AgentMessage(sender=_ME, content="q1", timestamp=_minute(1)),
                 AssistantMessage(content="a1", timestamp=_minute(3)),
             ],
         ),
@@ -1379,10 +1382,10 @@ async def _fork(
 ) -> ChatSent | None:
     """Fork the original at a2, its claude part's answer, from the user's station."""
     return await send_chat_line(
-        Store(engine, embed=StubEmbedder()),
+        Store(engine),
         user_id=_USER,
         body=ChatSend(
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             text="what if a2 were wrong?",
             fork=ChatForkAt(session_id=original.session, part=1, idx=1),
         ),
@@ -1391,7 +1394,7 @@ async def _fork(
         source_role="writer",
         inbound=inbound,
         assistant=_KB,
-        reader=reader_for(
+        reader=caller_reader(
             _ME,
             audiences=frozenset({OPEN, PRIVATE}),
             admin=False,
@@ -1405,7 +1408,7 @@ async def _fork(
 
 async def _lines(engine: PGliteEngine, session: uuid.UUID) -> list[tuple[str, ...]]:
     """Return each part's format and what each of its records says, in part order."""
-    store = Store(engine, embed=StubEmbedder())
+    store = Store(engine)
     return [
         (
             manifest.format,
@@ -1605,7 +1608,7 @@ async def test_a_fork_under_a_used_key_is_refused_and_opens_nothing(
 
 async def _service(engine: PGliteEngine, original: _Original) -> uuid.UUID:
     """Open the assistant's service session, under its own key."""
-    return await Store(engine, embed=StubEmbedder()).submit_agentsession(
+    return await Store(engine).submit_agentsession(
         SubmitAgentSession(title="scout", owner=_KB.actor, account=_KB.email),
         audience=OPEN,
         api_key_id=original.assistant_key,
@@ -1675,7 +1678,7 @@ def test_moving_a_station_sets_workstream_and_clears_its_suggestion(
             cast("DatabaseEngine", engine),
             user_id=_USER,
             email="user@example.com",
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             workstream_id=workstream_id,
             inbound=InboundQueue(),
             assistant=None,
@@ -1687,10 +1690,10 @@ def test_moving_a_station_sets_workstream_and_clears_its_suggestion(
     assert state.suggestion is None
     assert len(calls) == 1
     assert "- 'suggestion'" in calls[0][0]
-    assert calls[0][1] == (_WORKSPACE, _USER, str(workstream_id))
+    assert calls[0][1] == (_CANVAS, _USER, str(workstream_id))
 
 
-_STATION: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
+_CANVAS: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
 _LATEST: Final = (
     "SELECT id, revision, state, station FROM visual_workspaces "
     "WHERE user_id = $1 AND coalesce((station->>'hidden')::boolean, FALSE) "
@@ -1698,7 +1701,7 @@ _LATEST: Final = (
     "ORDER BY modified_at DESC, id DESC LIMIT 1"
 )
 _ROW: Final[dict[str, object]] = {
-    "id": _STATION,
+    "id": _CANVAS,
     "revision": 4,
     "state": {"visuals": []},
     "station": {"name": "tails", "page": "#/issue/7"},
@@ -1753,7 +1756,7 @@ def test_the_station_changed_last_is_read_and_nothing_is_written() -> None:
 
     assert asked == [(_LATEST, (_USER,))]
     assert (state.id, state.revision, state.name, state.page) == (
-        _STATION,
+        _CANVAS,
         4,
         "tails",
         "#/issue/7",
@@ -1792,7 +1795,7 @@ def test_a_user_with_no_station_gets_the_first_one_named_and_read_back() -> None
     # The redesign's rule: a new station opens on the empty black stage.
     assert WorkspaceData.model_validate(data).visuals == []
     assert asked[3] == (_LATEST, (_USER,))
-    assert state.id == _STATION
+    assert state.id == _CANVAS
     assert state.assistant is None
     assert state.partner is None
 
@@ -1826,7 +1829,7 @@ def test_open_latest_reuses_a_station_that_appears_during_the_names_query() -> N
 
     state = _open(engine)
 
-    assert state.id == _STATION
+    assert state.id == _CANVAS
     assert asked == [(_LATEST, (_USER,)), (_LATEST, (_USER,))]
     assert not any(sql.startswith("INSERT") for sql in executed_sql(engine.conn))
 
@@ -1870,7 +1873,7 @@ async def test_assistant_name_uses_the_next_free_suffix(
         await conn.execute(
             "INSERT INTO visual_workspaces (id, user_id, state, station) VALUES "
             "($1, $2, $3, $4), ($5, $2, $3, $6), ($7, $2, $3, $8)",
-            _WORKSPACE,
+            _CANVAS,
             _USER,
             {"visuals": []},
             {"name": "unnamed-workstream#1", "conversation_id": str(conversation_id)},
@@ -1891,7 +1894,7 @@ async def test_assistant_name_uses_the_next_free_suffix(
     async with empty_workspace_schema.acquire() as conn:
         station = await conn.fetchval(
             "SELECT station FROM visual_workspaces WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
         )
     assert StationData.model_validate(station).name == "Research (3)"
 
@@ -1916,14 +1919,14 @@ async def test_assistant_name_leaves_an_already_named_station_unchanged(
         await conn.execute(
             "INSERT INTO visual_workspaces (id, user_id, state, station) "
             "VALUES ($1, $2, $3, $4)",
-            _WORKSPACE,
+            _CANVAS,
             _USER,
             {"visuals": []},
             {"name": "Research", "conversation_id": str(conversation_id)},
         )
         version_before = await conn.fetchval(
             "SELECT xmin::text FROM visual_workspaces WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
         )
 
     _ = await name_unnamed_station(
@@ -1937,11 +1940,11 @@ async def test_assistant_name_leaves_an_already_named_station_unchanged(
     async with empty_workspace_schema.acquire() as conn:
         station = await conn.fetchval(
             "SELECT station FROM visual_workspaces WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
         )
         version_after = await conn.fetchval(
             "SELECT xmin::text FROM visual_workspaces WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
         )
     assert StationData.model_validate(station).name == "Research"
     assert version_after == version_before
@@ -1967,7 +1970,7 @@ async def test_suggestion_updates_chat_station_without_creating_an_issue(
         await conn.execute(
             "INSERT INTO visual_workspaces (id, user_id, state, station) "
             "VALUES ($1, $2, $3, $4)",
-            _WORKSPACE,
+            _CANVAS,
             _USER,
             {"visuals": []},
             {"name": "Research", "conversation_id": str(conversation_id)},
@@ -1988,7 +1991,7 @@ async def test_suggestion_updates_chat_station_without_creating_an_issue(
     async with empty_workspace_schema.acquire() as conn:
         station = await conn.fetchval(
             "SELECT station FROM visual_workspaces WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
         )
         issues_after = await conn.fetchval(
             "SELECT count(*) FROM inquiries WHERE kind = 'Issue'",
@@ -2025,7 +2028,7 @@ async def test_a_suggestion_of_the_chats_own_workstream_reads_back_as_none(
         await conn.execute(
             "INSERT INTO visual_workspaces (id, user_id, state, station) "
             "VALUES ($1, $2, $3, $4)",
-            _WORKSPACE,
+            _CANVAS,
             _USER,
             {"visuals": []},
             {
@@ -2091,7 +2094,7 @@ async def test_boxes_are_stored_read_back_and_dropped_by_a_cleared_station(
     read = await read_workspace(
         seeded_workspace,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         inbound=inbound,
         assistant=None,
     )
@@ -2103,7 +2106,7 @@ async def test_boxes_are_stored_read_back_and_dropped_by_a_cleared_station(
     copied = await clear_chat_station(
         seeded_workspace,
         user_id=_USER,
-        workspace_id=_WORKSPACE,
+        workspace_id=_CANVAS,
         key=uuid.uuid4(),
         inbound=inbound,
         assistant=None,
@@ -2151,7 +2154,7 @@ def _clear_source() -> dict[str, object]:
         },
     )
     return {
-        "id": _WORKSPACE,
+        "id": _CANVAS,
         "revision": 9,
         "state": data.model_dump(mode="json"),
         "station": {
@@ -2215,7 +2218,7 @@ def _clear(
         clear_chat_station(
             cast("DatabaseEngine", FakeEngine(conn)),
             user_id=_USER,
-            workspace_id=_WORKSPACE,
+            workspace_id=_CANVAS,
             key=_CLEAR_KEY,
             inbound=_CLEAR_INBOUND,
             assistant=_KB,
@@ -2239,12 +2242,12 @@ def test_a_clear_copies_the_canvas_without_marks_chat_or_flags(
         ),
         _INSERT_STATION,
     ]
-    assert clearing.asked[0][1] == (_WORKSPACE, _USER)
+    assert clearing.asked[0][1] == (_CANVAS, _USER)
     assert clearing.asked[1][1] == (_USER, str(_CLEAR_KEY))
     assert clearing.asked[2][1] == (_USER, "unnamed-workstream#%")
     new_id, owner, station, data = clearing.asked[3][1]
     assert isinstance(new_id, uuid.UUID)
-    assert new_id != _WORKSPACE
+    assert new_id != _CANVAS
     assert owner == _USER
     assert station == {
         "name": "unnamed-workstream#2",
@@ -2274,7 +2277,7 @@ def test_a_clear_copies_the_canvas_without_marks_chat_or_flags(
 def test_a_clear_retried_under_its_key_returns_the_first_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first = _clear_source() | {"id": _STATION}
+    first = _clear_source() | {"id": _CANVAS}
 
     state, clearing = _clear(monkeypatch, source=_clear_source(), cleared=first)
 
@@ -2289,7 +2292,7 @@ def test_a_clear_retried_under_its_key_returns_the_first_copy(
         },
     ]
     assert state is not None
-    assert state.id == _STATION
+    assert state.id == _CANVAS
 
 
 def test_a_clear_of_a_station_the_user_does_not_own_finds_nothing(
@@ -2317,7 +2320,7 @@ class _Submitted:
 
     async def submit_artifact(self, body: SubmitArtifact, **how: object) -> uuid.UUID:
         self.calls.append((body, how))
-        return _STATION
+        return _CANVAS
 
 
 def test_a_settings_artifact_is_its_owners_with_the_settings_label() -> None:
@@ -2336,7 +2339,7 @@ def test_a_settings_artifact_is_its_owners_with_the_settings_label() -> None:
         ),
     )
 
-    assert made == _STATION
+    assert made == _CANVAS
     assert store.calls == [
         (
             SubmitArtifact(
@@ -2363,7 +2366,7 @@ async def _claude_chat(engine: PGliteEngine) -> tuple[uuid.UUID, uuid.UUID]:
     await _seed(engine)
     own_key = await _owner_key(engine)
     conversation = uuid.uuid4()
-    session = await Store(engine, embed=StubEmbedder()).submit_agentsession(
+    session = await Store(engine).submit_agentsession(
         SubmitAgentSession(
             title="Science chat",
             owner=chat_actor(conversation),
@@ -2382,7 +2385,7 @@ async def _claude_chat(engine: PGliteEngine) -> tuple[uuid.UUID, uuid.UUID]:
             "UPDATE visual_workspaces SET state = state || jsonb_build_object("
             "'provider', 'claude', 'marks_seq', 3), station = station || "
             "jsonb_build_object('conversation_id', $2::text) WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
             str(conversation),
         )
         await conn.execute(
@@ -2423,10 +2426,10 @@ async def _post(
     """Post from the user's station, or the sharer's, as a browser does."""
     poster = _SHARER if sharer else _ME
     return await send_chat_line(
-        Store(engine, embed=StubEmbedder()),
+        Store(engine),
         user_id=_SHARER_ID if sharer else _USER,
         body=ChatSend(
-            workspace_id=_SHARER_STATION if sharer else _WORKSPACE,
+            workspace_id=_SHARER_STATION if sharer else _CANVAS,
             text=text,
             kind=kind,
             payload=payload,
@@ -2437,7 +2440,7 @@ async def _post(
         source_role="writer",
         inbound=inbound,
         assistant=None,
-        reader=reader_for(
+        reader=caller_reader(
             poster,
             audiences=frozenset({OPEN}),
             admin=False,
@@ -2453,7 +2456,7 @@ async def _marks_sent(engine: PGliteEngine) -> int:
     async with engine.acquire() as conn:
         state = await conn.fetchval(
             "SELECT state FROM visual_workspaces WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
         )
     return WorkspaceData.model_validate(state).marks_sent
 
@@ -2567,7 +2570,7 @@ async def test_an_assistant_station_refuses_a_command_before_it_binds_a_chat(
     async with seeded_workspace.acquire() as conn:
         station = await conn.fetchval(
             "SELECT station FROM visual_workspaces WHERE id = $1",
-            _WORKSPACE,
+            _CANVAS,
         )
     assert StationData.model_validate(station).conversation_id is None
 

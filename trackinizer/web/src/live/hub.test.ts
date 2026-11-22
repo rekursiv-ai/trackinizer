@@ -4,7 +4,7 @@ import { bootQueries } from "../app/boot";
 import { LiveHub } from "./hub";
 import type { Batch, Later } from "./serial";
 import { testClient } from "./testing";
-import { AGREED } from "../api/testing";
+import { must } from "../must";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -31,7 +31,12 @@ function hubWithQuery() {
 test("every registered query gets every batch, one second after its first id", async () => {
   const { hub, batches } = hubWithQuery();
   const other: string[][] = [];
-  hub.register({ update: async ({ ids }) => (other.push([...ids]), null) });
+  hub.register({
+    update: async ({ ids }) => {
+      other.push([...ids]);
+      return null;
+    },
+  });
   hub.change("a");
   hub.change("b");
   hub.change("a");
@@ -49,16 +54,32 @@ test("the first connect recovers the gap, as the stream replays nothing from bef
   expect(batches).toEqual([{ ids: [], gap: true }]);
   // A query registered once the stream is open reads after it, and misses nothing.
   const later: boolean[] = [];
-  hub.register({ update: async ({ gap }) => (later.push(gap), null) });
+  hub.register({
+    update: async ({ gap }) => {
+      later.push(gap);
+      return null;
+    },
+  });
   hub.change("a");
   await vi.advanceTimersByTimeAsync(1_000);
   expect(later).toEqual([false]);
 });
 
 /** A query that records whether each batch it gets asks for a gap recovery. */
-function gaps(): { query: { update: (batch: Batch) => Promise<Later | null> }; gaps: boolean[] } {
+function gaps(): {
+  query: { update: (batch: Batch) => Promise<Later | null> };
+  gaps: boolean[];
+} {
   const seen: boolean[] = [];
-  return { query: { update: async ({ gap }) => (seen.push(gap), null) }, gaps: seen };
+  return {
+    query: {
+      update: async ({ gap }) => {
+        seen.push(gap);
+        return null;
+      },
+    },
+    gaps: seen,
+  };
 }
 
 test("the first open recovers only queries whose reads started before it, and a late query that holds one", async () => {
@@ -188,9 +209,19 @@ test("live updates count as paused once the stream has been down for 10 s, and r
 
 test("a refused stream refetches the profile, whose 401 would end the session", async () => {
   const { client, hub } = hubWithQuery();
-  const profile = vi.fn(async () => ({ user_id: "u", email: "a@b", name: "A", role: "viewer", last_login: null, visual_workspace_enabled: false, ...AGREED }));
+  const profile = vi.fn(async () => ({
+    user_id: "u",
+    email: "a@b",
+    name: "A",
+    role: "viewer",
+    last_login: null,
+  }));
   client.setQueryData(bootQueries.profile.queryKey, await profile());
-  new QueryObserver(client, { ...bootQueries.profile, queryFn: profile, staleTime: Infinity }).subscribe(() => {});
+  new QueryObserver(client, {
+    ...bootQueries.profile,
+    queryFn: profile,
+    staleTime: Infinity,
+  }).subscribe(() => {});
   hub.refuse();
   await vi.advanceTimersByTimeAsync(0);
   expect(profile).toHaveBeenCalledTimes(2);
@@ -208,8 +239,24 @@ test("queries registered under one name are one query until the last leaves", as
   const hub = new LiveHub(client);
   const first: string[][] = [];
   const second: string[][] = [];
-  const a = hub.register({ update: async ({ ids }) => (first.push([...ids]), null) }, { shareAs: "detail x" });
-  const b = hub.register({ update: async ({ ids }) => (second.push([...ids]), null) }, { shareAs: "detail x" });
+  const a = hub.register(
+    {
+      update: async ({ ids }) => {
+        first.push([...ids]);
+        return null;
+      },
+    },
+    { shareAs: "detail x" },
+  );
+  const b = hub.register(
+    {
+      update: async ({ ids }) => {
+        second.push([...ids]);
+        return null;
+      },
+    },
+    { shareAs: "detail x" },
+  );
   hub.change("x");
   await vi.advanceTimersByTimeAsync(1_000);
   expect([first, second]).toEqual([[["x"]], []]);
@@ -243,8 +290,8 @@ test("a hidden tab holds at most 100 ids; past that it recovers the gap on retur
   hub.show();
   await vi.advanceTimersByTimeAsync(0);
   expect(batches).toHaveLength(1);
-  expect(batches[0]!.gap).toBe(true);
-  expect(batches[0]!.ids.length).toBeLessThanOrEqual(100);
+  expect(must(batches[0]).gap).toBe(true);
+  expect(must(batches[0]).ids.length).toBeLessThanOrEqual(100);
 });
 
 test("the browser coming back online recovers the gap", async () => {

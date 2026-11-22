@@ -17,7 +17,7 @@ type Renderer = { readonly version: number; readonly Component: ComponentType<Re
 const ContextGraph = lazyView(() => import("./ContextGraph"), (module) => module.ContextGraph);
 const Knowledge = lazyView(() => import("./Knowledge"), (module) => module.Knowledge);
 const Timeline = lazyView(() => import("./Timeline"), (module) => module.Timeline);
-const Artifact = lazyView(() => import("./Artifact"), (module) => module.Artifact);
+const Artifact = lazyView(() => import("./ArtifactVisual"), (module) => module.Artifact);
 const Summary = lazyView(() => import("./Summary"), (module) => module.Summary);
 const Files = lazyView(() => import("./Files"), (module) => module.Files);
 const Terminal = lazyView(() => import("./Terminal"), (module) => module.TerminalTile);

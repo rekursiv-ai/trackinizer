@@ -1,28 +1,34 @@
-"""The welcome flow's agreement, recorded per user against the rules version.
+"""A user's preferences: the defaults, a change, a reset, and who sees them.
 
-The rules version is Issue#1's last change, so editing the rules makes a recorded
-agreement stale. The whole app answers each request over PGlite.
+The whole app answers each request over PGlite.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fastapi import Response
 from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.canvas_test_support import (
+from trackinizer.server.api.conftest import (
+    TEST_USER_EMAIL,
+    TEST_USER_ID,
+    clear_identity_override,
+    install_identity,
+    make_test_identity,
+    patch_state,
+)
+from trackinizer.server.api.session_test_support import (
     OTHER_EMAIL,
     OTHER_KEY_ID,
     OTHER_USER_ID,
     seed_accounts,
 )
-from trackinizer.server.api.conftest import (
-    TEST_USER_ID,
-    install_identity,
-    make_test_identity,
-)
+from trackinizer.server.auth import PAGE_ACCOUNT_HEADER, PAGE_USER_PARAM
+from trackinizer.server.config import Config
+from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
 
 
 if TYPE_CHECKING:
@@ -30,7 +36,6 @@ if TYPE_CHECKING:
 
     import httpx2
 
-    from trackinizer.server.auth import Role
     from trackinizer.server.store.core import Store
 
 
@@ -41,232 +46,67 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-
-async def test_a_new_user_has_agreed_to_nothing(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-
-    profile = await _profile(client)
-
-    assert profile["acknowledged_at"] is None
-    assert profile["acknowledged_rules_version"] is None
-    assert profile["rules_issue_id"] is None
-    assert profile["rules_version"] is None
-
-
-async def test_an_unlocked_rules_issue_is_not_in_force(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    await _rules_issue(client)
-
-    profile = await _profile(client)
-    agreed = await client.put("/api/me/acknowledge", json={"rules_version": "x"})
-
-    assert profile["rules_issue_id"] is None
-    assert profile["rules_version"] is None
-    assert agreed.status_code == 409
-
-
-async def test_locking_the_rules_puts_them_in_force(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    rules = await _rules_issue(client)
-    before = await _profile(client)
-
-    await _lock(client, rules, locked=True)
-    after = await _profile(client)
-    agreed = await _agree(client)
-
-    assert before["rules_version"] is None
-    assert after["rules_issue_id"] == rules
-    assert isinstance(after["rules_version"], str)
-    assert agreed.status_code == 200, agreed.text
-
-
-async def test_unlocking_the_rules_takes_them_out_of_force(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    rules = await _rules_issue(client)
-    await _lock(client, rules, locked=True)
-
-    await _lock(client, rules, locked=False)
-
-    assert (await _profile(client))["rules_version"] is None
-
-
-async def test_agreeing_records_the_current_rules_version(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    rules = await _rules_issue(client)
-    await _lock(client, rules, locked=True)
-
-    agreed = await _agree(client)
-    profile = await _profile(client)
-
-    assert agreed.status_code == 200, agreed.text
-    assert profile["rules_issue_id"] == rules
-    assert profile["acknowledged_rules_version"] == profile["rules_version"]
-    assert profile["acknowledged_rules_version"] != "none"
-    assert isinstance(profile["acknowledged_at"], str)
-    assert from_plain(agreed.json(), dict[str, object]) == {
-        "acknowledged_at": profile["acknowledged_at"],
-        "acknowledged_rules_version": profile["rules_version"],
-    }
-
-
-async def test_editing_the_rules_makes_the_agreement_stale(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    rules = await _rules_issue(client)
-    await _lock(client, rules, locked=True)
-    await _agree(client)
-    agreed = await _profile(client)
-
-    edit = await client.put(
-        f"/api/inquiries/{rules}/description",
-        json={"value": "new rules"},
-    )
-    stale = await _profile(client)
-
-    assert edit.status_code == 200, edit.text
-    assert stale["rules_version"] != agreed["rules_version"]
-    assert stale["acknowledged_rules_version"] == agreed["rules_version"]
-
-
-async def test_locking_the_rules_again_leaves_the_version_alone(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    rules = await _rules_issue(client)
-    await _lock(client, rules, locked=True)
-    before = await _profile(client)
-
-    await _lock(client, rules, locked=False)
-    await _lock(client, rules, locked=True)
-    after = await _profile(client)
-
-    assert after["rules_version"] == before["rules_version"]
-
-
-async def test_editing_a_child_of_the_rules_leaves_the_version_alone(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    rules = await _rules_issue(client)
-    await _lock(client, rules, locked=True)
-    child = await client.post(
-        "/api/inquiries/issue",
-        json={"title": "child", "narrows": [[rules, None]]},
-    )
-    assert child.status_code == 201, child.text
-    child_id = from_plain(from_plain(child.json(), dict[str, object])["id"], str)
-    before = await _profile(client)
-
-    edit = await client.put(
-        f"/api/inquiries/{child_id}/title",
-        json={"value": "renamed"},
-    )
-    after = await _profile(client)
-
-    assert edit.status_code == 200, edit.text
-    assert after["rules_version"] == before["rules_version"]
-
-
-async def test_agreeing_to_rules_that_changed_since_they_were_read_is_refused(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    rules = await _rules_issue(client)
-    await _lock(client, rules, locked=True)
-    read = await _profile(client)
-    await client.put(f"/api/inquiries/{rules}/description", json={"value": "new"})
-
-    refused = await client.put(
-        "/api/me/acknowledge",
-        json={"rules_version": read["rules_version"]},
-    )
-    profile = await _profile(client)
-
-    assert refused.status_code == 409, refused.text
-    assert profile["acknowledged_rules_version"] is None
-
-
-async def test_a_key_cannot_agree_for_its_user(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    install_identity(make_test_identity(role="writer"))
-
-    refused = await client.put(
-        "/api/me/acknowledge",
-        json={"rules_version": "none"},
-    )
-
-    assert refused.status_code == 403
-
-
-def _as(role: Role) -> None:
-    install_identity(make_test_identity(role=role, api_key_id=None))
-
-
-async def _rules_issue(client: httpx2.AsyncClient) -> str:
-    """Create the first Issue, which is the rules."""
-    made = await client.post("/api/inquiries/issue", json={"title": "Rules"})
-    assert made.status_code == 201, made.text
-    return from_plain(from_plain(made.json(), dict[str, object])["id"], str)
-
-
-async def _lock(client: httpx2.AsyncClient, target: str, *, locked: bool) -> None:
-    """Lock or unlock a row as an admin, who then makes the requests that follow."""
-    _as("admin")
-    put = await client.put(
-        f"/api/admin/inquiries/{target}/lock",
-        json={"locked": locked},
-    )
-    assert put.status_code == 200, put.text
-
-
-async def _agree(client: httpx2.AsyncClient) -> httpx2.Response:
-    """Agree to the rules version the caller's profile shows."""
-    shown = await _profile(client)
-    return await client.put(
-        "/api/me/acknowledge",
-        json={"rules_version": shown["rules_version"]},
-    )
-
-
-async def _profile(client: httpx2.AsyncClient) -> dict[str, object]:
-    response = await client.get("/api/me/profile")
-    assert response.status_code == 200, response.text
-    return from_plain(response.json(), dict[str, object])
+_SESSION_SECRET = "session-signing-secret"  # noqa: S105 -- test fixture.
+# A browser sends its page's origin with every write; a session write without it is refused.
+_ORIGIN = "http://testserver"
 
 
 _DEFAULTS: dict[str, object] = {
     "theme": "dark",
     "skin": "default",
+    "scanlines": True,
+    "terminal_colors": {
+        "text": "#00ff00",
+        "background": "#000000",
+        "bold": None,
+        "palette": [
+            "#171421",
+            "#c01c28",
+            "#26a269",
+            "#a2734c",
+            "#12488b",
+            "#a347ba",
+            "#2aa1b3",
+            "#d0cfcc",
+            "#5e5c64",
+            "#f66151",
+            "#33d17a",
+            "#e9ad0c",
+            "#2a7bde",
+            "#c061cb",
+            "#33c7de",
+            "#ffffff",
+        ],
+        "bold_is_bright": True,
+    },
     "chat_side": "left",
+    "app_bar": "top",
+    "app_bar_width": 220,
+    "app_bar_folded": False,
+    "app_bar_pinned": True,
+    "font": "system",
+    "interface_text_size": 14,
+    "chat_text_size": 13,
+    "canvas_text_size": 14,
+    "display_text_sizes": {},
     "highlight_mentions": True,
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
     "home": "graph",
-    "chat_provider": "assistant",
-    "chat_tool_calls": False,
+    "assistant_prompt": "sagent",
+    "cli_folder": "",
+    "default_host": "",
+    "chat_view": {
+        "view": "chat",
+        "density": "auto",
+        "thinking": False,
+        "output_lines": "tool",
+        "times": False,
+        "tool_groups": "open",
+    },
+    "autofix": True,
+    "automerge": False,
+    "hide_closed_pulls": True,
     "stars": [],
     "views": [],
     "console_views": [],
@@ -274,10 +114,19 @@ _DEFAULTS: dict[str, object] = {
     "people": {},
     "read": {"boundary": None, "marks": []},
     "collapsed": [],
+    "dismissed": [],
+    "unread_tabs": [],
     "lens": None,
     "drafts": {},
     "create_draft": None,
-    "workstreams": {"order": [], "pinned": [], "hidden": []},
+    "workspaces": {
+        "order": [],
+        "hidden": [],
+        "colors": {},
+        "expanded": [],
+        "tabs": [],
+        "last_canvas": {},
+    },
     "settings_artifact_id": None,
 }
 
@@ -318,7 +167,8 @@ async def test_a_retired_key_a_user_still_has_stored_is_ignored_then_dropped(
     await seed_accounts(store)
     async with store.engine.acquire() as conn:
         await conn.execute(
-            'UPDATE users SET preferences = \'{"chat_style": "terminal"}\'::jsonb '
+            "UPDATE users SET preferences = "
+            '\'{"chat_style": "terminal", "chat_tool_calls": false}\'::jsonb '
             "WHERE id = $1",
             TEST_USER_ID,
         )
@@ -327,7 +177,9 @@ async def test_a_retired_key_a_user_still_has_stored_is_ignored_then_dropped(
     changed = await client.patch("/api/me/preferences", json={"theme": "light"})
 
     assert changed.status_code == 200, changed.text
-    assert "chat_style" not in from_plain(changed.json(), dict[str, object])
+    answered = from_plain(changed.json(), dict[str, object])
+    assert "chat_style" not in answered
+    assert "chat_tool_calls" not in answered
     assert await _stored_preferences(store, TEST_USER_ID) == {"theme": "light"}
 
 
@@ -490,6 +342,93 @@ async def test_an_admin_resets_a_users_preferences_and_never_sees_them(
     assert "terminal" not in listed.text
     assert (reset.status_code, reset.content) == (204, b"")
     assert await _stored_preferences(store, TEST_USER_ID) is None
+
+
+async def test_a_change_from_a_page_read_as_another_account_writes_nothing(
+    pglite_route_client: _Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tab left open as one account sends the change once another signs in."""
+    client, store = pglite_route_client
+    await _signed_in_as_other(client, store, monkeypatch)
+
+    stale = await client.patch(
+        "/api/me/preferences",
+        json={"theme": "light"},
+        headers={PAGE_ACCOUNT_HEADER: TEST_USER_EMAIL, "Origin": _ORIGIN},
+    )
+    own = await client.patch(
+        "/api/me/preferences",
+        json={"skin": "dos"},
+        headers={PAGE_ACCOUNT_HEADER: OTHER_EMAIL, "Origin": _ORIGIN},
+    )
+
+    assert stale.status_code == 409, stale.text
+    refusal = from_plain(stale.json(), dict[str, dict[str, str]])["detail"]
+    assert refusal["code"] == "other_account"
+    assert own.status_code == 200, own.text
+    assert await _stored_preferences(store, OTHER_USER_ID) == {"skin": "dos"}
+    assert await _stored_preferences(store, TEST_USER_ID) is None
+
+
+async def test_a_read_naming_another_page_user_is_refused(
+    pglite_route_client: _Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale tab's stream names its user in the URL, which it reads as nobody.
+
+    An ``EventSource`` sends no header, so its URL carries ``page_user``; every stream
+    route resolves its caller through ``request_user`` before it streams, as this read does.
+    """
+    client, store = pglite_route_client
+    await _signed_in_as_other(client, store, monkeypatch)
+
+    stale = await client.get(
+        "/api/me/profile",
+        params={PAGE_USER_PARAM: str(TEST_USER_ID)},
+    )
+    own = await client.get(
+        "/api/me/profile",
+        params={PAGE_USER_PARAM: str(OTHER_USER_ID)},
+    )
+
+    assert stale.status_code == 409, stale.text
+    refusal = from_plain(stale.json(), dict[str, dict[str, str]])["detail"]
+    assert refusal["code"] == "other_account"
+    assert own.status_code == 200, own.text
+
+
+async def _signed_in_as_other(
+    client: httpx2.AsyncClient,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sign the browser in as ``OTHER_USER_ID`` by its session cookie."""
+    await seed_accounts(store)
+    clear_identity_override()
+    patch_state(
+        monkeypatch,
+        "config",
+        Config(session_secret=_SESSION_SECRET, session_max_age_seconds=600),
+    )
+    signed = Response()
+    set_session_cookie(
+        signed,
+        user_id=str(OTHER_USER_ID),
+        generation=0,
+        secret=_SESSION_SECRET,
+        max_age_seconds=600,
+    )
+    client.cookies.set(
+        SESSION_COOKIE_NAME,
+        signed.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1],
+    )
+
+
+async def _profile(client: httpx2.AsyncClient) -> dict[str, object]:
+    response = await client.get("/api/me/profile")
+    assert response.status_code == 200, response.text
+    return from_plain(response.json(), dict[str, object])
 
 
 async def _stored_preferences(store: Store, user_id: uuid.UUID) -> object:

@@ -1,6 +1,7 @@
 # Minimal transformers stub: ONLY the three symbols the public trackinizer
-# package imports (`server/embedders/*.py`). transformers ships `py.typed`, but its
-# `AutoModel.from_pretrained` / `AutoTokenizer.from_pretrained` resolve to
+# package imports (`addons/embedding/qwen3_0p6b.py`). transformers ships
+# `py.typed`, but its `AutoModel.from_pretrained` /
+# `AutoTokenizer.from_pretrained` resolve to
 # `Unknown`/union types under the shipped types, which both checkers reject
 # under `failOnWarnings`. The monorepo carries the full upstream stub; the
 # export cannot ship 15 MB of it, so this pins exactly the surface used:

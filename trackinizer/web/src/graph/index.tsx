@@ -12,11 +12,11 @@ import {
 } from "react";
 import type { Graph, GraphNode } from "../api/graph";
 import { type Meta, useMeta } from "../app/boot";
-import { useHighlighted } from "../app/highlights";
 import { isStrings, useTabState } from "../app/tabState";
 import { useCommands } from "../commands/registry";
 import "../lists/lists.css";
 import { LiveFailureBar } from "../live";
+import { routeOf } from "../router/addressBar";
 import { type FocusRef, type Hops, parseHash, type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { ReadFailure } from "../ui/failure";
@@ -42,11 +42,25 @@ import { hopCounts, isWithin, reach } from "./hops";
 import { graphQuery, useLiveGraph } from "./live";
 import { type DrawNode, GraphModel, type Lens } from "./model";
 import { useThemePalette } from "./palette";
-import { type Covered, type CreateRenderer, forceGraphRenderer, type Renderer } from "./renderer";
+import {
+  type Covered,
+  type CreateRenderer,
+  forceGraphRenderer,
+  type Renderer,
+} from "./renderer";
 import { replay } from "./replay";
 import { findRoots } from "./roots";
 import { RootsPanel } from "./RootsPanel";
-import { hopsName, MAX_ROWS, type MatchGroup, RESULTS, SearchBox, type SearchKey, SearchResults, searchNodes } from "./search";
+import {
+  hopsName,
+  MAX_ROWS,
+  type MatchGroup,
+  RESULTS,
+  SearchBox,
+  type SearchKey,
+  SearchResults,
+  searchNodes,
+} from "./search";
 
 /** The graph route, as the hash holds it. */
 type Place = Extract<Route, { name: "graph" }>;
@@ -79,14 +93,23 @@ type Place = Extract<Route, { name: "graph" }>;
  *
  * `createRenderer` draws it; tests replace it, as jsdom has no canvas.
  */
-export function GraphView({ createRenderer = forceGraphRenderer }: { createRenderer?: CreateRenderer }) {
+export function GraphView({
+  createRenderer = forceGraphRenderer,
+}: {
+  createRenderer?: CreateRenderer;
+}) {
   const meta = useMeta();
   const { route, navigate } = useRouter();
   // The create form opens over the graph under a route of its own; the graph keeps its place meanwhile.
-  const [place, setPlace] = useState<Place>(route.name === "graph" ? route : { name: "graph" });
+  const [place, setPlace] = useState<Place>(
+    route.name === "graph" ? route : { name: "graph" },
+  );
   if (route.name === "graph" && route !== place) setPlace(route);
   const go = (next: Partial<Omit<Place, "name">>, replace = false) =>
-    navigate({ name: "graph", focus: place.focus, grouped: place.grouped, ...next }, { replace });
+    navigate(
+      { name: "graph", focus: place.focus, grouped: place.grouped, ...next },
+      { replace },
+    );
   const [view, setView] = useTabState(STATE_KEY, readViewState, initialState);
   const peek = usePanel(PEEK);
   const results = usePanel(RESULTS);
@@ -108,7 +131,11 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
   const [centring, setCentring] = useState<string | null>(null);
   /** The nodes of a root's island, to frame once Peek shows the root. */
   const [framing, setFraming] = useState<ReadonlySet<string> | null>(null);
-  const [hovered, setHovered] = useState<{ node: DrawNode; x: number; y: number } | null>(null);
+  const [hovered, setHovered] = useState<{
+    node: DrawNode;
+    x: number;
+    y: number;
+  } | null>(null);
   const [query, setQuery] = useState("");
   const [marked, setMarked] = useState(-1);
   /** The roots list is to take the keyboard once it shows. */
@@ -148,15 +175,26 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
     setView((state) => ({ ...state, limit: wider }));
   }, [data, focus, focusNode, view.limit]);
   const reached = useMemo(
-    () => (data && focusNode ? reach(data, focusNode.id, { skipEdges: shownBy.skipEdges, keep: shownBy.keep }) : null),
+    () =>
+      data && focusNode
+        ? reach(data, focusNode.id, {
+            skipEdges: shownBy.skipEdges,
+            keep: shownBy.keep,
+          })
+        : null,
     [data, focusNode, shownBy],
   );
   // A focus holds the light; without one, a selection does, or a hover.
   const lightId = focusNode ? null : (selected?.id ?? hovered?.node.id ?? null);
   const lit = useMemo(() => {
-    if (focus && reached) return new Map([...reached].filter(([, far]) => isWithin(far, focus.hops)));
+    if (focus && reached)
+      return new Map([...reached].filter(([, far]) => isWithin(far, focus.hops)));
     if (!data || lightId === null) return null;
-    return new Map([...reach(data, lightId, { skipEdges: NO_STRINGS, keep: shownBy.keep })].filter(([, far]) => far <= 1));
+    return new Map(
+      [...reach(data, lightId, { skipEdges: NO_STRINGS, keep: shownBy.keep })].filter(
+        ([, far]) => far <= 1,
+      ),
+    );
   }, [focus, reached, data, lightId, shownBy]);
   const only = focusNode !== undefined && view.only;
   const drawnNodes = useMemo(
@@ -164,8 +202,10 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
     [nodes, shownBy, only, lit],
   );
   const matches = useMemo(() => searchNodes(drawnNodes, query), [drawnNodes, query]);
-  const highlighted = useHighlighted();
-  const groups = matchGroups(matches, focusNode && focus && lit ? { node: focusNode, hops: focus.hops, lit } : null);
+  const groups = matchGroups(
+    matches,
+    focusNode && focus && lit ? { node: focusNode, hops: focus.hops, lit } : null,
+  );
   const rows = groups.flatMap((group) => group.rows.slice(0, MAX_ROWS));
   const markedAt = Math.min(marked, rows.length - 1);
   const resultsId = useId();
@@ -173,7 +213,10 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
   const rootsId = useId();
   const searching = query.trim() !== "";
   const grouped = place.grouped ?? true;
-  const roots = useMemo(() => (grouped && data ? findRoots(data) : null), [grouped, data]);
+  const roots = useMemo(
+    () => (grouped && data ? findRoots(data) : null),
+    [grouped, data],
+  );
   const lens = useMemo<Lens>(
     () => ({
       hiddenKinds: shownBy.kinds,
@@ -182,17 +225,20 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
       skipEdges: focusNode ? shownBy.skipEdges : NO_STRINGS,
       only,
       strong: new Set([focusNode?.id, selected?.id].filter((id) => id !== undefined)),
-      highlighted,
       matches: new Set(matches.map((row) => row.id)),
-      labelled: new Set(roots?.groups.flatMap((group) => (group.root ? [group.key] : [])) ?? []),
+      labelled: new Set(
+        roots?.groups.flatMap((group) => (group.root ? [group.key] : [])) ?? [],
+      ),
     }),
-    [shownBy, lit, focusNode, only, selected, highlighted, matches, roots],
+    [shownBy, lit, focusNode, only, selected, matches, roots],
   );
 
-  const focusOn = (row: GraphNode) => go({ focus: { ref: { kind: row.kind, seq: row.seq }, hops: focus?.hops ?? 1 } });
+  const focusOn = (row: GraphNode) =>
+    go({ focus: { ref: { kind: row.kind, seq: row.seq }, hops: focus?.hops ?? 1 } });
   const onDoubleClick = useEffectEvent((node: DrawNode) => focusOn(node));
   useEffect(() => {
-    const canvas = host.current!;
+    const canvas = host.current;
+    if (!canvas) return;
     const made = createRenderer(
       canvas,
       {
@@ -208,11 +254,17 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
   // A graph drawn anew (a new limit's, or one drawn on consent) is framed once
   // laid out: what a focus lights, or every node. Framed earlier, with nothing
   // drawn, a focus would be lost.
-  const frameNew = useEffectEvent(() => (focusNode && lit ? (node: DrawNode) => lit.has(node.id) : EVERY_NODE));
+  const frameNew = useEffectEvent(() =>
+    focusNode && lit ? (node: DrawNode) => lit.has(node.id) : EVERY_NODE,
+  );
   useEffect(() => {
     if (!renderer || !data || replayer.running || asking) return;
     if (model.apply(data)) {
-      renderer.setData(model.nodes, model.links, drawn.current === view.limit ? null : frameNew());
+      renderer.setData(
+        model.nodes,
+        model.links,
+        drawn.current === view.limit ? null : frameNew(),
+      );
       drawn.current = view.limit;
     } else {
       renderer.repaint();
@@ -226,7 +278,10 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
   const frameFocus = useEffectEvent(() => {
     if (lit) renderer?.fit((node) => lit.has(node.id));
   });
-  const focusKey = focus && focusNode ? `${focusNode.id} ${focus.hops} ${view.skipEdges.join(" ")}` : null;
+  const focusKey =
+    focus && focusNode
+      ? `${focusNode.id} ${focus.hops} ${view.skipEdges.join(" ")}`
+      : null;
   useEffect(() => {
     if (focusKey !== null) frameFocus();
   }, [focusKey, renderer]);
@@ -241,7 +296,10 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
     renderer?.refit();
   }, [panels, renderer]);
   // force-graph reads each node's group only as the force takes its nodes, so a new answer registers it again.
-  useEffect(() => renderer?.group(roots ? (node) => roots.home.get(node.id) : null), [renderer, roots]);
+  useEffect(
+    () => renderer?.group(roots ? (node) => roots.home.get(node.id) : null),
+    [renderer, roots],
+  );
   // A selected node the graph no longer has stays unselected should it come back (R3-03).
   useEffect(() => {
     if (selectedId !== null && data && !selected) setSelectedId(null);
@@ -279,7 +337,9 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
     const group = roots?.groups.find((found) => found.key === key);
     if (!group || !roots) return;
     setSelectedId(group.root?.id ?? null);
-    setFraming(new Set([...roots.home].flatMap(([id, home]) => (home === key ? [id] : []))));
+    setFraming(
+      new Set([...roots.home].flatMap(([id, home]) => (home === key ? [id] : []))),
+    );
   };
   const setLimit = (limit: number) => {
     // A Replay holds answers back; a new limit's answer draws at once.
@@ -304,34 +364,85 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
     }
   };
   useCommands([
-    { id: "graph.fit", title: "Fit the graph", keys: ["f"], section: "Graph", run: () => renderer?.fit() },
-    { id: "graph.search", title: "Search the graph", keys: ["/"], section: "Graph", run: () => searchBox.current?.focus() },
+    {
+      id: "graph.fit",
+      title: "Fit the graph",
+      keys: ["f"],
+      section: "Graph",
+      run: () => renderer?.fit(),
+    },
+    {
+      id: "graph.search",
+      title: "Search the graph",
+      keys: ["/"],
+      section: "Graph",
+      run: () => searchBox.current?.focus(),
+    },
     // The search results take the roots list's place, and its key.
     ...(searching
       ? [panelCommand(results)]
       : grouped
-        ? [{ id: "graph.roots", title: "Show or hide the roots list", keys: ["["], section: "Graph", run: toggleRoots }]
+        ? [
+            {
+              id: "graph.roots",
+              title: "Show or hide the roots list",
+              keys: ["["],
+              section: "Graph",
+              run: toggleRoots,
+            },
+          ]
         : []),
     ...(selected
       ? [
           panelCommand(peek),
-          { id: "graph.clear", title: "Clear the selection", keys: ["Escape"], run: () => setSelectedId(null) },
-          { id: "graph.focus", title: "Focus the graph on the selection", keys: ["."], section: "Graph", run: () => focusOn(selected) },
+          {
+            id: "graph.clear",
+            title: "Clear the selection",
+            keys: ["Escape"],
+            run: () => setSelectedId(null),
+          },
+          {
+            id: "graph.focus",
+            title: "Focus the graph on the selection",
+            keys: ["."],
+            section: "Graph",
+            run: () => focusOn(selected),
+          },
         ]
       : focus
-        ? [{ id: "graph.unfocus", title: "Clear the graph's focus", keys: ["Escape"], section: "Graph", run: () => go({ focus: undefined }) }]
+        ? [
+            {
+              id: "graph.unfocus",
+              title: "Clear the graph's focus",
+              keys: ["Escape"],
+              section: "Graph",
+              run: () => go({ focus: undefined }),
+            },
+          ]
         : []),
   ]);
   const followLink = usePeekLinks(meta, drawnNodes, selected, select);
 
   const hidden: Hidden = { kinds: view.hiddenKinds, statuses: view.hiddenStatuses };
-  const litEdges = data && lit ? data.edges.filter((row) => lit.has(row.from_id) && lit.has(row.to_id) && !lens.skipEdges.has(row.edge_kind)) : [];
+  const litEdges =
+    data && lit
+      ? data.edges.filter(
+          (row) =>
+            lit.has(row.from_id) &&
+            lit.has(row.to_id) &&
+            !lens.skipEdges.has(row.edge_kind),
+        )
+      : [];
   const drawnIds = new Set(drawnNodes.map((row) => row.id));
-  const drawnEdges = (data?.edges ?? []).filter((row) => drawnIds.has(row.from_id) && drawnIds.has(row.to_id));
+  const drawnEdges = (data?.edges ?? []).filter(
+    (row) => drawnIds.has(row.from_id) && drawnIds.has(row.to_id),
+  );
   const keyShown = view.key && !asking && nodes.length > 0;
   const present = {
     kinds: meta.kinds.filter((kind) => nodes.some((node) => node.kind === kind)),
-    statuses: (meta.enums.status ?? []).filter((status) => nodes.some((node) => node.status === status)),
+    statuses: (meta.enums.status ?? []).filter((status) =>
+      nodes.some((node) => node.status === status),
+    ),
   };
   /** The matches list, which the search box controls, shows. */
   const listed = searching && !results.collapsed;
@@ -351,7 +462,14 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
           listId={listed ? resultsId : null}
           activeId={listed && markedAt >= 0 ? `${resultsId}-${markedAt}` : undefined}
         />
-        <span className="graph-count muted num">{countText(data !== undefined, nodes.length, drawnNodes.length, searching ? matches.length : null)}</span>
+        <span className="graph-count muted num">
+          {countText(
+            data !== undefined,
+            nodes.length,
+            drawnNodes.length,
+            searching ? matches.length : null,
+          )}
+        </span>
         <div className="spacer" />
         <button
           type="button"
@@ -392,7 +510,14 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
           <Icon name="tag" size={14} />
           Key
         </button>
-        <FilterMenu meta={meta} nodes={nodes} hidden={hidden} onToggle={(field, value) => setView((state) => toggleHidden(state, field, value))} />
+        <FilterMenu
+          meta={meta}
+          nodes={nodes}
+          hidden={hidden}
+          onToggle={(field, value) =>
+            setView((state) => toggleHidden(state, field, value))
+          }
+        />
         <LimitMenu limit={view.limit} onLimit={setLimit} />
         <ReplayMenu
           running={replayer.running}
@@ -408,8 +533,15 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
       <FilterChips
         hidden={hidden}
         present={present}
-        onRemove={(field) => setView((state) => ({ ...state, ...(field === "kinds" ? { hiddenKinds: [] } : { hiddenStatuses: [] }) }))}
-        onClear={() => setView((state) => ({ ...state, hiddenKinds: [], hiddenStatuses: [] }))}
+        onRemove={(field) =>
+          setView((state) => ({
+            ...state,
+            ...(field === "kinds" ? { hiddenKinds: [] } : { hiddenStatuses: [] }),
+          }))
+        }
+        onClear={() =>
+          setView((state) => ({ ...state, hiddenKinds: [], hiddenStatuses: [] }))
+        }
       />
       {focus ? (
         <FocusRow
@@ -423,7 +555,12 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
           meta={meta}
           onHops={(hops) => go({ focus: { ...focus, hops } }, true)}
           onOnly={(next) => setView((state) => ({ ...state, only: next }))}
-          onSkip={(edgeKind) => setView((state) => ({ ...state, skipEdges: toggled(state.skipEdges, edgeKind) }))}
+          onSkip={(edgeKind) =>
+            setView((state) => ({
+              ...state,
+              skipEdges: toggled(state.skipEdges, edgeKind),
+            }))
+          }
           onClear={() => go({ focus: undefined })}
         />
       ) : null}
@@ -443,19 +580,37 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
           />
         ) : roots && view.roots ? (
           // Beside an open Peek, a strip, so the graph keeps at least half the width at 1,280 px.
-          <RootsPanel id={rootsId} roots={roots} onSelect={frameRoot} compact={selected !== undefined && !peek.collapsed} />
+          <RootsPanel
+            id={rootsId}
+            roots={roots}
+            onSelect={frameRoot}
+            compact={selected !== undefined && !peek.collapsed}
+          />
         ) : null}
         <div className="graph-stage">
           <div className="graph-canvas" ref={host} aria-busy={!data} />
-          {!data && graph.isError ? <ReadFailure error={graph.error} retry={() => void graph.refetch()} /> : null}
+          {!data && graph.isError ? (
+            <ReadFailure error={graph.error} retry={() => void graph.refetch()} />
+          ) : null}
           {data && nodes.length === 0 ? (
             <div className="graph-ask">
-              <EmptyState icon={<Icon name="graph" size={24} />} title="No inquiries yet">
-                <p>Inquiries, and the edges between them, show here as they are made.</p>
+              <EmptyState
+                icon={<Icon name="graph" size={24} />}
+                title="No inquiries yet"
+              >
+                <p>
+                  Inquiries, and the edges between them, show here as they are made.
+                </p>
               </EmptyState>
             </div>
           ) : null}
-          {asking ? <AskToDraw count={nodes.length} onDraw={() => setConsent(view.limit)} onFewer={() => setLimit(ASK_ABOVE)} /> : null}
+          {asking ? (
+            <AskToDraw
+              count={nodes.length}
+              onDraw={() => setConsent(view.limit)}
+              onFewer={() => setLimit(ASK_ABOVE)}
+            />
+          ) : null}
           {keyShown ? (
             <Key
               id={keyId}
@@ -463,14 +618,26 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
               palette={palette}
               kinds={present.kinds}
               nodes={drawnNodes}
-              edges={drawnEdges.map((row) => ({ kind: row.edge_kind, valence: row.valence }))}
+              edges={drawnEdges.map((row) => ({
+                kind: row.edge_kind,
+                valence: row.valence,
+              }))}
               hiddenKinds={view.hiddenKinds}
-              onHiddenKinds={(hiddenKinds) => setView((state) => ({ ...state, hiddenKinds }))}
+              onHiddenKinds={(hiddenKinds) =>
+                setView((state) => ({ ...state, hiddenKinds }))
+              }
             />
           ) : null}
-          <ZoomButtons onZoom={(factor) => renderer?.zoomBy(factor)} onFit={() => renderer?.fit()} />
+          <ZoomButtons
+            onZoom={(factor) => renderer?.zoomBy(factor)}
+            onFit={() => renderer?.fit()}
+          />
           {hovered ? (
-            <Tooltip {...hovered} far={focus ? reached?.get(hovered.node.id) : undefined} hint="Click opens Peek · double-click focuses here" />
+            <Tooltip
+              {...hovered}
+              far={focus ? reached?.get(hovered.node.id) : undefined}
+              hint="Click opens Peek · double-click focuses here"
+            />
           ) : null}
           {selected ? (
             // Its own box, so the capture sees Peek's links before they navigate; Peek places itself.
@@ -507,13 +674,25 @@ function useShown(view: ViewState) {
  */
 function coveredOf(host: HTMLElement): Covered {
   const canvas = host.getBoundingClientRect();
-  const box = (selector: string) => host.parentElement!.querySelector(selector)?.getBoundingClientRect();
-  return { right: Math.max(0, ...[box(".graph-peek > :not([hidden])"), box(".graph-key"), box(".graph-zoom")].map((at) => (at ? canvas.right - at.left : 0))) };
+  const box = (selector: string) =>
+    host.parentElement?.querySelector(selector)?.getBoundingClientRect();
+  return {
+    right: Math.max(
+      0,
+      ...[
+        box(".graph-peek > :not([hidden])"),
+        box(".graph-key"),
+        box(".graph-zoom"),
+      ].map((at) => (at ? canvas.right - at.left : 0)),
+    ),
+  };
 }
 
 /** The node a focus names, if the graph has it. */
 function findFocus(nodes: readonly GraphNode[], ref: FocusRef): GraphNode | undefined {
-  return nodes.find((row) => ("id" in ref ? row.id === ref.id : row.kind === ref.kind && row.seq === ref.seq));
+  return nodes.find((row) =>
+    "id" in ref ? row.id === ref.id : row.kind === ref.kind && row.seq === ref.seq,
+  );
 }
 
 /** The sizes a focus that is not loaded yet may widen the view to, smallest first. */
@@ -531,18 +710,32 @@ function matchGroups(
 ): MatchGroup[] {
   if (!focus) return [{ name: null, rows: matches }];
   const ref = `${focus.node.kind}#${focus.node.seq}`;
-  const near = focus.hops === "all" ? `Connected to ${ref}` : `Within ${hopsName(focus.hops)} of ${ref}`;
+  const near =
+    focus.hops === "all"
+      ? `Connected to ${ref}`
+      : `Within ${hopsName(focus.hops)} of ${ref}`;
   return [
     { name: near, rows: matches.filter((row) => focus.lit.has(row.id)) },
-    { name: "Elsewhere in the graph", rows: matches.filter((row) => !focus.lit.has(row.id)) },
+    {
+      name: "Elsewhere in the graph",
+      rows: matches.filter((row) => !focus.lit.has(row.id)),
+    },
   ].filter((group) => group.rows.length > 0);
 }
 
 /** `1,039 nodes`, `915 of 1,039 nodes` while some are hidden, or `47 of 915 nodes match` while searching. */
-function countText(loaded: boolean, total: number, drawn: number, matched: number | null): string {
+function countText(
+  loaded: boolean,
+  total: number,
+  drawn: number,
+  matched: number | null,
+): string {
   if (!loaded) return "Loading…";
-  if (matched !== null) return `${matched.toLocaleString("en-US")} of ${plural(drawn, "node")} match`;
-  return drawn === total ? plural(total, "node") : `${drawn.toLocaleString("en-US")} of ${plural(total, "node")}`;
+  if (matched !== null)
+    return `${matched.toLocaleString("en-US")} of ${plural(drawn, "node")} match`;
+  return drawn === total
+    ? plural(total, "node")
+    : `${drawn.toLocaleString("en-US")} of ${plural(total, "node")}`;
 }
 
 /**
@@ -550,12 +743,25 @@ function countText(loaded: boolean, total: number, drawn: number, matched: numbe
  * instead (v1's jump); any other link navigates, one to a node loaded but
  * hidden by a filter or Only these too.
  */
-function usePeekLinks(meta: Meta, drawn: readonly GraphNode[], selected: GraphNode | undefined, select: (row: GraphNode) => void) {
+function usePeekLinks(
+  meta: Meta,
+  drawn: readonly GraphNode[],
+  selected: GraphNode | undefined,
+  select: (row: GraphNode) => void,
+) {
   return (event: MouseEvent<HTMLElement>) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    const href = event.target instanceof Element ? event.target.closest("a")?.getAttribute("href") : null;
-    if (!href?.startsWith("#/")) return;
-    const route = parseHash(href, meta.kinds);
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return;
+    const link = event.target instanceof Element ? event.target.closest("a") : null;
+    const hash = link ? routeOf(link.href) : null;
+    if (hash === null) return;
+    const route = parseHash(hash, meta.kinds);
     const target =
       route.name === "lookup"
         ? drawn.find((row) => row.id === route.id)
@@ -598,7 +804,12 @@ function useReplay(model: GraphModel, renderer: Renderer | null, onStart: () => 
       stop.current = replay(graph, {
         speed: () => speedNow.current,
         step: (grown) => {
-          if (model.apply(grown)) renderer.setData(model.nodes, model.links, grown.nodes.length === graph.nodes.length ? EVERY_NODE : null);
+          if (model.apply(grown))
+            renderer.setData(
+              model.nodes,
+              model.links,
+              grown.nodes.length === graph.nodes.length ? EVERY_NODE : null,
+            );
           else renderer.repaint();
         },
         done: () => setRunning(false),
@@ -633,7 +844,13 @@ function useDebugHook(
           const { id, kind, seq, title, status, hidden } = node;
           return { id, kind, seq, title, status, hidden, screen: screenOf(node) };
         }),
-        links: model.links.map(({ from, to, kind, valence, hidden }) => ({ from, to, kind, valence, hidden })),
+        links: model.links.map(({ from, to, kind, valence, hidden }) => ({
+          from,
+          to,
+          kind,
+          valence,
+          hidden,
+        })),
         selected,
         focus,
       };
@@ -648,7 +865,9 @@ function plural(count: number, noun: string): string {
 
 /** `values` with `value` added, or taken out if it was there. */
 function toggled(values: readonly string[], value: string): string[] {
-  return values.includes(value) ? values.filter((other) => other !== value) : [...values, value];
+  return values.includes(value)
+    ? values.filter((other) => other !== value)
+    : [...values, value];
 }
 
 function toggleHidden(state: ViewState, field: keyof Hidden, value: string): ViewState {
@@ -677,13 +896,23 @@ type ViewState = {
  * src/app/prefetch.ts starts this limit's read for a tab with no state kept.
  */
 function initialState(): ViewState {
-  return { limit: 1000, hiddenKinds: [], hiddenStatuses: [], skipEdges: [], only: false, key: true, roots: true };
+  return {
+    limit: 1000,
+    hiddenKinds: [],
+    hiddenStatuses: [],
+    skipEdges: [],
+    only: false,
+    key: true,
+    roots: true,
+  };
 }
 
 /** The view's state kept for the tab, or null for anything this build cannot use. */
 function readViewState(saved: unknown): ViewState | null {
   if (typeof saved !== "object" || saved === null) return null;
-  const { limit, hiddenKinds, hiddenStatuses, skipEdges, only, key, roots } = saved as { [field: string]: unknown };
+  const { limit, hiddenKinds, hiddenStatuses, skipEdges, only, key, roots } = saved as {
+    [field: string]: unknown;
+  };
   return Number.isSafeInteger(limit) &&
     (limit as number) >= 1 &&
     isStrings(hiddenKinds) &&
@@ -692,7 +921,15 @@ function readViewState(saved: unknown): ViewState | null {
     typeof only === "boolean" &&
     typeof key === "boolean" &&
     typeof roots === "boolean"
-    ? { limit: limit as number, hiddenKinds, hiddenStatuses, skipEdges, only, key, roots }
+    ? {
+        limit: limit as number,
+        hiddenKinds,
+        hiddenStatuses,
+        skipEdges,
+        only,
+        key,
+        roots,
+      }
     : null;
 }
 

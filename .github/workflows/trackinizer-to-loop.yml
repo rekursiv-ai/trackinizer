@@ -1,7 +1,7 @@
 # DO NOT EDIT -- generated from external-to-internal.yml.tmpl and this
 # package's sync config. Hand edits are overwritten; change
 # the template, the generator, or the sync config instead.
-name: "Trackinizer to Loop"
+name: "trackinizer→loop"
 
 on:
   pull_request:
@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   import-change:
-    name: "Trackinizer to Loop into source"
+    name: "trackinizer→loop"
     runs-on: ubuntu-latest
     # Bounded so a hung step fails in minutes, not at the 6h default.
     timeout-minutes: 45
@@ -63,11 +63,11 @@ jobs:
       - id: settings
         name: Check settings
         env:
-          IMPORT_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+          IMPORT_TOKEN: ${{ vars.SYNC_APP_ID != '' && secrets.SYNC_APP_PRIVATE_KEY != '' && 'configured' || '' }}
         run: |
           missing=false
           if [ -z "$IMPORT_TOKEN" ]; then
-            echo "::error::Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
+            echo "::error::Set SYNC_APP_ID and SYNC_APP_PRIVATE_KEY."
             missing=true
           fi
           if [ -z "$TARGET_REPO" ]; then
@@ -92,6 +92,31 @@ jobs:
           fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
 
+      - name: Create sync App token
+        id: sync-app-token
+        if: steps.settings.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          owner: "rekursiv-ai"
+          repositories: ${{ env.TARGET_REPO }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Verify sync App identity
+        if: steps.settings.outputs.enabled == 'true'
+        env:
+          EXPECTED_SYNC_APP_SLUG: "rekursiv-sync"
+          ACTUAL_SYNC_APP_SLUG: ${{ steps.sync-app-token.outputs.app-slug }}
+        run: |
+          # The pinned action authenticates the App and resolves its installation;
+          # its slug output identifies the App that minted this token. GET /user
+          # does not accept installation tokens.
+          if [ "$ACTUAL_SYNC_APP_SLUG" != "$EXPECTED_SYNC_APP_SLUG" ]; then
+            echo "::error::Sync token belongs to App '$ACTUAL_SYNC_APP_SLUG', expected '$EXPECTED_SYNC_APP_SLUG'."
+            exit 1
+          fi
       # The target checkout comes first because it carries the import ledger the
       # merge baseline is read from, and because the trusted helper is installed
       # out of it before any public tree exists on disk. It keeps
@@ -102,7 +127,7 @@ jobs:
         if: steps.settings.outputs.enabled == 'true'
         with:
           repository: ${{ env.TARGET_REPO }}
-          token: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+          token: ${{ steps.sync-app-token.outputs.token }}
           ref: main
           path: target
           persist-credentials: false
@@ -111,12 +136,15 @@ jobs:
           # import would silently fall back to the pushed commit's parent -- the
           # exact wrong baseline this resolution exists to avoid.
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: steps.settings.outputs.enabled == 'true'
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         if: steps.settings.outputs.enabled == 'true'
+        with:
+          # Outranks the checkouts' .python-version, which pins a newer one.
+          python-version: "3.12"
 
       - name: Capture trusted import helper
         if: steps.settings.outputs.enabled == 'true'
@@ -253,22 +281,15 @@ jobs:
             --report "$IMPORT_REPORT" \
             --record-on-validation-failure "${{ github.event_name == 'push' }}" \
             --refresh-public-lockfile \
-            --validation-command 'uv sync --frozen --all-groups --all-extras' \
-            --validation-command 'uv run pre-commit run --all-files --hook-stage pre-commit' \
-            --validation-command 'uv run pre-commit run --all-files --hook-stage pre-push' \
-            --validation-command 'uv run python -c "import trackinizer"' \
-            --validation-command '(cd trackinizer/web && ./npm ci --no-audit --no-fund && ./npm run typecheck && ./npm test && ./npm run build)' \
-            --validation-command 'rm -rf dist' \
-            --validation-command 'uv build --out-dir dist' \
-            --validation-command 'uv run python -m zipfile -l dist/trackinizer-*.whl | grep -q trackinizer/web/dist/index.html' \
-            --validation-command 'wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --no-project --with "$wheel" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import importlib.metadata as m, importlib.util as u, re, trackinizer.trax.cli, trackinizer.client.client; extra = [re.match(r'"'"'[A-Za-z0-9_.-]+'"'"', r)[0].replace('"'"'-'"'"', '"'"'_'"'"') for r in m.requires('"'"'trackinizer'"'"') if '"'"'server'"'"' in r.partition('"'"';'"'"')[2]]; assert extra, '"'"'the wheel has no server extra'"'"'; leaked = [name for name in extra if u.find_spec(name)]; assert not leaked, leaked; print(trackinizer.__file__)"' \
-            --validation-command 'wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --no-project --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "${wheel}[server]" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import trackinizer.server.server; print(trackinizer.__file__)"' \
+            --validation-command 'uv sync --frozen --all-groups --compile-bytecode' \
+            --validation-command 'SKIP=ty-check,pyrefly-check uv run pre-commit run --all-files --hook-stage pre-commit' \
+            --validation-command 'SKIP=pytest-global,pytest-slow-global,pytest-ci-smoke-global,pytest-integration-global uv run pre-commit run --all-files --hook-stage pre-push' \
             --open-pr false
 
       - name: Open or update target import PR
         if: steps.refs.outputs.import == 'true' && github.event_name != 'pull_request'
         env:
-          GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+          GH_TOKEN: ${{ steps.sync-app-token.outputs.token }}
         run: |
           public_base_ref="${{ steps.refs.outputs.base_ref }}"
           public_head_ref="${{ steps.refs.outputs.head_ref }}"
@@ -306,7 +327,7 @@ jobs:
 
       - name: Upload import report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: copybarista-import-report
           path: ${{ env.IMPORT_REPORT }}

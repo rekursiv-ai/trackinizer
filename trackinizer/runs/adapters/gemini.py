@@ -1,0 +1,130 @@
+"""Gemini CLI adapter.
+
+Sessions live at
+``~/.gemini/tmp/<project-sha256>/chats/session-<timestamp>-<uuid>.json``.
+Unlike the others the session is ONE JSON object that gemini rewrites in place
+on every update, so there are no appended lines to follow: the runner re-reads
+the whole body on each change and feeds that.
+
+Reading it is ``trackinizer.sagent.scripts.convert_session.gemini``'s job, not this module's --
+one IR reader serves capture here AND the conversion paths.
+
+See ``docs/cli-scraping-investigation.md`` for the empirical layout.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import hashlib
+
+from trackinizer.sagent.scripts.convert_session import gemini
+from trackinizer.sagent.scripts.convert_session.tail import Tail
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from trackinizer.runs.adapters.custom_types import Subagent
+    from trackinizer.types.streams import TraxRecord
+
+
+class GeminiAdapter:
+    """Locates the ``gemini`` CLI's whole-file session JSON.
+
+    Stateless: the reading state lives on the reader, which is built per FILE.
+    That is what keeps two concurrent session documents from sharing one, which
+    a per-adapter counter did not (#498).
+    """
+
+    name: str = "gemini"
+    cli_binary: str = "gemini"
+    whole_file: bool = True
+    parent_session_env: frozenset[str] = frozenset[str]()
+    # Not measured: gemini is not a resume target, and how its ``/chat`` commands
+    # move a session has not been checked against a live CLI.
+    session_switch_commands: frozenset[str] = frozenset[str]()
+
+    @property
+    def _tmp_dir(self) -> Path:
+        # Resolve ``$HOME`` per call, not at import (see ClaudeAdapter).
+        return Path.home() / ".gemini" / "tmp"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
+
+    def session_dirs(self) -> Iterable[Path]:
+        """Return the directories this CLI writes sessions under."""
+        # Returned whether or not it exists yet: the runner MINTS these before
+        # arming its watch (see ClaudeAdapter for why withholding an absent
+        # root silently disables capture on a first-ever run).
+        #
+        # The tmp ROOT, not each project's ``chats`` leaf. Gemini shards by
+        # project sha and mints ``<sha>/chats`` when it first runs in a
+        # canvas -- after the watch is armed for the run being captured. A
+        # watch on the leaves existing at arming time cannot adopt a new
+        # sibling, so the run would capture nothing silently.
+        # ``matches_session_file`` still requires a ``chats/session-*.json``,
+        # so widening the watch does not widen what is captured.
+        return (self._tmp_dir,)
+
+    def matches_session_file(self, path: Path) -> bool:
+        """Return whether ``path`` is one of this CLI's session files."""
+        return (
+            path.suffix == ".json"
+            and path.parent.name == "chats"
+            and path.name.startswith("session-")
+        )
+
+    def session_scope(self) -> Path | None:
+        """Return the one project directory this run's cwd hashes to.
+
+        Gemini shards ``tmp/`` by the sha256 of the working directory, so the
+        run's own subtree is derivable and a concurrent run in another
+        canvas lands under a different hash. The path is RESOLVED first:
+        the CLI hashes what it resolved at startup, so a symlinked cwd would
+        name a directory that never receives a write.
+
+        Returns:
+          result: The Path | None.
+
+        """
+        digest = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()
+        return self._tmp_dir / digest
+
+    def session_id_from_path(self, path: Path) -> str | None:
+        """Return the session id encoded in ``path``.
+
+        Args:
+          path: File path (typically a gemini session-<id>.json).
+
+        Returns:
+          result: Session id string, or None if resume is not supported.
+
+        """
+        # Gemini's ``session-<id>.json`` stem carries an id, but resume
+        # correlation isn't wired for it yet; treat as non-resumable for now.
+        del path
+        return None
+
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        """Return ``None``: no gemini resume is recognized, so every run is new."""
+        del cli_args
+        return None
+
+    def subagent(self, path: Path) -> Subagent | None:
+        """Return ``None``: this adapter knows no gemini sub-agent transcript."""
+        del path
+        return None
+
+    def reader(self) -> Tail[TraxRecord]:
+        """Return a fresh IR reader for one gemini session document.
+
+        Whole-file: gemini rewrites in place, so each chunk is the entire
+        session again rather than a continuation. The runner marks such a
+        chunk a restart, so every record lands back on the position it already
+        held instead of being appended a second time.
+
+        Returns:
+          result: Tail IR reader configured for whole-file gemini format.
+
+        """
+        return Tail(gemini.normalize, whole_file=True)

@@ -1,11 +1,12 @@
-"""Tests for ``Store`` construction, embedders, bootstrap, and pure helpers."""
+"""Tests for ``Store`` construction, bootstrap, and pure helpers."""
 
 from __future__ import annotations
 
-from typing import Protocol, cast, override
+from dataclasses import replace
+from typing import Protocol, cast
 from unittest.mock import AsyncMock
 
-import asyncio
+import uuid
 
 import asyncpg
 import pytest
@@ -15,165 +16,146 @@ from trackinizer.conftest import (
     executed_sql,
     make_conn,
     make_store,
-    new_uuid,
 )
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.server.embedders.stub import StubEmbedder, _xorshift_floats
+from trackinizer.server import auth
+from trackinizer.server.auth import AuthIdentity, ProcessKey, generate_token
+from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import Store
-from trackinizer.wire.bodies import SubmitIssue
 
 
-class TestPureFunctions:
-    def test_xorshift_floats_deterministic(self) -> None:
-        a = _xorshift_floats(42)
-        b = _xorshift_floats(42)
-        assert [next(a) for _ in range(5)] == [next(b) for _ in range(5)]
-
-    def test_xorshift_floats_in_range(self) -> None:
-        rng = _xorshift_floats(1)
-        for _ in range(50):
-            v = next(rng)
-            assert -1.0 <= v <= 1.0
+def _identity(*, user_id: uuid.UUID | None = None) -> AuthIdentity:
+    return AuthIdentity(
+        user_id=user_id or uuid.uuid4(),
+        api_key_id=uuid.uuid4(),
+        email="u@example.com",
+        role="writer",
+    )
 
 
-class TestStubEmbedder:
-    @pytest.mark.asyncio
-    async def test_embed_unit_norm_correct_dim(self) -> None:
-        emb = StubEmbedder()
-        v = await emb.embed("hello")
-        assert len(v) == StubEmbedder.dim
-        norm = sum(x * x for x in v) ** 0.5
-        assert abs(norm - 1.0) < 1e-9
+class TestVerifiedBearerCache:
+    """The Store's cache of bearer secrets it already verified, and its bump throttle."""
 
-    @pytest.mark.asyncio
-    async def test_embed_deterministic(self) -> None:
-        emb = StubEmbedder()
-        assert await emb.embed("foo") == await emb.embed("foo")
-        assert await emb.embed("foo") != await emb.embed("bar")
-
-    def test_name_carries_non_default_dim(self) -> None:
-        """The stored name distinguishes a 384 stub from a 1024 stub.
-
-        384 MUST stay the literal ``"stub"`` (it keys existing
-        ``inquiry_embeddings`` rows); a non-default dim carries its width so
-        the config knob ``stub-1024`` and the DB identity agree, and a 384 and
-        1024 stub are never confused for one model.
-        """
-        assert StubEmbedder().name == "stub"
-        assert StubEmbedder(dim=384).name == "stub"
-        assert StubEmbedder(dim=1024).name == "stub-1024"
-
-
-class _NamedStub(StubEmbedder):
-    """StubEmbedder variant with a configurable ``name`` so multiple embedders.
-
-    Coexist per ``inquiry_embeddings`` PK ``(inquiry_id, model)``.
-    """
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-
-    # Override the base's computed ``name`` property with the fixed value.
-    @property
-    @override
-    def name(self) -> str:
-        return self._name
-
-
-class TestStoreEmbedders:
-    def test_single_embedder_normalized_to_tuple(self) -> None:
-        store, _ = make_store()
-        assert len(store.embedders) == 1
-        assert store.embedders[0].name == "stub"
-
-    def test_sequence_of_embedders_preserved(self) -> None:
+    def test_cache_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A flood of distinct keys must not pin unbounded memory.
         engine = FakeEngine()
-        store = Store(
-            cast(DatabaseEngine, engine),
-            embed=[_NamedStub("a"), _NamedStub("b")],
+        store = Store(cast(DatabaseEngine, engine))
+        monkeypatch.setattr(auth, "VERIFIED_BEARER_MAX_ENTRIES", 4)
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+
+        identity = _identity()
+        secrets_seen = [generate_token()[0] for _ in range(10)]
+        for secret in secrets_seen:
+            store.remember_bearer_identity(secret, identity)
+            clock[0] += 1.0
+        assert len(store._verified_bearers) == 4
+        # Eviction is soonest-expiring-first, so the newest survive.
+        assert store.cached_bearer_identity(secrets_seen[-1]) is not None
+        assert store.cached_bearer_identity(secrets_seen[0]) is None
+
+    def test_plaintext_secret_is_not_held_in_memory(self) -> None:
+        # The cache key is a digest: a heap dump of a live server must not
+        # yield replayable tokens.
+        engine = FakeEngine()
+        store = Store(cast(DatabaseEngine, engine))
+        secret, _ = generate_token()
+        store.remember_bearer_identity(secret, _identity())
+        assert all(secret.encode("utf-8") not in key for key in store._verified_bearers)
+
+    def test_an_entry_expires_on_read_once_its_ttl_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The TTL is the revocation lag: an expired entry is gone, not served."""
+        store, _engine = make_store()
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+        identity = _identity()
+        store.remember_bearer_identity("secret", identity)
+
+        assert store.cached_bearer_identity("secret") == identity
+        assert store.cached_bearer_identity("other") is None
+        clock[0] += auth.VERIFIED_BEARER_TTL_SEC
+
+        assert store.cached_bearer_identity("secret") is None
+        assert store._verified_bearers == {}
+
+    def test_forgetting_a_user_or_a_key_drops_only_its_entries(self) -> None:
+        store, _engine = make_store()
+        user = uuid.uuid4()
+        first, second, other = (
+            _identity(user_id=user),
+            _identity(user_id=user),
+            _identity(),
         )
-        assert [e.name for e in store.embedders] == ["a", "b"]
+        for secret, identity in (("a", first), ("b", second), ("c", other)):
+            store.remember_bearer_identity(secret, identity)
 
-    def test_empty_embedders_rejected(self) -> None:
-        engine = FakeEngine()
-        with pytest.raises(ValueError, match="at least one embedder"):
-            Store(cast(DatabaseEngine, engine), embed=[])
+        assert first.api_key_id is not None
+        store.forget_bearer_identity_for_key(first.api_key_id)
+        assert [store.cached_bearer_identity(s) for s in "abc"] == [None, second, other]
+        store.forget_bearer_identities(user)
+        assert [store.cached_bearer_identity(s) for s in "abc"] == [None, None, other]
 
-    def test_duplicate_embedder_names_rejected(self) -> None:
-        engine = FakeEngine()
-        with pytest.raises(ValueError, match=r"duplicates.*'dup'"):
-            Store(
-                cast(DatabaseEngine, engine),
-                embed=[_NamedStub("dup"), _NamedStub("dup")],
+    def test_forgetting_a_host_drops_its_process_keys_entries_alone(self) -> None:
+        """A device login's key bound to it, and other hosts' processes, stay."""
+        store, _engine = make_store()
+        host, elsewhere = uuid.uuid4(), uuid.uuid4()
+        mine, theirs = (
+            replace(
+                _identity(),
+                process=ProcessKey(
+                    process_id=uuid.uuid4(),
+                    session_id=uuid.uuid4(),
+                    host_id=bound,
+                ),
             )
-
-    def test_dim_mismatch_rejected(self) -> None:
-        class _WrongDim:
-            name = "wrong"
-            dim = 17
-
-            async def embed(self, text: str) -> list[float]:
-                del text
-                return [0.0] * self.dim
-
-        engine = FakeEngine()
-        with pytest.raises(ValueError, match=r"dim=384"):
-            Store(cast(DatabaseEngine, engine), embed=[_NamedStub("ok"), _WrongDim()])
-
-    @pytest.mark.asyncio
-    async def test_submit_writes_one_embedding_row_per_embedder(self) -> None:
-        conn = make_conn()
-        engine = FakeEngine(conn)
-        store = Store(
-            cast(DatabaseEngine, engine),
-            embed=[_NamedStub("a"), _NamedStub("b")],
+            for bound in (host, elsewhere)
         )
-        await store.submit_issue(SubmitIssue(title="t", account="tester@example.com"))
-        emb_upserts = [
-            c
-            for c in conn.execute.call_args_list
-            if "INSERT INTO inquiry_embeddings" in _sql(c.args)
-        ]
-        assert len(emb_upserts) == 2
-        assert {c.args[2] for c in emb_upserts} == {"a", "b"}
-        # Upsert (re-runs on title edit) implies ON CONFLICT clause.
-        assert all("ON CONFLICT" in _sql(c.args) for c in emb_upserts)
+        login = _identity()
+        for secret, identity in (("a", mine), ("b", theirs), ("c", login)):
+            store.remember_bearer_identity(secret, identity)
 
-    @pytest.mark.asyncio
-    async def test_embed_all_runs_concurrently(self) -> None:
-        """``_embed_all`` issues every ``embed`` call before awaiting any.
+        store.forget_bearer_identities_for_host(host)
 
-        The previous sequential ``[await e.embed(...) for ...]`` form
-        scaled latency as sum-of-embed-times. The current implementation
-        uses ``asyncio.gather`` -- proven here by parking each embedder on a
-        shared :class:`asyncio.Barrier`, which only releases once all three
-        have arrived. A serial implementation deadlocks and the timeout fires.
-        """
-        # Three embedders plus this test: the barrier trips only when all
-        # three are parked inside ``embed`` simultaneously.
-        barrier = asyncio.Barrier(4)
+        assert [store.cached_bearer_identity(s) for s in "abc"] == [None, theirs, login]
 
-        class _GatedEmbedder:
-            def __init__(self, name: str) -> None:
-                self.name = name
-                self.dim = StubEmbedder.dim
+    def test_a_key_bumps_once_per_interval(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+        key = uuid.uuid4()
 
-            async def embed(self, text: str) -> list[float]:
-                del text
-                _ = await barrier.wait()
-                return [0.0] * self.dim
+        first = store.should_bump_api_key_last_used(key)
+        again = store.should_bump_api_key_last_used(key)
+        clock[0] += auth.LAST_USED_BUMP_INTERVAL_SEC
 
-        engine = FakeEngine()
-        store = Store(
-            cast(DatabaseEngine, engine),
-            embed=[_GatedEmbedder("a"), _GatedEmbedder("b"), _GatedEmbedder("c")],
+        assert (first, again, store.should_bump_api_key_last_used(key)) == (
+            True,
+            False,
+            True,
         )
-        task = asyncio.create_task(store._embed_all("x"))
-        async with asyncio.timeout(5):
-            _ = await barrier.wait()
-            result = await task
-        assert [name for name, _ in result] == ["a", "b", "c"]
+
+    def test_the_bump_throttle_evicts_its_oldest_key_when_full(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+        monkeypatch.setattr(auth, "LAST_USED_BUMPED_AT_MAX_ENTRIES", 2)
+        oldest, middle, newest = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+        for key in (oldest, middle, newest):
+            assert store.should_bump_api_key_last_used(key)
+            clock[0] += 1.0
+
+        assert set(store._last_used_bumped_at) == {middle, newest}
 
 
 class TestStoreBootstrap:
@@ -201,8 +183,7 @@ class TestStoreBootstrap:
     async def test_bootstrap_skips_baseline_for_existing_db(self) -> None:
         conn = make_conn()
 
-        # Only the applied_migrations probe reports a prior schema; the
-        # embedding-backfill scan keeps the default empty result.
+        # Only the applied_migrations probe reports a prior schema.
         async def fetch(sql: str, *_args: object) -> list[dict[str, str]]:
             return [{"name": "schema.sql"}] if "applied_migrations" in sql else []
 
@@ -222,6 +203,108 @@ class TestStoreBootstrap:
         # the one that actually creates their tables.
         numbered = [name for name, _body in schema_migrations()][1:]
         assert inserts == numbered
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_records_no_migration_whose_body_fails(self) -> None:
+        """A migration that raises leaves the ledger without its name, rolled back.
+
+        Its body and its ledger row commit together, so a refused migration (the canvas
+        cutover meeting a collision) is no part of the database and runs again at the
+        next boot.
+        """
+        migrations = dict(schema_migrations())
+        pending = list(migrations)[-1]
+        refused = substitute_schema_placeholders(migrations[pending])
+        conn = make_conn()
+
+        async def fetch(sql: str, *_args: object) -> list[dict[str, str]]:
+            if "applied_migrations" not in sql:
+                return []
+            return [{"name": name} for name in migrations if name != pending]
+
+        async def execute(sql: str, *_args: object) -> str:
+            if sql == refused:
+                raise asyncpg.RaiseError("Canvas cutover refused")
+            return "UPDATE 1"
+
+        conn.fetch.side_effect = fetch
+        conn.execute.side_effect = execute
+        store, engine = make_store(conn)
+
+        with pytest.raises(asyncpg.RaiseError, match="Canvas cutover"):
+            await store.bootstrap()
+        recorded = [
+            c.args[1]
+            for c in engine.conn.execute.call_args_list
+            if "INSERT INTO applied_migrations" in _sql(c.args)
+        ]
+        sqls = executed_sql(engine.conn)
+        assert refused in sqls
+        assert pending not in recorded
+        assert sqls[sqls.index(refused) + 1] == "ROLLBACK"
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_runs_addon_migrations_after_the_core_ones(self) -> None:
+        """A fresh database records core migrations unrun, but runs an addon's."""
+        store, engine = make_store()
+        await store.bootstrap(
+            addon_migrations=[
+                ("shop.0001.sql", "CREATE SCHEMA shop"),
+                ("shop.0002.sql", "CREATE TABLE shop.items (id INT)"),
+            ],
+        )
+        sqls = executed_sql(engine.conn)
+        inserts = [
+            c.args[1]
+            for c in engine.conn.execute.call_args_list
+            if "INSERT INTO applied_migrations" in _sql(c.args)
+        ]
+        assert sqls.index("CREATE SCHEMA shop") > next(
+            index
+            for index, sql in enumerate(sqls)
+            if "CREATE TABLE IF NOT EXISTS inquiries" in sql
+        )
+        assert sqls.index("CREATE TABLE shop.items (id INT)") > sqls.index(
+            "CREATE SCHEMA shop",
+        )
+        assert inserts[-2:] == ["shop.0001.sql", "shop.0002.sql"]
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_skips_an_addon_migration_already_applied(self) -> None:
+        conn = make_conn()
+
+        async def fetch(sql: str, *_args: object) -> list[dict[str, str]]:
+            names = [name for name, _body in schema_migrations()] + ["shop.0001.sql"]
+            return (
+                [{"name": name} for name in names]
+                if "applied_migrations" in sql
+                else []
+            )
+
+        conn.fetch.side_effect = fetch
+        store, engine = make_store(conn)
+        await store.bootstrap(
+            addon_migrations=[("shop.0001.sql", "CREATE SCHEMA shop")],
+        )
+        assert "CREATE SCHEMA shop" not in executed_sql(engine.conn)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "names",
+        [["schema.045.sql"], ["shop.0001.sql", "shop.0001.sql"]],
+        ids=["core-name", "addon-name-twice"],
+    )
+    async def test_bootstrap_refuses_a_migration_name_used_twice(
+        self,
+        names: list[str],
+    ) -> None:
+        """The second migration of a name would never run, so start-up stops."""
+        store, engine = make_store()
+        with pytest.raises(ValueError, match="Two migrations are named"):
+            await store.bootstrap(
+                addon_migrations=[(name, "CREATE SCHEMA shop") for name in names],
+            )
+        assert executed_sql(engine.conn) == []
 
     @pytest.mark.asyncio
     async def test_bootstrap_partial_state_does_not_recreate_baseline(
@@ -265,7 +348,7 @@ class TestStoreBootstrap:
         ]
         # One reconcile per kind, each guarded by GREATEST so a healthy
         # sequence is never lowered, each carrying the table max as the floor.
-        assert len(setvals) == 9
+        assert len(setvals) == 10
         assert all(
             "GREATEST" in _sql(c.args) and "last_value" in _sql(c.args) for c in setvals
         )
@@ -278,41 +361,6 @@ class TestStoreBootstrap:
         await store.bootstrap()
         assert not any(
             "setval" in _sql(c.args) for c in engine.conn.execute.call_args_list
-        )
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_backfills_missing_embeddings(self) -> None:
-        """Inquiries lacking an embedding row are re-embedded at boot."""
-        conn = make_conn()
-        missing_id = new_uuid()
-
-        # Only the NOT EXISTS backfill query returns rows; other fetches stay [].
-        async def fetch(sql: str, *_args: object) -> list[dict[str, object]]:
-            return (
-                [{"id": missing_id, "title": "needs embedding"}]
-                if "NOT EXISTS" in sql and "inquiry_embeddings" in sql
-                else []
-            )
-
-        conn.fetch.side_effect = fetch
-        store, engine = make_store(conn)
-        await store.bootstrap()
-        inserts = [
-            c.args[1:]
-            for c in engine.conn.execute.call_args_list
-            if "INSERT INTO inquiry_embeddings" in _sql(c.args)
-        ]
-        assert len(inserts) == 1
-        assert inserts[0][0] == missing_id  # inquiry_id positional arg.
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_skips_backfill_when_fully_embedded(self) -> None:
-        """No embedding inserts fire when every inquiry already has a row."""
-        store, engine = make_store()  # `fetch` defaults to [] (nothing missing).
-        await store.bootstrap()
-        assert not any(
-            "INSERT INTO inquiry_embeddings" in _sql(c.args)
-            for c in engine.conn.execute.call_args_list
         )
 
     @pytest.mark.asyncio
@@ -476,6 +524,34 @@ class TestStoreBootstrap:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            asyncpg.exceptions.ConnectionDoesNotExistError(
+                "connection was closed in the middle of operation",
+            ),
+            asyncpg.InterfaceError("connection is closed"),
+        ],
+        ids=["connection-death", "closed-interface"],
+    )
+    async def test_bootstrap_gives_up_after_its_last_attempt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fault: Exception,
+    ) -> None:
+        """A database that never comes back raises its fault, after the waits between."""
+        slept = AsyncMock()
+        monkeypatch.setattr("trackinizer.server.store.core.asyncio.sleep", slept)
+        conn = make_conn()
+        conn.execute = AsyncMock(side_effect=fault)
+        store, _engine = make_store(conn)
+
+        with pytest.raises(type(fault)):
+            await store.bootstrap(attempts=3)
+
+        assert [call.args for call in slept.await_args_list] == [(0.25,), (0.5,)]
+
+    @pytest.mark.asyncio
     async def test_bootstrap_finally_unlock_preserves_original_cause(self) -> None:
         """A dead-connection unlock in ``finally`` must not mask the real error.
 
@@ -498,7 +574,7 @@ class TestStoreBootstrap:
         store, _engine = make_store(conn)
 
         with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError) as exc:
-            await store._bootstrap_once()
+            await store._bootstrap_once(())
         assert "DDL died first" in str(exc.value)
 
 

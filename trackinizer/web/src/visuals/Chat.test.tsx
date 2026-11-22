@@ -16,6 +16,7 @@ import { META, uuid } from "../detail/testing";
 import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import type { LiveQuery } from "../live/serial";
+import { currentRoute } from "../router/addressBar";
 import { startTrail } from "../router/trail";
 import { preferences, receivePreferences, sendWaiting } from "../preferences";
 import { Chat } from "./Chat";
@@ -128,7 +129,7 @@ async function write(next: ChatPartial | null) {
 
 let stopTrail = () => {};
 /** What a fork's first line is answered with: a station of its own, holding the new conversation. */
-const FORKED = { conversation_id: "f1", session_id: null, workspace_id: "w-fork" };
+const FORKED = { conversation_id: "f1", session_id: null, canvas_id: "w-fork" };
 /** The conversation the station holds, set by `open`. */
 let opened: string | null = null;
 afterEach(async () => {
@@ -155,10 +156,47 @@ afterEach(async () => {
 
 function head(conversation: string, account = ME, extra: Partial<ChatHead> = {}): ChatHead {
   return { conversation_id: conversation, session_id: `s-${conversation}`, title: "t", account, live: true, forks: 0, forked_from: null,
+    seq: 1, cli: null, goal: null, first_line: null, may_post: true,
     forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false, ...extra };
 }
 function record(idx: number, kind: string, payload: { [field: string]: unknown }): SessionRecord {
-  return { idx, kind, payload, text: "", context_id: null, timestamp: null, model: null, ciphertext: null } as unknown as SessionRecord;
+  let body: { [field: string]: unknown };
+  if (kind === "BashResult") {
+    body = {
+      "py/object": "ToolResult",
+      call_id: payload.call_id,
+      stdout: typeof payload.stdout === "string" ? (payload.stdout ? [payload.stdout] : []) : ((payload.stdout as unknown[]) ?? []),
+      stderr: typeof payload.stderr === "string" ? (payload.stderr ? [payload.stderr] : []) : ((payload.stderr as unknown[]) ?? []),
+      result: {
+        "py/object": "BashResult",
+        command: payload.command,
+        ...(payload.exit_code !== undefined ? { exit_code: payload.exit_code } : {}),
+      },
+      ...(payload.extra ? { extra: payload.extra } : {}),
+    };
+  } else if (kind === "WebSearchResult") {
+    const content = (payload.content as readonly { [k: string]: unknown }[]) ?? [];
+    body = {
+      "py/object": "ToolResult",
+      call_id: payload.call_id,
+      stdout: content.map((hit) => ({ "py/object": "WebSearchHit", ...hit })),
+      result: {
+        "py/object": "WebSearchResult",
+        query: payload.query,
+      },
+    };
+  } else if (kind === "UncategorizedToolResult") {
+    body = {
+      "py/object": "ToolResult",
+      call_id: payload.call_id,
+      stdout: typeof payload.content === "string" ? [payload.content] : [],
+      result: null,
+      ...(payload.extra ? { extra: payload.extra } : {}),
+    };
+  } else {
+    body = { "py/object": `trackinizer.sagent.session.types.${kind}`, ...payload };
+  }
+  return { idx, kind, payload: body, text: "", context_id: null, timestamp: null, model: null, ciphertext: null } as unknown as SessionRecord;
 }
 const said = (idx: number, sender: string, content: string) => record(idx, "AgentToAgentMessage", { sender, content });
 const answered = (idx: number, content: string) => record(idx, "AssistantMessage", { content });
@@ -289,7 +327,7 @@ test("chat drafts follow their station across switches, partner changes and remo
 });
 
 test("a send finishing after a station switch clears only its original unchanged draft", async () => {
-  let finish = (_value: { conversation_id: string; session_id: string | null; workspace_id: string }) => {};
+  let finish = (_value: { conversation_id: string; session_id: string | null; canvas_id: string }) => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   const { again } = shell();
   await type("Sent from A");
@@ -297,14 +335,14 @@ test("a send finishing after a station switch clears only its original unchanged
   again({ ...workspace, id: "station-b" });
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: "Draft B" } });
-  await act(async () => finish({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: null, canvas_id: WORKSPACE_ID }));
   expect(box).toHaveProperty("value", "Draft B");
   again();
   expect(box).toHaveProperty("value", "");
 });
 
 test("a successfully delivered question is recallable before its transcript arrives", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, canvas_id: WORKSPACE_ID });
   shell();
   await type("Just delivered");
   const box = screen.getByRole("textbox", { name: "Message" });
@@ -659,7 +697,7 @@ test("a relay line reads as \"you → lead-2: text\", in its own style, with no 
 });
 
 test("a prompt a claude run asked shows as a card, and Yes posts the decision as the chat's answer, not as a line of mine", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), record(1, "SystemMessage", { extra: { $interaction: { id: "p1", type: "permission", tool: "Bash", input: { command: "make test" } } } }));
   shell();
@@ -672,7 +710,7 @@ test("a prompt a claude run asked shows as a card, and Yes posts the decision as
 });
 
 test("a folder trust a CLI asks shows as a card in Chat, and Trust posts the answer as the chat's answer", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), record(1, "SystemMessage", { extra: { $interaction: { id: "t1", type: "trust", tool: "claude", input: { folder: "~/proj" },
     questions: null, plan: null, state: "pending", cli: "claude", folder: "~/proj", machine: "gx10", remembered: true } } }));
@@ -715,7 +753,7 @@ test("a /goal the run recorded is the sender's monospace line, its log's goal a 
 // The records `trax run` writes, the partner the server reads, and the answer the server
 // queues: `test/seams/*.json`, which the Python producers' and consumers' tests hold too.
 test("the trust card trax run writes renders, and Trust posts the answer the server queues and the run takes", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), trustCard as unknown as SessionRecord);
   shell();
@@ -1124,7 +1162,7 @@ test("a refused delete says why in a toast and keeps the chat", async () => {
 
 test("an unconfirmed post survives Chat remounting without sending it again", async () => {
   hold("c1");
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   const shown = shell({ ...workspace, conversation_id: "c1" });
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
   await type("continue");
@@ -1138,7 +1176,7 @@ test("an unconfirmed post survives Chat remounting without sending it again", as
 
 test("a post with no captured acknowledgement stops claiming an indefinite wait", async () => {
   hold("c1");
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   shell({ ...workspace, conversation_id: "c1" });
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
   await type("continue");
@@ -1149,7 +1187,7 @@ test("a post with no captured acknowledgement stops claiming an indefinite wait"
 
 test("switching to an empty station preserves the previous chat's unconfirmed post", async () => {
   hold("c1");
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   const original = { ...workspace, conversation_id: "c1" };
   const shown = shell(original);
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
@@ -1174,7 +1212,7 @@ test("retrying a captured post after a lost receipt keeps its original confirmat
   open("c1");
   hold("c1", said(0, ME, "first"), answered(1, "answer"));
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   const shown = shell();
   await screen.findByText("answer");
   await type("captured already");
@@ -1201,7 +1239,7 @@ test("a refused line shows its failure and keeps the original text", async () =>
 });
 
 test("a line shows pending, then the conversation's id at once, then its record once the assistant has opened the session", async () => {
-  let finish: (value: { conversation_id: string; session_id: string | null; workspace_id: string }) => void = () => {};
+  let finish: (value: { conversation_id: string; session_id: string | null; canvas_id: string }) => void = () => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   const { client } = shell();
 
@@ -1214,7 +1252,7 @@ test("a line shows pending, then the conversation's id at once, then its record 
   expect([line, typeof key]).toEqual([{ workspaceId: WORKSPACE_ID, text: "Show me Issue#12", conversationId: null, page: "#/graph", trail: [] }, "string"]);
 
   // The receipt names the conversation; its session is not there yet.
-  await act(async () => finish({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: null, canvas_id: WORKSPACE_ID }));
   await waitFor(() => expect(screen.getByText("Waiting for the assistant…")).toBeTruthy(), { interval: 1 });
   // The first line binds the conversation to the station.
   expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBe("c1");
@@ -1236,7 +1274,7 @@ test("a line shows pending, then the conversation's id at once, then its record 
 });
 
 test("the next line of a conversation names it", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   hold("c1", said(0, ME, "one"), answered(1, "an answer"));
   shell();
   await type("one");
@@ -1320,7 +1358,7 @@ test("a conversation whose last line is an answer shows no working line", async 
 test("the reply being written shows as its answer will, in place of the wait for the assistant", async () => {
   open("c1");
   hold("c1", said(0, ME, "q"), answered(1, "a"));
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   shell();
   await screen.findByText("a");
   await type("and now?");
@@ -1357,7 +1395,7 @@ test("the stored answer takes the bubble's place, once, and a partial cleared fo
 test("my next line's Sending… shows over the bubble, and an answer stored while that line waits takes the bubble's place, once", async () => {
   open("c1");
   hold("c1", said(0, ME, "first"));
-  let finish: (value: { conversation_id: string; session_id: string | null; workspace_id: string }) => void = () => {};
+  let finish: (value: { conversation_id: string; session_id: string | null; canvas_id: string }) => void = () => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   shell();
   await screen.findByText("Working…");
@@ -1366,7 +1404,7 @@ test("my next line's Sending… shows over the bubble, and an answer stored whil
   await type("second");
   await screen.findByText("Sending…");
   expect(document.querySelector(".chat-line-partial")).toBeNull();
-  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID }));
   await screen.findByText("The first");
   expect(screen.queryByText("Waiting for the assistant…")).toBeNull();
   await write({ turn: "t1", text: "The first answer", done: true });
@@ -1427,7 +1465,7 @@ test("a finished turn's text still held raises no bubble under the next line", a
 test("a line the assistant never opens a session for is said plainly after a while, and can be sent again", async () => {
   // The clock is the test's: the give-up time passes by advancing it, not by waiting.
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c9", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c9", session_id: null, canvas_id: WORKSPACE_ID });
   shell();
   await type("anyone there?");
   await screen.findByText("Waiting for the assistant…");
@@ -1459,7 +1497,7 @@ test.each([
 
 test("a failed send keeps the draft for a retry under one key, and shows no pending line", async () => {
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValueOnce({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+    .mockResolvedValueOnce({ conversation_id: "c1", session_id: null, canvas_id: WORKSPACE_ID });
   shell();
   await type("hi");
   fireEvent.click(await screen.findByRole("button", { name: "Retry message" }));
@@ -1472,7 +1510,7 @@ test("recalling identical history after a failed send keeps retry identity and c
   open("c1");
   hold("c1", said(0, ME, "same"), answered(1, "answer"));
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   shell();
   await screen.findByText("answer");
   await type("same");
@@ -1501,7 +1539,7 @@ test("a refusal shows the server's reason and offers no retry, while a server fa
 });
 
 test("a message's length counts characters as the server does, so 16,384 emoji send and one more is refused", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, canvas_id: WORKSPACE_ID });
   shell();
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: "\u{1F600}".repeat(16_385) } });
@@ -1520,13 +1558,13 @@ test("the composer refuses a too long message before sending it", async () => {
   expect((await screen.findByRole("alert")).textContent).toContain("at most 16,384");
   expect(sendChatLine).not.toHaveBeenCalled();
   fireEvent.change(box, { target: { value: "x".repeat(16_384) } });
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, canvas_id: WORKSPACE_ID });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
 });
 
 test("the box stays focused and editable while a message is sending, and what is typed meanwhile stays", async () => {
-  let finish: (value: { conversation_id: string; session_id: string | null; workspace_id: string }) => void = () => {};
+  let finish: (value: { conversation_id: string; session_id: string | null; canvas_id: string }) => void = () => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   shell();
   await type("first");
@@ -1534,12 +1572,12 @@ test("the box stays focused and editable while a message is sending, and what is
   await screen.findByText("Sending…");
   expect(box.disabled).toBe(false);
   fireEvent.change(box, { target: { value: "second, typed meanwhile" } });
-  await act(async () => finish({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: null, canvas_id: WORKSPACE_ID }));
   expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("second, typed meanwhile");
 });
 
 test("Chat mounting again keeps the station's conversation, which the station holds", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   hold("c1", said(0, ME, "hi"));
   const { mount } = shell();
   await type("hi");
@@ -1681,10 +1719,11 @@ test("a record link in an answer is a plain link that only sets the address, and
   hold("c1", answered(0, "See Issue#12 and 61d3a095-c7f1-4d27-a4c4-a5b1c218a31e."));
   shell();
   const issue = await screen.findByRole("link", { name: /Issue#12/ });
-  expect(issue.getAttribute("href")).toBe("#/ref/Issue/12");
+  expect(issue.getAttribute("href")).toBe("/trax/ref/Issue/12");
   const lookup = screen.getByRole("link", { name: /61d3a095/ });
-  expect(lookup.getAttribute("href")).toBe("#/lookup/61d3a095-c7f1-4d27-a4c4-a5b1c218a31e");
-  expect(fireEvent.click(lookup)).toBe(true);
+  expect(lookup.getAttribute("href")).toBe("/trax/lookup/61d3a095-c7f1-4d27-a4c4-a5b1c218a31e");
+  fireEvent.click(lookup);
+  expect(currentRoute()).toBe("#/lookup/61d3a095-c7f1-4d27-a4c4-a5b1c218a31e");
   expect(sendChatLine).not.toHaveBeenCalled();
 });
 
@@ -1702,7 +1741,7 @@ async function sentFrom(hashes: readonly string[]) {
   stopTrail = startTrail();
   shell();
   for (const hash of hashes.slice(1)) go(hash);
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, canvas_id: WORKSPACE_ID });
   await type("where am I");
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(1), { interval: 1 });
   const { page, trail } = vi.mocked(sendChatLine).mock.calls[0]![0];
@@ -1777,7 +1816,7 @@ const forkButton = (line: string) => within(screen.getByText(line).closest("arti
 test("typing in a chat I read joins it, and sends no fork", async () => {
   open("c1");
   hold("c1", ...TALK);
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   shell();
   await screen.findByText("a2");
   expect(screen.queryByText(/not shared with you/)).toBeNull();
@@ -1834,7 +1873,7 @@ test("my line in a fork shows until the fork holds one more of mine than it open
 test("Cancel fork goes back to posting into the chat", async () => {
   open("c1");
   hold("c1", ...TALK);
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   shell();
   await screen.findByText("a2");
   fireEvent.click(forkButton("a1"));
@@ -2058,7 +2097,7 @@ test("a post into a deleted chat lets it go and starts a new chat with the same 
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED))
-    .mockResolvedValue({ conversation_id: "n1", session_id: null, workspace_id: WORKSPACE_ID });
+    .mockResolvedValue({ conversation_id: "n1", session_id: null, canvas_id: WORKSPACE_ID });
   const { client } = shell();
   await screen.findByText("a2");
   await type("still there?");
@@ -2074,7 +2113,7 @@ test("a fork of a deleted chat's line lets the chat go and starts a new chat wit
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED))
-    .mockResolvedValue({ conversation_id: "n1", session_id: null, workspace_id: WORKSPACE_ID });
+    .mockResolvedValue({ conversation_id: "n1", session_id: null, canvas_id: WORKSPACE_ID });
   const { client } = shell();
   await screen.findByText("a2");
   fireEvent.click(forkButton("a1"));
@@ -2316,7 +2355,7 @@ test("the switch is honoured while a lookup is under way", async () => {
 });
 
 test("a recap whose last answer proposes a next experiment offers to launch it, sending the canned ask", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nThe climb held.\n\n## Next experiment\nRaise the effort to high."));
   shell();
@@ -2338,7 +2377,7 @@ test("a refused follow-up says why and is not an unhandled rejection; it waits l
 
 test("a follow-up whose answer was lost resends under its key, and leaves the typed draft alone", async () => {
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
   shell();
@@ -2355,7 +2394,7 @@ test("a follow-up whose answer was lost resends under its key, and leaves the ty
 
 test("a follow-up whose answer was lost takes a fresh key once it goes to another target", async () => {
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
   const { again } = shell();
@@ -2369,7 +2408,7 @@ test("a follow-up whose answer was lost takes a fresh key once it goes to anothe
 });
 
 test("while a follow-up is on its way, Enter sends no second line, and the box stays editable", async () => {
-  let finish = (_value: { conversation_id: string; session_id: string | null; workspace_id: string }) => {};
+  let finish = (_value: { conversation_id: string; session_id: string | null; canvas_id: string }) => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   open("c1");
   hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
@@ -2381,7 +2420,7 @@ test("while a follow-up is on its way, Enter sends no second line, and the box s
   fireEvent.keyDown(box, { key: "Enter" });
   expect(box).toHaveProperty("disabled", false);
   expect(sendChatLine).toHaveBeenCalledOnce();
-  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID }));
   expect(box).toHaveProperty("value", "also this");
 });
 
@@ -2394,7 +2433,7 @@ test("a plain last answer offers no follow-up", async () => {
 });
 
 test("hovering a stored line shows when it was sent, in the reader's own time; a line still being sent shows none", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", { ...said(0, ME, "my question"), timestamp: "2026-10-13T11:50:00Z" } as SessionRecord);
   shell();
@@ -2473,15 +2512,15 @@ const stampedAt = (at: SessionRecord, minute: number): SessionRecord => ({ ...at
 const TOOL_TALKS: readonly (readonly [string, string, readonly SessionRecord[]])[] = [
   ["sagent", "Bash", [said(0, ME, "list the home directory"),
     record(1, "ToolCall", { call_id: "kb1", name: "Bash", arguments: { command: "ls ~" } }),
-    record(2, "ShellCommandResult", { call_id: "kb1", command: ["ls ~"], stdout: "notes\nsrc\n", extra: { is_error: false } }),
+    record(2, "BashResult", { call_id: "kb1", command: ["ls ~"], stdout: "notes\nsrc\n", extra: { is_error: false } }),
     answered(3, "Two entries.")]],
   ["claude", "Bash", [record(0, "UserMessage", { content: "list the home directory", extra: { author: ME } }),
     record(1, "ToolCall", { call_id: "toolu_1", name: "Bash", arguments: { command: "ls ~", description: "List home" } }),
-    record(2, "ShellCommandResult", { call_id: "toolu_1", command: ["ls ~"], stdout: "notes\nsrc\n", stderr: "", exit_code: 0 }),
+    record(2, "BashResult", { call_id: "toolu_1", command: ["ls ~"], stdout: "notes\nsrc\n", stderr: "", exit_code: 0 }),
     answered(3, "Two entries.")]],
   ["codex", "shell", [record(0, "UserMessage", { content: "list the home directory", extra: { author: ME } }),
     record(1, "ToolCall", { call_id: "call_1", name: "shell", arguments: { command: ["bash", "-lc", "ls ~"], workdir: "/home/ada" } }),
-    record(2, "ShellCommandResult", { call_id: "call_1", command: ["bash", "-lc", "ls ~"], stdout: "notes\nsrc\n", stderr: "", exit_code: 0 }),
+    record(2, "BashResult", { call_id: "call_1", command: ["bash", "-lc", "ls ~"], stdout: "notes\nsrc\n", stderr: "", exit_code: 0 }),
     answered(3, "Two entries.")]],
 ];
 const cardsOn = () => act(() => receivePreferences({ ...preferences(), chat_tool_calls: true }));
@@ -2531,7 +2570,7 @@ test("a call still running shows as a running row, and a failed one as failed wi
   hold("c1", said(0, ME, "run both"),
     record(1, "ToolCall", { call_id: "a", name: "Bash", arguments: { command: "sleep 200" } }),
     record(2, "ToolCall", { call_id: "b", name: "Bash", arguments: { command: "ls /nope" } }),
-    record(3, "ShellCommandResult", { call_id: "b", command: ["ls /nope"], stdout: "", stderr: "no such directory\n", exit_code: 2 }));
+    record(3, "BashResult", { call_id: "b", command: ["ls /nope"], stdout: "", stderr: "no such directory\n", exit_code: 2 }));
   shell();
   await waitFor(() => expect(document.querySelectorAll(".chat-line-tool")).toHaveLength(2));
   const [running, failed] = [...document.querySelectorAll<HTMLElement>(".chat-line-tool")];
@@ -2558,7 +2597,7 @@ function codexChat(run: Partial<WorkspacePartner> = {}): WorkspaceState {
 }
 
 test("an ask with options shows the agent's buttons, and a click posts that option as the chat's answer", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), asking(1));
   shell(codexChat());
@@ -2604,7 +2643,7 @@ test.each([
   ["a codex run on a turn", codexChat({ state: "running" })],
   ["a claude run waiting on an ask", { ...workspace, provider: "claude" as const, partner: { ...(livePartner as WorkspacePartner), state: "requires_action" as const } }],
 ])("Stop interrupts %s: it posts the chat's interrupt, a fresh one each press", async (_name, station) => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"));
   shell(station);
@@ -2638,7 +2677,7 @@ test.each([
 });
 
 test("Esc in the box interrupts the turn a run is on and keeps the draft; with no turn on, it sends nothing", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"));
   const { again } = shell(codexChat({ state: "idle" }));

@@ -1,8 +1,10 @@
 """Request bodies for inquiry submit and edit routes.
 
 Each ``SubmitX`` mirrors its dataclass minus the auto-generated fields
-(id, seq, status, marginal_cost, edge projections, modified),
-which the Store fills in or edges supply. Per-field edits share three
+(id, seq, status, marginal_cost, edge projections), which the Store fills
+in or edges supply. ``modified`` defaults to the server clock; only an admin
+may set it, with ``created``, to import past work with its real dates.
+Per-field edits share three
 uniform bodies (:class:`FieldSet`, :class:`FieldOp`,
 :class:`FieldMutation`) keyed by HTTP method; the field's concrete type
 lives in ``types/inquiries.py``, not here.
@@ -60,6 +62,7 @@ __all__ = [
     "FieldMutation",
     "FieldOp",
     "FieldSet",
+    "SubmitAccessGroup",
     "SubmitAgentSession",
     "SubmitArtifact",
     "SubmitBase",
@@ -106,8 +109,9 @@ class SubmitBase(_CostFields):
     created: AwareDatetime | None = None
     """Optional historical creation instant for importing an inquiry. Requires
     an explicit timezone and cannot be in the future. Applies only to initial
-    creation; the server owns ``modified`` and the audit event's timestamp.
-    ``None`` keeps the database's current creation-time default."""
+    creation; the server owns the audit event's timestamp, and ``modified``
+    unless an admin sets it. ``None`` keeps the database's current
+    creation-time default."""
 
     @field_validator("created", mode="before")
     @classmethod
@@ -203,6 +207,43 @@ class SubmitBase(_CostFields):
         return (
             None if value is None else _reject_blank_strings(value, noun="subscribers")
         )
+
+    modified: AwareDatetime | None = None
+    """When the row was last changed, for an import of past work. ``None``
+    stamps the server clock. Admin only: the routes refuse any other caller
+    with 403. Valid only with ``created``, and never before it. The edges
+    written in the same request leave it as given."""
+
+    @model_validator(mode="after")
+    def _check_modified(self) -> Self:
+        """Refuse ``modified`` without ``created`` or before it."""
+        if self.modified is None:
+            return self
+        if self.created is None:
+            raise ValueError("modified requires created")
+        if self.modified < self.created:
+            raise ValueError("modified must not precede created")
+        return self
+
+    # A body ignores a key it does not declare, so without this a client's
+    # ``filed_from_chat`` would be dropped in silence and its sender would believe
+    # the row filed.
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_filed_from_chat(cls, data: object) -> object:
+        """Refuse ``filed_from_chat``, which the server stamps from a filing's chat."""
+        if _names_filed_from_chat(data):
+            raise ValueError(
+                "filed_from_chat is set by the server from the chat a filing names",
+            )
+        return data
+
+
+# Kept out of the validator: inlined there, the ``dict`` test narrows the ``data`` it
+# hands back to a partly unknown type, which basedpyright refuses.
+def _names_filed_from_chat(data: object) -> bool:
+    """Return whether a raw submit body names ``filed_from_chat``."""
+    return isinstance(data, dict) and "filed_from_chat" in data
 
 
 # Shared by every list-of-string submit field so the "no blank entries" rule lives in
@@ -321,14 +362,14 @@ class Citation(BaseModel):
     artifact_id: uuid.UUID
     """The citing Artifact's id (the edge's stored from-side)."""
 
-    artifact_kind: Artifact.Kind
+    artifact_kind: Artifact.EvidenceKind
     """The citing Artifact's declared kind, verified against the stored row.
 
-    ``Artifact.Kind`` deliberately includes ``Belief`` / ``Experiment``: a claim
-    is itself an Artifact, so it may also *cite* another claim (e.g. one Belief
-    cited as evidence for another). The schema edge CHECK admits this -- the
+    ``Artifact.EvidenceKind`` deliberately includes ``Belief`` / ``Experiment``: a
+    claim is itself an Artifact, so it may also *cite* another claim (e.g. one
+    Belief cited as evidence for another). The schema edge CHECK admits this -- the
     citation target stays ``{Belief, Experiment}`` while the citer may be any
-    Artifact kind, claims included."""
+    evidence kind, claims included. An AccessGroup cites nothing."""
 
     valence: float = Field(default=CITATION_VALENCE_DEFAULT, ge=-1.0, le=1.0)
     """Signed evidential weight: positive for, negative against, magnitude
@@ -399,7 +440,7 @@ class SubmitWebSearch(SubmitBase):
 
 
 class SubmitAgentSession(SubmitBase):
-    """Submit body for a new AgentSession (a captured ``trax run`` session)."""
+    """Submit body for a new AgentSession (a captured agent run's session)."""
 
     kind: Literal["AgentSession"] = "AgentSession"
     cli: str | None = Field(default=None, min_length=1)
@@ -445,8 +486,21 @@ class SubmitAgentSession(SubmitBase):
         return self
 
 
+class SubmitAccessGroup(SubmitBase):
+    """Submit body for a new AccessGroup: its base fields alone.
+
+    The server stamps its controls (``read_group = write_group =`` its own id) and
+    makes it neither a system group nor a domain's, so a body naming a control is
+    refused rather than silently dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["AccessGroup"] = "AccessGroup"
+
+
 # A room name must be a single clean token: non-blank (it is matched verbatim against
-# ``agentsession_rooms``) and free of ``,`` (``trax run`` exports rooms comma-joined
+# ``agentsession_rooms``) and free of ``,`` (the agent runner exports rooms comma-joined
 # into ``TRAX_ROOMS``, so a room ``'a,b'`` is indistinguishable from two rooms ``'a'``
 # and ``'b'`` to an agent inside the session). The rule lives here so
 # ``SubmitAgentSession.rooms`` -- and its ``SessionStart.rooms`` mirror in
@@ -503,7 +557,8 @@ SubmitItem = Annotated[
     | SubmitCodeChange
     | SubmitWebResult
     | SubmitWebSearch
-    | SubmitAgentSession,
+    | SubmitAgentSession
+    | SubmitAccessGroup,
     Field(discriminator="kind"),
 ]
 
@@ -627,12 +682,12 @@ class SubmitBatch(BaseModel):
         value: list[SubmitItem],
     ) -> list[SubmitItem]:
         """Reject items sharing one idempotency_key, naming the dup indexes."""
-        seen: dict[uuid.UUID, int] = {}
+        seen: dict[uuid.UUID | None, int] = {}
         duplicates: list[int] = []
+        # ``_require_idempotency_keys`` runs first and refuses a missing key, and
+        # pydantic stops a field's after-validators at the first error: every key is set.
         for i, item in enumerate(value):
             key = item.idempotency_key
-            if key is None:  # `missing` keys reported by _require_idempotency_keys.
-                continue
             if key in seen:
                 duplicates.append(i)
             else:

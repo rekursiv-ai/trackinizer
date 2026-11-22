@@ -3,7 +3,12 @@ import { useState } from "react";
 import type { InquiryRow } from "../api/inquiries";
 import type { Enums } from "../api/meta";
 import { useMeta, useProfile } from "../app/boot";
-import { type ChoiceField, filterFields, type ListQuery, NO_PRIORITY } from "../query/query";
+import {
+  type ChoiceField,
+  filterFields,
+  type ListQuery,
+  NO_PRIORITY,
+} from "../query/query";
 import {
   Avatar,
   capitalize,
@@ -49,8 +54,17 @@ export function FilterMenu({
   const [field, setField] = useState<ChoiceField | null>(null);
   const fields = filterFields(query, meta.fieldOwners);
   const options = field
-    ? valueOptions(field, { query, rows: [...rows, ...loadedRows(queryClient, query.kinds)], enums: meta.enums, email })
-    : fields.map((f) => ({ value: f, label: FIELD_NAMES[f], icon: <Icon name="filter" size={14} /> }));
+    ? valueOptions(field, {
+        query,
+        rows: [...rows, ...loadedRows(queryClient, query.kinds)],
+        enums: meta.enums,
+        email,
+      })
+    : fields.map((f) => ({
+        value: f,
+        label: FIELD_NAMES[f],
+        icon: <Icon name="filter" size={14} />,
+      }));
   const typedValue = field === "owner" || field === "labels" ? field : null;
   return (
     <Menu
@@ -67,7 +81,9 @@ export function FilterMenu({
         if (field) onToggle(field, value);
         else setField(fields.find((f) => f === value) ?? null);
       }}
-      create={typedValue ? (typed) => `${FIELD_NAMES[typedValue]} is “${typed}”` : undefined}
+      create={
+        typedValue ? (typed) => `${FIELD_NAMES[typedValue]} is “${typed}”` : undefined
+      }
       onBack={field ? () => setField(null) : undefined}
       onClose={() => setField(null)}
     />
@@ -90,8 +106,13 @@ export function FilterChips({
       {query.choices.map(({ field, values }) => (
         <span key={field} className="fchip">
           <span className="k">{FIELD_NAMES[field]}</span>
-          {values.length > 1 ? "is any of" : "is"} {values.map((value) => valueName(field, value)).join(", ")}
-          <button type="button" aria-label={`Remove the ${FIELD_NAMES[field]} filter`} onClick={() => onRemove(field)}>
+          {values.length > 1 ? "is any of" : "is"}{" "}
+          {values.map((value) => valueName(field, value)).join(", ")}
+          <button
+            type="button"
+            aria-label={`Remove the ${FIELD_NAMES[field]} filter`}
+            onClick={() => onRemove(field)}
+          >
             <Icon name="x" size={12} />
           </button>
         </span>
@@ -126,10 +147,20 @@ function loadedRows(queryClient: QueryClient, kinds: readonly string[]): Inquiry
 /** The values the menu offers for `field`, the ticked ones checked. */
 function valueOptions(
   field: ChoiceField,
-  { query, rows, enums, email }: { query: ListQuery; rows: readonly InquiryRow[]; enums: Enums; email: string },
+  {
+    query,
+    rows,
+    enums,
+    email,
+  }: { query: ListQuery; rows: readonly InquiryRow[]; enums: Enums; email: string },
 ): MenuOption[] {
   const ticked = query.choices.find((choice) => choice.field === field)?.values ?? [];
-  const option = (value: string, label: string, icon?: MenuOption["icon"], hint?: string): MenuOption => ({
+  const option = (
+    value: string,
+    label: string,
+    icon?: MenuOption["icon"],
+    hint?: string,
+  ): MenuOption => ({
     value,
     label,
     icon,
@@ -138,28 +169,41 @@ function valueOptions(
   });
   switch (field) {
     case "kind":
-      return query.kinds.map((kind) => option(kind, kindLook(kind).plural, <KindIcon kind={kind} />));
+      return query.kinds.map((kind) =>
+        option(kind, kindLook(kind).plural, <KindIcon kind={kind} />),
+      );
     case "status":
       return (enums.status ?? [])
         .filter((status) => query.tab === "all" || status !== "active")
-        .map((status) => option(status, capitalize(status), <StatusGlyph status={status} />));
+        .map((status) =>
+          option(status, capitalize(status), <StatusGlyph status={status} />),
+        );
     case "judgement":
-      return (enums.judgement ?? []).map((j) => option(j, capitalize(j), <JudgementGlyph judgement={j} />));
+      return (enums.judgement ?? []).map((j) =>
+        option(j, capitalize(j), <JudgementGlyph judgement={j} />),
+      );
     case "priority":
       return [
-        ...PRIORITY_NAMES.map((name, band) => option(String(band), name, <PriorityGlyph priority={band * 10} />)),
+        ...PRIORITY_NAMES.map((name, band) =>
+          option(String(band), name, <PriorityGlyph priority={band * 10} />),
+        ),
         option(NO_PRIORITY, "No priority", <PriorityGlyph priority={null} />),
       ];
     case "owner": {
-      const others = distinct([...rows.map((row) => row.owner ?? ""), ...ticked]).filter((o) => o !== email);
+      const others = distinct([
+        ...rows.map((row) => row.owner ?? ""),
+        ...ticked,
+      ]).filter((o) => o !== email);
       return [
         option(email, "Me", <Avatar actor={email} size={16} />, email),
-        ...others.map((owner) => option(owner, owner, <Avatar actor={owner} size={16} />)),
+        ...others.map((owner) =>
+          option(owner, owner, <Avatar actor={owner} size={16} />),
+        ),
       ];
     }
     case "labels":
-      return distinct([...rows.flatMap((row) => row.labels ?? []), ...ticked]).map((label) =>
-        option(label, label, <LabelDot label={label} />),
+      return distinct([...rows.flatMap((row) => row.labels ?? []), ...ticked]).map(
+        (label) => option(label, label, <LabelDot label={label} />),
       );
   }
 }

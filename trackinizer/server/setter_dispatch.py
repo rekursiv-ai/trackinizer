@@ -42,6 +42,7 @@ from trackinizer.types.columns import (
     storage_name,
 )
 from trackinizer.types.inquiries import (
+    AccessGroup,
     AgentSession,
     Artifact,
     Belief,
@@ -102,8 +103,6 @@ def _canonical_tuple(value: object) -> object:
     if not all(isinstance(item, str) for item in items):
         raise ValueError("Expected all(isinstance(item, str) for item in items).")
     strings = [item for item in items if isinstance(item, str)]
-    if len(strings) != len(items):
-        raise ValueError("Expected len(strings) == len(items).")
     return canonical_strs(strings)
 
 
@@ -190,15 +189,13 @@ helpers are defined."""
 # one Inquiry subclass (``status`` on ``Inquiry``, inherited everywhere); one pass over
 # the hierarchy gives the Store one mapping to dispatch from. Asserts that duplicate
 # columns agree on their specs.
-def _column_specs_for(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec]:
+def _column_specs(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec]:
     """Merge ``ColumnSpec`` metadata across a tuple of dataclass classes."""
     merged: dict[str, ColumnSpec] = {}
     for cls in classes:
         for field_name, spec in column_specs(cls).items():
             col = storage_name(field_name, spec)
-            if (
-                col in merged and merged[col] != spec
-            ):  # pragma: no cover -- defensive consistency check across the hierarchy.
+            if col in merged and merged[col] != spec:
                 raise AssertionError(
                     f"inconsistent ColumnSpec for {col!r}: {merged[col]!r} vs {spec!r}",
                 )
@@ -206,7 +203,7 @@ def _column_specs_for(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec
     return merged
 
 
-COLUMN_SPECS: dict[str, ColumnSpec] = _column_specs_for(
+COLUMN_SPECS: dict[str, ColumnSpec] = _column_specs(
     Inquiry,
     Issue,
     Artifact,
@@ -217,6 +214,7 @@ COLUMN_SPECS: dict[str, ColumnSpec] = _column_specs_for(
     WebResult,
     WebSearch,
     AgentSession,
+    AccessGroup,
 )
 """``storage_name -> ColumnSpec`` aggregated from every Inquiry subclass.
 

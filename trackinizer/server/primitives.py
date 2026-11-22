@@ -17,6 +17,7 @@ from uuid import UUID
 
 import math
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.schema_gen import SEQ_FOR_KIND
 from trackinizer.server.setter_dispatch import (
     COLUMN_SPECS,
@@ -26,7 +27,6 @@ from trackinizer.server.setter_dispatch import (
 from trackinizer.server.values import (
     canonical_strs,
     empty_optional_to_none,
-    vec_to_text,
     vetted_sql,
 )
 from trackinizer.types.columns import column_specs
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import AccessPolicy, Principal
 
 
 # Columns ``insert_inquiry`` writes explicitly, so the derived body skips them:
@@ -71,7 +72,7 @@ async def insert_inquiry(
     *,
     status: Inquiry.Status | None = None,
     values: Mapping[str, object],
-) -> None:
+) -> None:  # pragma: no mutate block
     """Insert one ``inquiries`` row, drawing ``seq`` from the per-kind sequence.
 
     ``values`` holds every non-identity column by its flat storage name (base
@@ -84,8 +85,7 @@ async def insert_inquiry(
     the edit path uses), so a new column needs no edit here -- decorate the
     dataclass attribute and it flows through. Only ``id`` / ``kind`` / ``seq`` /
     ``status`` are handled explicitly (identity + the ``status`` COALESCE
-    default); ``marginal_cost`` is never a row column. Embeddings land
-    separately via :func:`upsert_embedding`.
+    default); ``marginal_cost`` is never a row column.
 
     Args:
       conn: Database connection.
@@ -142,36 +142,6 @@ async def insert_inquiry(
     )
 
 
-async def upsert_embedding(
-    conn: Conn,
-    inquiry_id: UUID,
-    model: str,
-    embedding: Sequence[float],
-) -> None:
-    """Upsert one ``inquiry_embeddings`` row.
-
-    Called on submit and on title re-embed. The PK ``(inquiry_id, model)``
-    plus ``ON CONFLICT DO UPDATE`` keeps the vector aligned with the current
-    title across edits.
-
-    Args:
-      conn: Database connection.
-      inquiry_id: The inquiry row to embed.
-      model: Embedder name (e.g., "stub", "voyage", "openai").
-      embedding: Vector as a sequence of floats; stored as pgvector text.
-
-    """
-    await conn.execute(
-        "INSERT INTO inquiry_embeddings (inquiry_id, model, embedding) "
-        "VALUES ($1, $2, $3::vector) "
-        "ON CONFLICT (inquiry_id, model) DO UPDATE "
-        "SET embedding = EXCLUDED.embedding, created = now()",
-        inquiry_id,
-        model,
-        vec_to_text(list(embedding)),
-    )
-
-
 async def lookup_kind(conn: Conn, target_id: UUID) -> Inquiry.InquiryKind:
     """Resolve an inquiry id to its discriminator ``kind``.
 
@@ -201,6 +171,8 @@ async def lookup_kinds(
     ids: Sequence[UUID],
     *,
     for_share: bool = False,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> dict[UUID, Inquiry.InquiryKind]:
     """Batch ``id -> kind`` lookup; ids absent from the result don't exist.
 
@@ -212,6 +184,8 @@ async def lookup_kinds(
       conn: Database connection.
       ids: Inquiry ids to look up.
       for_share: Lock rows with FOR SHARE until transaction end.
+      policy: Deployment policy for UUID visibility.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       result: Dict of found UUIDs to their kinds; missing ids are not returned.
@@ -220,10 +194,21 @@ async def lookup_kinds(
     if not ids:
         return {}
     lock = " FOR SHARE" if for_share else ""
+    params: list[object] = [list(ids)]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     rows = await conn.fetch(
         # ``lock`` is one of two fixed literals chosen by the bool, not input.
-        vetted_sql("SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[])", lock),
-        list(ids),
+        vetted_sql(
+            "SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[])",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
+            lock,
+        ),
+        *params,
     )
     result: dict[UUID, Inquiry.InquiryKind] = {}
     for row in rows:
@@ -262,7 +247,7 @@ async def validate_list_references(
     if not value:
         return
     permitted = COLUMN_SPECS[column].references
-    if not permitted:  # pragma: no cover -- defensive: callers gate on metadata.
+    if not permitted:
         raise AssertionError(
             f"validate_list_references called for {column!r} with no references",
         )

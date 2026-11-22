@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import json
@@ -10,12 +10,9 @@ import json
 from treekle import immutable, mutable
 
 import pytest
-import pytest_asyncio
 
+from trackinizer.conftest import FakeEngine, executed_sql, make_store
 from trackinizer.lib import zstd_compat
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.semantic_mapper_footprint import HEAD_CHARS
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_bodies import (
     HEAD_TEXT_CHARS,
     HEAVY_KINDS,
@@ -28,22 +25,14 @@ from trackinizer.types.session_records import SessionRecordRow
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.store.core import Store
 
-    from trackinizer.lib.postgres import PostgresEngine
 
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store; session tables truncated per test."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    async with built.engine.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE session_records, session_ciphertext, session_bodies, "
-            "session_manifests, session_slash_commands",
-        )
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session(store: Store) -> UUID:
@@ -80,7 +69,7 @@ async def _session(store: Store) -> UUID:
                 session_id=session_id,
                 part=0,
                 idx=1,
-                kind="ShellCommandResult",
+                kind="BashResult",
                 payload=immutable(
                     {"py/object": "y", "stdout": "exit 1\n" + "spam " * 5_000},
                 ),
@@ -205,23 +194,35 @@ async def test_tsvector_shrinks_to_the_head(store: Store) -> None:
     assert head_hit == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("shards", "shard"), [(2, 2), (2, -1), (1, 1)])
+async def test_a_shard_outside_the_count_is_refused_before_any_read(
+    shards: int,
+    shard: int,
+) -> None:
+    engine = FakeEngine()
+
+    with pytest.raises(ValueError, match=rf"shard {shard} outside \[0, {shards}\)"):
+        await offload_session_bodies(
+            cast("DatabaseEngine", engine),
+            shards=shards,
+            shard=shard,
+        )
+
+    assert engine.conn.mock_calls == []
+
+
 def test_the_stub_is_valid_json() -> None:
     assert json.loads(STUB_PAYLOAD) == {"$body": "offloaded"}
 
 
-def test_heads_agree_with_the_footprint_mapper() -> None:
-    """Storage heads and search heads are one decision (by test, not import)."""
-    assert HEAD_TEXT_CHARS == HEAD_CHARS
-
-
-def test_heavy_kinds_cover_the_footprint_headed_set() -> None:
-    """Every kind the mapper heads is offloaded; FileRead adds the unindexed."""
+def test_heavy_kinds_are_tool_output_and_file_bodies() -> None:
     assert {
-        "ShellCommandResult",
+        "BashResult",
         "UncategorizedToolResult",
-        "FileWriteResult",
-        "FileEditResult",
-        "FileReadResult",
+        "WriteResult",
+        "EditResult",
+        "ReadResult",
     } == set(HEAVY_KINDS)
 
 
@@ -253,6 +254,50 @@ class TestSplicedPayload:
             decode_body(corrupt)
         with pytest.raises(ValueError, match="UTF-8"):
             spliced_payload(STUB_PAYLOAD, corrupt)
+
+
+@pytest.mark.asyncio
+async def test_offload_batches_compress_bodies_before_replacing_the_hot_row() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    text = "é" * (HEAD_TEXT_CHARS + 1)
+    payload = '{"stdout":"é"}'
+    engine.conn.fetch.side_effect = [
+        [
+            {
+                "session_id": session_id,
+                "part": 2,
+                "idx": 3,
+                "payload": payload,
+                "text": text,
+            },
+        ],
+        [],
+    ]
+
+    stats = await offload_session_bodies(store.engine, shards=2, shard=1, batch=1)
+
+    writes = [call.args for call in engine.conn.execute.await_args_list]
+    sidecar = writes[1]
+    hot = writes[2]
+    assert sidecar[1:4] == ([session_id], [2], [3])
+    payloads = cast(list[bytes], sidecar[4])
+    texts = cast(list[bytes], sidecar[5])
+    assert decode_body(payloads[0]) == payload
+    assert decode_body(texts[0]) == text
+    assert hot[1:] == ([session_id], [2], [3], STUB_PAYLOAD, [text[:HEAD_TEXT_CHARS]])
+    assert stats.records_offloaded == 1
+    assert stats.bytes_before == len(payload.encode()) + len(text.encode())
+    assert stats.bytes_after == len(payloads[0]) + len(texts[0])
+    assert executed_sql(engine.conn).count("BEGIN") == 2
+    assert executed_sql(engine.conn).count("COMMIT") == 2
+    assert engine.conn.fetch.await_args_list[0].args[1:] == (
+        sorted(HEAVY_KINDS),
+        STUB_PAYLOAD,
+        2,
+        1,
+        1,
+    )
 
 
 if __name__ == "__main__":
