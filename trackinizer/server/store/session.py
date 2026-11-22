@@ -51,14 +51,17 @@ from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.types.session_records import served_kind, served_payload
+from trackinizer.wire import wire_science_chat
 from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_sessions import FeedEvent
 
 
 __all__ = [
+    "SPAWN_EDGE_SQL",
     "PastRun",
     "RunPlace",
     "_SessionMixin",
+    "spawned_below",
 ]
 
 
@@ -118,6 +121,54 @@ _SEEN_AGAIN_SQL: Final = (
     "UPDATE session_liveness SET last_seen = $2 "
     "WHERE session_id = $1 AND last_seen < $3"
 )
+
+# A chat's fork is ``produced_by`` its original too (``wire_science_chat``), and any row
+# may be ``produced_by`` a session. The label is as trusted as the edge: whoever may
+# strip it may add an unlabelled edge between the two sessions.
+SPAWN_EDGE_SQL: Final = (
+    "edges.edge_kind = 'produced_by' AND edges.from_kind = 'AgentSession' "
+    "AND edges.to_kind = 'AgentSession' "
+    "AND NOT COALESCE($3::text = ANY(edges.labels), FALSE)"
+)
+"""Whether an ``edges`` row links a session to the session whose agent spawned it:
+not labelled ``FORK_EDGE_LABEL``, which the query binds as ``$3``."""
+
+# ``UNION`` drops a session seen before, so a cycle of edges ends the walk.
+_SPAWNED_BELOW_SQL: Final = vetted_sql(
+    "WITH RECURSIVE up(id) AS ("
+    "SELECT edges.to_id FROM edges WHERE edges.from_id = $1 AND ",
+    SPAWN_EDGE_SQL,
+    " UNION SELECT edges.to_id FROM edges JOIN up ON edges.from_id = up.id WHERE ",
+    SPAWN_EDGE_SQL,
+    ") SELECT EXISTS (SELECT 1 FROM up WHERE id = $2)",
+)
+"""Whether spawns lead from session $1 up to $2, link by link."""
+
+
+async def spawned_below(conn: Conn, session_id: UUID, *, root: UUID) -> bool:
+    """Return whether ``session_id`` was spawned by ``root``'s session, at any depth.
+
+    It reads on ``conn``, so a caller inside a transaction asks there.
+
+    Args:
+      conn: The connection to read on.
+      session_id: The session asked about.
+      root: The session at the top.
+
+    Returns:
+      below: Whether a chain of spawns (``SPAWN_EDGE_SQL``) leads from ``session_id``
+        up to ``root``; ``False`` for ``root`` itself.
+
+    """
+    return from_plain(
+        await conn.fetchval(
+            _SPAWNED_BELOW_SQL,
+            session_id,
+            root,
+            wire_science_chat.FORK_EDGE_LABEL,
+        ),
+        bool,
+    )
 
 
 class _SessionMixin(_SubmitMixin, _EditMixin):
@@ -588,7 +639,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         *,
         cli_session_id: str,
     ) -> UUID | None:
-        """Return the session ``produced_by`` ``spawner`` under ``cli_session_id``, if any.
+        """Return the session ``spawner`` spawned under ``cli_session_id``, if any.
+
+        A spawn is a ``produced_by`` edge as ``SPAWN_EDGE_SQL`` reads one, so a chat's
+        fork, which is ``produced_by`` its original, is never re-opened as a child.
 
         Args:
           spawner: The session whose agent spawned it.
@@ -600,18 +654,20 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         """
         async with self.engine.acquire() as conn:
             found = await conn.fetchval(
-                "SELECT child.id FROM edges "
-                "JOIN inquiries AS child ON child.id = edges.from_id "
-                "WHERE edges.to_id = $1 AND edges.edge_kind = 'produced_by' "
-                "AND child.kind = 'AgentSession' "
-                "AND child.agentsession_cli_session_id = $2 "
-                "ORDER BY child.seq LIMIT 1",
+                vetted_sql(
+                    "SELECT child.id FROM edges "
+                    "JOIN inquiries AS child ON child.id = edges.from_id "
+                    "WHERE edges.to_id = $1 AND ",
+                    SPAWN_EDGE_SQL,
+                    " AND child.agentsession_cli_session_id = $2 "
+                    "ORDER BY child.seq LIMIT 1",
+                ),
                 spawner,
                 cli_session_id,
+                wire_science_chat.FORK_EDGE_LABEL,
             )
         return None if found is None else _uuid(found)
 
-    # ``UNION`` drops a session seen before, so a cycle of edges ends the walk.
     async def is_spawned_below(self, session_id: UUID, *, root: UUID) -> bool:
         """Return whether ``session_id`` was spawned by ``root``'s session, at any depth.
 
@@ -620,23 +676,12 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           root: The session at the top.
 
         Returns:
-          below: Whether a chain of ``produced_by`` edges between sessions leads
-            from ``session_id`` up to ``root``; ``False`` for ``root`` itself.
+          below: Whether a chain of spawns (``SPAWN_EDGE_SQL``) leads from
+            ``session_id`` up to ``root``; ``False`` for ``root`` itself.
 
         """
         async with self.engine.acquire() as conn:
-            below = await conn.fetchval(
-                "WITH RECURSIVE up(id) AS ("
-                "SELECT to_id FROM edges WHERE from_id = $1 "
-                "AND edge_kind = 'produced_by' AND to_kind = 'AgentSession' "
-                "UNION SELECT edges.to_id FROM edges JOIN up ON edges.from_id = up.id "
-                "WHERE edges.edge_kind = 'produced_by' "
-                "AND edges.to_kind = 'AgentSession') "
-                "SELECT EXISTS (SELECT 1 FROM up WHERE id = $2)",
-                session_id,
-                root,
-            )
-        return from_plain(below, bool)
+            return await spawned_below(conn, session_id, root=root)
 
     async def silent_sessions(self, *, before: datetime) -> list[UUID]:
         """Return each live session last heard from at or before ``before``.

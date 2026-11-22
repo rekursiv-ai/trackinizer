@@ -99,6 +99,7 @@ from trackinizer.server.auth import (
 )
 from trackinizer.server.host_auth import current_host, host_revoked
 from trackinizer.server.notify import SSE_PING, notify_after_commit, tx
+from trackinizer.server.preferences import stored_preferences
 from trackinizer.server.session_relay import (
     BAD_FRAME,
     HostRevokedError,
@@ -362,6 +363,12 @@ async def start_process_route(
             minter=identity,
             host_id=place.host_id,
         )
+        preferences = stored_preferences(
+            await conn.fetchval(
+                "SELECT preferences FROM users WHERE id = $1",
+                identity.user_id,
+            ),
+        )
     process = relay.start(
         session_id,
         body,
@@ -370,6 +377,7 @@ async def start_process_route(
         host=place.host,
         token=token,
         remote=place.remote,
+        watcher=preferences.watcher,
     )
     if process.process_id != process_id:
         # Another start won while this one minted: its key would serve nothing.

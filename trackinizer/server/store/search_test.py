@@ -37,12 +37,15 @@ from trackinizer.server.store.search import (
     _kept_units,
     _merge,
     _semantic_arm,
+    _spawned_below,
     search_inquiries,
     search_sessions,
 )
+from trackinizer.server.store.session import SPAWN_EDGE_SQL
 from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
 from trackinizer.server.values import vetted_sql
 from trackinizer.wire.audience import AUDIENCES
+from trackinizer.wire.wire_science_chat import FORK_EDGE_LABEL
 
 
 if TYPE_CHECKING:
@@ -327,19 +330,10 @@ async def test_a_search_near_what_a_session_spawned_asks_the_arm_for_the_one_fou
         limit=5,
     )
 
-    conn.fetchval.assert_awaited_once_with(
-        "WITH RECURSIVE down(id) AS ("
-        "SELECT from_id FROM edges WHERE to_id = $1 "
-        "AND edge_kind = 'produced_by' AND from_kind = 'AgentSession' "
-        "UNION SELECT edges.from_id FROM edges JOIN down ON edges.to_id = down.id "
-        "WHERE edges.edge_kind = 'produced_by' "
-        "AND edges.from_kind = 'AgentSession') "
-        "SELECT child.id FROM down JOIN inquiries AS child ON child.id = down.id "
-        "WHERE child.agentsession_cli_session_id = $2 "
-        "ORDER BY child.seq LIMIT 1",
-        UUID(int=7),
-        "a/b",
-    )
+    walked = conn.fetchval.await_args
+    assert walked is not None
+    assert cast(str, walked.args[0]).count(SPAWN_EDGE_SQL) == 2
+    assert walked.args[1:] == (UUID(int=7), "a/b", FORK_EDGE_LABEL)
     assert [(query, limit) for query, _, limit in arm.asked] == [(asked, 5)]
     # The arm's test keeps apart what the session found spawned, not the one named.
     assert arm.kept[0][2][0] == asked
@@ -757,6 +751,28 @@ async def test_what_a_session_spawned_is_found_at_any_depth_and_under_it_alone(
     )
 
     assert [hit.session_id for hit in hits] == [root]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_chats_fork_is_nothing_its_original_spawned(store: Store) -> None:
+    """A fork is ``produced_by`` its original, under the label that makes it a fork."""
+    root, fork, spawned = [await _session(store) for _ in range(3)]
+    _ = await _note(store, fork, root, "forked")
+    _ = await _note(store, spawned, root, "spawned")
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE edges SET labels = $2 WHERE from_id = $1",
+            fork,
+            [FORK_EDGE_LABEL],
+        )
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_cli_session_id = 'c' "
+            "WHERE id = ANY($1::uuid[])",
+            [fork, spawned],
+        )
+
+    assert await _spawned_below(store.engine, root, cli_session_id="c") == spawned
 
 
 _OPEN_READER: Final = SessionReader(audiences=frozenset({"open"}))

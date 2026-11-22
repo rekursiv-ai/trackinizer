@@ -22,7 +22,13 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
 
 
-__all__ = ["PROCESS_KEY_ROUTES", "RECORDS_ROUTES", "WEBSOCKET", "listed_route"]
+__all__ = [
+    "PROCESS_KEY_ROUTES",
+    "RECORDS_ROUTES",
+    "RECORD_WRITE_ROUTES",
+    "WEBSOCKET",
+    "listed_route",
+]
 
 
 WEBSOCKET: Final = "WEBSOCKET"
@@ -55,6 +61,35 @@ RECORDS_ROUTES: Final[Mapping[tuple[str, str], Scope]] = MappingProxyType(
     },
 )
 """The routes an agent's record reads call, by method and path, with their scopes."""
+
+RECORD_WRITE_ROUTES: Final[Mapping[tuple[str, str], Scope]] = MappingProxyType(
+    {
+        # Every route trax's write verbs call to file, edit, label, cost, link, unlink,
+        # claim and delete a row; each route holds a writer to its own access, and a
+        # delete to an unclaimed row of its account's. Left off, so a leaked key cannot
+        # reach them: a row's ``account`` and ``cli_session_id``, the org's variables,
+        # the export, metric writes and every admin route.
+        ("POST", "/api/inquiries/batch"): "account",
+        ("POST", "/api/inquiries/lookup"): "account",
+        ("POST", "/api/inquiries/next_issue"): "account",
+        ("DELETE", "/api/inquiries/{target_id}"): "account",
+        ("PUT", "/api/inquiries/{target_id}/title"): "account",
+        ("PUT", "/api/inquiries/{target_id}/status"): "account",
+        ("PUT", "/api/inquiries/{target_id}/owner"): "account",
+        ("PUT", "/api/inquiries/{target_id}/description"): "account",
+        ("PUT", "/api/inquiries/{target_id}/app"): "account",
+        ("PUT", "/api/issue/{target_id}/priority"): "account",
+        ("PUT", "/api/issue/{target_id}/validation"): "account",
+        ("PUT", "/api/belief/{target_id}/judgement"): "account",
+        ("PATCH", "/api/inquiries/{target_id}/labels"): "account",
+        ("PATCH", "/api/inquiries/{target_id}/marginal_cost_agent_usd"): "account",
+        ("POST", "/api/edges/{from_id}/{edge_kind}/{to_id}"): "account",
+        ("DELETE", "/api/edges/{from_id}/{edge_kind}/{to_id}"): "account",
+        # The one annotation trax sends after an edge's upsert: a clear of its labels.
+        ("PUT", "/api/edges/{from_id}/{edge_kind}/{to_id}/labels"): "account",
+    },
+)
+"""The routes an agent's record writes call, by method and path, with their scopes."""
 
 
 def _route_union(
@@ -128,12 +163,14 @@ PROCESS_KEY_ROUTES: Final[Mapping[tuple[str, str], Scope]] = _route_union(
         ("GET", "/api/me/preferences/agent"): "account",
     },
     RECORDS_ROUTES,
+    RECORD_WRITE_ROUTES,
 )
 """Every route an agent process calls with the key a start minted for it, by method
 and path, with its scope. A route nobody lists is refused to that key until someone
 does: an agent gets an ability by a tool, and the tool's routes are listed with it.
-:data:`RECORDS_ROUTES` joins its own entries; a route both list keeps one scope, so
-joining a tool's list never widens what the key reaches."""
+:data:`RECORDS_ROUTES` and :data:`RECORD_WRITE_ROUTES` join their own entries; a route
+two lists name keeps one scope, so joining a tool's list never widens what the key
+reaches."""
 
 
 def listed_route(

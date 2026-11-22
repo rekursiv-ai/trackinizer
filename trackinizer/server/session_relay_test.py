@@ -200,6 +200,7 @@ def _start(
     spec: ProcessSpec | None = None,
     host_id: UUID = _HOST,
     remote: bool = False,
+    watcher: bool = False,
 ) -> AgentProcess:
     return relay.start(
         session_id,
@@ -209,6 +210,7 @@ def _start(
         host="lab-box",
         token=f"key-{process.hex}",
         remote=remote,
+        watcher=watcher,
     )
 
 
@@ -1134,7 +1136,7 @@ async def test_a_start_wakes_its_hosts_wait_and_is_handed_out_once() -> None:
         f"key-{_PROCESS.hex}",
     )
     assert serve.spec == ProcessSpec(host="lab-box", cwd="/w", args=("--model", "opus"))
-    assert serve.remote is False
+    assert (serve.remote, serve.watcher) == (False, False)
     assert await relay.wait(_HOST, wait_sec=0, dropped=_here) is None
 
 
@@ -1147,6 +1149,16 @@ async def test_a_start_for_remote_agents_tells_its_daemon_so() -> None:
 
     assert isinstance(serve, ServeSession)
     assert serve.remote is True
+
+
+async def test_a_start_tells_its_daemon_the_persons_watcher_setting_is_on() -> None:
+    relay = SessionRelay()
+    _ = _start(relay, watcher=True)
+
+    serve = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+
+    assert isinstance(serve, ServeSession)
+    assert serve.watcher is True
 
 
 async def test_a_start_is_offered_to_its_own_host_alone() -> None:
@@ -1194,6 +1206,7 @@ async def test_starts_on_one_host_are_handed_out_in_turn_and_a_stop_takes_its_ow
             host="lab-box",
             token=f"key-{number}",
             remote=False,
+            watcher=False,
         )
 
     first = await asyncio.wait_for(waiting, 1)

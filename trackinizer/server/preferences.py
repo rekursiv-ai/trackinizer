@@ -67,18 +67,19 @@ ASSISTANT_KEYS: Final = frozenset(
         "chat_tool_calls",
         "autofix",
         "automerge",
+        "watcher",
     },
 )
 """The preferences a canvas's assistant may read and change for its owner: the
 UI's, each marked ``SETTING`` below. Every other key (the user's own data) stays
 the user's alone."""
 
-AGENT_KEYS: Final = ASSISTANT_KEYS - {"cli_folder", "autofix", "automerge"}
+AGENT_KEYS: Final = ASSISTANT_KEYS - {"cli_folder", "autofix", "automerge", "watcher"}
 """The settings an agent's own tool may change for the person, with the key a start
 minted for its process: how the app looks and reads. Not the folder an agent starts
 in, whose skills and AGENTS.md the next agent loads, nor what agents do to pull
-requests: an agent a line in a shared chat steered would change what every later
-agent of the person does."""
+requests, nor their watcher: an agent a line in a shared chat steered would change
+what every later agent of the person does."""
 
 SETTING: Final[JsonDict] = {"x-setting": True}
 """Marks a field as one of the UI's settings: Settings shows it in the
@@ -446,7 +447,9 @@ class Preferences(_Strict):
     ] = Field(
         default="default",
         description=(
-            "The app's look: default, or one of the fixed skins, which ignore theme."
+            "The app's look: default, or one of the fixed skins, each drawn in the "
+            "theme's light or dark where an app draws both; Trackinizer's own web "
+            "UI draws a fixed skin in its one palette and ignores the theme."
         ),
         json_schema_extra=SETTING,
     )
@@ -464,7 +467,8 @@ class Preferences(_Strict):
             "The browser terminal's colours, which the Hacker skin draws in too: "
             "text, background and bold, the 16-colour palette (ANSI 0 to 15), and "
             "whether bold text in colours 0 to 7 shows in 8 to 15. GNOME Terminal's "
-            "Green on black over its GNOME palette until changed."
+            "Green on black over its GNOME palette until changed. In light mode a "
+            "set on a dark background gives way to GNOME's light one."
         ),
         json_schema_extra=SETTING,
     )
@@ -625,6 +629,15 @@ class Preferences(_Strict):
             "push: GitHub merges it once its required checks pass and its reviews "
             "allow, a draft once it is marked ready. Chat switches it for each pull "
             "request."
+        ),
+        json_schema_extra=SETTING,
+    )
+    watcher: bool = Field(
+        default=True,
+        description=(
+            "Give each new chat's cloud agent a watcher, on the agent's own model, "
+            "that keeps it to your instructions. A chat's next start follows a "
+            "change."
         ),
         json_schema_extra=SETTING,
     )

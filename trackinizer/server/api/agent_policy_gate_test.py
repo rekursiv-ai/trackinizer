@@ -176,6 +176,7 @@ class _Site:
             host="remote-agents",
             token=str(uuid4()),
             remote=True,
+            watcher=False,
         )
         return process_id
 
