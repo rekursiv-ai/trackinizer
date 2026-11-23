@@ -31,7 +31,7 @@ import time
 import uuid
 
 from trackinizer.client.client import Client
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AssistantMessage,
     BashResult,
     SessionContext,

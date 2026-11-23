@@ -15,12 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session.shell_results import (
-    lift_shell_result,
-    rewrite_shell_source,
-)
-from trackinizer.sagent.scripts.convert_session.udiff import render_udiff
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     BashResult,
     EditResult,
     LineSpan,
@@ -29,6 +24,11 @@ from trackinizer.sagent.session.types import (
     ToolMessage,
     WriteResult,
 )
+from trackinizer.sagent.scripts.convert_session.shell_results import (
+    lift_shell_result,
+    rewrite_shell_source,
+)
+from trackinizer.sagent.scripts.convert_session.udiff import render_udiff
 
 
 def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> ToolMessage | None:

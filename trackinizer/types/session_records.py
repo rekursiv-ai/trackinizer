@@ -46,7 +46,7 @@ from uuid import UUID
 
 from treekle import PlainTree, immutable
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     FORMER_RESULT_KINDS,
     RENAMED_KINDS,
     AgentMessage,
@@ -274,7 +274,7 @@ def search_text(record: object) -> str:
 def stored_payload(record: TraxRecord) -> Mapping[str, PlainTree]:
     """Return ``record`` encoded as a row stores it, ciphertext and all.
 
-    As :func:`~trackinizer.sagent.session.types.stored_plain` writes it, the scrape
+    As :func:`~trackinizer.sagent.journal.types.stored_plain` writes it, the scrape
     streams named too. :meth:`SessionRecordRow.of` strips the ciphertext before
     calling this; a rewrite of a stored row keeps whatever the row held.
 

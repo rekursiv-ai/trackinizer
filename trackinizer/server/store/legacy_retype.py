@@ -16,7 +16,7 @@ mapping without a database.
 
 Fan-out: the old ``AssistantMessage`` nested text, thinking, and tool calls
 in one message; the IR states each act as its own record (axiom 3 of
-``trackinizer/sagent/session/types.py``). One legacy record therefore becomes
+``trackinizer/sagent/journal/types.py``). One legacy record therefore becomes
 one OR SEVERAL records, in the order the acts occurred: prose, thinking,
 tool calls, token usage.
 
@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 
 from treekle import from_plain, immutable
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AssistantMessage,
     Attachment,

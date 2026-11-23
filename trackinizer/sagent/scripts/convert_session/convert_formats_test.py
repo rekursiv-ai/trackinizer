@@ -20,6 +20,14 @@ import json
 
 import pytest
 
+from trackinizer.sagent.journal.jsonl import JsonlJournal, record_line
+from trackinizer.sagent.journal.types import (
+    AssistantMessage,
+    ContextClear,
+    SessionRecord,
+    ToolCall,
+    UserMessage,
+)
 from trackinizer.sagent.scripts.convert_session import claude, codex, gemini
 from trackinizer.sagent.scripts.convert_session.convert import (
     _Adapter,
@@ -29,14 +37,6 @@ from trackinizer.sagent.scripts.convert_session.convert import (
     convert_file,
     detect_format,
     main,
-)
-from trackinizer.sagent.session.jsonl import JsonlJournal, record_line
-from trackinizer.sagent.session.types import (
-    AssistantMessage,
-    ContextClear,
-    SessionRecord,
-    ToolCall,
-    UserMessage,
 )
 
 

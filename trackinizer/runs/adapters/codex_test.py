@@ -12,7 +12,7 @@ import pytest
 from trackinizer.lib import zstd_compat
 from trackinizer.runs.adapters.codex import CodexAdapter
 from trackinizer.runs.adapters.custom_types import Subagent
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.journal.types import UserMessage
 
 
 class TestCodexSessionsDir:

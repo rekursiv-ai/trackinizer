@@ -10,7 +10,7 @@ from fastapi import Request
 import pytest
 
 from trackinizer.conftest import make_store
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.journal.types import UserMessage
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.config import Config

@@ -13,8 +13,7 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import claude, codex, fuse
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AssistantMessage,
     ContextClear,
     ContextCompaction,
@@ -22,6 +21,7 @@ from trackinizer.sagent.session.types import (
     SessionRecord,
     UserMessage,
 )
+from trackinizer.sagent.scripts.convert_session import claude, codex, fuse
 
 
 if TYPE_CHECKING:

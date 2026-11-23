@@ -22,7 +22,7 @@ import uuid
 import asyncpg
 import pytest
 
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.journal.types import UserMessage
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.bodies import SubmitAgentSession, SubmitIssue
 

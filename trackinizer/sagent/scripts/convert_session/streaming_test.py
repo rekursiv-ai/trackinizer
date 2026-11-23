@@ -25,8 +25,8 @@ from trackinizer.sagent.scripts.convert_session import claude, codex
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+    from trackinizer.sagent.journal.types import SessionRecord
     from trackinizer.sagent.scripts.convert_session.convert import _Adapter
-    from trackinizer.sagent.session.types import SessionRecord
 
 
 class _TrackedLine(str):

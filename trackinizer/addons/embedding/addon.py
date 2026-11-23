@@ -23,7 +23,7 @@ from trackinizer.addons.embedding.qwen3_0p6b import Qwen06BEmbedder
 from trackinizer.addons.embedding.search import Nearest
 from trackinizer.addons.embedding.sweep import Sweep
 from trackinizer.addons.embedding.units import Settings, settings_key
-from trackinizer.sagent.session.types import first_name, stored_names
+from trackinizer.sagent.journal.types import first_name, stored_names
 from trackinizer.server.store.search import INQUIRY_TEXT_COLUMNS
 
 

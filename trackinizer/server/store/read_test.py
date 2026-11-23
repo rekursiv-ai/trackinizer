@@ -19,7 +19,7 @@ from trackinizer.conftest import (
     queue_field_rows,
 )
 from trackinizer.lib.postgres import Conn
-from trackinizer.sagent.session.types import AgentMessage, stored_names
+from trackinizer.sagent.journal.types import AgentMessage, stored_names
 from trackinizer.server.access_policy import DefaultPolicy, Principal
 from trackinizer.server.audience import (
     SessionReader,

@@ -42,7 +42,7 @@ import uuid
 from treekle import from_plain
 
 from trackinizer.client.client import Client
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AssistantMessage,
     BashResult,
     ToolCall,

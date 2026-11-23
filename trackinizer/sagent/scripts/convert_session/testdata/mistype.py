@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING, Final, cast
 
 import copy
 
-from trackinizer.sagent.session.types import IncompleteRecord, UncategorizedRecord
+from trackinizer.sagent.journal.types import IncompleteRecord, UncategorizedRecord
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-    from trackinizer.sagent.session.types import SessionRecord
+    from trackinizer.sagent.journal.types import SessionRecord
 
 
 __all__ = ["field_paths", "mistyped", "unread", "without"]

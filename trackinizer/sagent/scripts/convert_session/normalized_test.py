@@ -13,8 +13,7 @@ from treekle import ReadError, from_plain, json_loads
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import claude, codex, normalized
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AssistantMessage,
     Attachment,
@@ -34,6 +33,7 @@ from trackinizer.sagent.session.types import (
     UserMessage,
     stored_plain,
 )
+from trackinizer.sagent.scripts.convert_session import claude, codex, normalized
 
 
 if TYPE_CHECKING:
@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
+
+# Where the vocabulary lived while archives named classes by import path.
+_ARCHIVED: Final = "trackinizer.sagent.session.types"
 
 
 def test_session_json_round_trips_every_record_type() -> None:
@@ -165,7 +168,7 @@ def test_a_document_that_is_no_array_is_refused() -> None:
 
 def test_only_a_class_tag_is_renamed_from_its_import_path() -> None:
     """A string that merely spells an import path is the provider's, kept as it is."""
-    module = UserMessage.__module__
+    module = _ARCHIVED
     record = UserMessage(content="u", extra={"note": f"{module}.UserMessage"})
     old = json.dumps([stored_plain(record)]).replace(
         '"py/object": "',
@@ -192,7 +195,7 @@ def test_a_document_naming_classes_by_import_path_still_reads() -> None:
     record = ContextClear(
         history=(UserMessage(content="u"), AssistantMessage(content="a")),
     )
-    module = ContextClear.__module__
+    module = _ARCHIVED
     old = json.dumps([stored_plain(record)]).replace(
         '"py/object": "',
         f'"py/object": "{module}.',
@@ -205,7 +208,7 @@ def test_a_row_tagged_with_a_former_result_class_import_path_still_reads() -> No
     old = json.dumps(
         [
             {
-                "py/object": f"{ToolMessage.__module__}.UncategorizedToolResult",
+                "py/object": f"{_ARCHIVED}.UncategorizedToolResult",
                 "call_id": "c",
                 "content": "ok",
             },

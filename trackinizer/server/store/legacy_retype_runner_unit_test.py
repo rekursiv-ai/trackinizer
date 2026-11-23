@@ -14,7 +14,7 @@ from treekle import json_loads, mutable, to_plain
 import pytest
 
 from trackinizer.conftest import make_conn, make_store, new_uuid
-from trackinizer.sagent.session.types import Thinking, UserMessage
+from trackinizer.sagent.journal.types import Thinking, UserMessage
 from trackinizer.server.store import legacy_retype_runner
 from trackinizer.server.store.legacy_retype import SlashCommandOut
 from trackinizer.server.store.legacy_retype_runner import (

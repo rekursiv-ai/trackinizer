@@ -18,7 +18,7 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     BashResult,
     ToolCall,
     ToolMessage,

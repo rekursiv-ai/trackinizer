@@ -17,19 +17,7 @@ from treekle import ReadError, from_plain, json_loads
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import claude
-from trackinizer.sagent.scripts.convert_session.claude import _group
-from trackinizer.sagent.scripts.convert_session.shell_results import (
-    rewrite_shell_source,
-)
-from trackinizer.sagent.scripts.convert_session.tail import Tail
-from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
-    field_paths,
-    mistyped,
-    unread,
-    without,
-)
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AgentSpawnResult,
     AssistantMessage,
@@ -61,6 +49,18 @@ from trackinizer.sagent.session.types import (
     WriteResult,
     former_kind,
     stored_plain,
+)
+from trackinizer.sagent.scripts.convert_session import claude
+from trackinizer.sagent.scripts.convert_session.claude import _group
+from trackinizer.sagent.scripts.convert_session.shell_results import (
+    rewrite_shell_source,
+)
+from trackinizer.sagent.scripts.convert_session.tail import Tail
+from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
+    field_paths,
+    mistyped,
+    unread,
+    without,
 )
 
 

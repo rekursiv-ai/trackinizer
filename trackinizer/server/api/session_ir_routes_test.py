@@ -23,7 +23,7 @@ from treekle import from_plain, immutable, json_loads
 import httpx2
 import pytest
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     SessionContext,
     SessionRecord,
     Thinking,

@@ -6,16 +6,16 @@ from typing import cast
 
 import copy
 
+from trackinizer.sagent.journal.types import (
+    IncompleteRecord,
+    UncategorizedRecord,
+    UserMessage,
+)
 from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
     field_paths,
     mistyped,
     unread,
     without,
-)
-from trackinizer.sagent.session.types import (
-    IncompleteRecord,
-    UncategorizedRecord,
-    UserMessage,
 )
 
 

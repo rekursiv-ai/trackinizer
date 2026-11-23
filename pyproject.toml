@@ -64,7 +64,7 @@ dependencies = [
     "watchdog>=7.0.0 ; sys_platform == 'darwin'",
     # shell parsing: lifts a captured `cat`/`echo >` into a typed file result.
     # The agent runner's session capture does this on the client, through
-    # `sagent/session/shell_results.py`; without it every such command is
+    # `sagent/scripts/convert_session/shell_results.py`; without it every such command is
     # left unlifted, silently.
     "bashlex>=0.18",
     # lazy imports

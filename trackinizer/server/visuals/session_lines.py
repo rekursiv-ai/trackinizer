@@ -15,7 +15,7 @@ import uuid
 from pydantic import BaseModel
 from treekle import from_plain
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AssistantMessage,
     UserMessage,

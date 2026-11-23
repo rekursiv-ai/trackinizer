@@ -31,7 +31,7 @@ from typing import Final, TextIO, override
 import queue
 import threading
 
-from trackinizer.sagent.session.types import SessionContext
+from trackinizer.sagent.journal.types import SessionContext
 
 
 __all__ = ["Tail"]

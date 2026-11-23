@@ -16,7 +16,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final, Literal, cast, get_args, get_origin
 
-from trackinizer.sagent.session.types import stored_names
+from trackinizer.sagent.journal.types import stored_names
 from trackinizer.types.columns import (
     FlatColumn,
     flat_column_specs,

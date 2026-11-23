@@ -1,7 +1,7 @@
 """Normalize and denormalize sessions as the provider-neutral JSON form.
 
 The adapter whose wire format is the IR itself: one JSON array of records,
-each as :func:`~trackinizer.sagent.session.types.stored_plain` writes it -- its class
+each as :func:`~trackinizer.sagent.journal.types.stored_plain` writes it -- its class
 by name, its JSON fields as the plain objects the provider sent -- so a session
 converted to this format and back carries every semantic record rather than a
 provider projection of one. A file written before records carried codec tags
@@ -21,9 +21,8 @@ import json
 
 from treekle import MutablePlainTree, json_loads
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     FORMER_RESULT_KINDS,
-    ToolMessage,
     record_classes,
     stored_plain,
     stored_record,
@@ -33,7 +32,7 @@ from trackinizer.sagent.session.types import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-    from trackinizer.sagent.session.types import SessionRecord
+    from trackinizer.sagent.journal.types import SessionRecord
 
 
 __all__ = ["denormalize", "normalize"]
@@ -49,12 +48,14 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
       record: Each record the document holds, in stream order.
 
     """
+    # Such a document predates ``trackinizer.sagent.journal``: its tags name the module as
+    # it was, which a move of the package does not rewrite. A former result class
+    # is not in ``record_classes()``, and an old document still tags its rows with
+    # that class's import path.
     named = {
-        f"{kind.__module__}.{name}": name for name, kind in record_classes().items()
+        f"trackinizer.sagent.session.types.{name}": name
+        for name in (*record_classes(), *FORMER_RESULT_KINDS)
     }
-    # A former result class is not in ``record_classes()``, and an old document
-    # still tags its rows with that class's import path.
-    named |= {f"{ToolMessage.__module__}.{name}": name for name in FORMER_RESULT_KINDS}
     for plain in json_loads(stream.read(), list[MutablePlainTree]):
         yield stored_record(_named(plain, named=named))
 

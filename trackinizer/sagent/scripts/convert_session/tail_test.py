@@ -11,8 +11,8 @@ import threading
 
 import pytest
 
+from trackinizer.sagent.journal.types import SessionContext, SessionRecord, UserMessage
 from trackinizer.sagent.scripts.convert_session import tail
-from trackinizer.sagent.session.types import SessionContext, SessionRecord, UserMessage
 
 
 if TYPE_CHECKING:

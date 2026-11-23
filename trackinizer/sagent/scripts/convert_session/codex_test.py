@@ -16,20 +16,7 @@ from treekle import MutablePlainTree, from_plain, json_loads, mutable
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import codex
-from trackinizer.sagent.scripts.convert_session.codex import (
-    _grouped,
-    _rollout_records_from_another_cli,
-)
-from trackinizer.sagent.scripts.convert_session.provider_fields import MISSING_TIMESTAMP
-from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
-    field_paths,
-    mistyped,
-    unread,
-    without,
-)
-from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff, render_udiff
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AssistantMessage,
     Attachment,
@@ -61,6 +48,19 @@ from trackinizer.sagent.session.types import (
     former_kind,
     stored_plain,
 )
+from trackinizer.sagent.scripts.convert_session import codex
+from trackinizer.sagent.scripts.convert_session.codex import (
+    _grouped,
+    _rollout_records_from_another_cli,
+)
+from trackinizer.sagent.scripts.convert_session.provider_fields import MISSING_TIMESTAMP
+from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
+    field_paths,
+    mistyped,
+    unread,
+    without,
+)
+from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff, render_udiff
 
 
 if TYPE_CHECKING:

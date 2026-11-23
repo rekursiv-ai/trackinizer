@@ -37,8 +37,8 @@ import uuid
 
 from trackinizer.lib.files.owner_only import open_private
 from trackinizer.lib.userdirs import data_dir
-from trackinizer.sagent.session.jsonl import read_record
-from trackinizer.sagent.session.types import SessionContext, UserMessage, stored_names
+from trackinizer.sagent.journal.jsonl import read_record
+from trackinizer.sagent.journal.types import SessionContext, UserMessage, stored_names
 
 
 if TYPE_CHECKING:

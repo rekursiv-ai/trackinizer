@@ -1,7 +1,7 @@
 """A journal stored as one JSON line per record, locked to one process at a time.
 
-Each line is a record as :func:`~trackinizer.sagent.session.types.stored_plain` writes
-it, read back through :func:`~trackinizer.sagent.session.types.stored_record`.
+Each line is a record as :func:`~trackinizer.sagent.journal.types.stored_plain` writes
+it, read back through :func:`~trackinizer.sagent.journal.types.stored_record`.
 
 Typical usage example:
 
@@ -29,7 +29,7 @@ from treekle import json_loads
 
 from trackinizer.lib.files.owner_only import open_private
 from trackinizer.lib.posix.pids import lock_holder
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     FORMER_RESULT_KINDS,
     ContextClear,
     IncompleteRecord,

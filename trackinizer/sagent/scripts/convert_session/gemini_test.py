@@ -20,14 +20,7 @@ from treekle import json_loads
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import gemini
-from trackinizer.sagent.scripts.convert_session.convert import _dropped, detect_format
-from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
-    mistyped,
-    unread,
-    without,
-)
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AssistantMessage,
     ContextClear,
     IncompleteRecord,
@@ -37,6 +30,13 @@ from trackinizer.sagent.session.types import (
     ToolCall,
     UncategorizedRecord,
     UserMessage,
+)
+from trackinizer.sagent.scripts.convert_session import gemini
+from trackinizer.sagent.scripts.convert_session.convert import _dropped, detect_format
+from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
+    mistyped,
+    unread,
+    without,
 )
 
 

@@ -4,7 +4,7 @@ from typing import cast, get_args
 
 import pytest
 
-from trackinizer.sagent.session.types import SessionRecord
+from trackinizer.sagent.journal.types import SessionRecord
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Final
 
 import re
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     ContextClear,
     SessionContext,
     TokenUsage,

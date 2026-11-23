@@ -23,7 +23,7 @@ from treekle import mutable
 import pytest
 
 from trackinizer.conftest import make_store
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     Attachment,
     BashResult,

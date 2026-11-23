@@ -8,16 +8,16 @@ from typing import cast, get_args
 
 import pytest
 
+from trackinizer.sagent.journal.types import (
+    UncategorizedRecord,
+    UserMessage,
+    record_classes,
+)
 from trackinizer.sagent.scripts.convert_session.provider_fields import (
     Stamped,
     kept_spelling,
     read_or_default,
     stamped,
-)
-from trackinizer.sagent.session.types import (
-    UncategorizedRecord,
-    UserMessage,
-    record_classes,
 )
 
 

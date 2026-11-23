@@ -17,8 +17,8 @@ import json
 
 from treekle import PlainTree, immutable, json_loads
 
-from trackinizer.sagent.session.jsonl import read_record, record_line
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.jsonl import read_record, record_line
+from trackinizer.sagent.journal.types import (
     FORMER_TAPE_KINDS,
     RENAMED_KINDS,
     IncompleteRecord,

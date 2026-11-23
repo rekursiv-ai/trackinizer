@@ -26,18 +26,7 @@ from treekle import (
     mutable,
 )
 
-from trackinizer.sagent.scripts.convert_session.provider_fields import (
-    Stamped,
-    kept_spelling,
-    read_or_default,
-    stamped,
-)
-from trackinizer.sagent.scripts.convert_session.unmodeled import (
-    extract_unmodeled_fields,
-    field_state,
-    restore_unmodeled_fields,
-)
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AssistantMessage,
     ContextClear,
     IncompleteRecord,
@@ -48,6 +37,17 @@ from trackinizer.sagent.session.types import (
     UserMessage,
     stated_timestamp,
     timestamp_as_written,
+)
+from trackinizer.sagent.scripts.convert_session.provider_fields import (
+    Stamped,
+    kept_spelling,
+    read_or_default,
+    stamped,
+)
+from trackinizer.sagent.scripts.convert_session.unmodeled import (
+    extract_unmodeled_fields,
+    field_state,
+    restore_unmodeled_fields,
 )
 
 

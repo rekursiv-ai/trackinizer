@@ -17,12 +17,12 @@ from treekle import immutable
 
 import pytest
 
+from trackinizer.sagent.journal.types import SessionRecord, Thinking
 from trackinizer.sagent.scripts.convert_session import (
     claude,
     codex,
 )
 from trackinizer.sagent.scripts.convert_session.tail import Tail
-from trackinizer.sagent.session.types import SessionRecord, Thinking
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 from trackinizer.wire.bodies import SubmitAgentSession

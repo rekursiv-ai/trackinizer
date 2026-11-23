@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
+from trackinizer.sagent.journal.types import SessionRecord, UncategorizedRecord
 from trackinizer.sagent.scripts.convert_session import claude, codex
 from trackinizer.sagent.scripts.convert_session.convert import _Adapter, detect_format
 from trackinizer.sagent.scripts.convert_session.testdata.capture import (
@@ -22,7 +23,6 @@ from trackinizer.sagent.scripts.convert_session.testdata.capture import (
     _emit,
     _scrub_secrets,
 )
-from trackinizer.sagent.session.types import SessionRecord, UncategorizedRecord
 
 
 if TYPE_CHECKING:

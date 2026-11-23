@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import pytest
 
+from trackinizer.sagent.journal.types import Splice
 from trackinizer.sagent.scripts.convert_session import udiff
 from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff, render_udiff
-from trackinizer.sagent.session.types import Splice
 
 
 def diffs() -> tuple[tuple[str, str], ...]:

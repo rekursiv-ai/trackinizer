@@ -21,6 +21,17 @@ import pytest
 
 from trackinizer.lib import zstd_compat
 from trackinizer.lib.testing.resources import ascii_locale
+from trackinizer.sagent.journal.types import (
+    ReadResult,
+    SessionContext,
+    SessionRecord,
+    ToolCall,
+    ToolMessage,
+    UncategorizedToolResult,
+    UserMessage,
+    stored_plain,
+    stored_record,
+)
 from trackinizer.sagent.scripts.convert_session import (
     claude,
     codex,
@@ -42,17 +53,6 @@ from trackinizer.sagent.scripts.convert_session.convert import (
     convert_file,
     detect_format,
     main,
-)
-from trackinizer.sagent.session.types import (
-    ReadResult,
-    SessionContext,
-    SessionRecord,
-    ToolCall,
-    ToolMessage,
-    UncategorizedToolResult,
-    UserMessage,
-    stored_plain,
-    stored_record,
 )
 
 

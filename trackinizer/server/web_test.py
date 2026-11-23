@@ -44,7 +44,7 @@ import pytest
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
 from trackinizer.lib.postgres import Conn
 from trackinizer.mock_test_support import AsyncMockProtocol
-from trackinizer.sagent.session.types import AgentMessage, stored_names
+from trackinizer.sagent.journal.types import AgentMessage, stored_names
 from trackinizer.server import web
 from trackinizer.server.access_policy import Principal
 from trackinizer.server.api import auth_routes
