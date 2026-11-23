@@ -67,6 +67,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
     output_lines: "tool",
     times: false,
     tool_groups: "open",
+    messages: "open",
   },
   autofix: true,
   automerge: false,

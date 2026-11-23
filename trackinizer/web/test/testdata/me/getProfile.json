@@ -30,6 +30,7 @@
         "chat_text_size": 13,
         "chat_view": {
           "density": "auto",
+          "messages": "open",
           "output_lines": "tool",
           "thinking": false,
           "times": false,

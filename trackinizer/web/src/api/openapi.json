@@ -1018,6 +1018,15 @@
       "title": "Density",
       "type": "string"
      },
+     "messages": {
+      "default": "open",
+      "enum": [
+       "open",
+       "folded"
+      ],
+      "title": "Messages",
+      "type": "string"
+     },
      "output_lines": {
       "anyOf": [
        {
@@ -5369,13 +5378,14 @@
       "$ref": "#/components/schemas/ChatView",
       "default": {
        "density": "auto",
+       "messages": "open",
        "output_lines": "tool",
        "thinking": false,
        "times": false,
        "tool_groups": "open",
        "view": "chat"
       },
-      "description": "How Chat draws a chat: its own lines or the terminal's rows (view), how much of the tool calls shows (density), whether reasoning shows (thinking), how much of a tool's output shows (output_lines), when each line was written (times), and whether each group of tool calls starts open or folded (tool_groups).",
+      "description": "How Chat draws a chat: its own lines or the terminal's rows (view), how much of the tool calls shows (density), whether reasoning shows (thinking), how much of a tool's output shows (output_lines), when each line was written (times), and whether each group of tool calls (tool_groups) and each message (messages) starts open or folded.",
       "x-setting": true
      },
      "cli_folder": {

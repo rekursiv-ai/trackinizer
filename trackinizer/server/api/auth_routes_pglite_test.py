@@ -103,6 +103,7 @@ _DEFAULTS: dict[str, object] = {
         "output_lines": "tool",
         "times": False,
         "tool_groups": "open",
+        "messages": "open",
     },
     "autofix": True,
     "automerge": False,
