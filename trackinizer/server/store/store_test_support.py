@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from treekle import immutable
 
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.journal.types import UserMessage
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.store.session_feed import FeedScope
 from trackinizer.types.session_records import SessionRecordRow

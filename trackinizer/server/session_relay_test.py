@@ -13,7 +13,7 @@ import logging
 import pydantic
 import pytest
 
-from trackinizer.sagent.session.types import AgentMessage, stored_names
+from trackinizer.sagent.journal.types import AgentMessage, stored_names
 from trackinizer.server import session_relay
 from trackinizer.server.session_relay import (
     BAD_FRAME,

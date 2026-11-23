@@ -19,7 +19,7 @@ from treekle import from_plain, immutable, mutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.sagent.session.types import UncategorizedRecord
+from trackinizer.sagent.journal.types import UncategorizedRecord
 from trackinizer.types.session_records import SessionRecordRow, stored_payload
 
 

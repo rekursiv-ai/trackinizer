@@ -11,7 +11,7 @@ import pytest
 
 from trackinizer.runs.adapters.claude import ClaudeAdapter
 from trackinizer.runs.adapters.custom_types import Subagent
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.journal.types import UserMessage
 
 
 adapter = ClaudeAdapter()

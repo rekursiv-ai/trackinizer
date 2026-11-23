@@ -17,8 +17,8 @@ from treekle import PlainTree, from_plain, immutable, json_loads, mutable
 
 import pytest
 
-from trackinizer.sagent.session.jsonl import record_line
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.jsonl import record_line
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AgentSpawnResult,
     AssistantMessage,

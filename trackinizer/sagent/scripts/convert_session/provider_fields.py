@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Final, overload
 
 from treekle import ReadError, from_plain
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AssistantMessage,
     ContextClear,

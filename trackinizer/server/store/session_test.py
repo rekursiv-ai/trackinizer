@@ -24,7 +24,7 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.mock_test_support import AsyncMockProtocol
-from trackinizer.sagent.session.types import AgentMessage, ToolMessage, stored_names
+from trackinizer.sagent.journal.types import AgentMessage, ToolMessage, stored_names
 from trackinizer.server.access_policy import (
     AccessDeniedError,
     Principal,

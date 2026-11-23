@@ -16,8 +16,8 @@ from __future__ import annotations
 from io import StringIO
 from typing import TYPE_CHECKING
 
+from trackinizer.sagent.journal.types import SessionRecord, UncategorizedRecord
 from trackinizer.sagent.scripts.convert_session import claude, codex
-from trackinizer.sagent.session.types import SessionRecord, UncategorizedRecord
 
 
 if TYPE_CHECKING:

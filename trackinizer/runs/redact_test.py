@@ -18,7 +18,7 @@ from trackinizer.runs.redact import (
     redact_body,
     redactor_from_environ,
 )
-from trackinizer.sagent.session.types import CONCRETE_TYPES, Attachment, UserMessage
+from trackinizer.sagent.journal.types import CONCRETE_TYPES, Attachment, UserMessage
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import RecordBody
 

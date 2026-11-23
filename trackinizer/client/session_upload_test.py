@@ -17,7 +17,7 @@ from trackinizer.client.session_upload import (
     send_batches,
 )
 from trackinizer.runs.redact import Redactor
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AssistantMessage,
     IncompleteRecord,
     Thinking,

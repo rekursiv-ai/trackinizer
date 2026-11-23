@@ -84,8 +84,7 @@ import shlex
 
 from treekle import from_plain, immutable, mutable
 
-from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     BashResult,
     EditResult,
     LineSpan,
@@ -94,6 +93,7 @@ from trackinizer.sagent.session.types import (
     ToolMessage,
     WriteResult,
 )
+from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff
 
 
 if TYPE_CHECKING:

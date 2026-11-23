@@ -29,7 +29,7 @@ from treekle import from_plain
 
 from trackinizer.client.conversation import attested_delivery
 from trackinizer.client.errors import ClientError
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AssistantMessage,
     ToolCall,

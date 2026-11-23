@@ -32,7 +32,7 @@ export type RecordView = Shape & {
 
 /**
  * What a tool step did: read from its result's kind, the server's neutral
- * vocabulary (`trackinizer/sagent/session/types.py`), else from its call's name;
+ * vocabulary (`trackinizer/sagent/journal/types.py`), else from its call's name;
  * `call` when neither says.
  */
 export type ToolKind =
@@ -797,7 +797,7 @@ function shapeOf(record: SessionRecord): Shape {
 
 /**
  * The fields this view reads from a `ToolMessage` payload
- * (`trackinizer/sagent/session/types.py`); a field the server left out at its default
+ * (`trackinizer/sagent/journal/types.py`); a field the server left out at its default
  * reads as empty.
  */
 type ToolResultFields = {

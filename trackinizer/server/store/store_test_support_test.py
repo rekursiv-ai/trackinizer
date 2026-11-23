@@ -11,7 +11,7 @@ import pytest
 
 from trackinizer.conftest import make_store
 from trackinizer.mock_test_support import AsyncMockProtocol
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.journal.types import UserMessage
 from trackinizer.server.store.store_test_support import (
     EVERY_SESSION,
     append_user_message,

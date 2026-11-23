@@ -14,7 +14,7 @@ from uuid import UUID
 
 from treekle import from_plain
 
-from trackinizer.sagent.session.types import stored_names
+from trackinizer.sagent.journal.types import stored_names
 from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.audience import (
     NOBODY,

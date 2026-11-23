@@ -18,8 +18,8 @@ from treekle import PlainTree, ReadError, from_plain, immutable, json_loads
 import pytest
 
 from trackinizer.lib.userdirs import base_dir_variables
-from trackinizer.sagent.session import types
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal import types
+from trackinizer.sagent.journal.types import (
     FORMER_RESULT_KINDS,
     RENAMED,
     RENAMED_KINDS,

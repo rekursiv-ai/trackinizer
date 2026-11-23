@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, RecordingPolicy
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AssistantMessage,
     ContextState,
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from asyncpg import Record
 
     from trackinizer.lib.postgres import DatabaseEngine
-    from trackinizer.sagent.session.types import SessionRecord
+    from trackinizer.sagent.journal.types import SessionRecord
     from trackinizer.server.store.core import Store
 
 

@@ -20,7 +20,7 @@ from treekle import from_plain, immutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.journal.types import UserMessage
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     clear_identity_override,

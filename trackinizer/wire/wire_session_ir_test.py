@@ -12,7 +12,7 @@ from treekle import immutable
 
 import pytest
 
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     BashResult,
     Thinking,
     ToolMessage,

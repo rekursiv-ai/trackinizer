@@ -42,14 +42,14 @@ from typing import TYPE_CHECKING
 
 from treekle import from_plain, immutable
 
-from trackinizer.sagent.scripts.convert_session.provider_fields import stamped
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     ContextClear,
     SessionContext,
     SessionRecord,
     UserMessage,
     stated_timestamp,
 )
+from trackinizer.sagent.scripts.convert_session.provider_fields import stamped
 
 
 if TYPE_CHECKING:

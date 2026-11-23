@@ -13,10 +13,8 @@ from treekle import immutable
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import sagent
-from trackinizer.sagent.scripts.convert_session.convert import detect_format, main
-from trackinizer.sagent.session.jsonl import read_record, record_line
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.jsonl import read_record, record_line
+from trackinizer.sagent.journal.types import (
     RENAMED_KINDS,
     AssistantMessage,
     ContextClear,
@@ -28,6 +26,8 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
 )
+from trackinizer.sagent.scripts.convert_session import sagent
+from trackinizer.sagent.scripts.convert_session.convert import detect_format, main
 
 
 def _read(*lines: dict[str, object] | str) -> list[SessionRecord]:

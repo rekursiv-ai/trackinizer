@@ -8,13 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import shell_results
-from trackinizer.sagent.scripts.convert_session.shell_results import (
-    lift_shell_result,
-    shell_result_for_replay,
-)
-from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff, render_udiff
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     BashResult,
     EditResult,
     LineSpan,
@@ -23,6 +17,12 @@ from trackinizer.sagent.session.types import (
     ToolMessage,
     WriteResult,
 )
+from trackinizer.sagent.scripts.convert_session import shell_results
+from trackinizer.sagent.scripts.convert_session.shell_results import (
+    lift_shell_result,
+    shell_result_for_replay,
+)
+from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff, render_udiff
 
 
 if TYPE_CHECKING:

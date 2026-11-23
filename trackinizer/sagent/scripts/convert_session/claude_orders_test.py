@@ -13,6 +13,7 @@ from treekle import ReadError, from_plain, immutable, json_loads
 
 import pytest
 
+from trackinizer.sagent.journal.types import IncompleteRecord, UncategorizedRecord
 from trackinizer.sagent.scripts.convert_session import claude
 from trackinizer.sagent.scripts.convert_session.claude_orders import (
     assistant_order,
@@ -25,11 +26,10 @@ from trackinizer.sagent.scripts.convert_session.claude_orders import (
     system_order,
     user_order,
 )
-from trackinizer.sagent.session.types import IncompleteRecord, UncategorizedRecord
 
 
 if TYPE_CHECKING:
-    from trackinizer.sagent.session.types import SessionRecord
+    from trackinizer.sagent.journal.types import SessionRecord
 
 
 def _orderless(record: SessionRecord) -> SessionRecord:

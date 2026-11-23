@@ -27,9 +27,7 @@ from treekle import from_plain, json_loads
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import claude, codex
-from trackinizer.sagent.scripts.convert_session.udiff import render_udiff
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     EditResult,
     ReadResult,
     SessionRecord,
@@ -38,6 +36,8 @@ from trackinizer.sagent.session.types import (
     ToolMessage,
     WriteResult,
 )
+from trackinizer.sagent.scripts.convert_session import claude, codex
+from trackinizer.sagent.scripts.convert_session.udiff import render_udiff
 
 
 if TYPE_CHECKING:

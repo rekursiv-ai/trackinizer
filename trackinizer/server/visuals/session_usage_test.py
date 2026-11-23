@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from trackinizer.sagent.session.types import SessionContext
+from trackinizer.sagent.journal.types import SessionContext
 from trackinizer.server.visuals.session_usage import session_usage
 from trackinizer.types.session_records import SessionRecordRow, stored_kinds
 

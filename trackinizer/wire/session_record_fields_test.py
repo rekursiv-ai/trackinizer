@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Final
 
-from trackinizer.sagent.session import types
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal import types
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AgentSpawnResult,
     AssistantMessage,

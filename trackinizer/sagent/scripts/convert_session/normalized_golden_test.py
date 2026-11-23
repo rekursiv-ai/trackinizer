@@ -24,13 +24,13 @@ import os
 
 import pytest
 
+from trackinizer.sagent.journal.types import ToolMessage, former_kind
 from trackinizer.sagent.scripts.convert_session import claude, codex, normalized
-from trackinizer.sagent.session.types import ToolMessage, former_kind
 
 
 if TYPE_CHECKING:
+    from trackinizer.sagent.journal.types import SessionRecord
     from trackinizer.sagent.scripts.convert_session.convert import _Adapter
-    from trackinizer.sagent.session.types import SessionRecord
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent

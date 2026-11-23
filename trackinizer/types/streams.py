@@ -5,7 +5,7 @@ process's output WAS the session. A line is not merely text: WHICH stream it
 crossed is the only structure a scrape has, and it is what tells an answer from
 a question. Those sessions stay stored, and these records are how they read.
 
-These live in trackinizer rather than in ``trackinizer.sagent.session.types``
+These live in trackinizer rather than in ``trackinizer.sagent.journal.types``
 because they describe a TRANSPORT this package owns, not an act a model
 performed. Every other IR record answers "what did the agent do"; these answer
 "which fd did these bytes cross", which no other adapter can ever emit. A pty
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trackinizer.sagent.session.types import SessionRecord
+from trackinizer.sagent.journal.types import SessionRecord
 
 
 __all__ = ["Stderr", "Stdin", "Stdout", "TraxRecord"]
@@ -66,7 +66,7 @@ class Stderr:
 type TraxRecord = SessionRecord | Stdin | Stdout | Stderr
 """Everything the agent runner can capture: the shared IR, plus the scrape streams.
 
-A WIDENING of :data:`~trackinizer.sagent.session.types.SessionRecord`, not a
+A WIDENING of :data:`~trackinizer.sagent.journal.types.SessionRecord`, not a
 replacement. Every CLI adapter still yields the shared IR unchanged; only the
 scrape adds members, and only because a raw stream has no act to name.
 """

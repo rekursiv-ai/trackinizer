@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from trackinizer.sagent.session.types import renamed_records
+from trackinizer.sagent.journal.types import renamed_records
 from trackinizer.server.store.record_rename_runner import rename_shard
 
 

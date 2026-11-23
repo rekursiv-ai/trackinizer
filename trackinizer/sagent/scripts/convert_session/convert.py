@@ -1,7 +1,7 @@
 """Convert agent sessions between native formats and the normalized form.
 
 Every conversion routes through the normalized model: an input is normalized
-to a stream of :class:`~trackinizer.sagent.session.types.SessionRecord`, then
+to a stream of :class:`~trackinizer.sagent.journal.types.SessionRecord`, then
 denormalized to the requested target. Converting to the source's own format is
 therefore a losslessness check, which is what ``verify`` reports.
 
@@ -41,6 +41,7 @@ import time
 from treekle import json_loads
 
 from trackinizer.lib import zstd_compat
+from trackinizer.sagent.journal.types import IncompleteRecord, ToolMessage, former_kind
 from trackinizer.sagent.scripts.convert_session import (
     claude,
     codex,
@@ -54,11 +55,10 @@ from trackinizer.sagent.scripts.convert_session.fuse import (
     part_names,
     unfuse,
 )
-from trackinizer.sagent.session.types import IncompleteRecord, ToolMessage, former_kind
 
 
 if TYPE_CHECKING:
-    from trackinizer.sagent.session.types import SessionRecord
+    from trackinizer.sagent.journal.types import SessionRecord
 
 
 type Format = str

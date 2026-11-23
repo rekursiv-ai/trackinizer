@@ -2,8 +2,8 @@
 
 Both providers state file edits as diff text -- codex writes a per-path
 ``unified_diff``, claude a ``structuredPatch`` of the same lines -- while an
-edit's record, whose result is an :class:`~trackinizer.sagent.session.types.EditResult`,
-holds them as :class:`~trackinizer.sagent.session.types.Splice` items in its ``stdout``.
+edit's record, whose result is an :class:`~trackinizer.sagent.journal.types.EditResult`,
+holds them as :class:`~trackinizer.sagent.journal.types.Splice` items in its ``stdout``.
 This is the one conversion between those, so a diff read here and written back
 reproduces the provider's own bytes.
 
@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Final
 
 import re
 
-from trackinizer.sagent.session.types import Splice
+from trackinizer.sagent.journal.types import Splice
 
 
 if TYPE_CHECKING:

@@ -19,10 +19,7 @@ import json
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import claude, codex, gemini
-from trackinizer.sagent.scripts.convert_session.convert import detect_format
-from trackinizer.sagent.scripts.convert_session.fuse import chain
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentSpawnResult,
     AssistantMessage,
     EditResult,
@@ -35,6 +32,9 @@ from trackinizer.sagent.session.types import (
     WebSearchResult,
     WriteResult,
 )
+from trackinizer.sagent.scripts.convert_session import claude, codex, gemini
+from trackinizer.sagent.scripts.convert_session.convert import detect_format
+from trackinizer.sagent.scripts.convert_session.fuse import chain
 
 
 if TYPE_CHECKING:

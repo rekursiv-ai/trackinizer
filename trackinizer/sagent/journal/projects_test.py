@@ -14,9 +14,9 @@ from treekle import json_dumps
 import pytest
 
 from trackinizer.lib.userdirs import data_dir
-from trackinizer.sagent.session import projects
-from trackinizer.sagent.session.jsonl import read_record
-from trackinizer.sagent.session.projects import (
+from trackinizer.sagent.journal import projects
+from trackinizer.sagent.journal.jsonl import read_record
+from trackinizer.sagent.journal.projects import (
     child_journal,
     cwd_slug,
     find_sessions,
@@ -31,7 +31,7 @@ from trackinizer.sagent.session.projects import (
     spawner_journal,
     unused_session_path,
 )
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     Attachment,
     ContextClear,
     SessionContext,

@@ -23,7 +23,7 @@ from trackinizer.client.conversation import (
     read_part,
     read_segments,
 )
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AgentMessage,
     AssistantMessage,
     BashResult,

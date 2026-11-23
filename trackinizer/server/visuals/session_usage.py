@@ -23,12 +23,12 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 from treekle import from_plain
 
+from trackinizer.sagent.journal.types import SessionContext
 from trackinizer.sagent.model.capability import ModelCapability
 from trackinizer.sagent.model.cost import TokenCount
 from trackinizer.sagent.model.exceptions import UnknownModelError
 from trackinizer.sagent.providers import anthropic, openai
 from trackinizer.sagent.providers.table import models
-from trackinizer.sagent.session.types import SessionContext
 from trackinizer.types.session_records import stored_kinds
 
 

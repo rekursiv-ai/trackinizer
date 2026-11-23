@@ -23,12 +23,12 @@ import json
 
 import pytest
 
-from trackinizer.sagent.scripts.convert_session import claude, codex, gemini
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     ContextClear,
     SessionContext,
     SessionRecord,
 )
+from trackinizer.sagent.scripts.convert_session import claude, codex, gemini
 
 
 if TYPE_CHECKING:

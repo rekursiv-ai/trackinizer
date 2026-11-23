@@ -16,14 +16,14 @@ from treekle import MutablePlainTree, json_loads
 import pytest
 
 from trackinizer.lib.userdirs import base_dir_variables
-from trackinizer.sagent.session import jsonl
-from trackinizer.sagent.session.jsonl import (
+from trackinizer.sagent.journal import jsonl
+from trackinizer.sagent.journal.jsonl import (
     JournalInUseError,
     JsonlJournal,
     read_record,
     record_line,
 )
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     AssistantMessage,
     BashResult,
     ContextClear,

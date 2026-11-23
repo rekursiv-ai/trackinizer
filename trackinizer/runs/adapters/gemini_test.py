@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     import pytest
 
 from trackinizer.runs.adapters.gemini import GeminiAdapter
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.journal.types import UserMessage
 
 
 class TestSessionDiscovery:

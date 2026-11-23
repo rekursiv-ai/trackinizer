@@ -22,7 +22,7 @@ import pytest
 
 from trackinizer.conftest import executed_sql, make_store, set_field_row
 from trackinizer.lib import zstd_compat
-from trackinizer.sagent.session.types import (
+from trackinizer.sagent.journal.types import (
     SessionContext,
     SessionRecord,
     Thinking,
