@@ -24,12 +24,20 @@ test("the profile is a GET of /api/me/profile with no body", async () => {
     name: "Ada",
     role: "viewer",
     last_login: null,
+    visual_workspace_enabled: true,
   };
   const sent = stubFetch(() => Response.json(ada));
   expect(await getProfile()).toEqual(ada);
   expect(sent).toEqual([
     { method: "GET", path: "/api/me/profile", query: "", headers: {}, body: undefined },
   ]);
+});
+
+test("a profile from a server older than the canvas opt-in reads as on, and an off stays off", async () => {
+  stubFetch(() => Response.json({ name: "Ada" }));
+  expect((await getProfile()).visual_workspace_enabled).toBe(true);
+  stubFetch(() => Response.json({ name: "Ada", visual_workspace_enabled: false }));
+  expect((await getProfile()).visual_workspace_enabled).toBe(false);
 });
 
 test("the token list is a GET of /api/me/tokens, read from its tokens field", async () => {

@@ -56,6 +56,32 @@ test("no text takes the tertiary ink, under WCAG AA's 4.5:1 on every surface; te
   expect(textIn("--ink-tertiary")).toEqual([]);
 });
 
+test("the machine ink is neutral in both themes, so a locating line carries no colour cast, and it meets WCAG AA's 4.5:1 on every surface", () => {
+  for (const theme of [":root", ':root[data-theme="light"]']) {
+    const tokens = declarations(theme);
+    const hex = tokens.get("--ink-machine")!;
+    const channel = (at: number) => Number.parseInt(hex.slice(at, at + 2), 16);
+    expect([channel(1), channel(3), channel(5)], `${theme} --ink-machine ${hex} is grey`).toEqual([channel(1)!, channel(1)!, channel(1)!]);
+    for (const surface of ["--bg", "--surface", "--surface-raised", "--surface-hover"]) {
+      expect(contrast(hex, tokens.get(surface)!), `${theme} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+});
+
+test("the fold never reaches for a tinted grey: its chrome is the neutral machine ink and its content is white", () => {
+  // What a live page computes is the proof — a shared `.modal-b p` outranks a bare
+  // class — but this catches the tinted step being authored back into the sheet.
+  const sheet = readFileSync(join(import.meta.dirname, "visuals/Knowledge.css"), "utf8");
+  expect([...sheet.matchAll(/var\(--(muted|ink-muted|ink-tertiary)\)/g)].map((found) => found[1])).toEqual([]);
+  // A wire's word shares the `.mono` class with the slot that precedes it, and the
+  // accent marks a level and never a wire. Measured live, a bare `.knowledge-into`
+  // lost that cascade and the clause turned purple.
+  const into = sheet.split("\n").filter((line) => line.includes(".knowledge-into"));
+  expect(into).toHaveLength(1);
+  expect(into[0]).toContain(".mono.knowledge-into");
+  expect(into[0]).toContain("var(--ink-machine)");
+});
+
 test("text that steps back meets WCAG AA's 4.5:1 on a selected row, the accent's tint over the view or a panel", () => {
   for (const theme of [":root", ':root[data-theme="light"]']) {
     const tokens = declarations(css, theme);

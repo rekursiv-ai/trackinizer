@@ -44,6 +44,7 @@ def bundle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     source = package / "docs/skills/trax"
     (source / "belief").mkdir(parents=True)
     (source / "SKILL.md").write_text("router: belief/SKILL.md")
+    (source / "DESIGN.md").write_text("design brief")
     (source / "belief/SKILL.md").write_text("belief guidance")
     for name in ("grammar.lark", "GRAMMAR.md"):
         (package / "docs" / name).write_text(f"original {name}")
@@ -71,7 +72,7 @@ def test_supported_destinations(
         destination == (tmp_path if project else fake_home) / directory / "skills/trax"
     )
     assert (destination / "belief/SKILL.md").is_file()
-    assert count == 4
+    assert count == 5
 
 
 def test_installed_bundle_is_self_contained() -> None:
@@ -106,7 +107,7 @@ def test_installed_bundle_is_self_contained() -> None:
 def test_dry_run_reports_without_writing(fake_home: Path, bundle: Path) -> None:
     del bundle
     destination, count = install(TARGETS["claude"], dry_run=True)
-    assert count == 4
+    assert count == 5
     assert destination == fake_home / ".claude/skills/trax"
     assert not destination.parent.exists()
 
@@ -374,11 +375,15 @@ def test_published_install_reports_retained_cleanup(
     assert str(cleanup[0].parent) in str(error.value)
 
 
-@pytest.mark.parametrize("missing", ["SKILL.md", "grammar.lark", "GRAMMAR.md"])
+@pytest.mark.parametrize(
+    "missing",
+    ["SKILL.md", "DESIGN.md", "grammar.lark", "GRAMMAR.md"],
+)
 def test_missing_bundle_preserves_working_install(bundle: Path, missing: str) -> None:
     destination, _ = install(TARGETS["claude"])
     previous = (destination / "SKILL.md").read_bytes()
-    ((bundle if missing == "SKILL.md" else bundle.parent.parent) / missing).unlink()
+    inside = missing in {"SKILL.md", "DESIGN.md"}
+    ((bundle if inside else bundle.parent.parent) / missing).unlink()
     with pytest.raises(InstallError, match="bundled"):
         install(TARGETS["claude"])
     assert (destination / "SKILL.md").read_bytes() == previous

@@ -1,0 +1,87 @@
+/* REACT FLOW, BOUND TO THE LAW.
+   The library ships handles, a white control panel, a blue selection ring and its own
+   greys. None of that belongs on a monochrome instrument, so everything below is the
+   removal of a default or the restatement of a token — there is not one colour here
+   that is not the theme's. */
+
+.ui-flow { width: 100%; }
+.ui-flow .react-flow__renderer,
+.ui-flow .react-flow { background: transparent; }
+
+/* A handle is for drawing a connection, and nothing here is connectable: the relations
+   come from the store. Hidden, not shrunk — a 1px dot on a card edge reads as grit. */
+.ui-flow .react-flow__handle { opacity: 0; width: 1px; height: 1px; min-width: 0; min-height: 0; border: 0; }
+
+/* A node is our card, so the library contributes no box of its own. */
+.ui-flow .react-flow__node { font: inherit; color: inherit; cursor: pointer; }
+.ui-flow .react-flow__node:hover .ui-card { border-color: var(--text); }
+.ui-flow .react-flow__edge { cursor: pointer; }
+.ui-flow .react-flow__edge:hover .react-flow__edge-path { stroke-width: 2.4px; }
+.ui-flow .react-flow__node-block { width: auto; }
+/* No blue ring on focus: a selected block says so with the weight the card already
+   carries, and the accent on this surface would be the only hue on a grey pane. */
+.ui-flow .react-flow__node:focus,
+.ui-flow .react-flow__node:focus-visible { outline: none; }
+/* Selected is emphasis, not location: --text, not --ink-machine. The ink hierarchy is
+   white reads, grey locates — a selected card is the thing a reader's eye should land
+   on, the same reason the law gives white to the answer paragraph and not the gutter. */
+.ui-flow .react-flow__node.selected .ui-card { outline: 1px solid var(--text); }
+
+/* AN EDGE is chrome: the reading white, at the weight that separates a run from the
+   1px hairline a card's border is drawn at. At the same weight the two read as one
+   line and the graph loses its wires. */
+.ui-flow .react-flow__edge-path { stroke: var(--text); stroke-width: 1.6px; }
+.ui-flow .react-flow__arrowhead polyline,
+.ui-flow .react-flow__arrowhead path,
+.ui-flow .react-flow__edge marker path { fill: var(--text); stroke: var(--text); }
+
+/* THE EDGE'S WORD stands in the line, not over it. The halo is painted under the
+   glyphs and has to bridge the space between two words, or the run shows through that
+   gap and `leaves open` reads as `leaves_open`. 11px closes a 10px mono space. */
+.ui-flow .react-flow__edge-text {
+  fill: var(--text);
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.04em;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 11px;
+  stroke-linejoin: round;
+}
+/* The library draws a filled rect behind a label; the halo above does that job in the
+   pane's own colour, and a second box would be a frame around every word. */
+.ui-flow .react-flow__edge-textbg { display: none; }
+
+/* THE GRID says the surface can be panned. The theme's hairline, so it is a texture
+   and not a pattern. */
+.ui-flow .react-flow__background-pattern circle,
+.ui-flow .react-flow__background-pattern path { fill: var(--line); stroke: var(--line); }
+
+/* THE CONTROLS: the library's white panel with blue icons, restated as the app's own
+   chip — a hairline box, machine ink, the surface behind it. */
+.ui-flow .react-flow__controls { box-shadow: none; gap: 2px; }
+.ui-flow .react-flow__controls-button {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink-machine);
+}
+.ui-flow .react-flow__controls-button:hover { background: var(--surface-hover); color: var(--text); }
+.ui-flow .react-flow__controls-button svg { fill: currentColor; max-width: 10px; max-height: 10px; }
+
+/* A node sizes to its content unless told otherwise, so three cards in a tier grew
+   past their pitch and overlapped. The lane is the app's measure and the card takes
+   it: the claim gets a width it can wrap in, and the tier's arithmetic holds. */
+.ui-flow .react-flow__node-block { width: 320px; }
+.ui-flow .react-flow__node-block .ui-card,
+.ui-flow .react-flow__node-block .knowledge-card,
+.ui-flow .react-flow__node-block .ui-block {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+.ui-flow .react-flow__node:hover .knowledge-card {
+  border-color: var(--text);
+}

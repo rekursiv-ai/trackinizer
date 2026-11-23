@@ -28,11 +28,11 @@ import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from typing import Final, Literal, Annotated, Self
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator, model_validator
 
 
 __all__ = [
@@ -276,3 +276,166 @@ class ChatHead(BaseModel):
     may_delete: bool
     """Whether the caller may delete the chat: an admin, the key that opened it, or
     its starter while every person's line in it is theirs."""
+
+
+type ChatProvider = Literal["assistant", "claude", "codex"]
+"""Who answers a chat: the shared assistant, or a CLI run on a machine of the user's."""
+
+
+CHAT_PARTIAL_PATH: Final = "/api/sessions/{session_id}/partial"
+
+
+CHAT_PARTIAL_TURN_PATH: Final = "/api/sessions/{session_id}/partial/{turn}"
+
+
+CHAT_PARTIAL_CHARS: Final = 16_384
+
+
+CHAT_PARTIAL_WAIT_SEC: Final = 25.0
+
+
+_ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
+
+
+type ChatLineKind = Literal["line", "command", "answer", "settings", "interrupt"]
+
+
+class ChatAnswer(BaseModel):
+    """The payload of an ``answer`` post: a choice on an ask the run is showing.
+
+    It names the choice by ``option``, the id of one of the ask's own options, or in
+    the older form by ``decision``, which the run reads as the option of that kind.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_id: str = Field(min_length=1, max_length=200)
+    option: str = Field(default="", max_length=200)
+    """The id of the option taken, or a kind such as ``allow_once``; empty when
+    ``decision`` names the choice."""
+
+    decision: Literal["allow", "deny"] | None = None
+    """The older form of ``option``: ``allow`` is ``allow_once``, ``deny`` is ``deny``."""
+
+    updated_input: JsonValue = None
+    """The tool input the prompt's answer replaces, such as the answers to a
+    question; ``None`` leaves it as asked."""
+
+    message: str = Field(default="", max_length=16_384)
+    """Why, for a deny; the run passes it to the CLI."""
+
+    @model_validator(mode="after")
+    def _names_one_choice(self) -> Self:
+        if bool(self.option) == (self.decision is not None):
+            raise ValueError("an answer names exactly one of an option and a decision")
+        return self
+
+
+class ChatSettings(BaseModel):
+    """The payload of a ``settings`` post: a model or effort change, or both."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = Field(default=None, min_length=1, max_length=120)
+    effort: str | None = Field(default=None, min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if self.model is None and self.effort is None:
+            raise ValueError("a settings post names a model, an effort, or both")
+        return self
+
+
+class ChatSend(BaseModel):
+    """One line a signed-in writer posts to a science chat from their canvas."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ChatLineKind = "line"
+    """What the post is; a person's line unless the client names another kind. Only a
+    ``claude`` or ``codex`` station takes a kind other than ``line``."""
+
+    payload: dict[str, object] | None = None
+    """The kind's structured data: a :class:`ChatAnswer` for ``answer``, a
+    :class:`ChatSettings` for ``settings``, ``None`` for the other kinds."""
+
+    workspace_id: uuid.UUID
+    """The poster's own canvas, which the line is sent from."""
+
+    text: str = Field(pattern=r"\S", max_length=16_384)
+    conversation_id: uuid.UUID | None = None
+    """The conversation to post into; none starts one, named by the request's
+    ``Idempotency-Key`` so a retry starts the same one."""
+
+    fork: ChatForkAt | None = None
+    """Start a new conversation from this line of another, and post there. It names
+    the new conversation by the key, so it excludes ``conversation_id``."""
+
+    page: str | None = Field(default=None, max_length=512, pattern=_ROUTE)
+    """The `#/...` address the sender is on as they send."""
+
+    trail: list[Annotated[str, Field(max_length=512, pattern=_ROUTE)]] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+    """The addresses the sender came through before it, oldest first."""
+
+    # The web sent ``"science"`` here, the conversation's kind, until the field named
+    # the post's; a browser not yet reloaded still does, and its line is a line.
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _read_science_as_line(cls, value: object) -> object:
+        """Read the retired ``science`` kind as ``line``."""
+        return "line" if value == "science" else value
+
+    @model_validator(mode="after")
+    def _forks_a_new_conversation(self) -> ChatSend:
+        if self.fork is not None and self.conversation_id is not None:
+            raise ValueError("a fork starts a new conversation; it cannot name one")
+        if self.fork is not None and self.kind != "line":
+            raise ValueError("a fork starts from a person's line")
+        return self
+
+    # The payload's own error is raised as a ValueError: a ValidationError raised in
+    # a validator is not folded into the body's, so the route would answer 500.
+    @model_validator(mode="after")
+    def _payload_fits_the_kind(self) -> ChatSend:
+        shape = {"answer": ChatAnswer, "settings": ChatSettings}.get(self.kind)
+        if shape is None and self.payload is not None:
+            raise ValueError(f"a {self.kind} post carries no payload")
+        try:
+            _ = None if shape is None else shape.model_validate(self.payload)
+        except ValidationError as error:
+            raise ValueError(f"the {self.kind} payload: {error}") from error
+        return self
+
+
+class ChatPartial(BaseModel):
+    """The answer a chat's assistant is writing, as far as it has written it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    """The delivery the answer is for, new for each: a reader that saw its answer
+    stored shows no partial of it again."""
+
+    text: str = Field(max_length=CHAT_PARTIAL_CHARS)
+    """The answer so far, as a reader is shown it: vetted for secrets, without the
+    notes the model keeps, and clipped."""
+
+    done: bool = False
+    """Whether ``text`` is the whole answer, which the assistant is now storing."""
+
+
+class ChatPartialState(BaseModel):
+    """What the server holds of a chat's answer in writing, and how new it is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int
+    """Names the partial held: drawn at random, below 2**53, when the chat held none,
+    and one more with each put after it, so a put always names a new one and says
+    nothing of other chats; 0 when the server holds none for the chat. A reader
+    passes the last it saw to wait for a change, and compares it for equality only."""
+
+    partial: ChatPartial | None

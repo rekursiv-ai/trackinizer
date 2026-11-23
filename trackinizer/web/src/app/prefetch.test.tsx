@@ -31,13 +31,15 @@ const BOOT = [
   "/api/meta/fields",
 ];
 /** Reads the shell sends once it renders, beside its view's: never started early. */
-const SHELL: string[] = [];
+const SHELL: string[] = ["/api/terminals/hosts"];
 const PROFILE = {
   user_id: "u1",
   email: "ada@example.com",
   name: "Ada",
   role: "writer",
   last_login: null,
+  visual_workspace_enabled: false,
+  ...AGREED,
 };
 
 const BODIES: { [path: string]: unknown } = {

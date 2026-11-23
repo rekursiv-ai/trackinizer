@@ -1,0 +1,61 @@
+/*
+ * The app's frame: the bar over it, the rail down its left, the line under it.
+ *
+ * This is monochrome by rule. A place that is lit is lit with white ink on a raised
+ * ground and a 2 px white bar; nothing in this file colours a control. Purple belongs
+ * to the graph's lines and to no chrome, so `--accent` and `--group-4` appear nowhere
+ * here — a reader who wants to know whether the design held can grep this sheet for
+ * them and find none.
+ */
+
+/* The row the rail and the page share, between the bar and the line. */
+.app-body { display: flex; flex: 1; min-height: 0; min-width: 0; }
+/* The page takes the frame edge to edge: the card's margin and radius were the old
+   window's, and a rail cannot meet a rounded corner. */
+.app-body > .main { flex: 1 1 auto; margin: 0; border: 0; border-radius: 0; }
+
+/* ---- The rail (Rail.tsx) ---- */
+.rail {
+  display: flex; flex: none; flex-direction: column; gap: 6px; width: 68px; padding-top: 10px;
+  border-right: 1px solid var(--line); background: var(--surface);
+}
+.rail button {
+  position: relative; display: flex; flex: none; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; height: 60px; padding: 0; border: 0; border-radius: 0; background: none; color: var(--muted);
+  font: 500 10px/1 var(--sans); letter-spacing: .01em; cursor: pointer;
+}
+.rail button:hover { color: var(--text); background: var(--surface-hover); }
+.rail button.on { color: var(--text); background: var(--surface-hover); }
+.rail button.on::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; background: var(--text); }
+.rail button .ic { color: currentColor; }
+.rail-settings { margin-top: auto; height: 48px; }
+
+/* ---- The line under everything (StatusBar.tsx) ---- */
+.statusbar {
+  display: flex; flex: none; align-items: center; gap: 14px; height: 25px; padding: 0 14px;
+  border-top: 1px solid var(--line); background: var(--surface); color: var(--muted);
+  font: 400 10.5px/1 var(--sans); white-space: nowrap; overflow: hidden;
+}
+.statusbar .right { margin-left: auto; }
+.statusbar-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.statusbar-rule { flex: none; width: 1px; height: 11px; background: var(--line-strong); }
+
+/* ---- The bar's shape (TopBar.tsx) ---- */
+/* The name beside the mark, then the workstream it is in: the design reads the bar as
+   one sentence — `Trackinizer / Scratch` — not as a row of icons. */
+.topbar-name { flex: none; font-size: 13px; font-weight: 600; letter-spacing: -.01em; color: var(--text); }
+.topbar-slash { flex: none; color: var(--muted); font-size: 13px; }
+/* The search is the bar's middle column: over the centre of the window, as it is in the design,
+   and a button because it opens the palette rather than taking keys. */
+.topbar-search {
+  justify-self: center; display: flex; align-items: center; gap: 9px;
+  width: 340px; max-width: 34vw; height: 28px; padding: 0 10px; border: 1px solid var(--line-strong);
+  border-radius: 6px; background: var(--bg); color: var(--muted); font-size: 12px; cursor: text;
+}
+.topbar-search:hover { border-color: var(--muted); color: var(--ink-muted); }
+.topbar-search .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-search kbd { margin-left: auto; }
+.topbar-tail { display: flex; flex: none; align-items: center; gap: 4px; justify-self: end; }
+
+@media (max-width: 1100px) { .topbar-search { display: none; } }
+@media (prefers-reduced-motion: reduce) { .rail button, .topbar-search { transition: none; } }

@@ -2,6 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { getArtifactContentRevision } from "../api/artifacts";
 import { routeHref } from "../router/addressBar";
+import { useVisualMark } from "../visuals/marks";
+import type { RendererProps } from "../visuals/registry";
+import { HtmlArtifact } from "../ui/HtmlArtifact";
 import "./Artifact.css";
 
 /** A graph row cited by an Artifact finding. */
@@ -70,13 +73,17 @@ export function ArtifactPage({
   id,
   optional = false,
   framed = true,
+  shown,
 }: {
   readonly id: string;
   readonly optional?: boolean;
   /** Whether an HTML revision's page is drawn here; a record's page draws it across the pane itself (`ArtifactFrame`). */
   readonly framed?: boolean;
+  /** The canvas node this page is, so its data's paint is marked (`trackinizer.timings()`); absent when the record pane draws it. */
+  readonly shown?: Pick<RendererProps, "instance" | "workspace">;
 }) {
   const query = useArtifactContent(id);
+  useVisualMark(shown?.instance, shown?.workspace ?? null, "data", query.isSuccess);
   if (query.isPending)
     return (
       <div className="artifact-loading" aria-busy="true">
@@ -253,23 +260,4 @@ function Citation({ citation }: { readonly citation: ArtifactCitation }) {
 
 function citationKey(citation: ArtifactCitation, index: number): string {
   return `${citation.record_id}:${citation.claim_id ?? ""}:${index}`;
-}
-
-// The page route sends the sandbox CSP itself. A real URL (not srcdoc) also lets
-// the page's own history.pushState/replaceState work.
-function HtmlArtifact({ id, title }: { readonly id: string; readonly title: string }) {
-  return (
-    <iframe
-      className="artifact-html-frame"
-      title={`${title} Artifact content`}
-      sandbox="allow-scripts allow-popups"
-      referrerPolicy="no-referrer"
-      src={htmlPageUrl(id)}
-    />
-  );
-}
-
-/** The sandboxed page route serving one HTML Artifact revision. */
-function htmlPageUrl(id: string): string {
-  return `/api/artifacts/${encodeURIComponent(id)}/html`;
 }

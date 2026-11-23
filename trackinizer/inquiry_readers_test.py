@@ -101,6 +101,48 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
         "producer Issues; the caller's sessions are audience-gated",
     ),
     "server/web.py": ("policy", "every web read"),
+    # A canvas's own readers. Each is reached through a route that has already run
+    # the session check, or reads only rows the caller's own account holds.
+    "server/api/sessions_routes.py": (
+        "audience",
+        "every session route runs require_session_access before it reads",
+    ),
+    "server/asks.py": (
+        "trusted",
+        "the open asks of one session, read for the run that drains it",
+    ),
+    "server/store/deleted_chats.py": (
+        "trusted",
+        "whether a conversation was deleted: an audit row's existence, no content",
+    ),
+    "server/visuals/partners.py": (
+        "trusted",
+        "the chat's own session and the key that opened it: who answers, not content",
+    ),
+    "server/visuals/science_chats.py": (
+        "audience",
+        "visible_sql narrows a chat's sessions to the ones its reader reads",
+    ),
+    "server/visuals/screens.py": (
+        "audience",
+        "visible_sql narrows a screen's records to the ones its reader reads",
+    ),
+    "server/visuals/session_placement.py": (
+        "trusted",
+        "where a session sits, by the account that holds it; locks its own row",
+    ),
+    "server/visuals/timeline.py": (
+        "audience",
+        "one record by id, for a caller the timeline's route already tested",
+    ),
+    "server/visuals/workspace_store.py": (
+        "audience",
+        "a canvas's state and its chat, under the session check its operations run",
+    ),
+    "server/visuals/workstreams.py": (
+        "trusted",
+        "the caller's own workstream issues, by owner",
+    ),
 }
 """Each reading module, relative to this package, its class, and why."""
 

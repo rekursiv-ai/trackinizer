@@ -1,0 +1,81 @@
+/* The block's anatomy, once: slot and claim on the first line, what stands under
+   the claim one per row, and the footer past a rule. Two densities — a card you
+   read, a row you scan.
+   This sheet owns the grid, the type scale and the ink tiers. It deliberately owns
+   no background, border or ring: a lifted card in the fold and a dense chip in a
+   register are different objects resting on different surfaces, and the surface
+   paints its own box. What they may not do again is re-declare the anatomy. */
+
+.ui-block {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 13px 14px 11px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+}
+/* Without a slot the first column would still cost its gap, so a row is one column. */
+.ui-block:not(.has-slot) { grid-template-columns: minmax(0, 1fr); }
+.ui-block:not(.has-slot) .ui-block-claim, .ui-block:not(.has-slot) .ui-block-line { grid-column: 1; }
+
+/* The slot is the block's address, so it is set in the machine's own face here
+   rather than by borrowing the app's shared `.mono`, whose 12px would answer at the
+   same specificity and win on bundle order. Its ink is the surface's: a fold marks a
+   block in the one hue its frame allows, and passes it down as a token. */
+.ui-block-slot { grid-column: 1; grid-row: 1; font: 400 11px/1.4 var(--mono); color: var(--block-slot-ink, var(--text)); }
+.ui-block-claim { grid-column: 2; grid-row: 1; }
+.ui-block-line { grid-column: 2; }
+.ui-block-line:empty { display: none; }
+.ui-block-foot {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A card is read: the claim leads at answer size, the body is prose, and the
+   footer is part of what a reader reads, so it stays white like the body. */
+.is-card .ui-block-claim { font-size: 16px; font-weight: 600; line-height: 1.3; }
+.is-card .ui-block-line {
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  /* Without this the clamp is a lie: the box stops at four lines but the fifth and
+     sixth still paint over the footer, which is how a card's body came to sit on top
+     of its own record count. */
+  overflow: hidden;
+}
+.is-card .ui-block-foot { font-size: 12px; color: var(--text); }
+
+/* A row is scanned across a register, so it is set at the density a card of ~220px
+   holds without turning into an article: the claim a step under a card's, its two
+   lines a step under that, the address a step under that again. The frame's own strip
+   is set in the machine's face end to end — a chip indexes an answer, it is not read
+   as prose — so all three lines take --mono and weight says which one answers: the
+   price is the prior, the verdict the finding. Grey is left to the footer, which is an
+   address and only locates. */
+.is-row { padding: 9px 11px; gap: 3px; }
+.is-row .ui-block-claim { font: 500 12px/1.45 var(--mono); }
+.is-row .ui-block-line { font: 400 12px/1.45 var(--mono); color: var(--text); }
+.is-row .ui-block-line .is-said { font-weight: 500; }
+/* The row the ledger has never priced is the loudest one in the register, and it gets
+   no new hue and no grey for it: the absence is a finding. It sits one step above the
+   verdict rather than beside it, because two lines at the same weight leave a reader
+   to guess which one is the prior and which one answers. */
+.is-row .ui-block-line em { font-style: normal; font-weight: 600; }
+/* ONE LINE, and only the address may shorten: the plate under the strip prints every
+   path whole, so a chip that spent a second row on a directory would be a taller box
+   for a fact the reader already has below it. The frame's own rule for this line. */
+.is-row .ui-block-foot { font: 400 11px/1.4 var(--mono); color: var(--ink-machine); }
+.is-row .ui-block-foot i { font-style: normal; padding-left: 8px; }

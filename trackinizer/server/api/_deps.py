@@ -22,6 +22,7 @@ from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.terminals import Terminal, TerminalRelay
 from trackinizer.server.tool_relay import ToolConnection, ToolRelay
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
+from trackinizer.server.chat_hub import ChatHub
 
 
 if TYPE_CHECKING:
@@ -634,3 +635,37 @@ async def _connection_alive(connection: ToolConnection, *, app: FastAPI) -> bool
             access.failed,
         )
     return access.failed is None
+
+
+def get_inbound(request: Request) -> InboundQueue:
+    """Return the inbound-message queue held on the FastAPI app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The InboundQueue.
+
+    """
+    app = cast(_App, request.app)
+    return app.state.inbound
+
+
+def get_hub(request: Request) -> ChatHub:
+    """Return the Chat event hub held on the app state, made on first use.
+
+    An app built by hand, as a test harness does, has no lifespan to make one, so
+    the first request that needs the hub makes it.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The ChatHub.
+
+    """
+    app = cast("FastAPI", request.app)
+    hub: object = getattr(app.state, "hub", None)
+    if not isinstance(hub, ChatHub):
+        hub = app.state.hub = ChatHub()
+    return hub

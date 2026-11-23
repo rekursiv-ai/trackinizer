@@ -173,7 +173,9 @@ export function Composer({
           value: draft,
           placeholder,
           disabled: !enabled || ((sending.isPending || pending) && !editable),
-          rows: 3,
+          // One row, as the design's box is, and one more for every line the draft holds:
+          // a pasted log stops at eight rows rather than eating the log above the box.
+          rows: Math.min(8, draft.split("\n").length),
           onChange: (event) => edit(event.currentTarget.value),
           onKeyDown: (event) => {
             if (event.defaultPrevented || recall.take(event)) return;

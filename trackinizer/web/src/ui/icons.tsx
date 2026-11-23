@@ -83,6 +83,19 @@ const PATHS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   // A side panel's collapse and expand buttons (src/ui/panel.tsx): Lucide's panel icons.
+  panelLeftClose: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>',
+  panelLeftOpen: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/>',
+  panelRightClose: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/><path d="m8 9 3 3-3 3"/>',
+  panelRightOpen: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/><path d="m10 15-3-3 3-3"/>',
+  // The canvas bar's Back, Forward and Home (src/visuals/CanvasBar.tsx): Lucide's arrow-left, arrow-right and house.
+  arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  arrowRight: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  // The top bar's Machines menu (src/topbar/MachinesMenu.tsx): Lucide's server.
+  server: '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
+  // The canvas bar's Clear all boxes (src/visuals/CanvasBar.tsx): Lucide's eraser.
+  eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   panelLeftClose:
     '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>',
   panelLeftOpen:
@@ -125,7 +138,7 @@ export function Icon({
   );
 }
 
-/** Trackinizer's logo: a bulb whose filament is a small graph. */
+/** Trackinizer's logo: the crisp architectural geometric monogram mark. */
 export function Logo() {
   return (
     <svg
@@ -133,19 +146,12 @@ export function Logo() {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      strokeWidth="2.2"
+      strokeLinejoin="miter"
+      strokeLinecap="square"
       aria-hidden="true"
     >
-      <path d="M9 18.6C9 16.8 4.2 14.04 4.2 9A7.8 7.8 0 0 1 19.8 9C19.8 14.04 15 16.8 15 18.6M9 22.8H15" />
-      <g className="ws-filament">
-        <path d="M9 7.5L12 13.5M15.3 9.3L12 13.5V18.6" />
-        <g fill="currentColor" stroke="none">
-          <circle cx="9" cy="7.5" r="2.6" />
-          <circle cx="15.3" cy="9.3" r="2.6" />
-        </g>
-      </g>
+      <path d="M3 4.5h18v6h-11v9H6v-15z" />
     </svg>
   );
 }

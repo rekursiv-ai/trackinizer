@@ -1,0 +1,67 @@
+/* THE CODE NODE. highlight.js's colours are markdown/highlight.css's — ported
+   straight across, not restated, so a token is the same colour whether it is read in a
+   transcript or quoted in an answer. What is this node's own: the gutter, the line
+   number, and the highlighted range, none of which the transcript's Code needed. */
+
+.ui-code { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.ui-code-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-machine);
+  font: 400 11px/1.5 var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+.ui-code-head:hover { background: var(--surface-hover); }
+.ui-code-path { flex: none; }
+.ui-code-summary { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.ui-code-fn { margin-right: 8px; color: var(--text); white-space: nowrap; }
+.ui-code-doc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-code-open { flex: none; color: var(--ink-machine); }
+/* Opened whole, the block is a flex item of `.modal-b`, so it shrinks to the modal's
+   80vh rather than growing past it. `.ui-code`'s own `overflow: hidden` then drops
+   what was cut instead of offering it, which is how a long file opened "whole" came
+   out unscrollable. In full the `<pre>` carries the scroll itself: the path line stays
+   put at the top and the code moves under it. */
+.ui-code.is-full { border: 0; display: flex; flex-direction: column; min-height: 0; }
+.ui-code.is-full .ui-code-pre { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.ui-code-pre {
+  margin: 0;
+  overflow-x: auto;
+  background: var(--surface);
+  font: 400 12.5px/1.65 var(--mono);
+}
+.ui-code-row { display: flex; align-items: baseline; min-width: fit-content; }
+/* The range a reader's eye should land on first: a step of surface, never a hue — a
+   coloured code row would compete with the token colours it holds. */
+.ui-code-row.is-lit { background: var(--surface-hover); }
+.ui-code-n {
+  flex: none;
+  width: 3.4em;
+  padding: 0 10px;
+  color: var(--ink-machine);
+  text-align: right;
+  user-select: none;
+}
+.ui-code-tok { flex: 1 1 auto; min-width: 0; white-space: pre; color: var(--text); }
+/* THE GUTTER CHIP. Pinned to its own row — never below the block — so an annotation
+   is never read as floating. Right of the code, in the machine register: it locates
+   which arms touched this line, it does not argue the point. */
+.ui-code-note {
+  flex: none;
+  margin: 0 10px 0 18px;
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--ink-machine);
+  font-size: 11px;
+  white-space: nowrap;
+}

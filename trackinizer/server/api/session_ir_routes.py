@@ -9,7 +9,8 @@ AgentSession list (``trax agentsession tool_call re bar``), not a second query
 surface with its own grammar.
 
 The append requires ``writer``, and for a science chat the key that opened the part
-it writes, or for a new part a key the chat takes a run from; the reads require
+it writes, or for a new part a key the chat takes a run from; a server running
+``--no-auth``, where no caller has a key, asks its account instead. The reads require
 ``viewer``. Each route also answers 403 ``session_audience`` to a caller
 who neither opened the session nor reads it. A read takes an ``asker`` and a ``chat``:
 the configured assistant reads for that user, on the user's rights and never its own,

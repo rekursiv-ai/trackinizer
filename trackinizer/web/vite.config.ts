@@ -4,8 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vitest/config";
-import { APP_BASE } from "./src/base";
-import { fillName, manifestOf, TRACKINIZER } from "./src/identity";
+import { fillName, identityOf, manifestOf } from "./src/identity";
 
 // The dev server stands in for the trackinizer server: it proxies the API and the
 // login pages to TRACKINIZER_WEB_API_URL, and signs each request with
@@ -21,7 +20,9 @@ const proxyRoute = {
   headers: token ? { Authorization: `Bearer ${token}` } : {},
 };
 
-const identity = TRACKINIZER;
+// The app's name: TRACKINIZER_WEB_APP picks an identity from src/identity.ts, none the default. The deploy sets it.
+const app = process.env.TRACKINIZER_WEB_APP ?? "";
+const identity = identityOf(app);
 
 // The commit this app is built from. The bundle carries it for Copy details
 // (src/debug/details.ts) and dist/version.json for the deploy: read at run time,
@@ -32,9 +33,9 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], {
 }).trim();
 
 export default defineConfig({
-  base: APP_BASE,
+  base: "/app/",
   plugins: [react(), versionJson(), appIdentity(), preloadFirstLoad()],
-  define: { __COMMIT__: JSON.stringify(commit) },
+  define: { __COMMIT__: JSON.stringify(commit), __APP__: JSON.stringify(app), global: "globalThis" },
   build: {
     // dist/.vite/manifest.json, from which scripts/bundle-size.ts reads what a
     // first visit loads: the entry imports React DOM and the app dynamically
@@ -74,16 +75,7 @@ export default defineConfig({
         },
       },
       ...(process.env.TRACKINIZER_WEB_MANUAL_TESTS === "1"
-        ? [
-            {
-              extends: true,
-              test: {
-                name: "build",
-                environment: "node",
-                include: ["src/build.test.ts"],
-              },
-            },
-          ]
+        ? [{ extends: true, test: { name: "build", environment: "node", include: ["src/build.test.ts"] } }]
         : []),
     ],
   },
@@ -96,20 +88,13 @@ function appIdentity(): Plugin {
     name: "trackinizer-app-identity",
     transformIndexHtml: (html) => fillName(html, identity),
     configureServer(server) {
-      server.middlewares.use(
-        `${APP_BASE}manifest.webmanifest`,
-        (_request, response) => {
-          response.setHeader("Content-Type", "application/manifest+json");
-          response.end(manifest);
-        },
-      );
+      server.middlewares.use("/app/manifest.webmanifest", (_request, response) => {
+        response.setHeader("Content-Type", "application/manifest+json");
+        response.end(manifest);
+      });
     },
     generateBundle() {
-      this.emitFile({
-        type: "asset",
-        fileName: "manifest.webmanifest",
-        source: manifest,
-      });
+      this.emitFile({ type: "asset", fileName: "manifest.webmanifest", source: manifest });
     },
   };
 }
@@ -154,15 +139,8 @@ function preloadFirstLoad(): Plugin {
       order: "post",
       handler(_html, { bundle, chunk: entry }) {
         if (!bundle || !entry) return;
-        const chunks = new Map(
-          Object.values(bundle).flatMap((file) =>
-            file.type === "chunk" ? [[file.fileName, file]] : [],
-          ),
-        );
-        const reached = (
-          roots: readonly string[],
-          into = new Set<string>(),
-        ): Set<string> => {
+        const chunks = new Map(Object.values(bundle).flatMap((file) => (file.type === "chunk" ? [[file.fileName, file]] : [])));
+        const reached = (roots: readonly string[], into = new Set<string>()): Set<string> => {
           for (const file of roots) {
             if (into.has(file)) continue;
             into.add(file);
@@ -174,11 +152,7 @@ function preloadFirstLoad(): Plugin {
         const preloaded = reached([entry.fileName]);
         return [...reached(entry.dynamicImports)]
           .filter((file) => !preloaded.has(file))
-          .map((file) => ({
-            tag: "link",
-            attrs: { rel: "modulepreload", crossorigin: true, href: `${base}${file}` },
-            injectTo: "head",
-          }));
+          .map((file) => ({ tag: "link", attrs: { rel: "modulepreload", crossorigin: true, href: `${base}${file}` }, injectTo: "head" }));
       },
     },
   };
