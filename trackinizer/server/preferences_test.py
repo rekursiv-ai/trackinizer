@@ -86,6 +86,7 @@ _DEFAULTS: dict[str, JsonValue] = {
         "output_lines": "tool",
         "times": False,
         "tool_groups": "open",
+        "messages": "open",
     },
     "autofix": True,
     "automerge": False,
@@ -354,6 +355,7 @@ _TERMINAL: Final = {
     "output_lines": [3, 1],
     "times": True,
     "tool_groups": "folded",
+    "messages": "folded",
 }
 """A ``chat_view`` that sets every option away from its default."""
 
@@ -384,6 +386,8 @@ def test_chat_draws_its_own_lines_until_the_user_picks_another_view() -> None:
         {"times": 1},
         {"tool_groups": "closed"},
         {"tool_groups": False},
+        {"messages": "closed"},
+        {"messages": False},
         {"theme": "dark"},
     ],
 )

@@ -361,6 +361,11 @@ class ChatView(_Strict):
     """Whether each run of tool calls Chat groups under one line starts open, its
     calls listed under it, or folded to that line."""
 
+    messages: Literal["open", "folded"] = "open"
+    """Whether each message between agents, or between an agent and the person,
+    starts open, its words shown, or folded to its one line. Another agent's, drawn
+    among a chat's own lines, starts folded either way."""
+
 
 _CHAT_VIEW: Final = ChatView()
 """Chat's own lines, with each option at its default."""
@@ -599,7 +604,7 @@ class Preferences(_Strict):
             "much of the tool calls shows (density), whether reasoning shows "
             "(thinking), how much of a tool's output shows (output_lines), when "
             "each line was written (times), and whether each group of tool calls "
-            "starts open or folded (tool_groups)."
+            "(tool_groups) and each message (messages) starts open or folded."
         ),
         json_schema_extra=SETTING,
     )
