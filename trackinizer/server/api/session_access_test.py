@@ -56,6 +56,7 @@ from trackinizer.server.auth import AuthIdentity, Role
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.store.core import Store
 from trackinizer.types.errors import NotFoundError
+from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
 from trackinizer.types.inquiries import AgentSession
 
 
@@ -186,6 +187,10 @@ async def test_a_delegated_read_keeps_the_asker_chat_and_caller(
 ) -> None:
     reads = AsyncMock(return_value=readable)
     monkeypatch.setattr(session_access, "reads_session", reads)
+    monkeypatch.setattr(
+        session_access, "read_first_session", AsyncMock(return_value=uuid.uuid4())
+    )
+    monkeypatch.setattr(session_access, "_require_chat_takes", AsyncMock())
     caller = make_caller("open", email=SCOUT.email)
     session = AgentSession(audience="open")
     asker = make_asker("open")
@@ -202,10 +207,11 @@ async def test_a_delegated_read_keeps_the_asker_chat_and_caller(
 
     assert reads.await_args is not None
     assert reads.await_args.args[0] is not None
-    assert reads.await_args.kwargs["session_id"] == session.id
-    assert reads.await_args.kwargs["reader"] == SessionReader(
+    assert reads.call_args_list[0].kwargs["session_id"] == session.id
+    assert reads.call_args_list[0].kwargs["reader"] == SessionReader(
         email=asker.email,
         audiences=asker.read_audiences,
+        assistant=SCOUT.email,
     )
     if readable:
         assert refusal is None
@@ -635,6 +641,7 @@ class TestRequireSessionIdChange:
             _serving(self._SESSION),
             caller,
             uuid.uuid4(),
+            value="claude:def",
         )
 
     @pytest.mark.parametrize("key", [None, uuid.UUID(int=7)])
@@ -645,6 +652,7 @@ class TestRequireSessionIdChange:
                 _serving(self._SESSION),
                 make_caller("open", email="ada@example.com", key=key),
                 uuid.uuid4(),
+                value="claude:def",
             )
 
         assert (refused.value.status_code, refused.value.detail) == (
@@ -662,6 +670,35 @@ class TestRequireSessionIdChange:
             _serving(row),
             make_caller("open"),
             uuid.uuid4(),
+            value="claude:def",
+        )
+
+    @pytest.mark.parametrize(
+        ("held", "value"),
+        [
+            ("claude:abc", f"{CHAT_SESSION_PREFIX}0123456789ab"),
+            (f"{CHAT_SESSION_PREFIX}0123456789ab", "claude:abc"),
+        ],
+        ids=["into a chat", "out of one"],
+    )
+    @pytest.mark.asyncio
+    async def test_no_key_moves_a_session_into_or_out_of_a_science_chat(
+        self,
+        held: str,
+        value: str,
+    ) -> None:
+        """Even the opening key: a chat is named when its session starts, once."""
+        with pytest.raises(HTTPException) as refused:
+            await require_session_id_change(
+                _serving({**self._SESSION, "cli_session_id": held}),
+                make_caller("open", key=OPENER),
+                uuid.uuid4(),
+                value=value,
+            )
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "A science chat's id is named only when its session starts",
         )
 
 

@@ -1,0 +1,132 @@
+/* THE CATALOG'S NODES, BOUND TO THE THEME.
+ *
+ * Every library below ships a look of its own — Vega's blue-on-white defaults, KaTeX's
+ * Computer Modern, uPlot's grey axes, Tiptap's browser prose. None of them has seen the
+ * design, so each one arrives here overridden to the same tokens the design library
+ * already draws with: --text for what is read, --ink-machine for what only locates,
+ * --mono on every figure, --line for a hairline. A node the agent picks therefore
+ * cannot look like the library it came from.
+ *
+ * ui/law.test.ts holds every rule below that a grep can prove. The rest — a chart with
+ * four series and no legend reads worse than one with two — is the catalog's own job:
+ * what is not offered cannot be asked for. */
+
+/* ── Equation · KaTeX ──────────────────────────────────────────────────────────
+   A formula is machine, so it takes the reading ink at the prose size and never
+   KaTeX's own serif. Display mode is the only block form: an inline formula that
+   breaks the line's leading is a formula that should have been displayed. */
+.ui-eq { color: var(--text); font-size: 15px; }
+.ui-eq .katex { font-size: 1em; color: var(--text); }
+/* The stretch a long formula takes is its own, so it scrolls on its own axis and
+   never widens the pane it sits in. */
+.ui-eq .katex-display { margin: 14px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+/* KaTeX's error span is red text on nothing — a colour on a word, which the law
+   forbids. A formula that will not parse is printed as its own source in machine ink,
+   because the source is the record and a silent drop is a lie. */
+.ui-eq .katex-error { color: var(--ink-machine); font: 400 12px/1.5 var(--mono); }
+
+/* ── Series · uPlot ───────────────────────────────────────────────────────────
+   A metric curve: the axes locate, so they are machine ink and the hairline; the
+   series is the one thing read, so it carries the ink and the only weight. */
+.ui-series { position: relative; }
+.ui-series .u-title { display: none; } /* The Section above it already named it. */
+.ui-series .u-wrap { color: var(--ink-machine); }
+.ui-series .u-legend {
+  margin: 8px 0 0;
+  font: 400 11px/1.5 var(--mono);
+  color: var(--ink-machine);
+}
+/* A legend's value is a figure, so it is read: white, and at the figure's own size. */
+.ui-series .u-legend .u-value { color: var(--text); }
+.ui-series .u-legend .u-marker { width: 8px; height: 2px; border-radius: 0; }
+/* uPlot draws its cursor as a dashed grey line. Ours is the hairline the rest of the
+   pane uses, so a crosshair reads as part of the design and not of the library. */
+.ui-series .u-cursor-x,
+.ui-series .u-cursor-y { border-color: var(--line-strong); }
+
+/* ── Confusion · grid of counts ──────────────────────────────────────────────
+   A 3x3 matrix must read as a matrix: rows across, not a column of numbers.
+   Cells are equal squares; opacity carries the count. */
+.ui-confusion { color: var(--ink-machine); }
+.ui-confusion-grid { display: grid; gap: 4px; max-width: 360px; }
+.ui-confusion-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.ui-confusion-cell { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; font: 400 13px/1 var(--mono); color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+
+/* ── Plotly · interactive figure ─────────────────────────────────────────────
+   The Plotly div must have height or the canvas renders 0px. */
+.ui-plotly { height: 450px; width: 100%; position: relative; }
+.ui-plotly > div { width: 100% !important; height: 100% !important; }
+
+/* ── Chart · Vega-Lite ────────────────────────────────────────────────────────
+   The spec carries the marks; this carries nothing but the removal of Vega's chrome.
+   The renderer hands Vega a config built from these same tokens (see chart.tsx), so
+   axis ink, grid hairline and the categorical ramp are the theme's, not Vega's. */
+.ui-chart { color: var(--ink-machine); }
+/* Vega's action menu is a link that opens its own editor: not ours, and not on a
+   pane a scientist reads. */
+.ui-chart .vega-actions,
+.ui-chart details.vega-embed summary { display: none; }
+.ui-chart .vega-embed { width: 100%; }
+/* A tooltip is the figure under the pointer, so it is the pane's own surface and
+   hairline with the figure in mono — never Vega's white card. */
+.vg-tooltip {
+  background: var(--surface-overlay) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: none !important;
+  color: var(--text) !important;
+  font: 400 11px/1.6 var(--mono) !important;
+  padding: 7px 9px !important;
+}
+.vg-tooltip td.key { color: var(--ink-machine) !important; padding-right: 10px !important; }
+.vg-tooltip td.value { color: var(--text) !important; }
+
+/* ── Register · TanStack Virtual ──────────────────────────────────────────────
+   A strip or a list too long to mount whole. The law's rule for a strip is the one
+   that matters here: it scrolls on its own axis, and it never wraps or drops its tail.
+   The scroller owns the axis; the spacer inside it owns the measure. */
+.ui-reg { overflow: auto; overscroll-behavior: contain; }
+.ui-reg-x { overflow-x: auto; overflow-y: hidden; }
+.ui-reg-rail { position: relative; width: 100%; }
+/* A row is positioned by the virtualizer, so it takes no margin of its own: a gap
+   between rows would be measured by nobody and the last row would sit short. */
+.ui-reg-row { position: absolute; top: 0; left: 0; width: 100%; }
+.ui-reg-col { position: absolute; top: 0; left: 0; height: 100%; }
+
+/* ── Rich · Tiptap ────────────────────────────────────────────────────────────
+   The one writing surface. Prose is read, so it is the prose face at the prose
+   measure — the ~630px the design holds a column to, because a line longer than
+   that is a line a reader loses coming back from the right edge. */
+.ui-rich { max-width: 630px; }
+.ui-rich .ProseMirror {
+  outline: none;
+  font: 400 15px/1.7 var(--sans);
+  color: var(--text);
+}
+.ui-rich .ProseMirror p { margin: 0 0 11px; }
+.ui-rich .ProseMirror p:last-child { margin-bottom: 0; }
+/* A token inside written prose is the same address the rest of the app prints:
+   machine face, reading ink, and no box. */
+.ui-rich .ProseMirror code {
+  font-family: var(--mono);
+  font-size: 0.93em;
+  color: var(--text);
+}
+.ui-rich .ProseMirror pre {
+  margin: 12px 0;
+  padding: 11px 13px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font: 400 12px/1.6 var(--mono);
+}
+.ui-rich .ProseMirror pre code { font-size: inherit; }
+/* The placeholder locates rather than reads. */
+.ui-rich .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--ink-machine);
+}

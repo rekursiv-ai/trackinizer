@@ -1,0 +1,548 @@
+/* The design's two faces, held on this machine: the app loads no font from another host,
+   and Chat is set in them, so the files ship with it. A skin's own stack still wins —
+   see the `.chat-panel` rule below, which only applies to the default skin. */
+@import "@fontsource-variable/inter/index.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
+
+.visual-canvas { position: relative; display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.visual-write-error { padding: 7px 16px; border-bottom: 1px solid var(--line); color: var(--error-text); font-size: 12px; }
+.workbench-controls { display: flex; flex-direction: column; }
+.visual-option { display: flex; align-items: flex-start; gap: 10px; padding: 10px 6px; border-top: 1px solid var(--line); cursor: pointer; }
+.visual-option input { margin-top: 3px; accent-color: var(--accent); }
+.visual-option span { display: flex; flex-direction: column; gap: 2px; }
+.visual-option strong { font-size: 13px; font-weight: 600; }
+.visual-option small { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.visual-artifact-select { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
+.visual-artifact-select input { flex: 1; min-width: 0; padding: 7px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-raised); color: var(--text); font: inherit; text-align: center; }
+.visual-artifact-select p { flex-basis: 100%; }
+/* The canvas's ground is black, as the approved frame draws it: the stage a
+   station's tiles lift off of, one step under every surface they carry. The
+   light theme keeps the page's own ground. */
+.visual-stage { display: flex; flex: 1; min-height: 0; position: relative; overflow: auto; background: #06070b; }
+:root[data-theme="light"] .visual-stage { background: var(--bg); }
+.visual-tile { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+.visual-tile-browse { overflow: hidden; }
+.visual-browse-content { display: contents; }
+.visual-tile-floating { position: absolute; right: 16px; width: min(390px, calc(100% - 32px)); height: min(480px, calc(100% - 100px)); min-width: min(280px, calc(100vw - 32px)); min-height: min(220px, calc(100vh - 80px)); max-width: calc(100vw - 32px); max-height: calc(100vh - 80px); border: 1px solid var(--line-strong); border-radius: var(--panel-radius); box-shadow: 0 16px 48px #0008; overflow: hidden; }
+/* A wide visual's own window: room enough for the tiers it draws, so an answer that
+   needs the row takes the stage's whole height rather than squeezed into a 390 px strip. */
+.visual-tile-floating.visual-tile-wide { width: min(1040px, calc(100% - 32px)); height: min(760px, calc(100% - 24px)); }
+.visual-tile-focused { outline: 1px solid var(--accent); outline-offset: -1px; }
+.visual-tile-toolbar { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 2px 8px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.visual-tile-toolbar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.visual-tile-toolbar .visual-tile-drag-handle { min-width: 24px; padding: 1px 4px; cursor: grab; touch-action: none; font-size: 15px; line-height: 1; }
+.visual-tile-toolbar .visual-tile-drag-handle:active { cursor: grabbing; }
+.visual-tile-toolbar button, .visual-tile-toolbar select { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface-raised); font-size: 11px; color: var(--ink-muted); }
+.visual-tile-toolbar button:disabled, .visual-tile-toolbar select:disabled { opacity: .5; }
+.visual-mobile-tab-toggle { display: none; }
+.visual-loading, .visual-unsupported { padding: 20px; color: var(--muted); }
+/* The panel's own ramp, named as the design names it: the ground, the raised surface what a
+   person typed sits on, the chip, the hairline, the box's line. A skin takes the app's tokens;
+   the default skin takes the design's, below. */
+.chat-panel { --chatbg: var(--surface); --box: var(--surface-hover); --chip: var(--surface-raised); --hair: var(--line);
+  --boxline: var(--line-strong); --boxline-h: var(--muted); --proc: var(--ink-muted);
+  display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; background: var(--chatbg); }
+/* The strip Chat's column opens with: one row, 43px — the mark, this chat's name and its
+   chevron, and the find at the far end. No hue: the row is ink on chrome. Its height and type
+   are the canvas tab bar's, so the two read as one line across the window. */
+.chat-head { position: relative; display: flex; align-items: center; gap: 8px; height: 43px;
+  padding: 0 10px 0 14px; border-bottom: 1px solid var(--hair);
+  font: 400 13px/1.4 var(--sans); color: var(--text); }
+.chat-mark { display: inline-flex; flex: none; align-items: center; color: var(--muted); }
+.chat-head-actions { display: none !important; }
+/* One chat is named here — the one you are in, carrying the chevron that opens the picker.
+   The others were a strip across this row; they are in the picker, where its search can reach
+   all of them and this row stays a single name. */
+.chat-sessions { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; }
+.chat-session { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0;
+  padding: 4px 6px; border: 0; border-radius: 6px;
+  background: none; color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.chat-session .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chat-session .cv { flex: none; font-size: 10px; line-height: 1; color: var(--muted, #8b8d91); margin-left: 2px; }
+.chat-session:hover { background: var(--surface-hover); }
+/* The row ends in chrome, not in words: the dock and the find are two 28px marks at the right.
+   The dock was a bordered chip reading "Move left", which put a second label on a row whose
+   whole point is to carry one name. */
+.chat-head-icon-btn, .chat-head-search-btn { display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: none;
+  color: var(--muted); font-size: 11px; cursor: pointer; flex: none; }
+.chat-head-icon-btn { margin-left: auto; }
+.chat-head-icon-btn + .chat-head-search-btn { margin-left: 0; }
+.chat-head-icon-btn:hover, .chat-head-search-btn:hover { background: var(--surface-hover); color: var(--text); }
+
+/* Session Switcher Popover (Image 2). It hangs under the Chat pane's header and inside the
+   pane's own width, so it can never reach past the edge of the window. It was a fixed 320px
+   with no ceiling on its height: in a right-docked Chat that put it half over the canvas and
+   ran its footer off the bottom of the screen. The list is the part that grows, so the list
+   is the part that scrolls, and the search and the footer stay in view. */
+.session-popover {
+  position: absolute;
+  z-index: 55;
+  top: calc(100% + 4px);
+  left: 8px;
+  right: 8px;
+  width: auto;
+  max-width: 420px;
+  max-height: min(70vh, 560px);
+  background: #14151a;
+  border: 1px solid var(--line-strong, #343538);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+.session-popover > .session-pop-search, .session-popover > .session-pop-footer,
+.session-popover > .chat-menu-label, .session-popover > .provider-new, .session-popover > .chat-name-search { flex: none; }
+.session-pop-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #0d0e12;
+  border: 1px solid var(--line-strong, #343538);
+  border-radius: 6px;
+  color: var(--muted);
+}
+.session-pop-search .session-search-input {
+  flex: 1;
+  background: none;
+  border: 0;
+  color: var(--text, #fff);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.session-pop-search kbd {
+  font: 500 10px var(--mono);
+  color: var(--muted);
+}
+.session-pop-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.session-pop-tab {
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted, #8b8d91);
+  font: 500 11.5px var(--sans);
+  cursor: pointer;
+  transition: all .12s;
+}
+.session-pop-tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.session-pop-tab.is-active {
+  background: var(--surface-raised, #232429);
+  border-color: var(--line-strong, #343538);
+  color: var(--text, #fff);
+  font-weight: 550;
+}
+.session-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+.session-pop-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.session-pop-item:hover {
+  background: var(--surface-hover, #1e1f24);
+}
+.session-pop-item.is-current {
+  background: rgba(255, 255, 255, 0.05);
+}
+.session-pop-item-icon {
+  flex: none;
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+}
+.session-pop-item-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.session-pop-item-name {
+  font: 500 12.5px var(--sans);
+  color: var(--text, #fff);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-pop-item-agent {
+  font: 400 11px var(--sans);
+  color: var(--muted, #8b8d91);
+}
+.session-pop-current-badge {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface-raised, #232429);
+  color: var(--muted, #8b8d91);
+  font: 500 10px var(--mono);
+}
+.session-pop-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair, #26272c);
+  font: 500 10.5px var(--mono);
+  color: var(--muted, #8b8d91);
+}
+/* The find is an icon at rest and a field once the caret is in it, so the row stays one line. */
+.chat-head-search { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; width: 30px; padding: 0 8px; height: 28px;
+  border: 1px solid transparent; border-radius: 6px; background: none; color: var(--muted); overflow: hidden;
+  transition: width .18s ease, border-color .18s ease; }
+.chat-head-search:focus-within { width: 168px; border-color: var(--boxline); background: var(--bg); color: var(--ink-muted); }
+.chat-head-search input { flex: 1 1 auto; min-width: 0; border: 0; background: none; outline: none;
+  color: var(--text); font: inherit; }
+.chat-head-search input::placeholder { color: var(--muted); }
+.chat-station { min-width: 0; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+/* A chat its starter hid, or one made staff only. */
+.chat-badge { padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 11px; line-height: 18px; }
+.chat-head-actions { display: flex; align-items: center; gap: 2px; flex: none; margin-left: auto; }
+.chat-head-actions .btn:disabled { opacity: .5; }
+.chat-partner-context { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Static on purpose: this box is 0px wide, so while it was `relative` it, and not the Chat
+   header, was the containing block of the session pop-over hanging off it — which is how a
+   pop-over told to span its pane came out 320px wide against the window's right edge. The
+   header (`.chat-head`) is `relative` and is the pane's width, so it anchors the pop-over. */
+.chat-name-pick { min-width: max-content; flex: 0 0 auto; }
+/* The picker: the name field with its esc, the rows, then the count line. One ink tier for the
+   names, a lower one for what locates them. */
+.chat-pick-field { display: flex; align-items: center; gap: 8px; }
+.chat-pick-field kbd { flex: none; margin-left: auto; padding: 1px 5px; border: 1px solid var(--line-strong); border-radius: 4px;
+  background: var(--chip); color: var(--muted); font: 500 10px/1.5 var(--mono); }
+.chat-name-input { flex: 1 1 auto; min-width: 0; padding: 3px 0; border: 0; background: none; color: var(--text); font: inherit; font-weight: 550; outline: none; }
+/* Spans the Chat pane it belongs to, rather than taking a fixed 320px out of the middle of it.
+   Two classes on purpose: `.station-menu` in stations.css sets `width: min(320px, 90vw)` and
+   loads after this file, so a single-class rule here loses to it. */
+.session-popover.chat-name-menu { left: 8px; right: 8px; width: auto; }
+.chat-menu-label { margin: 2px 6px; color: var(--muted); font-size: 11px; }
+.chat-name-row { display: flex; align-items: center; min-width: 0; }
+.chat-name-row .station-option { flex: 1; min-width: 0; }
+.chat-pick-current { flex: none; padding-right: 6px; color: var(--muted); font: 500 10px/1 var(--mono); letter-spacing: .06em; }
+.chat-pick-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 4px 6px 2px; padding-top: 5px;
+  border-top: 1px solid var(--hair); color: var(--muted); font: 500 10px/1.5 var(--mono); letter-spacing: .04em; }
+.chat-name-row-actions { display: flex; gap: 2px; opacity: 0; }
+.chat-name-row:hover .chat-name-row-actions, .chat-name-row:focus-within .chat-name-row-actions { opacity: 1; }
+.chat-name-row-actions .btn { padding: 2px 5px; font-size: 11px; }
+.chat-name-search { padding-top: 4px; border-top: 1px solid var(--line); }
+.chat-workstream-pick { position: relative; display: flex; align-items: center; min-width: 0; flex: none; gap: 5px; }
+.chat-workstream-menu { position: absolute; z-index: 42; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 5px; width: min(280px, 90vw); padding: 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
+.chat-workstream-menu input { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.chat-suggestion-chip { display: inline-flex; flex: none; align-items: center; border: 1px solid var(--boxline); border-radius: 999px; background: var(--chip); font-size: 12px; }
+.chat-suggestion-chip button { padding: 2px 7px; border: 0; background: transparent; color: var(--ink-muted); }
+.chat-suggestion-chip button:hover { color: var(--text); }
+.chat-more-menu, .chat-info-menu { position: absolute; z-index: 42; top: calc(100% + 4px); right: 8px; display: flex; flex-direction: column; gap: 4px; min-width: 220px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
+/* Every ⋯ item wears this, the Share, Delete and Public/Private controls too, so the list reads as one. */
+.chat-menu-item { width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; text-align: left; }
+.chat-menu-item:hover { background: var(--surface-overlay); }
+.chat-menu-item:disabled { opacity: .45; cursor: default; }
+.chat-info-menu { top: calc(100% + 4px); max-width: min(320px, 90vw); overflow-wrap: anywhere; }
+.chat-info-menu span { color: var(--muted); font-size: 12px; }
+.hover-only { opacity: 0; transition: opacity .12s; }
+.chat-head:hover .hover-only, .chat-head:focus-within .hover-only { opacity: 1; }
+@media (hover: none) { .hover-only, .chat-name-row-actions { opacity: 1; } }
+/* Share and Delete open under their item in the ⋯ menu, as wide as it: a pop-over hung from the item would run
+   past the Chat column, whose panel clips what overflows it, and be cut off. */
+.chat-head-pop .station-menu { position: static; width: auto; box-shadow: none; }
+.chat-share-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 0 0 8px; font-size: 12px; overflow-wrap: anywhere; }
+.chat-head-pop .chat-note { margin: 0; }
+.chat-error { margin: 8px 12px 0; color: var(--error-text); font-size: 12px; }
+.chat-note { color: var(--muted); font-size: 12px; }
+.chat-off { display: flex; flex-direction: column; gap: 6px; }
+.chat-off .chat-note { margin: 0; }
+/* Chat is set in the design's own ramp: its ground, its raised box, its chip and its hairline.
+   The ramp carries no hue — an act is marked by ink tier and by the row's own rule, not by a
+   colour. Only the default skin, and only on the dark
+   theme: a light theme takes the app's own tokens, so Chat is not a black terminal
+   inside a white app. A skin that names its own ink — the DOS one its VGA face —
+   keeps its ink and its ramp here too. The two faces come from styles.css, where
+   every design pane takes them together. */
+:root:not([data-skin])[data-theme="dark"] .chat-panel,
+:root:not([data-skin]):not([data-theme]) .chat-panel {
+  --chatbg: #0d0d0d; --box: #242424; --chip: #181818; --hair: #3a3a3a; --boxline: #565656; --boxline-h: #8c8c8c;
+  --proc: #b8b8b8;
+}
+/* Light: the panel is the app's own ground, and only the box that holds what a person
+   typed is raised off it. The hairline is the app's line, not a terminal's rule. */
+:root:not([data-skin])[data-theme="light"] .chat-panel {
+  --chatbg: var(--bg); --box: var(--surface-hover); --chip: var(--surface-raised); --hair: var(--line);
+  --boxline: var(--line-strong); --boxline-h: var(--muted); --proc: var(--ink-muted);
+}
+.chat-lines { display: flex; flex: 1; flex-direction: column; gap: 9px; min-height: 0; overflow: auto; padding: 16px; scrollbar-width: thin; }
+/* Three registers, and the log's own words are not among the mono ones: the answer and what a
+   person typed are both 13 sans, one flush on the ground and one raised on the right. Mono is
+   only for what a run echoed back — a command line, and the text a command printed — because
+   there the face is the content, not the chrome. */
+.chat-line { align-self: stretch; max-width: none; padding: 0; border: 0; border-radius: 0; font: 450 13px/1.5 var(--sans); color: var(--text); overflow-wrap: anywhere; }
+/* What a person typed is the design's own band: full-bleed across the column, in the machine's
+   face, marked by the `>` the CLI puts before a prompt. It is not a bubble — the transcript is a
+   session log, and the band is where the log says who spoke. */
+.chat-line-user { align-self: stretch; max-width: none; margin: 2px -16px; padding: 9px 16px; letter-spacing: 0;
+  background: var(--box); border: 0; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair);
+  border-radius: 0; font: 400 13px/1.5 var(--mono); }
+.chat-line-user .chat-line-body { padding-left: 0; text-indent: 0; }
+.chat-line-user p.chat-line-body::before, .chat-line-user .md.chat-line-body > :first-child::before { content: "> "; color: var(--boxline-h); }
+.chat-line-command .chat-line-body { font-family: var(--mono); }
+.chat-line-pending { opacity: .7; }
+.chat-line-other { align-self: stretch; }
+.chat-line-relay, .chat-line-note { padding: 0 2px; color: var(--muted); font-size: 12px; }
+/* One call, as the CLI's own row: the ⏺ sits on a rail down the left, so a run of them
+   reads as one process block rather than as small print under the answer. One row, one
+   line: the verb, the argv cut to what this column holds, the duration in the right margin.
+   A 478 px column of this mono holds 52 characters and a real argv is a compound shell line,
+   which is why the cut is here at all. The cut is the row's own width, so a wider chat prints
+   more of it. */
+.chat-line-tool { background: transparent; }
+.chat-run { position: relative; display: flex; flex-wrap: wrap; align-items: baseline; padding: 1px 0 1px 14px; border-left: 1px solid var(--hair); font: 400 12px/1.45 var(--mono); letter-spacing: 0; color: var(--proc); overflow-wrap: anywhere; }
+.chat-run::before { content: "●"; position: absolute; left: 3px; top: 2px; font-size: 7px; line-height: 1.4; color: var(--boxline-h); }
+.chat-run .verb { flex: none; font-weight: 500; }
+/* One line at rest, the whole command on its ▸. A terminal wraps, but this store's live
+   commands wrapped the 477 px column into 2 to 7 rows and buried the answer that asked for them,
+   so the row keeps its line and the press gives back what the width took. The basis is 0, not
+   auto: with a content basis the row wraps the command onto a line of its own before it shrinks
+   it, and the duration is left orphaned on a line by itself. */
+.chat-run .arg { flex: 1 1 0; min-width: 0; margin-left: .6em; font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-run.argv-open .arg { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.chat-run .t { flex: none; align-self: flex-start; margin-left: auto; padding-left: 8px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.chat-run .t.quiet { font-weight: 400; }
+/* A failed call's margin is white, not red: the design's run row carries no hue at all, and the
+   words (`exit 2`) are the signal. White is what you read; grey only locates. */
+.chat-run .t.failed { color: var(--text); }
+/* The payload is white: it is the machine's answer, and the grey tier belongs to the argv.
+   The └ is a row of its own and the payload takes the full width under it — hung beside the
+   glyph, every line of a fifty-line output pays the glyph's column. One line of it shows until
+   its ▸ is pressed, held at the row's right edge: this store's 11 multi-line payloads run from 2
+   lines to 49, and fifty white lines between two answers read as the answer. */
+.chat-run .out { display: flex; align-items: flex-start; flex: 1 0 100%; margin-top: 1px; color: var(--text); }
+/* The branch hangs off the row's top edge because `.out` is flex-start, but JetBrains Mono's
+   corner glyph puts its ink 4.2 px above the payload's baseline, so it read as floating mid-word.
+   Dropped by that measured ink gap, the corner lands on the baseline and the payload hangs off it. */
+.chat-run .out .branch { flex: none; margin-right: 1ch; padding-top: .35em; color: var(--boxline-h); }
+.chat-run .out .lvl { flex: 1 1 auto; min-width: 0; display: block; }
+.chat-run .out:not(.open) .lvl { max-height: 1.5em; overflow: hidden; }
+.chat-run .out .fold, .chat-run > .fold { flex: none; padding: 0 0 0 6px; border: 0; background: none; color: var(--boxline-h); font: inherit; cursor: pointer; }
+.chat-run .out .fold:hover, .chat-run > .fold:hover { color: var(--text); }
+.chat-run .out .tool-out { padding: 0; color: inherit; }
+.chat-run .out .tool-out.failed { color: var(--muted); }
+.chat-run .out .tr-diff { color: inherit; }
+.chat-run .out .md-code { margin: 0; }
+.chat-run .out .turn-json { max-height: none; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; }
+.chat-run .out .quiet { color: var(--muted); }
+/* A web search's sources (ChatToolCard's `Sources`). Closed, one line of numbered chips: the
+   number is the marker the answer's prose cites, in the same order, so a `[2]` in a sentence
+   lands on the second chip. Open, each chip says what the search said of it. A chip whose
+   address cannot be linked is dashed — same shape, and it says it is not a door. */
+.chat-sources { display: flex; flex-wrap: wrap; gap: 3px 7px; margin: 0; padding: 0; list-style: none; }
+.chat-run .out.open .chat-sources { flex-direction: column; gap: 5px; }
+.chat-sources li { min-width: 0; }
+.chat-sources .src {
+  display: inline-flex; align-items: baseline; gap: 5px; max-width: 100%; padding: 0 6px;
+  border: 1px solid var(--boxline); border-radius: 5px; background: var(--chip); color: var(--ink-muted);
+  font-size: 11px; line-height: 1.4; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chat-sources .src:hover { border-color: var(--boxline-h); color: var(--text); }
+.chat-sources .src.plain { border-style: dashed; }
+.chat-sources .n { flex: none; color: var(--boxline-h); font-variant-numeric: tabular-nums; }
+.chat-sources .src-what { margin: 2px 0 0; color: var(--text); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.chat-sources .src-said { color: var(--muted); }
+.chat-line-author { display: block; margin-bottom: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.chat-notice { margin: 0; padding: 6px 18px 0; color: var(--muted); font-size: 11px; }
+.chat-read-only { margin: 0; padding: 8px 18px 12px; }
+.chat-line-body { margin: 0; }
+/* The answer is the log's own register, not the shared markdown one: 13/450 white, since the
+   log's rows are 12 and 13 and an answer at 14.5 in a tinted grey towers over its own argv. */
+.chat-panel .md { font-size: 13px; line-height: 1.5; letter-spacing: 0; color: var(--text); }
+/* One weight and one colour, and the chip is the only thing in an answer allowed to be
+   smaller and boxier than the prose: a <b> mid-sentence reads as random, and a chip at the
+   prose's own size turns an answer into a row of buttons. */
+.chat-panel .md strong { font-weight: inherit; }
+.chat-panel .md code { font: 500 11.5px var(--mono); padding: 1px 3px; border-radius: 3px; background: var(--chip); }
+/* A recap's "keep going": shown at once, not on hover, since it is the message's call to action. */
+.chat-line-followup { display: inline-flex; margin-top: 8px; padding: 3px 10px; border: 1px solid var(--boxline); border-radius: 7px; color: var(--text); background: transparent; font-size: 12px; }
+.chat-line-followup:hover { background: var(--box); }
+/* Seen on hover or focus, and always where there is no hover to find it by. */
+.chat-line-fork { display: block; margin-top: 4px; padding: 0; font-size: 11px; opacity: 0; }
+.chat-line:hover .chat-line-fork, .chat-line:focus-within .chat-line-fork { opacity: 1; }
+@media (hover: none) { .chat-line-fork { opacity: 1; } }
+.chat-fork-banner { margin: 0; padding: 6px 18px 0; color: var(--muted); font-size: 12px; }
+/* Stop sits over the box while a run is on a turn, wherever the log is scrolled to. */
+.chat-stop { display: flex; justify-content: flex-end; padding: 6px 18px 0; }
+.chat-stop .btn { padding: 2px 10px; font-size: 12px; }
+.chat-line p.chat-line-body { white-space: pre-wrap; }
+.chat-status { align-self: flex-start; color: var(--muted); font-size: 12px; font-style: italic; }
+/* The reply the assistant is writing ends in a caret after its last word. It needs no rule
+   of its own for prefers-reduced-motion: styles.css stops every animation there, so it stands still. */
+.chat-line-partial .chat-line-body > :last-child::after { content: ""; display: inline-block; width: 2px; height: 1.1em; margin-left: 2px; vertical-align: text-bottom; background: currentColor; animation: chat-caret 1s steps(2) infinite; }
+@keyframes chat-caret { 50% { opacity: 0; } }
+/* Three movements, each under 200 ms and each in the log's own ramp: the line you sent settles up
+   into its band, the answer settles in behind it, and the waiting row breathes while the run is on
+   a turn. No bounce, no hue. The answer's ramp is on the stored row, not only the streamed one:
+   a run that posts its reply whole still arrives rather than pops. */
+@keyframes chat-sent { from { opacity: 0; transform: translateY(3px); } }
+@keyframes chat-arrived { from { opacity: 0; transform: translateY(2px); } }
+@keyframes chat-breath { 50% { opacity: .58; } }
+.chat-line-pending { animation: chat-sent 200ms ease-out both; }
+.chat-line-assistant { animation: chat-arrived 180ms ease-out both; }
+.chat-status { animation: chat-breath 1.6s ease-in-out infinite; }
+/* The band the column ends with: the box, then the line that names who it talks to and what its
+   keys do. It owns the rule the log ends at, so the notes above it stay on the log's ground. */
+.chat-foot { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 12px 16px 10px; border-top: 1px solid var(--hair); }
+.chat-panel .composer { gap: 6px; }
+/* What you type sits in a raised box, in the machine's face, with the CLI's own `>` before it.
+   Monochromatic bright white styling. */
+.chat-panel .composer > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.chat-panel .completion-field { display: flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid var(--line-strong, #343538);
+  border-radius: 6px; background: var(--surface-raised, #191a1b); transition: border-color .15s ease, box-shadow .15s ease; }
+.chat-panel .completion-field::before { content: ">"; flex: none; color: #ffffff; font: 500 12.5px/1.45 var(--mono); }
+.chat-panel .completion-field:focus-within { border-color: rgba(255, 255, 255, 0.7); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3); }
+.chat-panel .composer textarea { flex: 1 1 auto; min-width: 0; padding: 0; border: 0; border-radius: 0; background: none;
+  color: #ffffff; font: 400 12.5px/1.45 var(--mono); caret-color: #ffffff; }
+.chat-panel .composer textarea::placeholder { color: var(--muted); opacity: 1; }
+/* The field already says it is focused — its hairline lifts to --boxline-h above — and the app's
+   ring is the link's blue, which drew a second box inside the design's own. Buttons keep theirs. */
+.chat-panel .composer textarea:focus-visible { outline: none; }
+/* The hints row is the design's own footer register: the mono line under the box, at 10px. */
+.chat-hints { display: flex; align-items: baseline; gap: 10px; padding: 0 2px; color: var(--muted); font: 400 10px/1.4 var(--mono); letter-spacing: .02em; white-space: nowrap; }
+/* The page and the other main visuals share a strip: each has 240 px at least, and a strip with more than fit scrolls inside itself. Visuals docked at a side stand in one column there, left or right of it, up to 360 px or 30% wide. */
+.visual-main-strip { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; overflow-x: auto; }
+.visual-main-strip > .visual-tile { flex: var(--tile-share, 1) 0 var(--tile-basis, 240px); min-width: 240px; }
+/* The page's lists need 300 px for their own toolbar. */
+.visual-main-strip > .visual-browse-slot { flex-basis: var(--tile-basis, 300px); min-width: 300px; }
+.visual-main-strip > .visual-tile + .visual-tile, .visual-main-strip > .visual-divider + .visual-tile { border-left: 1px solid var(--line); }
+.visual-side-column { display: flex; flex: 0 1 var(--column-width, min(360px, 30%)); flex-direction: column; min-width: 260px; max-width: 70%; min-height: 0; border-left: 1px solid var(--line); overflow-y: auto; }
+.visual-side-column > .visual-tile { flex: var(--tile-share, 1) 1 0; min-height: 280px; }
+.visual-side-column > .visual-tile + .visual-tile, .visual-side-column > .visual-divider + .visual-tile { border-top: 1px solid var(--line); }
+.visual-side-column-left { border-left: 0; border-right: 1px solid var(--line); }
+@media (max-width: 900px) {
+  .visual-stage { flex-direction: column; }
+  /* A phone has no left: both columns come under the page. */
+  .visual-side-column-left { order: 1; border-right: 0; }
+  .visual-main-strip { flex: 0 0 auto; flex-direction: column; overflow-x: visible; }
+  .visual-main-strip > .visual-tile { flex: 0 0 min(400px, 48vh); min-width: 0; width: 100%; }
+  .visual-side-column { flex: 0 0 auto; min-width: 0; width: 100%; border-left: 0; border-top: 1px solid var(--line); overflow-y: visible; }
+  .visual-side-column > .visual-tile { flex: 0 0 min(400px, 48vh); min-height: 0; }
+  .visual-main-strip > .visual-tile + .visual-tile, .visual-main-strip > .visual-divider + .visual-tile { border-left: 0; border-top: 1px solid var(--line); }
+}
+@media (max-width: 900px) { .visual-tile-floating { position: relative; top: auto !important; right: auto; left: auto !important; width: 100% !important; min-width: 0; max-width: 100%; height: 34px !important; min-height: 0; border-radius: 0; box-shadow: none; flex: 0 0 auto; } .visual-tile-floating.visual-tile-mobile-expanded { height: min(400px, 48vh) !important; } .visual-mobile-tab-toggle { display: inline-block; } }
+/* A tile's whole top bar drags it (a press without movement focuses it); the controls on the bar keep their own cursors. */
+.visual-tile-toolbar-draggable { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.visual-tile-toolbar-draggable:active { cursor: grabbing; }
+.visual-tile-toolbar-draggable button, .visual-tile-toolbar-draggable select { cursor: pointer; }
+.visual-tile-toolbar .visual-tile-fold { min-width: 22px; line-height: 1; }
+/* A folded tile is its top bar alone; its contents stay mounted, so a visual keeps its state. */
+@media (min-width: 901px) {
+  .visual-tile-floating.visual-tile-collapsed { height: auto !important; min-height: 0; }
+  .visual-tile-collapsed > :not(.visual-tile-toolbar) { display: none; }
+  .visual-tile-collapsed > .visual-tile-toolbar { border-bottom: 0; }
+}
+@media (max-width: 900px) {
+  .visual-tile-toolbar .visual-tile-fold { display: none; }
+  .visual-tile-toolbar-draggable { cursor: auto; touch-action: auto; user-select: auto; -webkit-user-select: auto; }
+  .visual-column-edge, .visual-divider, .visual-window-edge { display: none; }
+  /* A floating tile is a header in its strip's flow. */
+  .visual-main-strip > .visual-tile-floating, .visual-side-column > .visual-tile-floating { flex: 0 0 auto; }
+}
+/* A phone shows every tile, as the page's own are: a floating one is no header to unfold. */
+@media (max-width: 760px) {
+  .visual-tile-floating { height: min(400px, 48vh) !important; }
+  .visual-mobile-tab-toggle { display: none !important; }
+}
+/* A column that holds nothing in the flow takes no room. */
+@media (min-width: 901px) {
+  .visual-side-column-vacant { flex: 0 0 0; min-width: 0; border: 0; overflow: visible; }
+}
+/* What a drag draws over the stage. The snap preview marks where the tile would dock: the column at a side, or the whole stage at the top edge, where it joins the page's strip. A docked tile stays in its strip while it is dragged, which would clip it, so it dims and a card follows the pointer in its place. */
+.visual-snap { position: absolute; z-index: 40; display: none; border: 2px solid var(--accent); border-radius: var(--panel-radius); background: var(--accent-soft); pointer-events: none; }
+.visual-snap[data-zone="left"] { display: block; top: 6px; bottom: 6px; left: 6px; width: min(360px, 30%); }
+.visual-snap[data-zone="side"] { display: block; top: 6px; bottom: 6px; right: 6px; width: min(360px, 30%); }
+.visual-snap[data-zone="main"] { display: block; inset: 6px; }
+.visual-drag-ghost { position: absolute; z-index: 45; top: 0; left: 0; display: none; width: 220px; padding: 7px 12px; overflow: hidden; border: 1px solid var(--accent); border-radius: var(--panel-radius); background: var(--surface-overlay); box-shadow: 0 16px 48px #0008; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.visual-tile-lifted { opacity: .45; }
+/* The edge between a column and the page: 6 px to grab, 3 px over each of them, so it takes no room of its own. */
+.visual-column-edge { position: relative; z-index: 5; flex: 0 0 6px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
+.visual-column-edge:hover, .visual-column-edge:focus-visible, .visual-column-edge:active, .visual-divider:hover, .visual-divider:active { background: var(--accent); outline: 0; }
+/* The divider between two docked tiles, across the main strip or down a column: 6 px to grab, 3 px over each neighbour. The two trade room; a tile's share of its strip is its flex weight, an even share being 1. */
+.visual-divider { position: relative; z-index: 5; flex: 0 0 6px; touch-action: none; }
+.visual-divider-x { margin: 0 -3px; cursor: col-resize; }
+.visual-divider-y { margin: -3px 0; cursor: row-resize; }
+/* A floating window resizes by any edge or corner, as a desktop's does: strips 6 px thick along its sides and 12 px squares at its corners, over its content. */
+.visual-window-edge { position: absolute; z-index: 3; touch-action: none; }
+.visual-window-edge-n, .visual-window-edge-s { right: 12px; left: 12px; height: 6px; cursor: ns-resize; }
+.visual-window-edge-e, .visual-window-edge-w { top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.visual-window-edge-ne, .visual-window-edge-se, .visual-window-edge-sw, .visual-window-edge-nw { width: 12px; height: 12px; }
+.visual-window-edge-n, .visual-window-edge-ne, .visual-window-edge-nw { top: 0; }
+.visual-window-edge-s, .visual-window-edge-se, .visual-window-edge-sw { bottom: 0; }
+.visual-window-edge-e, .visual-window-edge-ne, .visual-window-edge-se { right: 0; }
+.visual-window-edge-w, .visual-window-edge-nw, .visual-window-edge-sw { left: 0; }
+.visual-window-edge-ne, .visual-window-edge-sw { cursor: nesw-resize; }
+.visual-window-edge-nw, .visual-window-edge-se { cursor: nwse-resize; }
+/* The canvas's top, a browser's two rows: the tabs, then the row that navigates the open one. Both
+   heights are whole pixels: a fractional one leaves the stage off the pixel grid, and docked Browse,
+   sized by its slot's whole-pixel clientWidth and clientHeight, would miss its slot by half a pixel
+   (src/visuals/Canvas.tsx, projectBrowse). */
+.canvas-bar { display: flex; flex: 0 0 auto; flex-direction: column; min-width: 0; font-size: 13px; }
+.canvas-tabs-row { display: flex; align-items: stretch; height: 43px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.canvas-tabs { display: flex; align-items: stretch; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.canvas-tabs::-webkit-scrollbar { display: none; }
+/* A tab is a name in the chrome's grey, parted from its neighbour by a hairline. The open one takes the
+   page's ground, breaks the rule under it so it reads as cut into the page, and carries the bar's only
+   mark: 2px of ink along its top. No hue is in this row. */
+.canvas-tab { position: relative; display: flex; flex: none; align-items: center; min-width: 109px; max-width: min(240px, 28vw);
+  padding-left: 12px; border-right: 1px solid var(--line); color: var(--ink-machine); font-size: 12px; }
+.canvas-tab-ic { margin-right: 6px; flex: none; color: var(--ink-machine); opacity: 0.7; }
+.canvas-tab[aria-current="true"] { margin-bottom: -1px; background: var(--bg); border-bottom: 1px solid var(--bg); color: var(--text); font-weight: 500; }
+.canvas-tab[aria-current="true"] .canvas-tab-ic { opacity: 1; color: var(--text); }
+.canvas-tab[aria-current="true"]::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: var(--text); }
+.canvas-tools-hidden { display: none !important; }
+.canvas-tab-open { flex: 1; min-width: 0; overflow: hidden; padding: 0; border: 0; background: none; color: inherit; font: inherit;
+  line-height: 43px; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.canvas-tab-open:hover { color: var(--text); }
+.canvas-tab-open:disabled { opacity: .5; cursor: default; }
+.canvas-tab-close { display: grid; place-items: center; flex: none; width: 22px; height: 22px; margin-right: 6px; border: 0; border-radius: 4px; color: var(--muted); opacity: 0; }
+.canvas-tab:hover .canvas-tab-close, .canvas-tab[aria-current="true"] .canvas-tab-close, .canvas-tab-close:focus-visible { opacity: 1; }
+.canvas-tab-close:hover { background: var(--surface-overlay); color: var(--text); }
+.canvas-tab-name { width: min(240px, 28vw); min-width: 109px; height: 29px; margin-bottom: -1px; padding: 0 8px; border: 1px solid var(--boxline);
+  border-radius: 0; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+/* The row under the tabs is on the page's own ground: it belongs to the canvas, not to the chrome. */
+.canvas-toolbar { display: flex; align-items: center; gap: 3px; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--bg); color: var(--muted); }
+.canvas-toolbar-tail { display: flex; align-items: center; gap: 3px; margin-left: auto; }
+.canvas-bar-button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.canvas-bar-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.canvas-bar-button:disabled { opacity: .4; cursor: default; }
+.canvas-bar-button[aria-pressed="true"] { background: var(--surface-hover); color: var(--text); }
+.canvas-tab-new { align-self: center; margin: 0 6px; }
+.canvas-clear, .canvas-clear:hover:not(:disabled) { color: var(--error-text); }
+.canvas-tab-new, .canvas-clear { opacity: 0; transition: opacity .12s; }
+.canvas-bar:hover .canvas-tab-new, .canvas-bar:focus-within .canvas-tab-new, .canvas-bar:hover .canvas-clear, .canvas-bar:focus-within .canvas-clear { opacity: 1; }
+@media (hover: none) { .canvas-tab-close, .canvas-tab-new, .canvas-clear { opacity: 1; } }
+.chat-panel[hidden] { display: none; }
+/* The tile below its bar: the area red boxes pinned to the tile are positioned in. */
+.visual-tile-body { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+/* An agent waits on the person: a blue dot by the provider, as an editor marks a tab that needs you. */
+.chat-waiting { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text); }
+/* A run taken over in a terminal: the note, and the button that takes it back. */
+.chat-taken-over { align-items: flex-start; }

@@ -1160,15 +1160,30 @@ test("Esc clears the selection first, then the focus; the focus chip's close cle
   await waitFor(() => expect(currentRoute()).toBe("#/graph"));
 });
 
-test("a focus on an inquiry the graph has not loaded says so and lights nothing", async () => {
+test("a focus on an inquiry no size of the graph holds says so and lights nothing", async () => {
+  // The view reaches for the next size up before giving this answer, so the larger
+  // graph has to be answered too; without the row there either, it settles on saying so.
+  answers.set(5000, GRAPH);
   history.replaceState(null, "", "#/graph?focus=Issue/99&hops=2");
   await shown();
-  expect(
-    within(screen.getByRole("group", { name: "Focus" })).getByText(
-      "Issue#99 is not among the nodes loaded",
-    ),
-  ).toBeTruthy();
+  expect(within(await screen.findByRole("group", { name: "Focus" })).getByText("Issue#99 is not among the nodes loaded")).toBeTruthy();
   expect(dimmed()).toEqual([]);
+});
+
+test("a focus outside the newest nodes loads the next size up rather than reporting it cannot see it", async () => {
+  // The record someone has just read about is usually not among the newest thousand of a
+  // store that holds thousands — the rail's Graph opens on what the canvas is about
+  // (`graph/topic`), and that landed on "not among the nodes loaded" while the row was
+  // one size setting away. One step up, and the focus lights.
+  answers.set(5000, { nodes: [...GRAPH.nodes, node(99)], edges: [edge(99, 1)] });
+  history.replaceState(null, "", "#/graph?focus=Issue/99&hops=2");
+  await shown();
+  // The larger graph arrives and the focus is in it: the chip names the row it found.
+  await screen.findByText("4 nodes");
+  expect(within(screen.getByRole("group", { name: "Focus" })).getByText(/^Issue#99 · /)).toBeTruthy();
+  // One step, and only one: it reads 1k then 5k, never the whole store.
+  expect(limits()).toEqual(["1000", "5000"]);
+  expect(screen.getByRole("button", { name: "Nodes: 5k" })).toBeTruthy();
 });
 
 // Two trees, 1 <- 2 and 3 <- 4, 3 <- 5, and 6 under no root; the newer tree, 3's, lists first.

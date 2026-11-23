@@ -1003,6 +1003,42 @@
     "title": "Change",
     "type": "object"
    },
+   "ChatForkAt": {
+    "additionalProperties": false,
+    "description": "A line of a science chat's session, which a fork starts from.",
+    "properties": {
+     "idx": {
+      "minimum": 0.0,
+      "title": "Idx",
+      "type": "integer"
+     },
+     "part": {
+      "minimum": 0.0,
+      "title": "Part",
+      "type": "integer"
+     },
+     "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "part",
+     "idx"
+    ],
+    "title": "ChatForkAt",
+    "type": "object"
+   },
+   "ChatProvider": {
+    "enum": [
+     "assistant",
+     "claude",
+     "codex"
+    ],
+    "type": "string"
+   },
    "ChatView": {
     "additionalProperties": false,
     "description": "How Chat draws a chat: which view, and what each view shows of it.\n\nA write replaces the whole object, as it does any top-level key.",
@@ -1563,6 +1599,58 @@
     "title": "ConsoleLive",
     "type": "object"
    },
+   "ConsoleRelay": {
+    "description": "What a person sent agents directly from the Console, told to their station's chat.\n\nPosted by the browser after the per-agent sends, and carried in the context of\nthe message the chat's partner then receives. The partner records it in the\nchat as :meth:`line` and answers nothing, but reads it in its next prompt, so it\nnever contradicts what the person told the agents.",
+    "properties": {
+     "targets": {
+      "items": {
+       "$ref": "#/components/schemas/ConsoleTarget"
+      },
+      "maxItems": 200,
+      "minItems": 1,
+      "title": "Targets",
+      "type": "array"
+     },
+     "text": {
+      "maxLength": 16384,
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+     }
+    },
+    "required": [
+     "targets",
+     "text"
+    ],
+    "title": "ConsoleRelay",
+    "type": "object"
+   },
+   "ConsoleTarget": {
+    "description": "An agent a Console line was sent to, as ``@actor`` or ``@actor:room``.",
+    "properties": {
+     "actor": {
+      "minLength": 1,
+      "title": "Actor",
+      "type": "string"
+     },
+     "room": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Room"
+     }
+    },
+    "required": [
+     "actor"
+    ],
+    "title": "ConsoleTarget",
+    "type": "object"
+   },
    "ConsoleView": {
     "additionalProperties": false,
     "description": "A Console view: what it picks, its level and its place in time, under a name.",
@@ -2057,6 +2145,23 @@
      "target"
     ],
     "title": "DraftRelation",
+    "type": "object"
+   },
+   "DrainInboundResponse": {
+    "description": "The inbound messages drained for one session (oldest first).",
+    "properties": {
+     "messages": {
+      "items": {
+       "$ref": "#/components/schemas/InboundDrainItem"
+      },
+      "title": "Messages",
+      "type": "array"
+     }
+    },
+    "required": [
+     "messages"
+    ],
+    "title": "DrainInboundResponse",
     "type": "object"
    },
    "EnrollRequest": {
@@ -4173,6 +4278,150 @@
     "maxItems": 4,
     "type": "array"
    },
+   "InboundDrainItem": {
+    "description": "One message drained for a session, with its attested sender.\n\nThe drain **response** item: unlike the enqueue request, it carries\n``source`` -- the producer's attested ``--as`` / principal -- so the\npoller can render the ``[room] sender:`` injection context. Inbound-only\nand transient: it is **not** an ``agent_session_events`` row; when the\nagent consumes it, the capture path logs it as a normal turn.",
+    "properties": {
+     "context": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/WorkspaceMessageContext"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "kind": {
+      "$ref": "#/components/schemas/InboundKind",
+      "default": "line"
+     },
+     "payload": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Payload"
+     },
+     "room": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Room"
+     },
+     "source": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Source"
+     },
+     "source_role": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Source Role"
+     },
+     "text": {
+      "maxLength": 16384,
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "title": "InboundDrainItem",
+    "type": "object"
+   },
+   "InboundEnqueueRequest": {
+    "additionalProperties": false,
+    "description": "A message a client asks trackinizer to inject into a live session.\n\nThe enqueue **request** carries ``text`` -- the one field the route delivers --\nand, from the configured assistant alone, the ``asker`` it sends for. ``source``\nis attested by the route from the authenticated principal (a client cannot forge\nanother sender), and ``room`` has no enqueue semantics (the direct-session\nenqueue route discards it; routed delivery is the separate ``@actor:room``\nsend-message path). ``extra=\"forbid\"`` makes a client-sent ``source`` or ``room``\na 422 rather than a silently-ignored field -- the request and response shapes are\ndeliberately distinct (the response :class:`InboundDrainItem` carries both\n``source`` and ``room``), so neither can be confused for the other.",
+    "properties": {
+     "asker": {
+      "anyOf": [
+       {
+        "maxLength": 254,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Asker"
+     },
+     "kind": {
+      "$ref": "#/components/schemas/InboundKind",
+      "default": "line"
+     },
+     "payload": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Payload"
+     },
+     "text": {
+      "maxLength": 16384,
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "title": "InboundEnqueueRequest",
+    "type": "object"
+   },
+   "InboundEnqueueResponse": {
+    "description": "Receipt for an enqueued inbound message.\n\n``queued`` is the current count pending for the session after this enqueue,\nincluding on an idempotent retry. It is\nan honest receipt -- the message is queued for the session's poller, not\nproven delivered; a session whose ``trax run`` is gone never drains it.",
+    "properties": {
+     "queued": {
+      "title": "Queued",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "queued"
+    ],
+    "title": "InboundEnqueueResponse",
+    "type": "object"
+   },
+   "InboundKind": {
+    "enum": [
+     "line",
+     "command",
+     "answer",
+     "settings",
+     "interrupt"
+    ],
+    "type": "string"
+   },
    "InputKind": {
     "enum": [
      "UserMessage",
@@ -5208,6 +5457,76 @@
     "title": "Opened",
     "type": "object"
    },
+   "ParameterDescription": {
+    "additionalProperties": false,
+    "description": "One bounded parameter accepted by a visual provider.",
+    "properties": {
+     "default": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "integer"
+       },
+       {
+        "type": "boolean"
+       }
+      ],
+      "title": "Default"
+     },
+     "max_length": {
+      "anyOf": [
+       {
+        "maximum": 512.0,
+        "minimum": 0.0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Max Length"
+     },
+     "maximum": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Maximum"
+     },
+     "minimum": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Minimum"
+     },
+     "type": {
+      "enum": [
+       "string",
+       "integer",
+       "boolean"
+      ],
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "type",
+     "default"
+    ],
+    "title": "ParameterDescription",
+    "type": "object"
+   },
    "PartBody": {
     "description": "One part of a session, as ``GET .../parts`` lists it.",
     "properties": {
@@ -5354,6 +5673,12 @@
       "type": "integer",
       "x-setting": true
      },
+     "chat_provider": {
+      "$ref": "#/components/schemas/ChatProvider",
+      "default": "assistant",
+      "description": "The provider a new chat starts on: the assistant, or claude or codex run on a machine of yours.",
+      "x-setting": true
+     },
      "chat_side": {
       "default": "left",
       "description": "The side of the workbench Chat stands on; the sidebar takes the other.",
@@ -5372,6 +5697,13 @@
       "minimum": 10.0,
       "title": "Chat Text Size",
       "type": "integer",
+      "x-setting": true
+     },
+     "chat_tool_calls": {
+      "default": false,
+      "description": "Show each tool call an agent makes in Chat as a card between the lines: what it ran, and what came back.",
+      "title": "Chat Tool Calls",
+      "type": "boolean",
       "x-setting": true
      },
      "chat_view": {
@@ -5677,6 +6009,10 @@
      "workspaces": {
       "$ref": "#/components/schemas/WorkspacesPreference",
       "description": "Your tab bar: its groups, their tabs' order, and the last opened."
+     },
+     "workstreams": {
+      "$ref": "#/components/schemas/WorkstreamsPreference",
+      "description": "Your workstream bar order, pins, and hidden items."
      }
     },
     "title": "Preferences",
@@ -6235,6 +6571,15 @@
     "pattern": "^[/~][^\\x00-\\x1f\\x7f]*$",
     "type": "string"
    },
+   "RunState": {
+    "enum": [
+     "idle",
+     "running",
+     "requires_action",
+     "taken_over"
+    ],
+    "type": "string"
+   },
    "SavedView": {
     "additionalProperties": false,
     "description": "A named list query.",
@@ -6758,6 +7103,18 @@
       ],
       "title": "Actor"
      },
+     "cli": {
+      "anyOf": [
+       {
+        "minLength": 1,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cli"
+     },
      "cli_session_id": {
       "anyOf": [
        {
@@ -6841,6 +7198,26 @@
      "more"
     ],
     "title": "SessionList",
+    "type": "object"
+   },
+   "SessionRunState": {
+    "additionalProperties": false,
+    "description": "What a run reports of itself, between its drains of the session's queue.",
+    "properties": {
+     "instance": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Instance",
+      "type": "string"
+     },
+     "state": {
+      "$ref": "#/components/schemas/RunState"
+     }
+    },
+    "required": [
+     "state",
+     "instance"
+    ],
+    "title": "SessionRunState",
     "type": "object"
    },
    "SessionStart": {
@@ -10307,6 +10684,116 @@
      }
     ]
    },
+   "VisualCatalogBody": {
+    "description": "Available visual types and the initial visual for a new canvas.",
+    "properties": {
+     "default_visual": {
+      "title": "Default Visual",
+      "type": "string"
+     },
+     "visuals": {
+      "items": {
+       "$ref": "#/components/schemas/VisualDescription"
+      },
+      "title": "Visuals",
+      "type": "array"
+     }
+    },
+    "required": [
+     "default_visual",
+     "visuals"
+    ],
+    "title": "VisualCatalogBody",
+    "type": "object"
+   },
+   "VisualDescription": {
+    "description": "The inert catalog entry a browser can safely render.",
+    "properties": {
+     "default_placement": {
+      "anyOf": [
+       {
+        "enum": [
+         "main",
+         "side",
+         "floating"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Default Placement"
+     },
+     "default_size": {
+      "enum": [
+       "compact",
+       "wide"
+      ],
+      "title": "Default Size",
+      "type": "string"
+     },
+     "description": {
+      "title": "Description",
+      "type": "string"
+     },
+     "parameter_schema": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/ParameterDescription"
+      },
+      "title": "Parameter Schema",
+      "type": "object"
+     },
+     "record_kinds": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Record Kinds"
+     },
+     "requires": {
+      "items": {
+       "const": "record",
+       "type": "string"
+      },
+      "title": "Requires",
+      "type": "array"
+     },
+     "title": {
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+     },
+     "type": {
+      "minLength": 1,
+      "title": "Type",
+      "type": "string"
+     },
+     "version": {
+      "minimum": 1.0,
+      "title": "Version",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "type",
+     "version",
+     "title",
+     "description",
+     "requires",
+     "default_size",
+     "parameter_schema"
+    ],
+    "title": "VisualDescription",
+    "type": "object"
+   },
    "WebView": {
     "additionalProperties": true,
     "type": "object"
@@ -10334,6 +10821,294 @@
      "seq"
     ],
     "title": "WorkedOn",
+    "type": "object"
+   },
+   "WorkspaceMark": {
+    "description": "A red box drawn on the canvas since the sender's last line, with what it covers.",
+    "properties": {
+     "author": {
+      "title": "Author",
+      "type": "string"
+     },
+     "bottom": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Bottom",
+      "type": "number"
+     },
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "instances": {
+      "items": {
+       "$ref": "#/components/schemas/WorkspaceVisibleVisual"
+      },
+      "title": "Instances",
+      "type": "array"
+     },
+     "left": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Left",
+      "type": "number"
+     },
+     "page": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Page"
+     },
+     "records": {
+      "items": {
+       "$ref": "#/components/schemas/WorkspaceRecordContext"
+      },
+      "title": "Records",
+      "type": "array"
+     },
+     "right": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Right",
+      "type": "number"
+     },
+     "tile": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/WorkspaceVisibleVisual"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "top": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Top",
+      "type": "number"
+     }
+    },
+    "required": [
+     "id",
+     "author"
+    ],
+    "title": "WorkspaceMark",
+    "type": "object"
+   },
+   "WorkspaceMessageContext": {
+    "description": "Server-derived canvas context attached to an inbound message.",
+    "properties": {
+     "agent_instructions": {
+      "anyOf": [
+       {
+        "maxLength": 8192,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Agent Instructions"
+     },
+     "continuation_record_id": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Continuation Record Id"
+     },
+     "conversation_id": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Conversation Id"
+     },
+     "fork": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ChatForkAt"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "marks": {
+      "items": {
+       "$ref": "#/components/schemas/WorkspaceMark"
+      },
+      "title": "Marks",
+      "type": "array"
+     },
+     "page": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/WorkspacePage"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "relay": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ConsoleRelay"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "trail": {
+      "items": {
+       "$ref": "#/components/schemas/WorkspacePage"
+      },
+      "title": "Trail",
+      "type": "array"
+     },
+     "visible_visuals": {
+      "items": {
+       "$ref": "#/components/schemas/WorkspaceVisibleVisual"
+      },
+      "title": "Visible Visuals",
+      "type": "array"
+     },
+     "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "workspace_id",
+     "visible_visuals"
+    ],
+    "title": "WorkspaceMessageContext",
+    "type": "object"
+   },
+   "WorkspacePage": {
+    "description": "A page the sender was on, with the record it shows when it names one.",
+    "properties": {
+     "record": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/WorkspaceRecordContext"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "route": {
+      "title": "Route",
+      "type": "string"
+     }
+    },
+    "required": [
+     "route"
+    ],
+    "title": "WorkspacePage",
+    "type": "object"
+   },
+   "WorkspaceRecordContext": {
+    "description": "A graph record the sender sees on screen, with a bounded title preview.",
+    "properties": {
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "seq": {
+      "title": "Seq",
+      "type": "integer"
+     },
+     "title": {
+      "maxLength": 512,
+      "title": "Title",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "kind",
+     "seq",
+     "title"
+    ],
+    "title": "WorkspaceRecordContext",
+    "type": "object"
+   },
+   "WorkspaceVisibleVisual": {
+    "description": "A visual present on the canvas when a message was sent.",
+    "properties": {
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "params": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        },
+        {
+         "type": "boolean"
+        }
+       ]
+      },
+      "title": "Params",
+      "type": "object"
+     },
+     "record": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/WorkspaceRecordContext"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "type": {
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "type"
+    ],
+    "title": "WorkspaceVisibleVisual",
     "type": "object"
    },
    "WorkspacesPreference": {
@@ -10411,6 +11186,44 @@
      }
     },
     "title": "WorkspacesPreference",
+    "type": "object"
+   },
+   "WorkstreamsPreference": {
+    "additionalProperties": false,
+    "description": "The user's workstream bar state.",
+    "properties": {
+     "hidden": {
+      "default": [],
+      "items": {
+       "maxLength": 100,
+       "type": "string"
+      },
+      "maxItems": 500,
+      "title": "Hidden",
+      "type": "array"
+     },
+     "order": {
+      "default": [],
+      "items": {
+       "maxLength": 100,
+       "type": "string"
+      },
+      "maxItems": 500,
+      "title": "Order",
+      "type": "array"
+     },
+     "pinned": {
+      "default": [],
+      "items": {
+       "maxLength": 100,
+       "type": "string"
+      },
+      "maxItems": 500,
+      "title": "Pinned",
+      "type": "array"
+     }
+    },
+    "title": "WorkstreamsPreference",
     "type": "object"
    },
    "trackinizer__types__change_log__Kind": {
@@ -16970,7 +17783,7 @@
   },
   "/api/messages": {
    "post": {
-    "description": "Send a message to one agent of a session, or to the live sessions of a name.\n\nThe front door of ``trax send`` and of AgentSend across sessions. The target is\n``to``, one agent of one session by the session's number or UUID, or ``actor``\n(optionally scoped to ``room``), a routing name the server resolves to the live\nsessions that match. Each live session is sent the text through the agent process\nserving it, which holds it while it starts. Delivery is drop-if-absent -- the\nresponse lists the sessions sent to; an empty list means no agent process serves\na live session the target names now. A send none took and a process refused, as\nlarger than a frame or past what it holds unread, is 409 ``input_refused``.\n\nThe sender is written by the route, never read from the body: the caller's email,\nor ``label#number`` for an agent of another session. A body that names\n``from_session`` must come with a key that session's attached agent process holds\nits socket with, else 403 ``not_its_process``; the session's number then follows\n``from_label``. A key minted for an agent process must name it, and is 403\n``not_its_process`` without. An unknown number or UUID in ``to`` is 404\n``no_session``.\n\nPolicy: only the session's account or opening key may send input; a science\nchat takes a message from whoever may post a line into it, as\n``POST .../inputs`` does. The configured\nassistant may relay for a writer ``asker`` whose account holds the session, on\nthat user's rights alone. Reading a session, sharing an organisation or being\nan admin grants no input rights. Same-account cross-agent messaging remains.\nWhen any live session the target resolves to is one the sender may not message,\nthe whole send is 403 ``session_audience`` and nothing is sent, so a send never\nreports a delivery that did not happen; one to a remote agent the agent policy\nrefuses is answered as it says, the same way.\n\nA browser reaches a science chat through its canvas, so its send to one is refused\nwith 409 (\"Open its canvas to talk to this chat\"); a key's send reaches the chat's\nagent process as it reaches any session's.\n\nA bare ``actor`` (no ``room``) is rejected when the matched session belongs\nto more than one room: a single PTY interleaves every room's messages, so\nthe caller must name the room (``@actor:room``) to give the agent context.\nRetries that reuse the request's ``Idempotency-Key`` return the original\nreceipt without sending again (the send path writes no ``change_log`` row to\ndedup against), but only a delivery that reached at least one live session\nis recorded: an empty send leaves the key unrecorded so a later retry --\nonce the session is live -- still delivers instead of replaying nothing.\n\nArgs:\n  body: The target, the text, the user the assistant sends it for, and an\n    agent's own session, label and booking.\n  request: Starlette request object.\n  identity: Authenticated user (sender is attested, not from body).\n\nReturns:\n  response: The ids of the sessions sent to (empty if none takes messages).",
+    "description": "Resolve a routing name to live sessions and enqueue the message.\n\nThe ergonomic front door for ``trax send``: the server resolves ``actor``\n(optionally scoped to ``room``) to the live sessions that match and\nenqueues the text to each, so the caller never needs a session id. Sender\nis route-attested (the principal), never the body. Delivery is\ndrop-if-absent -- the response lists the sessions enqueued; an empty list\nmeans no live session matched.\n\nPolicy: any ``writer`` may message the agent of any session whose audience it\nreads. The configured assistant may message one it does not read only for an\n``asker`` it names, who is that session's account or a writer who holds its\naudience: it relays a user's line and passes on that user's rights, not its own.\nSessions are a shared workspace and cross-agent messaging is the feature, so there\nis no per-opener ownership gate here (or on the direct ``/inbound`` route). The\nsender is always truthfully attested. When any live session the name resolves to\nis one the sender may not message, the whole send is 403 ``session_audience`` and\nnothing is queued, so a send never reports a delivery that did not happen.\n\nA science chat is reached through its station, so a browser's send to one is\nrefused with 409 (\"Open its station to talk to this chat\"), whether or not the\nchat is being drained; an agent key's send to a chat being drained is refused\nwith 409 too.\n\nA bare ``actor`` (no ``room``) is rejected when the matched session belongs\nto more than one room: a single PTY interleaves every room's messages, so\nthe caller must name the room (``@actor:room``) to give the agent context.\nRetries that reuse the request's ``Idempotency-Key`` return the original\nreceipt without re-enqueuing (the send path writes no ``change_log`` row to\ndedup against), but only a delivery that reached at least one live session\nis recorded: an empty send leaves the key unrecorded so a later retry --\nonce the session is live -- still delivers instead of replaying nothing.\n\nArgs:\n  body: Message text and optional room scope to address by actor name, and the\n    user the assistant sends it for.\n  request: Starlette request object.\n  identity: Authenticated user (sender is attested, not from body).\n\nReturns:\n  response: SendMessageResponse with list of (session_id,\n    message_count) pairs of all sessions enqueued (may be empty if no\n    live session matched).",
     "operationId": "send_message_route_api_messages_post",
     "requestBody": {
      "content": {
@@ -18118,7 +18931,7 @@
   },
   "/api/sessions/start": {
    "post": {
-    "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so the run\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one;\nwith ``keep_audience`` it leaves the session in the audience it has, so ``private``\nhides only a session the start mints. A session under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session; a chat's first session takes ``private`` when the canvas that\nholds the chat chose it (its ``opens_as``). A ``cli_session_id`` of a deleted\nscience chat (``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is\ntitled ``Science chat`` whatever ``title`` says, since every key reads the row and\nonly the chat's members read its lines, and labelled ``science-chat``, so a run that\nstarts under a new ``chat:`` id begins that chat as Chat's own start does.\n\n``attach`` re-opens that session by its id instead: it is live again if it had\nended, its ``cli_session_id`` stays, and the run's file becomes its next part. The\nresponse names it as a fresh start's would. A caller who may not write the\nsession is 403, and so is one a science chat takes no run from: only its opening\nkey, the assistant's or its starter's attach to a chat. An unknown id is 404.\n\n``spawned_by`` names the session whose agent spawned this one, which the caller\nmust write, and, a science chat, may run or serve as its process (403 else; 404\nfor no session). The start re-opens the session already\n``produced_by`` it under ``cli_session_id``, whichever key opened that, else opens\none in its audience; either way it links this one ``produced_by`` it, ``note``\nthe edge's note. A session it mints so takes a tab, opening nothing, in Chat on\neach canvas of the chat it works for, unless it is a chat of its own (a\n``chat:`` id); one it re-opens takes none. An agent process's key starts only\nsuch a session, spawned by a session it acts for (``auth.process_reaches``).\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, attach, started, rooms,\n    account, idempotency_key, private, keep_audience).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
+    "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A\nsession under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session. A ``cli_session_id`` of a deleted science chat\n(``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled\n``Science chat`` whatever ``title`` says, since every key reads the row and only\nthe chat's members read its lines.\n\n``attach`` re-opens that session by its id instead: it is live again if it had\nended, its ``cli_session_id`` stays, and the run's file becomes its next part. The\nresponse names it as a fresh start's would. A caller who may not write the\nsession is 403, and so is one a science chat takes no run from: only its opening\nkey, the assistant's or its starter's attach to a chat. An unknown id is 404.\n\n``spawned_by`` names the session whose agent spawned this one, which the caller\nmust write, and, a science chat, may run or serve as its process (403 else; 404\nfor no session). The start re-opens the session already\n``produced_by`` it under ``cli_session_id``, whichever key opened that, else opens\none in its audience; either way it links this one ``produced_by`` it, ``note``\nthe edge's note. A session it mints so takes a tab, opening nothing, in Chat on\neach canvas of the chat it works for, unless it is a chat of its own (a\n``chat:`` id); one it re-opens takes none. An agent process's key starts only\nsuch a session, spawned by a session it acts for (``auth.process_reaches``).\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, attach, started, rooms,\n    account, idempotency_key, private).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
     "operationId": "session_start_route_api_sessions_start_post",
     "requestBody": {
      "content": {
@@ -18280,7 +19093,7 @@
   },
   "/api/sessions/{session_id}/end": {
    "post": {
-    "description": "Close a session atomically, and stop the agent process serving it.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal. Then its agent process, if one serves it, is stopped as\n``DELETE .../process`` stops one: its socket closes and its key is revoked a\nminute later, so an ended session keeps no agent, tools or key. A process that\nattaches to it again reopens it. A second end on an already-closed session is a 409. A\nsession the caller neither opened nor holds the account of is 403\n``session_audience``. A science chat is closed by a key that may run on it: its\nopening key, the assistant's or its starter's (403 otherwise); its starter may also\nclose it from a browser, which has no key.\n\nArgs:\n  session_id: UUID of the session to close.\n  body: When the session ended, an optional cli_session_id backfill and the\n    audit actor.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",
+    "description": "Close a session atomically and release its inbound queue.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal -- and the inbound queue is drained only after\nthe close commits, so a failed end never silently discards undelivered\nsteering messages. A second end on an already-closed session is a 409. A\nsession whose audience the caller neither reads nor opened is 403\n``session_audience``. A science chat is closed by a key that may run on it: its\nopening key, the assistant's or its starter's (403 otherwise). An end that names\na ``cli`` other than the chat's provider is a 200 that changes nothing: it is the\nexit of a run a switch stopped, and the session is the chat's, now drained by the\nprovider its station chose. An end that names a ``cli`` and an ``instance`` is\nthe same 200 that changes nothing when the run it names was replaced, or another\nrun of that CLI holds the session's lease: it is the exit of a run a reattach\ntook over, and the run holding the chat goes on. Any other end first releases\nthe asks the run left open: an ``$interaction_resolved`` record with\n``by: released`` for each, which the\nclosed session would take no more.\n\nArgs:\n  session_id: UUID of the session to close.\n  body: Session status, optional cli_session_id backfill, and the ending run's\n    CLI and instance.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",
     "operationId": "session_end_route_api_sessions__session_id__end_post",
     "parameters": [
      {
@@ -18327,6 +19140,192 @@
      }
     },
     "summary": "Session End Route"
+   }
+  },
+  "/api/sessions/{session_id}/inbound": {
+   "get": {
+    "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or reads\nits audience.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's service session are drained by their opening key alone\n(403 otherwise). Viewer access is scoped to the opening API key so reading chat\ndoes not grant graph-write permission.\n\nA science chat's queue has one drainer, the provider its starter's station names,\nand one live run. For ``claude`` or ``codex`` a drain by the configured assistant's\nkey is 409 ``provider_is_cli``, and the run that drains it may be under any key a\nchat takes a run from (its opening key or its starter's; 403 otherwise), or under\nno key at all where the server runs ``--no-auth``. For\n``assistant`` a drain by its opening key that is not the assistant's is 409\n``provider_is_assistant``. Either holds from the moment the station switches.\n\nA chat answered by a CLI is drained by a run that names its ``cli``: a drain that\nnames none, as a ``trax`` older than the name sends, is 426 ``cli_required`` and\ntakes no lease, since the server cannot tell which CLI polls. A drain by the other\nCLI than the station's is 409 ``provider_is_other_cli``. The lease records the\nnamed CLI, and the chat is live for a provider only while a poller that named it\nholds the lease. ``instance`` is an id the run minted for itself; a drain whose\n``instance`` differs from that of the unexpired lease of the same CLI is 409\n``chat_run_live``, so one chat never has two runs draining it. So is a drain by\na run the server replaced when it reattached the chat (``POST .../reattach``).\n\nA drain of a CLI chat's session that has ended, as when the person closed the chat,\nis 409 ``session_ended`` and the run stops; a session the reaper closed for silence\nis reopened by the drain instead.\n\n``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the\ndrain takes keeps them for Chat to show (a malformed one is 422). They are the\ncaller's own word about its own run, shown and never trusted; a run that names\nnone is shown as it was before runs named themselves.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n  run: The ``trax run --detach`` host the run is, which ``trax run attach``\n    takes; absent for a run in a terminal of its own.\n  machine: The run's machine, as ``trax machine connect`` names it.\n  cwd: The run's working directory, ``~/...`` under its home: at most 1,024\n    characters, none of them a control character.\n  cli: The CLI the draining run is, as ``trax run`` names it: a lowercase word of\n    at most 32 characters.\n  instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of\n    its drains.\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text, kind,\n    payload, source, room), oldest first, or empty list if none are queued.",
+    "operationId": "session_inbound_drain_route_api_sessions__session_id__inbound_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "wait_sec",
+      "required": false,
+      "schema": {
+       "default": 0.0,
+       "title": "Wait Sec",
+       "type": "number"
+      }
+     },
+     {
+      "in": "query",
+      "name": "run",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "pattern": "^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Run"
+      }
+     },
+     {
+      "in": "query",
+      "name": "machine",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Machine"
+      }
+     },
+     {
+      "in": "query",
+      "name": "cwd",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 1024,
+         "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Cwd"
+      }
+     },
+     {
+      "in": "query",
+      "name": "cli",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Cli"
+      }
+     },
+     {
+      "in": "query",
+      "name": "instance",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "pattern": "^[0-9a-f]{32}$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Instance"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DrainInboundResponse"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Session Inbound Drain Route"
+   },
+   "post": {
+    "description": "Enqueue a message to inject into a live session's input.\n\nThe sender is **attested by the route**, never trusted from the body: the\nstored ``source`` is always the authenticated principal, so an agent\ncannot forge another sender. The request body (:class:`InboundEnqueueRequest`)\ncarries no ``source`` at all -- a client that sends one gets 422, not a\nsilently-ignored field. The session must exist and have a recent inbound\npoll; an ended or stale session is rejected (409) because no poller will\ndrain it. A session whose audience the sender does not read is 403\n``session_audience``, unless the sender is the configured assistant sending for\nan ``asker`` who is that session's account or a writer who holds its audience.\n\nArgs:\n  session_id: UUID of the session to message.\n  body: Message text to inject, and the user the assistant sends it for.\n  request: Starlette request object.\n  identity: Authenticated user (sender is attested, not from body).\n\nReturns:\n  response: InboundEnqueueResponse with list of (session_id,\n    message_count) pairs of sessions enqueued (always the one target).",
+    "operationId": "session_inbound_enqueue_route_api_sessions__session_id__inbound_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/InboundEnqueueRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/InboundEnqueueResponse"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Session Inbound Enqueue Route"
    }
   },
   "/api/sessions/{session_id}/inputs": {
@@ -18801,6 +19800,50 @@
      }
     },
     "summary": "Append Session Records Route"
+   }
+  },
+  "/api/sessions/{session_id}/run-state": {
+   "post": {
+    "description": "Take what a run says it is doing, for Chat to show.\n\nThe run reports between its drains, so a change shows at once, not after the\ndrain it is parked in. The state stays on the session's lease: it lapses with it,\nand a drain of the same run leaves it as it is, so a run says a state other than\nidle again while it holds; only a change rechecks open canvases. It is the run's own\nword about its\nown run, shown and never trusted. A report from a run other than the one holding\nthe lease, or while none does, changes nothing, and is answered the same.\n\n``taken_over`` is the report that matters: Chat then refuses the chat's lines with\n409 ``chat_taken_over``, until a reattach starts a headless run again.\n\nThe caller is held to the rules of the session's drain: its opening key, or for a\nchat answered by a CLI its starter's run (403 otherwise), and never the\nassistant's (409 ``provider_is_cli``).\n\nArgs:\n  session_id: The session the run drains.\n  body: The state, and the run's own id.\n  request: Starlette request object.\n  identity: Authenticated run.",
+    "operationId": "session_run_state_route_api_sessions__session_id__run_state_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SessionRunState"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Session Run State Route"
    }
   },
   "/api/sessions/{session_id}/turns": {
@@ -19289,6 +20332,25 @@
      }
     },
     "summary": "Version Route"
+   }
+  },
+  "/api/visuals": {
+   "get": {
+    "description": "List visual definitions and the default without loading visual data.",
+    "operationId": "visuals_route_api_visuals_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VisualCatalogBody"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Visuals Route"
    }
   },
   "/api/web/feed": {

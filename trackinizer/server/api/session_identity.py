@@ -134,8 +134,10 @@ def session_reader(
             audiences=AUDIENCES,
             email=identity.email.lower(),
             every_session=True,
+            every_chat=True,
             oversight=True,
             hidden=hidden,
+            assistant="" if assistant is None else assistant.email,
         )
     return caller_reader(
         identity.email,

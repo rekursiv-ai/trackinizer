@@ -21,6 +21,7 @@ from trackinizer.trax.connection import connect, connect_flags
 from trackinizer.trax.doctor import Doctor
 from trackinizer.trax.forward import MOVED_VERBS, moved
 from trackinizer.trax.parser import parse_backfill_timestamp, parse_list_query
+from trackinizer.trax.code_verb import Code
 from trackinizer.trax.profile import unmatched_server_hint
 from trackinizer.trax.profiles import Profiles
 from trackinizer.trax.render import SHOW_IDS, echo
@@ -122,6 +123,7 @@ DISPATCHERS: tuple[type[Command], ...] = (
     Version,
     Export,
     Canvas,
+    Code,
     Doctor,
     Help,
     Profiles,

@@ -112,8 +112,10 @@ class SessionReader:
     email: str = ""
     org: str | None = None
     every_session: bool = False
+    every_chat: bool = False
     oversight: bool = False
     hidden: bool = True
+    assistant: str = ""
 
 
 NOBODY: Final = SessionReader()
@@ -253,8 +255,10 @@ def caller_reader(
             else None
         ),
         every_session=orgs == "single",
+        every_chat=orgs == "single" and (person or the_assistant) and not delegated,
         oversight=person and not delegated and (STAFF in audiences or admin),
         hidden=hidden,
+        assistant=assistant,
     )
 
 
@@ -263,34 +267,100 @@ def visible_sql(
     *,
     params: list[object],
     reader: SessionReader,
+    single: bool = False,
 ) -> str:
     """Return the test that keeps rows of a session whose transcript ``reader`` reads.
 
     The reader must hold the session's audience, and a private one only when
-    ``reader.hidden``. A session is then read when it is ``staff``, by its account,
-    with ``reader.oversight``, and, when it is ``open``, with
-    ``reader.every_session`` or by its account's organisation. A session with no
-    audience is dropped.
+    ``reader.hidden``. A science chat (a ``chat:`` id) is then read by the person
+    who began it, as :func:`chat_beginnings_sql` finds the first session under its
+    id, by the people it is shared with, and, unless it is private, by everyone
+    with ``reader.every_chat`` and by the starter's organisation. Any other session
+    is read when it is ``staff``, by its account, with ``reader.oversight``, and,
+    when it is ``open``, with ``reader.every_session`` or by its account's
+    organisation. A session with no audience is dropped.
 
     Args:
       row: The alias, or the table name, the query gives the session's ``inquiries``
         row, such as ``i``.
-      params: The query's bound values so far; the reader's are appended.
+      params: The query's bound values so far; the reader's eight are appended.
       reader: Who reads.
-      single: The query tests one row, so a chat's starter is looked up for it alone.
+      single: The query tests one row, so the starter is looked up for that row's
+        chat alone. Otherwise every chat's starter is found once for all the rows,
+        which a query over many rows needs: looked up row by row, each would scan
+        the sessions again.
 
     Returns:
-      clause: A boolean expression binding the parameters it appended.
+      clause: A boolean expression binding the next eight parameters.
 
     """
-    held = _bound(params, sorted(reader.audiences))
-    email = _bound(params, reader.email)
-    org = _bound(params, reader.org)
-    every_session = _bound(params, reader.every_session)
-    oversight = _bound(params, reader.oversight)
-    hidden = _bound(params, reader.hidden)
+    # The subqueries name their own rows by these aliases, so under one of them a
+    # test of ``row`` moved inside a subquery would read the inner row instead.
+    if row in {"began", "began_key", "began_by", "shared", "began_chat"}:
+        raise ValueError(f"{row!r} is an alias the science chat test uses itself")
+    params.extend(
+        (
+            sorted(reader.audiences),
+            reader.email,
+            reader.org,
+            reader.every_session,
+            reader.every_chat,
+            reader.oversight,
+            reader.hidden,
+            reader.assistant,
+        ),
+    )
+    held, email, org, every_session, every_chat, oversight, hidden, assistant = (
+        f"${len(params) - back}" for back in range(7, -1, -1)
+    )
+    cli = vetted_sql(row, ".agentsession_cli_session_id")
     audience = vetted_sql(row, ".agentsession_audience")
-    shown = vetted_sql(
+    began = vetted_sql(
+        "SELECT began_chat.cli FROM (SELECT DISTINCT ON "
+        "(began.agentsession_cli_session_id) began.agentsession_cli_session_id AS cli, "
+        "lower(began.account) AS starter ",
+        chat_beginnings_sql(assistant=vetted_sql(assistant, "::text")),
+        vetted_sql(" AND began.agentsession_cli_session_id = ", cli)
+        if single
+        else " AND began.agentsession_cli_session_id LIKE 'chat:%'",
+        " ORDER BY began.agentsession_cli_session_id, began.created, began.id) "
+        "AS began_chat WHERE ",
+    )
+    return vetted_sql(
+        "COALESCE(",
+        audience,
+        " = ANY(",
+        held,
+        "::text[]) AND (",
+        audience,
+        " <> 'private' OR ",
+        hidden,
+        "::boolean) AND CASE WHEN ",
+        cli,
+        " LIKE 'chat:%' THEN ",
+        cli,
+        " IN (SELECT 'chat:' || shared.conversation_id::text "
+        "FROM science_chat_shares AS shared WHERE shared.email = ",
+        email,
+        "::text) OR (",
+        audience,
+        " <> 'private' AND ",
+        every_chat,
+        "::boolean) OR ",
+        cli,
+        " IN (",
+        began,
+        "began_chat.starter = ",
+        email,
+        "::text) OR (",
+        audience,
+        " <> 'private' AND ",
+        cli,
+        " IN (",
+        began,
+        "split_part(began_chat.starter, '@', -1) = ",
+        org,
+        "::text)) ELSE ",
         audience,
         " = 'staff' OR lower(",
         row,
@@ -306,20 +376,7 @@ def visible_sql(
         row,
         ".account), '@', -1) = ",
         org,
-        "::text))",
-    )
-    return vetted_sql(
-        "COALESCE(",
-        audience,
-        " = ANY(",
-        held,
-        "::text[]) AND (",
-        audience,
-        " <> 'private' OR ",
-        hidden,
-        "::boolean) AND (",
-        shown,
-        "), FALSE)",
+        "::text)) END, FALSE)",
     )
 
 
@@ -464,3 +521,123 @@ def _bound(params: list[object], value: object) -> str:
     """Append ``value`` to a query's bound values; return its placeholder."""
     params.append(value)
     return f"${len(params)}"
+
+
+def chat_beginnings_sql(*, assistant: str) -> str:
+    """Return the ``FROM`` and ``WHERE`` of the sessions that may begin a science chat.
+
+    A chat is begun by the oldest session under its id that the assistant opened, or
+    that a key of the session's own account opened. Any writer's key may open a
+    session under a ``chat:`` id, but only as its own account and after the chat's
+    first session, so neither that nor a session a rotated assistant key opens later
+    for a poster begins it. The caller adds the id test and orders by
+    ``began.created, began.id``: oldest is by ``created``, which no route writes, never
+    by ``started``, which one does.
+
+    Args:
+      assistant: SQL naming the assistant's email, such as ``$2``; a NULL or empty
+        one lets only a session's own account's key begin it.
+
+    Returns:
+      sql: ``FROM inquiries AS began`` joined to the opening key (``began_key``)
+        and its user (``began_by``), and a ``WHERE`` the caller extends with
+        ``AND``.
+
+    """
+    return vetted_sql(
+        "FROM inquiries AS began JOIN api_keys AS began_key "
+        "ON began_key.id = began.agentsession_opened_by_api_key_id "
+        "JOIN users AS began_by ON began_by.id = began_key.user_id "
+        "WHERE began.kind = 'AgentSession' AND (began_by.email = ",
+        assistant,
+        " OR lower(began_by.email) = lower(began.account))",
+    )
+
+
+def members_reader(
+    starter: str,
+    *,
+    orgs: ChatOrgs,
+    assistant: str,
+) -> SessionReader | None:
+    """Describe, as one reader, everyone an open chat ``starter`` begins is open to.
+
+    Besides its starter and the people it is shared with: every person on a
+    ``single`` server; on a ``domain`` one, each member of the organisation of the
+    starter's email domain, whether or not Google names the starter a member of it,
+    and none for a consumer one, of which Google names no one a member. A copy into
+    the chat is read by all of them, so it may hold only what this reader reads. It
+    is no person, so it owns nothing and oversees nothing.
+
+    Args:
+      starter: The email of the chat's starter.
+      orgs: The server's organisation mode.
+      assistant: The configured assistant's email; empty when none.
+
+    Returns:
+      reader: Any of them; ``None`` where an open chat is open to no one else: on an
+        ``individual`` server, and on a ``domain`` one for a consumer domain.
+
+    """
+    domain = starter.lower().rpartition("@")[2]
+    if orgs == "individual" or (orgs == "domain" and domain in CONSUMER_DOMAINS):
+        return None
+    return SessionReader(
+        audiences=frozenset({OPEN, PRIVATE}),
+        org=domain if orgs == "domain" else None,
+        every_session=orgs == "single",
+        every_chat=orgs == "single",
+        assistant=assistant,
+    )
+
+
+def reader_for(
+    email: str,
+    *,
+    audiences: frozenset[str],
+    admin: bool,
+    orgs: ChatOrgs,
+    assistant: str,
+    hosted_domain: str | None,
+    delegated: bool = False,
+    hidden: bool = True,
+) -> SessionReader:
+    """Describe a caller as the transcript test reads it on a server in ``orgs`` mode.
+
+    A person is any caller but the assistant and a service account. Only a person has
+    an organisation, and only on a ``domain`` server, and only a person oversees. A
+    read the assistant makes for a person (``delegated``) is that person's, less what
+    no chat may copy out: their oversight and the every-chat grant.
+
+    Args:
+      email: The caller's email.
+      audiences: The audiences the caller holds.
+      admin: Whether the caller is an admin.
+      orgs: The server's organisation mode.
+      assistant: The configured assistant's email; empty when none.
+      hosted_domain: Google's ``hd`` claim from the caller's last login, which
+        makes them a member of their email domain's organisation (:func:`org_of`).
+      delegated: The assistant reads for this caller.
+      hidden: Keep private sessions.
+
+    Returns:
+      reader: The caller, as :func:`visible_sql` tests it.
+
+    """
+    email = email.lower()
+    the_assistant = bool(assistant) and email == assistant
+    person = not the_assistant and not is_service_address(email)
+    return SessionReader(
+        audiences=audiences,
+        email=email,
+        org=(
+            org_of(email, hosted_domain=hosted_domain)
+            if person and orgs == "domain"
+            else None
+        ),
+        every_session=orgs == "single",
+        every_chat=orgs == "single" and (person or the_assistant) and not delegated,
+        oversight=person and not delegated and (STAFF in audiences or admin),
+        hidden=hidden,
+        assistant=assistant,
+    )

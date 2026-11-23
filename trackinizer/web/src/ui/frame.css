@@ -1,0 +1,127 @@
+/* THE FRAME PIECES: the bar, the caption, the queue and the panel. These rules were the
+   register's own — `.rv-bar`, `.rv-h`, `.rv-chips` — and the code stage, the fold and the
+   record panel each drew them again under their own name, so a frame had four owners and
+   four slightly different inks. One owner now, and the ink rule it carries is the
+   library's: white is what a reader reads, `--ink-machine` is what locates, and a hue
+   arrives only through the token the block reads. */
+
+/* THE BAR: 36px, sticky, one line. The subject is what the bar is for, so it is read;
+   the count beside it says how big the answer is and takes the locating tier. */
+.ui-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  font: 400 11.5px/1.4 var(--mono);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ui-bar-ttl { flex: none; font-weight: 500; letter-spacing: 0.1em; }
+.ui-bar-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.ui-bar-sp { flex: 1; }
+.ui-bar-meta { flex: none; color: var(--ink-machine); }
+.ui-bar-act { flex: none; }
+
+/* ONE CAPTION PER LEVEL: the noun in white at the frame's letterspaced mono, the gloss
+   beside it in the machine tier, and the measure — when there is one — at the end of the
+   line, where the code stage paints its +N −M. */
+.ui-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin: 0 0 8px;
+  font: 500 11px/1.3 var(--mono);
+  letter-spacing: 0.1em;
+  color: var(--text);
+}
+.ui-head b { font-weight: 500; }
+.ui-head i {
+  min-width: 0;
+  font: 400 11px/1.3 var(--mono);
+  font-style: normal;
+  letter-spacing: 0;
+  color: var(--ink-machine);
+}
+.ui-head em {
+  flex: none;
+  margin-left: auto;
+  font: 400 11px/1.3 var(--mono);
+  font-style: normal;
+  letter-spacing: 0;
+  color: var(--ink-machine);
+}
+.ui-head:not(:first-child) { margin-top: 15px; }
+
+/* THE QUEUE'S GRID, NOT THE COMMIT STRIP'S. proto74 paints the shapes two to a row in an
+   880px column — 435px per cell — because a chip's four lines are four facts, each of which
+   the frame gives ONE ROW: rank, shape, what this commit does, the address that proves it.
+   At four columns the same sentences wrapped to three rows each and the strip became seven
+   articles. The 340px floor is that arithmetic read the other way: two cells fit down to a
+   689px column and one takes the width below it, so a narrow tile loses a column and never
+   wraps a line. */
+.ui-queue {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 9px;
+  margin: 0;
+}
+/* The places are blocks — anatomy, type scale and ink tiers come from ui/block.css,
+   which owns no box on purpose. This sheet owns where they sit and what they rest on.
+   The one hue a frame wears is its slot's, and it arrives through the token the block
+   reads; the same hue is what marks the open one, because a selection is a level and
+   not a word. */
+.ui-queue .ui-block {
+  width: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  --block-slot-ink: var(--group-4);
+}
+.ui-queue .ui-block:hover { background: var(--surface-hover); }
+.ui-queue .ui-block[aria-pressed="true"] { background: var(--surface-raised); border-color: var(--group-4); }
+/* A row the answer asked for: the cells sit on one line and the line scrolls when it
+   runs past the pane, which is how a replay's arms and a commit's steps always read.
+   The cell takes the grid's own 340px floor rather than a new width, so a row scrolls
+   instead of squeezing, and consecutive rows keep the grid's gap. */
+.ui-queue.is-row {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 9px;
+}
+.ui-queue.is-row .ui-block { flex: 0 0 340px; }
+.ui-queue + .ui-queue { margin-top: 9px; }
+
+/* THE PANEL: the address it was opened from, the line it answers, then the body and the
+   foot. The kicker is the only place a frame's hue may reach a panel, and a surface asks
+   for it — the fold paints its block address in the hue that marks a block. */
+.ui-panel-kicker {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font: 500 10.5px/1.4 var(--mono);
+  color: var(--text);
+}
+/* The kicker's address is a `<b>`, which arrives at the browser's own bold — a heavier
+   word than the 500 the design draws for a level line. */
+.ui-panel-kicker b { font-weight: 500; }
+.ui-panel-kicker i {
+  margin-left: auto;
+  font-weight: 400;
+  font-style: normal;
+  color: var(--ink-machine);
+}
+.ui-panel-h { margin: 7px 0 0; font: 600 16px/1.4 var(--sans); color: var(--text); }
+.ui-panel-sub { font: 400 11.5px/1.4 var(--mono); color: var(--ink-machine); }
+/* The foot's own line: the shared `.muted` is the app's fourth grey, and a panel that
+   takes it says the same fact — this only locates — in an ink no pane else uses. */
+.ui-panel-esc { font: 400 11px/1.4 var(--mono); color: var(--ink-machine); }

@@ -73,6 +73,13 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         # returns no transcript, but tells how much a session did, so a read takes the
         # records' read test.
         ("GET", "/api/sessions/{session_id}/usage"),
+        # A canvas's Chat. The inbound queue is the line a run drains and the line a
+        # person sends it, so both take the input test; a science chat's queue is
+        # narrowed further to the one key its provider's run holds. A run's reported
+        # state is written under the same test.
+        ("GET", "/api/sessions/{session_id}/inbound"),
+        ("POST", "/api/sessions/{session_id}/inbound"),
+        ("POST", "/api/sessions/{session_id}/run-state"),
         ("POST", "/api/messages"),
         ("GET", "/api/web/feed"),
         ("GET", "/api/web/feed/facets"),

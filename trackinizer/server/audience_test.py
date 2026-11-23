@@ -208,13 +208,17 @@ _ANN: Final = SessionReader(
     oversight=True,
     hidden=False,
 )
+# In the order `visible_sql` binds them: the audiences held, the email, the org, then
+# every_session, every_chat, oversight, hidden and the configured assistant.
 _ANN_VALUES: Final = (
     ["open", "private", "staff"],
     "ann@lab.example",
     "lab.example",
     False,
+    False,
     True,
     False,
+    "",
 )
 
 
@@ -225,11 +229,11 @@ class TestSqlFragments:
         clause = visible_sql("i", params=params, reader=_ANN)
 
         assert params == ["before", *_ANN_VALUES]
-        assert {f"${n}::" for n in range(2, 2 + len(_ANN_VALUES))} <= {
+        assert {f"${n}::" for n in range(2, 10)} <= {
             clause[at : at + 4] for at in range(len(clause) - 3)
         }
         assert "$1" not in clause
-        assert f"${2 + len(_ANN_VALUES)}" not in clause
+        assert "$10" not in clause
         assert clause.startswith("COALESCE(i.agentsession_audience = ANY($2::text[])")
 
     def test_hidden_binds_the_reader_after_the_values_already_bound(self) -> None:
@@ -244,6 +248,23 @@ class TestSqlFragments:
             ")",
         )
         assert params == ["a", "b", *_ANN_VALUES]
+
+    def test_one_row_looks_up_its_own_chats_starter_alone(self) -> None:
+        many = visible_sql("t", params=[], reader=_ANN)
+        one = visible_sql("t", params=[], reader=_ANN, single=True)
+
+        assert "LIKE 'chat:%' ORDER BY" in many
+        assert (
+            "began.agentsession_cli_session_id = t.agentsession_cli_session_id"
+        ) in one
+
+    @pytest.mark.parametrize(
+        "alias",
+        ["began", "began_key", "began_by", "shared", "began_chat"],
+    )
+    def test_the_row_takes_no_alias_the_chat_test_uses_inside(self, alias: str) -> None:
+        with pytest.raises(ValueError, match="alias the science chat test uses"):
+            _ = visible_sql(alias, params=[], reader=NOBODY)
 
 
 _SCOUT: Final = "scout@service.invalid"

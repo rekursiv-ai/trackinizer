@@ -29,7 +29,7 @@ from pydantic_core import to_json
 from treekle import from_plain
 
 from trackinizer.wire.wire_hosts import NAME_PATTERN
-from trackinizer.wire.wire_science_chat import AssistantPrompt
+from trackinizer.wire.wire_science_chat import AssistantPrompt, ChatProvider
 
 
 if TYPE_CHECKING:
@@ -63,6 +63,8 @@ ASSISTANT_KEYS: Final = frozenset(
         "cli_folder",
         "default_host",
         "chat_view",
+        "chat_provider",
+        "chat_tool_calls",
         "autofix",
         "automerge",
         "watcher",
@@ -419,6 +421,14 @@ _DisplayKey = Annotated[
     str,
     StringConstraints(pattern=r"^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$"),
 ]
+class WorkstreamsPreference(_Strict):
+    """The user's workstream bar state."""
+
+    order: Annotated[list[_Id], Field(max_length=500)] = []
+    pinned: Annotated[list[_Id], Field(max_length=500)] = []
+    hidden: Annotated[list[_Id], Field(max_length=500)] = []
+
+
 
 
 class Preferences(_Strict):
@@ -703,6 +713,71 @@ class Preferences(_Strict):
         description="Your personal settings Artifact id, pinned when first opened.",
     )
 
+    chat_provider: ChatProvider = Field(
+        default="assistant",
+        description=(
+            "The provider a new chat starts on: the assistant, or claude or codex run on "
+            "a machine of yours."
+        ),
+        json_schema_extra=SETTING,
+    )
+    chat_tool_calls: bool = Field(
+        default=False,
+        description=(
+            "Show each tool call an agent makes in Chat as a card between the lines: "
+            "what it ran, and what came back."
+        ),
+        json_schema_extra=SETTING,
+    )
+    stars: Annotated[list[_Id], Field(max_length=2_000)] = Field(
+        default=list[_Id](),
+        description="The inquiries you starred, by id: your bookmarks, never a label.",
+    )
+    views: Annotated[list[SavedView], Field(max_length=200)] = Field(
+        default=list[SavedView](),
+        description="Your saved views: a name and the list query each one shows.",
+    )
+    console_views: Annotated[list[ConsoleView], Field(max_length=200)] = Field(
+        default=list[ConsoleView](),
+        description="Your Console views: a name, what each picks, its level and its range.",
+    )
+    aliases: Annotated[list[_Name], Field(max_length=50)] = Field(
+        default=list[_Name](),
+        description="The names besides your email that mean you in owner and subscriber filters.",
+    )
+    people: Annotated[dict[_Name, Person], Field(max_length=1_000)] = Field(
+        default=dict[_Name, Person](),
+        description="Names for people and agents you added by hand, by owner or subscriber value.",
+    )
+    read: ReadState = Field(
+        default_factory=lambda: ReadState(boundary=None, marks=[]),
+        description="The notifications you have read: a boundary time, and changes marked one by one after it.",
+    )
+    collapsed: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description="The sections you folded, by key.",
+    )
+    lens: _Id | None = Field(
+        default=None,
+        description="The detail lens you used last; none until you pick one.",
+    )
+    drafts: Annotated[dict[_Id, FieldDraft], Field(max_length=200)] = Field(
+        default=dict[_Id, FieldDraft](),
+        description="Unsent edits of a field, by inquiry id and field name, until you send or discard them.",
+    )
+    create_draft: CreateDraft | None = Field(
+        default=None,
+        description="The inquiry you started on the create form and have not created.",
+    )
+    workstreams: WorkstreamsPreference = Field(
+        default_factory=WorkstreamsPreference,
+        description="Your workstream bar order, pins, and hidden items.",
+    )
+    settings_artifact_id: _Id | None = Field(
+        default=None,
+        description="Your personal settings Artifact id, pinned when first opened.",
+    )
+
 
 _SCHEMA_NOISE: Final = frozenset({"title", "x-setting"})
 """Schema keys a model reading a tool's arguments does not need."""
@@ -909,3 +984,5 @@ def inline_refs(node: JsonValue, defs: Mapping[str, JsonValue]) -> JsonValue:
         for key, value in node.items()
         if key not in _SCHEMA_NOISE
     }
+
+

@@ -1,0 +1,162 @@
+/* The fold, `trax.knowledge`: record blocks on a canvas, the wires between them,
+   and one of either opened to what the store holds on it. The ink follows the
+   approved frame's one rule — white is what a reader reads and `--ink-machine` is
+   what locates it, so every grey here is the neutral one and none of the app's
+   blue-tinted steps. A block's own bottom line is read, not located: its address and
+   the count of records under it are white, in the same sans as its body. The grey is
+   left to the window's header, a panel's section marks, and a wire's word. The frame
+   is the one purple the design allows off the graph's top line, and it marks a block,
+   never a wire: the wires are white, and a source's sign already owns green and red. */
+.knowledge { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.knowledge-h { display: flex; align-items: baseline; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.knowledge-lead { display: flex; flex: 1 1 auto; align-items: baseline; gap: 10px; min-width: 0; }
+/* The window's own bar already prints the catalog's title, so this line opens on the
+   record the fold was asked about rather than saying the window's name twice. */
+.knowledge-of, .knowledge-count { flex-shrink: 0; color: var(--ink-machine); }
+/* The record's own headline is read, not located, so it takes the page's white. */
+.knowledge-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.knowledge-body { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 20px 18px 24px; }
+
+/* Tiers, one per step from the record the window was opened on: its own claim reads
+   first, alone and centred, and the beliefs it rests on fan below it. A tier too wide
+   for the tile wraps, and a wrapped tier's rows keep the same corridor between them as
+   two tiers do, because that gap is where a wire and its word are drawn. The tiers
+   paint above the wire overlay, so a run that has to cross a row passes behind it. */
+.knowledge-tiers { position: relative; z-index: 1; display: flex; flex: 1; flex-direction: column; justify-content: flex-start; gap: 76px; min-height: 100%;
+  /* The container covers the gutters its own cards leave empty, so it must not hold
+     their pointer events: a wire's word lives in a gutter and answers a click. */
+  pointer-events: none; }
+/* `safe center` and not `center`: a centred flex row whose cards are wider than it
+   overflows BOTH edges, and the half that goes off the start edge cannot be scrolled
+   back to — the scroll range begins at 0. That is what cut "Live updates across
+   views" down to "across views" and "Lists: filter, group and sort" to "group and
+   sort" on a narrow stage. `safe` keeps the centring while there is room and falls
+   back to the start edge when there is not, so a card may be scrolled to but never
+   lost. */
+.knowledge-tier { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: safe center; gap: 76px 44px; }
+
+/* The card's box, and only its box: the anatomy, the type scale and the ink tiers
+   are ui/block.css, which the review register's chips share, and the width is
+   blocks/fit.css, which computes it from the composition's widest row. What is the
+   fold's own is the lift. The frame's record surface is 18 levels above the ground
+   it sits on, and `--surface` is 4: a block has to read as lifted off the page, not
+   as a smudge on it, so it rests on `--surface-hover` — the token that holds that
+   step in both themes. It hands the block one thing of its own: the slot's hue,
+   which is the frame's purple because purple marks a block and never a wire. */
+/* The width is the fold's own, and it has to be: a card that sizes to its text is a
+   different width per card, so no two land on one row, every tier wraps to one card a
+   line and the gutter runs — which only cross between rows — have nothing to join.
+   That is exactly what happened here. The rule used to live in `blocks/fit.css`, which
+   reached these cards only while the blocks view happened to be mounted beside the
+   fold; once the canvas drew one surface at a time that stylesheet stopped loading and
+   the fold lost its layout. A surface owns its own measurements.
+   The var is kept so the blocks view can still set a measured width for its own page. */
+.knowledge-card { flex: 0 0 auto; width: var(--kb-card-w, 316px); min-width: 0; pointer-events: auto; --block-slot-ink: var(--group-4);
+  background: var(--surface-hover); border: 1px solid var(--group-4); border-radius: 10px; }
+/* Both states answer with the hairline, never the fill: the surface a block rests on
+   is the one the design draws, and darkening it on hover put the block back into the
+   ground it was just lifted out of. The lift is the step from `--surface` to
+   `--surface-hover` and the line around it — a shadow and a glow ring were doing the
+   same job in a literal hex that only the dark default is right in, and a pane whose
+   cards glow reads as generated. `outline` draws the weight without taking layout. */
+.knowledge-card:hover { outline: 1px solid var(--group-4); }
+/* Open keeps the purple and gains weight: a heavier line, never a new hue. */
+.knowledge-card[aria-pressed="true"] { outline: 2px solid var(--group-4); }
+
+/* The wires are drawn where the blocks landed, so they are an overlay. It refuses
+   pointer events everywhere but a run's own word and line, which open that wire, so
+   a card stays hittable through the rest of it. A word sits on its line in the
+   surface's own ink, which is what makes it read as a label rather than a smudge. */
+.knowledge-wires { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+/* A run is right-angled: it leaves a block, turns once in the gutter above that
+   block's own row, and enters the claim above. Its word stands on that turn. */
+.knowledge-wires .knowledge-run { fill: none; stroke: var(--text); stroke-width: 1.6px; }
+/* A wire the store holds as a want, not an assertion, runs dashed: the design's
+   open dependencies read as promises rather than findings at a glance. */
+.knowledge-wires .knowledge-run.is-open { stroke-dasharray: 5 4; }
+/* The head is the same white as its run and points at the claim the store says the
+   far block supports. It marks a wire, so it takes none of the purple that marks a
+   block. */
+.knowledge-wires .knowledge-head { fill: var(--text); }
+/* The word stands IN the line, not over it: the halo is painted under the glyphs and
+   has to be wide enough to bridge the space between two words, or the run shows
+   through that gap and `leaves open` reads as `leaves_open`. 11px is what closes a
+   10px mono space; 4px left the line visible and was the one thing on this pane that
+   did not match the design it was ported from. */
+.knowledge-wires text { fill: var(--text); font: 600 10px/1 var(--mono); letter-spacing: .04em; text-anchor: middle; paint-order: stroke; stroke: var(--bg); stroke-width: 11px; stroke-linejoin: round; }
+/* A wire answers a click the way a block does, so its word and its run are both
+   targets. The overlay refuses pointer events so a card stays hittable through it;
+   these two take them back. The hit is the run's own path under a wide invisible
+   stroke, so a reader aims at the line and not at a 10px word. */
+.knowledge-wires .knowledge-said { pointer-events: fill; cursor: pointer; }
+.knowledge-wires .knowledge-hit { fill: none; stroke: transparent; stroke-width: 14px; pointer-events: stroke; cursor: pointer; }
+/* The opened wire gains weight in its own white: purple marks a block and never a
+   wire, so nothing here takes the hue the graph's top line owns. */
+.knowledge-wires .knowledge-picked .knowledge-run { stroke: var(--text); stroke-width: 2px; }
+.knowledge-wires .knowledge-picked .knowledge-said { fill: var(--text); font-weight: 700; }
+
+.knowledge-none { margin: 0; color: var(--ink-machine); font-size: 12.5px; }
+.knowledge-none[aria-busy='true'] { animation: knowledge-distilling 1.3s ease-in-out infinite alternate; }
+@keyframes knowledge-distilling { from { opacity: 0.45; } to { opacity: 1; } }
+
+/* The fold's bottom line, as the design draws it: what was drawn and from how much
+   it was read, in the grey machine register under the tiers, beside nothing else. */
+.knowledge-machine { flex-shrink: 0; padding: 6px 12px; border-top: 1px solid var(--line); color: var(--ink-machine); font-size: 10.5px; letter-spacing: 0.02em; }
+
+/* One block or one wire opened, on the frame the approved design draws: a purple
+   hairline around the panel, the block's own `K#` address in purple above its claim,
+   one sentence-case section rule, and a spine the records that formed it hang off.
+   The shared `.modal` supplies the ink, the shadow and the centre; this owns the
+   padding, so every line sits on the 20px column the design uses and not two grids. */
+.knowledge-modal { width: min(620px, calc(100vw - 40px)); padding: 15px 20px 13px; overflow: hidden; border-color: var(--group-4); border-radius: 8px; }
+/* The shared `.modal` scrolls itself, which on a long spine carries the footer away
+   with the list. Here only the body scrolls: `esc closes` and the way out to the
+   claim stay on the screen however many records formed it. */
+.knowledge-modal .modal-b { flex: 1 1 auto; min-height: 0; overflow: auto; gap: 0; padding: 0; }
+/* The design's `esc closes` sits opposite one action, so the footer's own link is
+   pushed to the end instead of joining the gap. */
+.knowledge-modal .modal-f { flex-shrink: 0; margin-top: 12px; padding: 9px 0 0; }
+.knowledge-modal .modal-f a { margin-left: auto; color: var(--text); }
+
+/* The panel's kicker line is the library's; this is the one surface that asks for its
+   hue, because `K#1` is a block's address and a block's level is what the fold marks.
+   What the row answers at the far end of that line stays the machine's grey. */
+.knowledge-modal .ui-panel-kicker b { color: var(--group-4); }
+/* Sentence case, because this line is a heading of a reading, not a column label. */
+.knowledge-modal .knowledge-sec { margin: 16px 0 0; padding-bottom: 5px; border-bottom: 1px solid var(--line-strong); color: var(--ink-machine); font: 500 10px/1.4 var(--mono); letter-spacing: .09em; }
+
+/* The spine: one stem down the left of the section, one tick per record into it, and
+   every record's own lines to the right of the tick. The claim opened heads it in the
+   purple that marks a block; what formed it hang below, unboxed, in reading order. */
+.knowledge-spine { position: relative; margin: 9px 0 0; padding-left: 26px; }
+.knowledge-spine::before { content: ""; position: absolute; left: 10px; top: 14px; bottom: 14px; width: 1px; background: var(--line-strong); }
+.knowledge-me { position: relative; margin: 7px 0; padding: 5px 8px; border: 1px solid var(--group-4); border-radius: 4px; }
+.knowledge-me::before, .knowledge-sources li::before { content: ""; position: absolute; left: -16px; width: 16px; height: 1px; background: var(--line-strong); }
+.knowledge-me::before { top: 14px; }
+.knowledge-sources { margin: 0; padding: 0; list-style: none; }
+.knowledge-sources li { position: relative; margin: 11px 0 0; display: flex; flex-direction: column; gap: 4px; }
+.knowledge-sources li:first-child { margin-top: 0; }
+.knowledge-sources li::before { top: 9px; }
+
+/* Three lines per record, in three registers: purple mono is the level's slot, white
+   prose is what it recorded, and the neutral machine ink is the wire's word. */
+.knowledge-src-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--ink-machine); font-size: 12.5px; }
+.knowledge-src-h .mono { font-size: 10.5px; font-weight: 500; color: var(--group-4); }
+/* The clause carries `.mono` beside the slot, so a bare class loses that cascade and
+   the wire's word came back purple on the live page. The accent marks a level and
+   never a wire, so this names both classes to outrank it. */
+.knowledge-src-h .mono.knowledge-into { margin-left: auto; font-weight: 400; color: var(--ink-machine); }
+.knowledge-src-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+/* The claim's and a source's own words are what a reader came for, so they take the
+   page's ink: `.modal-b p` greys every paragraph in a modal, and these are not chrome. */
+.knowledge-modal .knowledge-src-line { color: var(--text); font-size: 13.5px; line-height: 1.55; }
+.knowledge-modal .knowledge-src-note { color: var(--text); font-size: 10px; line-height: 1.45; }
+.knowledge-modal p { margin: 0; }
+/* `.modal-b p` colours every paragraph in a modal at --muted, the blue-tinted grey,
+   and it outranks a bare class: the panel's own lines are named through `.knowledge-modal`
+   so white actually lands on them. */
+.knowledge-modal .knowledge-src-h { color: var(--ink-machine); font-size: 12.5px; }
+.knowledge-modal .knowledge-none { color: var(--ink-machine); font-size: 12.5px; }
+/* The list's own mark of leaving records out, now in white like the body — the whole
+   fold is what a reader reads, not chrome that locates it. */
+.knowledge-modal .knowledge-rest { margin: 11px 0 0; color: var(--text); font-size: 10.5px; line-height: 1.45; }

@@ -47,6 +47,7 @@ from trackinizer.server.auth import (
     current_user,
 )
 from trackinizer.server.config import Assistant, Config
+from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
 from trackinizer.server.session_reaper import STALE_AFTER, reap_silent_sessions
 from trackinizer.server.store.core import Store
@@ -688,8 +689,10 @@ def _serving(
     """Serve ``store`` from the global ``app`` to ``identity``, for one test."""
     prev_engine = getattr(app.state, "engine", None)
     prev_store = getattr(app.state, "store", None)
+    prev_inbound = getattr(app.state, "inbound", None)
     app.state.engine = engine
     app.state.store = store
+    app.state.inbound = InboundQueue()
     install_identity(identity)
     try:
         yield
@@ -703,6 +706,10 @@ def _serving(
             del app.state.store
         else:
             app.state.store = prev_store
+        if prev_inbound is None:
+            del app.state.inbound
+        else:
+            app.state.inbound = prev_inbound
 
 
 def _refused_lifespan(app: FastAPI) -> NoReturn:

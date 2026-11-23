@@ -112,7 +112,13 @@ _DEFAULTS: dict[str, JsonValue] = {
         "tabs": [],
         "last_canvas": {},
     },
+    # The workstream bar: the groups you ordered, pinned and hid.
+    "workstreams": {"order": [], "pinned": [], "hidden": []},
     "settings_artifact_id": None,
+    # A new chat's provider, and whether Chat draws a card per tool call: the canvas's
+    # own two settings, which `chat_view` does not say.
+    "chat_provider": "assistant",
+    "chat_tool_calls": False,
 }
 
 _VIEW_REQUEST: dict[str, JsonValue] = {
@@ -330,7 +336,7 @@ def test_a_default_host_no_host_could_be_named_is_refused(host: object) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("key", "stored", "sent"),
-    [("chat_provider", "codex", "claude"), ("terminal_placement", "side", "bottom")],
+    [("terminal_placement", "side", "bottom")],
 )
 async def test_a_retired_key_reads_as_nothing_and_is_refused_on_write(
     key: str,
@@ -366,11 +372,9 @@ def test_chat_draws_its_own_lines_until_the_user_picks_another_view() -> None:
         stored_preferences({"chat_view": _TERMINAL}).chat_view.model_dump() == _TERMINAL
     )
     assert "chat_view" in ASSISTANT_KEYS
-    # The switch it replaced is no preference now: a stored one is ignored.
-    assert (
-        "chat_tool_calls"
-        not in stored_preferences({"chat_tool_calls": False}).model_dump()
-    )
+    # It says how Chat reads a line, not whether a tool call gets a card of its own:
+    # ``chat_tool_calls`` is still the switch for that.
+    assert stored_preferences({"chat_tool_calls": True}).chat_tool_calls
 
 
 @pytest.mark.parametrize(

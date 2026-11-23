@@ -157,6 +157,23 @@ export function GraphView({
     setArriving(false);
     if (focusNode) setSelectedId(focusNode.id);
   }
+  /**
+   * Opened on a focus the loaded graph does not hold, reach once for the next size up.
+   *
+   * A focus lights within the newest `limit` records, and on a store of thousands the
+   * record just read about is rarely among the newest thousand — so the link landed on
+   * "not among the nodes loaded" while the row was one size setting away. One step, once
+   * per focus, so a record that really is absent settles on the honest answer.
+   */
+  const widened = useRef<string | null>(null);
+  useEffect(() => {
+    if (!data || focus === null || focusNode) return;
+    const asked = refKey(focus.ref);
+    const wider = LIMIT_STEPS.find((size) => size > view.limit && size <= ASK_ABOVE);
+    if (wider === undefined || widened.current === asked) return;
+    widened.current = asked;
+    setView((state) => ({ ...state, limit: wider }));
+  }, [data, focus, focusNode, view.limit]);
   const reached = useMemo(
     () =>
       data && focusNode
@@ -676,6 +693,14 @@ function findFocus(nodes: readonly GraphNode[], ref: FocusRef): GraphNode | unde
   return nodes.find((row) =>
     "id" in ref ? row.id === ref.id : row.kind === ref.kind && row.seq === ref.seq,
   );
+}
+
+/** The sizes a focus that is not loaded yet may widen the view to, smallest first. */
+const LIMIT_STEPS: readonly number[] = [1_000, 5_000];
+
+/** One text per focus, so widening is tried once for each and not once per render. */
+function refKey(ref: FocusRef): string {
+  return "id" in ref ? ref.id : `${ref.kind}#${ref.seq}`;
 }
 
 /** The matches as the results list them: within a focus's reach, then elsewhere; without a focus, all together. */

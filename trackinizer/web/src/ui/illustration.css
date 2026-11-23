@@ -1,0 +1,16 @@
+/* THE ILLUSTRATION NODE. Same hairline-and-step as every other figure — being
+   decorative content is not a reason to draw a decorative frame. */
+.ui-illustration { margin: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; display: flex; flex-direction: column; }
+.ui-illustration video { display: block; width: 100%; background: var(--bg); }
+/* The warning is read, not located, so it takes --text like any other claim; it is
+   not tinted, because a tint would make it the one coloured word on the surface. */
+.ui-illustration figcaption {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--line);
+  font: 400 11px/1.5 var(--mono);
+}
+.ui-illustration figcaption strong { color: var(--text); font-weight: 500; }
+.ui-illustration figcaption span { color: var(--ink-machine); }

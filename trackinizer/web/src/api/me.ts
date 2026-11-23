@@ -20,13 +20,43 @@ export type Profile = {
   name: string;
   role: string;
   last_login: string | null;
+  /** The canvas and Chat column, on by default; absent from a server older than it, filled by `getProfile`. */
+  visual_workspace_enabled: boolean;
   /**
    * The user's preferences, every key, defaults filled (`src/preferences.ts`);
    * absent from a server older than them, whose page shows the defaults.
    */
   preferences?: Required<components["schemas"]["Preferences"]>;
+  /** When the caller agreed to the alpha rules; null before they have. */
+  acknowledged_at: string | null;
+  /** The rules version they agreed to; null before they have. */
+  acknowledged_rules_version: string | null;
+  /** The Issue that holds the rules (`Issue#1`); null unless it exists and is locked. */
+  rules_issue_id: string | null;
+  /** The rules as they stand: Issue#1's last change; null while no rules are in force. */
+  rules_version: string | null;
+  /**
+   * Who reads chats and sessions on this server (`TRACKINIZER_CHAT_ORGS`); absent
+   * from a server older than it.
+   */
+  org_mode?: OrgMode;
   /** The audiences whose transcripts the caller reads; absent from a server older than it. */
   read_audiences?: readonly string[];
+};
+
+/**
+ * What the server takes as an organisation, and so who reads a chat or a session
+ * besides its starter or owner and the people a chat is shared with: everyone
+ * signed in (`single`), the people of the same email domain (`domain`), or
+ * nobody (`individual`, one person to an organisation). In every mode staff and
+ * admins read other people's sessions, hidden ones too, and never their chats.
+ */
+export type OrgMode = "single" | "domain" | "individual";
+
+/** What `PUT /api/me/acknowledge` answers: when the caller agreed, and to which rules version. */
+export type Acknowledgement = {
+  readonly acknowledged_at: string;
+  readonly acknowledged_rules_version: string;
 };
 
 /** One of the caller's API tokens, as `GET /api/me/tokens` lists it: never its secret. */
@@ -43,19 +73,37 @@ export type Token = {
 };
 
 /** A new token, with the secret the server returns this once and never again. */
-export type NewToken = Omit<Token, "created_at" | "last_used_at" | "revoked_at"> & {
-  readonly secret: string;
-};
+export type NewToken = Omit<Token, "created_at" | "last_used_at" | "revoked_at"> & { readonly secret: string };
 
 /** The body of a token create: its label, and a role at most the caller's (theirs by default). */
 export type CreateTokenBody = components["schemas"]["CreateTokenBody"];
 
 /** Fetch the caller's profile. Nobody signed in is an `ApiError` with status 401. */
 export async function getProfile({ signal }: CallOptions = {}): Promise<Profile> {
-  const profile = await send(TIMEOUT_MS.read, signal, (signal) =>
+  const profile = (await send(TIMEOUT_MS.read, signal, (signal) =>
     client.GET("/api/me/profile", { signal }),
+  )) as RawProfile;
+  // On unless the server says off: a server older than the column answers without the key, and
+  // an absent field is not a person's refusal — it hid the whole canvas, chat and all, in silence.
+  return { ...profile, visual_workspace_enabled: profile.visual_workspace_enabled !== false };
+}
+
+/** The answer as it arrives: every key `Profile` holds, except the canvas opt-in a server older than it omits. */
+type RawProfile = Omit<Profile, "visual_workspace_enabled"> & {
+  readonly visual_workspace_enabled?: boolean;
+};
+
+/**
+ * Record that the caller agreed to the alpha rules as they stand now.
+ *
+ * A browser session only: an API key is refused with 403. `rulesVersion` is the
+ * version the user was shown; the server answers 409 when the rules have changed
+ * since, so an agreement never covers rules the user did not read.
+ */
+export async function acknowledgeRules(rulesVersion: string): Promise<Acknowledgement> {
+  return send(TIMEOUT_MS.write, undefined, (signal) =>
+    client.PUT("/api/me/acknowledge", { body: { rules_version: rulesVersion }, signal }),
   );
-  return profile as Profile;
 }
 
 /**
@@ -75,51 +123,37 @@ export async function setPreferences(
   return saved as Required<components["schemas"]["Preferences"]>;
 }
 
+/** Persist the account's opt-in for the agent-guided canvas. */
+export async function setVisualWorkspacePreference(enabled: boolean): Promise<{ enabled: boolean }> {
+  return send(TIMEOUT_MS.write, undefined, (signal) =>
+    client.PUT("/api/me/visual-workspace", { body: { enabled }, signal }),
+  );
+}
+
 /** Fetch the caller's tokens, revoked ones included. */
 export async function listTokens({ signal }: CallOptions = {}): Promise<Token[]> {
-  const listed = await send(TIMEOUT_MS.read, signal, (signal) =>
-    client.GET("/api/me/tokens", { signal }),
-  );
+  const listed = await send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/me/tokens", { signal }));
   // Written by hand from `list_tokens_route`: the schema types it as free JSON.
   return (listed as { tokens: Token[] }).tokens;
 }
 
 /** Make a token. A role above the caller's is refused with 403. */
-export async function createToken(
-  body: CreateTokenBody,
-  { signal }: CallOptions = {},
-): Promise<NewToken> {
-  const made = await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.POST("/api/me/tokens", { body, signal }),
-  );
+export async function createToken(body: CreateTokenBody, { signal }: CallOptions = {}): Promise<NewToken> {
+  const made = await send(TIMEOUT_MS.write, signal, (signal) => client.POST("/api/me/tokens", { body, signal }));
   return made as NewToken;
 }
 
 /** Revoke a token at once. One not the caller's, or already revoked, is a 404. */
-export async function revokeToken(
-  id: string,
-  { signal }: CallOptions = {},
-): Promise<void> {
+export async function revokeToken(id: string, { signal }: CallOptions = {}): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.POST("/api/me/tokens/{key_id}/revoke", {
-      params: { path: { key_id: id } },
-      signal,
-    }),
+    client.POST("/api/me/tokens/{key_id}/revoke", { params: { path: { key_id: id } }, signal }),
   );
 }
 
 /** Change a token's role; one above the caller's is refused with 403. */
-export async function setTokenRole(
-  id: string,
-  role: Role,
-  { signal }: CallOptions = {},
-): Promise<void> {
+export async function setTokenRole(id: string, role: Role, { signal }: CallOptions = {}): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.PUT("/api/me/tokens/{key_id}/role", {
-      params: { path: { key_id: id } },
-      body: { role },
-      signal,
-    }),
+    client.PUT("/api/me/tokens/{key_id}/role", { params: { path: { key_id: id } }, body: { role }, signal }),
   );
 }
 

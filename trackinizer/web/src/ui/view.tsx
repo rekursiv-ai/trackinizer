@@ -12,10 +12,13 @@ export const OpenDrawerContext = createContext<() => void>(() => {});
 export function ViewHeader({
   icon,
   title,
+  beside,
   children,
 }: {
   icon: ReactNode;
   title: string;
+  /** Sits next to the title, before the spacer; for a control that belongs to the view's name. */
+  beside?: ReactNode;
   children?: ReactNode;
 }) {
   const openDrawer = useContext(OpenDrawerContext);
@@ -33,6 +36,7 @@ export function ViewHeader({
         {icon}
         <span>{title}</span>
       </h1>
+      {beside}
       <div className="spacer" />
       {children}
     </header>

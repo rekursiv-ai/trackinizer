@@ -1,0 +1,56 @@
+/* THE NUMERIC TABLE — one owner for the shape a results table has, inside the frame
+   every answer surface draws. `.md table` is a markdown render's scroll box, `.jv-table`
+   is a JSON viewer's key/value rows and `.sum-table` is a roster of sessions; none of
+   them may state the precision of a figure, which is what this piece owns.
+
+   Ink follows the library's rule: `--text` is what a reader reads (a header, a row's
+   name, every cell), `--line` and `--line-strong` are the only structure, and no hue
+   arrives — a table judges nothing, so a colour in it would be a verdict with no
+   verdict behind it. */
+
+.ui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.ui-table th, .ui-table td {
+  padding: 3px 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+.ui-table thead th {
+  font: 400 11.5px/1.5 var(--mono);
+  color: var(--text);
+  border-bottom: 1px solid var(--line-strong);
+  padding-bottom: 5px;
+}
+.ui-table tbody th {
+  text-align: left;
+  font: 400 12.5px/1.6 var(--mono);
+  color: var(--text);
+}
+.ui-table tbody td {
+  font: 400 12.5px/1.6 var(--mono);
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+}
+.ui-table tbody tr:last-child td { border-bottom: 0; }
+.ui-table td:hover { background: var(--surface-hover); }
+
+/* The row the source did not print. It stands under a hairline of its own weight and
+   keeps the plate's bottom rule, because a reader has to see where the document stops
+   and this component's arithmetic starts. */
+.ui-table tr.ui-derived th, .ui-table tr.ui-derived td {
+  border-top: 1px solid var(--line-strong);
+  font-weight: 600;
+}
+
+/* A caption is read, so it is white at the prose size — the source's own label and
+   sentence, never a gloss this component adds. Its top gap is the frame's caption
+   rhythm, `ui-head:not(:first-child)`'s 15px, so a table separates from what sits above
+   it the way a level does. */
+.ui-cap {
+  margin: 15px 0 6px;
+  font: 400 12px/1.55 var(--sans);
+  color: var(--text);
+}
