@@ -897,15 +897,8 @@ def test_lifespan_holds_the_deployments_vector_search(
 def test_the_old_runners_chat_and_run_routes_are_registered_nowhere() -> None:
     """A session's agent process and its relay replaced these; none answers."""
     removed = {
-        ("POST", "/api/sessions/{session_id}/inbound"),
-        ("GET", "/api/sessions/{session_id}/inbound"),
-        ("POST", "/api/sessions/{session_id}/run-state"),
-        ("PUT", "/api/sessions/{session_id}/partial"),
-        ("GET", "/api/sessions/{session_id}/partial"),
-        ("DELETE", "/api/sessions/{session_id}/partial/{turn}"),
         ("POST", "/api/sessions/{session_id}/runs/{run_id}/output"),
         ("GET", "/api/sessions/{session_id}/runs/{run_id}/output"),
-        ("POST", "/api/sessions/{session_id}/reattach"),
         ("GET", "/api/chat-models"),
         ("POST", "/api/chats/uploads"),
         ("GET", "/api/chats/uploads/wait"),

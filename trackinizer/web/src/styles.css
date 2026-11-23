@@ -9,6 +9,10 @@
   --text: #f7f8f8;
   --ink-muted: #d0d6e0;
   --muted: #8a8f98;
+  /* Machine ink: the ramp's one neutral grey, r=g=b, for the lines that locate a
+     record rather than say what it reads. The app's other greys carry a blue cast,
+     which is what made a fold's footer read as a smear. */
+  --ink-machine: #b8b8b8;
   --ink-tertiary: #62666d;
   --line: #232426;
   --line-strong: #343538;
@@ -22,6 +26,14 @@
   --red: #d14545;
   --urgent: #f2994a;
   --violet: #9d8cf0;
+  /* The top bar's station groups take these in turn; --on-group is text on one. */
+  --group-1: #b9a7f5;
+  --group-2: #e8b55c;
+  --group-3: #6fd9c4;
+  --group-4: #f2908c;
+  --on-group: #0b0c0d;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans:
     "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
@@ -47,6 +59,17 @@
      colour and --muted keep 4.5:1. */
   --diff-add: #2ea04326;
   --diff-del: #f8514926;
+  /* THE CODE PANE'S OWN SYNTAX RAMP. The --code-* set above is GitHub's, and it stays
+     the transcript's and the diff's. A whole file read at length wanted a palette of
+     this app rather than of GitHub, so the pane takes the station bar's four group
+     hues, which already sit together by design. Each clears 4.5:1 on every surface in
+     both themes (styles.test.ts); the pane maps --code-* onto these (code/code.css),
+     so the editor and the plain listing follow one ramp. */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --control-height: 32px;
   --radius: 6px;
   --panel-radius: 10px;
@@ -59,6 +82,21 @@
   background: var(--frame);
   -webkit-font-smoothing: antialiased;
 }
+/* THE DESIGN'S PANES — the chat, the code stage, the review register, the opened page —
+   are set in the
+   two faces the design is drawn in, both already in this app's own bundle: Inter for
+   what a reader reads and JetBrains Mono for what the machine said. The centred panel
+   is on the list because it opens from a portal on the document body, so it inherits
+   none of the pane behind it's face — a title in the system stack over a pane in Inter
+   is two faces for one answer. Everything else
+   in the product keeps the system stacks above. The rule is pane-scoped, not root-scoped,
+   and guarded on the default skin, so a skin that names its own ink — the DOS one its VGA
+   face — keeps it inside these panes too. */
+:root:not([data-skin]) :is(.chat-panel, .ui-panel, .ui-composed) {
+  font-family: var(--sans);
+  --mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: "Inter Variable", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
 :root[data-theme="light"] {
   --bg: #f7f9fb;
   --surface: #ffffff;
@@ -70,6 +108,8 @@
   --ink-muted: #344255;
   /* Over 4.5:1 on a selected row's tint, --accent-soft, too (styles.test.ts). */
   --muted: #5d6978;
+  /* Neutral in this theme too, and over 4.5:1 on every light surface (styles.test.ts). */
+  --ink-machine: #5c5c5c;
   --ink-tertiary: #6c7886;
   --line: #dce3ea;
   --line-strong: #bec9d4;
@@ -81,6 +121,11 @@
   --red: #b62f36;
   --urgent: #ae5717;
   --violet: #694fb0;
+  --group-1: #6d4bb8;
+  --group-2: #8f5410;
+  --group-3: #0f766e;
+  --group-4: #b3322c;
+  --on-group: #ffffff;
   --l-provenance: #657487;
   --l-work: #657487;
   /* Text too: an agent's name in the console, a diff's added lines. */
@@ -249,6 +294,9 @@ a.ws-switch:hover {
   opacity: 0.45;
   cursor: default;
 }
+/* The graph draws to the frame's edges: the fit frames the field to the box it is
+   given, so the main area's margin and border are that much field it cannot spend. */
+.app.graph-bleed .main { margin: 0; border: 0; border-radius: 0; }
 .icon-btn {
   width: 28px;
   height: 28px;
@@ -788,6 +836,8 @@ body:has(.bulk) .toast-viewport {
     max-width: none;
   }
 }
+/* CSS only: a SMIL timeline inside an agent's `drawing` ignores this rule, so drawing.tsx
+   pauses those timelines itself. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

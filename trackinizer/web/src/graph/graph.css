@@ -3,336 +3,379 @@
 
 /* The tools: the search field and the count. */
 .graph-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 260px;
-  height: 28px;
-  padding: 0 5px 0 9px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--muted);
+  display: flex; align-items: center; gap: 8px; width: 260px; height: 28px; padding: 0 5px 0 9px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--muted);
 }
-.graph-search:focus-within {
-  outline: 2px solid var(--accent-hover);
-  outline-offset: 2px;
-}
-.graph-search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: none;
-  outline: none;
-  font-size: 12.5px;
-  color: var(--text);
-}
-.graph-search input::placeholder {
-  color: var(--muted);
-}
-.graph-count {
-  font-size: 12.5px;
-  white-space: nowrap;
-}
-.graph .view-tools .btn[aria-pressed="true"] {
-  background: var(--surface-hover);
-  color: var(--text);
-}
+.graph-search:focus-within { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
+.graph-search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 12.5px; color: var(--text); }
+.graph-search input::placeholder { color: var(--muted); }
+.graph .view-tools .btn[aria-pressed="true"] { background: var(--surface-hover); color: var(--text); }
 
 /* The focus row: a chips row (lists.css) of its own. */
-.graph-focus {
-  align-items: center;
-  gap: 6px 10px;
-  font-size: 12.5px;
-}
-.graph-focus .fchip .ic {
-  color: var(--muted);
-}
-.graph-focus-name {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.graph-seg-count {
-  margin-left: 5px;
-  font-size: 11px;
-  color: var(--muted);
-}
-.view-seg button[aria-pressed="true"] .graph-seg-count {
-  color: var(--ink-muted);
-}
+.graph-focus { align-items: center; gap: 6px 10px; font-size: 12.5px; }
+.graph-focus .fchip .ic { color: var(--muted); }
+.graph-focus-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-seg-count { margin-left: 5px; font-size: 11px; color: var(--muted); }
+.view-seg button[aria-pressed="true"] .graph-seg-count { color: var(--ink-muted); }
 
 /* The left column (search results or the roots), then the canvas. */
-.graph-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  position: relative;
-}
-.graph-body > aside {
-  width: 330px;
-  flex-shrink: 0;
-}
-.graph-body > .roots.is-compact {
-  width: 44px;
-}
-.graph-body > .panel-strip {
-  width: 40px;
-}
-/* Peek over the canvas takes at most 45% of it, so the graph beside it stays the
-   larger part: 540 px of a 1,280 px window's canvas left it 43%. */
+.graph-body { flex: 1; min-height: 0; display: flex; position: relative; }
+.graph-body > aside { width: 330px; flex-shrink: 0; }
+.graph-body > .roots.is-compact { width: 44px; }
+.graph-body > .panel-strip { width: 40px; }
+/* Peek over the canvas is the design's card: a black panel floating on the field,
+   14 in from its edge, clear of the top bar and the timeline. Nothing of the app's
+   column is left in it — no grey ground, no border down one side — because the
+   record it holds is drawn to sit on the canvas, not beside it.
+   It stands on the right, where the design put its legend, so the legend folds away
+   while a record is open: one panel per corner. Collapsing the record brings the
+   key back, and the strip leaves room for it (below).
+   The width starts between the design and us: its `#insp` is 360px, which reads
+   well only because its 20px title wraps, and at its 340px briefing width a chain
+   step's title ellipsised. 430px holds a chain row on one line without leaving the
+   13px body text lost across the card — and it is only where the drag on Peek's
+   left edge starts, since how much of the field a record should leave is not one
+   reader's answer. */
 .graph-peek .peek {
-  width: min(540px, max(360px, 45%));
+  top: 52px; right: 14px; bottom: 62px; width: min(var(--peek-w, 430px), 82%);
+  background: var(--p-panel); border: 1px solid var(--p-line); border-radius: 8px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .55); backdrop-filter: blur(12px); overflow: hidden;
 }
-.graph-panel {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--bg);
-  border-right: 1px solid var(--line);
-}
-.graph-panel-h {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 6px 2px 14px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.graph-panel-h b {
-  color: var(--ink-muted);
-  font-weight: 500;
-}
-.graph-panel .group-h {
-  height: 30px;
-  padding: 0 12px 0 14px;
-  font-size: 12px;
-}
-.graph-panel .row {
-  height: 34px;
-  padding: 0 12px 0 14px;
-  gap: 8px;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.graph-panel .row .ic {
-  color: var(--muted);
-}
-.graph-panel .row-ref {
-  min-width: 0;
-}
-.graph-panel mark {
-  background: var(--accent-soft);
-  color: var(--text);
-  border-radius: 2px;
-}
+.graph-stage:has(.graph-peek .peek:not([hidden])) .proto-legend { display: none; }
+.graph-panel { display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); }
+.graph-panel-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 2px 14px; font-size: 12px; color: var(--muted); }
+.graph-panel-h b { color: var(--ink-muted); font-weight: 500; }
+.graph-panel .group-h { height: 30px; padding: 0 12px 0 14px; font-size: 12px; }
+.graph-panel .row { height: 34px; padding: 0 12px 0 14px; gap: 8px; font-size: 12.5px; cursor: pointer; }
+.graph-panel .row .ic { color: var(--muted); }
+.graph-panel .row-ref { min-width: 0; }
+.graph-panel mark { background: var(--accent-soft); color: var(--text); border-radius: 2px; }
 .graph-panel-foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 9px 12px 9px 14px;
-  border-top: 1px solid var(--line);
-  font-size: 12.5px;
-  color: var(--accent-hover);
+  display: flex; align-items: center; gap: 6px; padding: 9px 12px 9px 14px; border-top: 1px solid var(--line);
+  font-size: 12.5px; color: var(--accent-hover);
 }
-.graph-panel-foot:hover {
-  background: var(--surface-raised);
-}
+.graph-panel-foot:hover { background: var(--surface-raised); }
 
-.graph-stage {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-.graph-canvas {
-  position: absolute;
-  inset: 0;
-}
-.graph-stage > .read-error {
-  position: absolute;
-  top: 12px;
-  left: 18px;
-  right: 18px;
-}
-.graph-ask {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: grid;
-  place-items: center;
-  background: color-mix(in srgb, var(--bg) 80%, transparent);
-}
+.graph-stage { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.graph-canvas { position: absolute; inset: 0; }
+.graph-stage > .read-error { position: absolute; top: 12px; left: 18px; right: 18px; }
+.graph-ask { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 80%, transparent); }
 
 /* Over the canvas: the tooltip, the key and the zoom buttons, as the app's menus float. */
-.graph-tip,
-.graph-key,
-.graph-zoom {
-  position: absolute;
-  z-index: 3;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-overlay);
-  box-shadow:
-    0 16px 48px #000b,
-    inset 0 1px 0 #ffffff08;
+.graph-tip, .graph-key, .graph-zoom {
+  position: absolute; z-index: 3; border: 1px solid var(--line-strong); background: var(--surface-overlay);
+  box-shadow: 0 16px 48px #000b, inset 0 1px 0 #ffffff08;
 }
-.graph-tip {
-  max-width: 320px;
-  pointer-events: none;
-  padding: 7px 10px;
-  border-radius: var(--panel-radius);
-  font-size: 12.5px;
-  color: var(--text);
-}
-.graph-tip-ref {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 2px;
-  font: 500 11.5px var(--mono);
-  color: var(--muted);
-}
-.graph-tip-hint {
-  margin-top: 4px;
-  font-size: 11.5px;
-  color: var(--muted);
-}
+.graph-tip { max-width: 320px; pointer-events: none; padding: 7px 10px; border-radius: var(--panel-radius); font-size: 12.5px; color: var(--text); }
+.graph-tip-ref { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; font: 500 11.5px var(--mono); color: var(--muted); }
+.graph-tip-hint { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
 /* The key: a column of Kinds, Links and Status in the canvas's top right corner,
    above the zoom buttons, scrolling once the canvas is too short for it. */
 .graph-key {
-  right: 12px;
-  top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: calc(100% - 124px);
-  overflow-y: auto;
-  padding: 8px 12px 10px;
-  border-radius: var(--panel-radius);
-  font-size: 12px;
-  color: var(--ink-muted);
-  scrollbar-width: thin;
+  right: 12px; top: 12px; display: flex; flex-direction: column; gap: 8px; max-height: calc(100% - 124px); overflow-y: auto;
+  padding: 8px 12px 10px; border-radius: var(--panel-radius); font-size: 12px; color: var(--ink-muted); scrollbar-width: thin;
 }
-.graph-key h2 {
-  margin: 0 0 2px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 16px;
-  color: var(--muted);
-}
-.graph-key ul {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.graph-key li,
-.graph-key li > button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 22px;
-  white-space: nowrap;
-}
-.graph-key li > button {
-  flex: 1;
-  margin: 0 -6px;
-  padding: 0 6px;
-  border-radius: 4px;
-  color: inherit;
-  font-size: inherit;
-  text-align: left;
-}
-.graph-key li > button:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-.graph-key li > button[aria-pressed="false"] {
-  color: var(--muted);
-  text-decoration: line-through;
-}
-.graph-key li > button[aria-pressed="false"] .graph-dot {
-  opacity: 0.35;
-}
+.graph-key h2 { margin: 0 0 2px; font-size: 11px; font-weight: 500; line-height: 16px; color: var(--muted); }
+.graph-key ul { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.graph-key li, .graph-key li > button { display: flex; align-items: center; gap: 7px; min-height: 22px; white-space: nowrap; }
+.graph-key li > button { flex: 1; margin: 0 -6px; padding: 0 6px; border-radius: 4px; color: inherit; font-size: inherit; text-align: left; }
+.graph-key li > button:hover { background: var(--surface-hover); color: var(--text); }
+.graph-key li > button[aria-pressed="false"] { color: var(--muted); text-decoration: line-through; }
+.graph-key li > button[aria-pressed="false"] .graph-dot { opacity: .35; }
 /* One box for every mark, so the names line up whatever draws them. */
-.graph-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-.graph-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-.graph-tally {
-  margin-left: auto;
-  padding-left: 14px;
-  color: var(--muted);
-}
-/* Edge hues are quiet on purpose; a wide stroke keeps them legible here. */
-.graph-stroke {
-  width: 14px;
-  height: 0;
-  border-top-width: 3px;
-}
-.graph-ring {
-  box-sizing: border-box;
-  width: 10px;
-  height: 10px;
-  border: 2px solid;
-  border-radius: 50%;
-}
-.graph-zoom {
-  right: 12px;
-  bottom: 12px;
-  display: flex;
-  flex-direction: column;
-  border-radius: 8px;
-  overflow: hidden;
-}
-/* Beside a collapsed Peek's strip (peek.css), not under it. */
-.graph-stage:has(.peek-strip) :is(.graph-key, .graph-zoom) {
-  right: 52px;
-}
-.graph-zoom .icon-btn {
-  border-radius: 0;
-  font-size: 16px;
-}
-.graph-zoom .icon-btn + .icon-btn {
-  border-top: 1px solid var(--line);
-}
+.graph-mark { display: inline-grid; place-items: center; width: 14px; height: 14px; flex-shrink: 0; }
+.graph-dot { width: 10px; height: 10px; border-radius: 50%; }
+.graph-tally { margin-left: auto; padding-left: 14px; color: var(--muted); }
+/* Edge hues are quiet on purpose; a wide stroke keeps them legible here. The style
+   belongs to the rule, not the inline colour: a border with no style draws nothing. */
+.graph-stroke { width: 14px; height: 0; border-top: 3px solid; }
+.graph-ring { box-sizing: border-box; width: 10px; height: 10px; border: 2px solid; border-radius: 50%; }
+.graph-zoom { right: 12px; bottom: 12px; display: flex; flex-direction: column; border-radius: 8px; overflow: hidden; }
+/* Beside a collapsed Peek's strip (peek.css), not under it. The key is static
+   inside `.proto-legend`, so the column that moves is the wrapper. */
+.graph-stage:has(.peek-strip) :is(.proto-legend, .graph-zoom) { right: 52px; }
+.graph-zoom .icon-btn { border-radius: 0; font-size: 16px; }
+.graph-zoom .icon-btn + .icon-btn { border-top: 1px solid var(--line); }
 
 @media (max-width: 760px) {
-  .graph-search {
-    width: 100%;
-  }
-  .graph-body {
-    flex-direction: column;
-  }
-  .graph-body > aside {
-    width: auto;
-    max-height: 40%;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
+  .graph-search { width: 100%; }
+  .graph-body { flex-direction: column; }
+  .graph-body > aside { width: auto; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--line); }
   /* Stacked over the canvas, the collapsed results lie across it. */
-  .graph-body > .panel-strip.is-left {
-    width: auto;
-    flex-direction: row;
-    padding: 0 6px;
-    border-right: 0;
-  }
-  .graph-body > .panel-strip .panel-strip-text {
-    writing-mode: horizontal-tb;
-  }
-  .graph-focus-name {
-    max-width: 200px;
-  }
+  .graph-body > .panel-strip.is-left { width: auto; flex-direction: row; padding: 0 6px; border-right: 0; }
+  .graph-body > .panel-strip .panel-strip-text { writing-mode: horizontal-tb; }
+  .graph-focus-name { max-width: 200px; }
 }
+
+/* ---- the design prototype's chrome: black stage, top bar, briefing, timeline, legend ---- */
+.graph-stage { background: var(--p-ground); }
+.proto-topbar { border-bottom: 1px solid var(--p-line); background: var(--p-ground); gap: 12px; padding-left: 14px; }
+/* The design's canvas is the window: its controls float on top of the field, they
+   do not stand above it. A row in the column costs the fit its own height in
+   pixels, and the fit is what decides how large a dot reads -- 52px of chrome
+   was the entire gap between the design's k .275 and our .257 at five thousand. */
+.graph > .proto-topbar { position: absolute; z-index: 4; top: 0; left: 0; right: 0; }
+.proto-topbar .graph-search { background: var(--p-sunken); border-color: var(--p-line-strong); }
+.proto-stat { font: 400 12px var(--mono); color: var(--p-muted); white-space: nowrap; }
+.proto-fit { font: 500 12px var(--mono); color: var(--p-fg-2); border: 1px solid var(--p-line-strong); border-radius: 6px; padding: 4px 12px; }
+.proto-fit:hover { background: var(--p-hover); }
+
+.proto-briefing {
+  position: absolute; z-index: 3; top: 52px; left: 14px; bottom: 62px; width: 340px;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--p-panel); border: 1px solid var(--p-line); border-radius: 10px;
+  color: var(--p-fg-2); backdrop-filter: blur(6px);
+  transition: transform .24s cubic-bezier(.3, .7, .2, 1);
+}
+/* Hidden, it slides past the viewport's edge rather than going: the design's
+   `#side.hidden`, and its `#sShow` pill takes the corner the panel left. */
+.proto-briefing.is-hidden { transform: translateX(calc(-100% - 24px)); }
+.proto-hide {
+  width: 24px; height: 24px; border: 0; border-radius: 4px; background: none;
+  display: grid; place-items: center; color: var(--p-muted); cursor: pointer;
+}
+.proto-hide:hover { color: var(--p-fg-2); background: var(--p-hover); }
+.proto-show {
+  position: absolute; z-index: 2; top: 52px; left: 14px; height: 28px; padding: 0 10px;
+  display: flex; align-items: center; gap: 6px; border: 1px solid var(--p-line-strong); border-radius: 6px;
+  background: color-mix(in srgb, var(--p-ground) 60%, transparent); font: 12px var(--mono); color: var(--p-muted); cursor: pointer;
+}
+.proto-show:hover { color: var(--p-fg-2); border-color: var(--p-muted); }
+.proto-briefing > header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--p-line);
+  font: 500 12px var(--mono); color: var(--p-muted);
+}
+.proto-briefing-body { overflow-y: auto; padding: 14px; font-size: 12.5px; line-height: 1.5; }
+.proto-briefing-body h3 {
+  margin: 16px 0 8px; font: 500 11px var(--mono); color: var(--p-muted);
+  display: flex; justify-content: space-between;
+}
+.proto-briefing-body h3 em { font-style: normal; color: var(--p-muted); }
+.proto-asof { display: flex; justify-content: space-between; align-items: center; font: 400 11.5px var(--mono); color: var(--p-muted); }
+.proto-summary { margin: 10px 0 0; color: var(--p-muted); }
+.proto-summary b { color: var(--p-fg-2); font-weight: 600; }
+.proto-camein { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.proto-camein li { display: grid; grid-template-columns: 8px 84px 1fr 34px; align-items: center; gap: 8px; }
+.proto-camein li > i { width: 7px; height: 7px; border-radius: 50%; }
+.proto-camein-label { color: var(--p-muted); }
+.proto-bar { position: relative; height: 3px; background: var(--p-line); border-radius: 2px; overflow: hidden; }
+.proto-bar i { position: absolute; inset: 0; transform-origin: left; border-radius: 2px; }
+.proto-delta { text-align: right; color: var(--p-fg-2); font-size: 11.5px; }
+.proto-learned { list-style: none; margin: 0; padding: 0; }
+.proto-learned li { padding: 8px 0; border-bottom: 1px solid var(--p-line); }
+.proto-learned li:last-child { border-bottom: 0; }
+/* The design's `.pill`: every reference wears its kind's hue, tinted into the
+   black ground, instead of a grey box. `--c` is set inline from the palette. */
+.proto-chip {
+  border: 1px solid color-mix(in srgb, var(--c, var(--p-line-strong)) 70%, transparent);
+  border-radius: 4px; background: color-mix(in srgb, var(--c, var(--p-hover)) 14%, transparent);
+  color: var(--c, var(--p-fg-2));
+  font: 500 11px var(--mono); padding: 1px 7px; cursor: pointer;
+}
+.proto-chip:hover { background: color-mix(in srgb, var(--c, var(--p-hover)) 24%, transparent); }
+.proto-chip.inline { display: inline; }
+.proto-verdict { font: 500 11px var(--mono); margin: 0 6px; color: var(--c, var(--p-vpos)); }
+.proto-verdict.disproven { color: var(--c, var(--p-vneg)); }
+.proto-learned-line { margin-top: 5px; color: var(--p-muted); }
+.proto-attention { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+/* Each is marked by a ring in the colour of what is wrong with it: counter-evidence's
+   amber for a verdict that has fallen behind the data, the undecidable violet for a
+   claim standing against the weight on it. Picked, it lights them on the canvas and
+   opens its list here. */
+.proto-att {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 7px 8px; margin: 0 -8px;
+  border: 1px solid transparent; border-radius: 6px; background: none; text-align: left; cursor: pointer;
+}
+.proto-att:hover:not(:disabled) { background: var(--p-picked); }
+.proto-att.is-on { background: var(--p-picked); border-color: var(--p-line-strong); }
+.proto-att:disabled { cursor: default; opacity: .45; }
+.proto-att > span { flex: 1; min-width: 0; }
+.proto-att-hint { flex: none; font: 10.5px var(--mono); font-style: normal; color: var(--p-muted); }
+.proto-att.is-on .proto-att-hint { color: var(--p-fg-2); }
+.proto-flagged {
+  list-style: none; margin: 6px 0 0; padding: 2px 0 2px 19px; display: flex; flex-direction: column; gap: 1px;
+  border-left: 1px solid var(--p-line);
+}
+.proto-flag {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 6px; margin: 0 -6px; border: 0; border-radius: 4px; background: none;
+  color: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.proto-flag:hover { background: var(--p-hover); }
+.proto-flag-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--p-fg-2); }
+.proto-flag-side { flex: none; color: var(--p-vneg, var(--p-vneg)); font-size: 10.5px; }
+.proto-ring { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid; flex: none; margin-top: 3px; }
+.proto-ring.is-against { border-color: var(--p-vneg, var(--p-vneg)); }
+.proto-ring.is-odd { border-color: var(--p-odd); }
+.proto-attention b { display: block; color: var(--p-fg-2); font-weight: 600; }
+.proto-attention span span { display: block; }
+.proto-next-why { margin: 0; color: var(--p-muted); }
+.proto-next { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.proto-next button { border: 0; background: none; padding: 0; color: var(--p-fg-2); font-size: 12.5px; text-align: left; cursor: pointer; }
+.proto-next-line { display: block; color: var(--p-vpos); font-size: 11.5px; margin-top: 2px; }
+/* The row's receipts, the design's `.bm`: one mono line of counts, the price last. */
+.proto-next-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 3px; font: 10.5px var(--mono); color: var(--p-muted); }
+/* The bill, the design's `.spend`: four boxes of the same size, ink over its name. */
+.proto-spend { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.proto-spend div { padding: 7px 8px; border-radius: 6px; background: var(--p-hover); }
+.proto-spend b { display: block; font: 500 13px var(--mono); color: var(--p-fg-2); }
+.proto-spend small { display: block; margin-top: 1px; font: 10px var(--mono); color: var(--p-muted); }
+.proto-spend-note { margin: 8px 0 0; font-size: 12px; line-height: 1.45; color: var(--p-muted); }
+
+.proto-timeline {
+  position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; height: 44px;
+  display: flex; align-items: center; gap: 12px; padding: 0 14px;
+  background: linear-gradient(to top, color-mix(in srgb, var(--p-ground) 90%, transparent), color-mix(in srgb, var(--p-ground) 0%, transparent));
+}
+.proto-play {
+  width: 26px; height: 26px; flex-shrink: 0; border-radius: 50%;
+  border: 1px solid var(--p-line-strong); background: var(--p-sunken); color: var(--p-fg-2); cursor: pointer;
+  display: grid; place-items: center;
+}
+.proto-play-glyph { font-size: 9px; line-height: 1; }
+.proto-track { position: relative; flex: 1; height: 22px; display: flex; align-items: flex-end; gap: 1px; cursor: ew-resize; }
+.proto-track i { flex: 1; background: var(--p-track); border-radius: 1px; min-height: 2px; }
+.proto-scrub {
+  position: absolute; top: 50%; width: 9px; height: 9px; margin: -4px 0 0 -4px;
+  border-radius: 50%; background: var(--p-fg-2);
+}
+.proto-date { font: 400 11.5px var(--mono); color: var(--p-muted); white-space: nowrap; }
+
+.proto-legend { position: absolute; z-index: 3; right: 14px; bottom: 62px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.proto-legend .graph-key { position: static; }
+.proto-legend-pill {
+  border: 1px solid var(--p-line-strong); border-radius: 7px; background: var(--p-panel);
+  color: var(--p-muted); font: 500 11.5px var(--mono); padding: 5px 12px; cursor: pointer;
+}
+.proto-legend-pill:hover { color: var(--p-fg-2); }
+
+/* ---- the design's type ramp -------------------------------------------------
+   Measured off the prototype with getComputedStyle, rule by rule. Two things
+   were wrong here at once. The app's face is 14px Inter carrying -0.05px of
+   tracking, which is a sans-serif's tracking: on JetBrains Mono it closes the
+   counterspaces, so every `Belief#428` reads as a smudge and the sizes drift
+   (12.5, 12, 11.5, 11, 10.5 all in use where the design uses five fixed roles).
+   And the app had two greys where the design has three: it set a record's TITLE
+   in --muted, which is the design's dimmest step, so the one thing worth
+   reading was the least legible. The ladder itself is tokens.css's --p-fg,
+   --p-fg-2 and --p-muted, which turn over with the theme; what is here is the
+   sizes and the faces, scoped to `.graph`, since the lists are the app's own
+   and this page is the design's. */
+.graph {
+  font: 13px/1.5 var(--sans);
+  letter-spacing: normal;
+}
+/* The design's `.mono` swaps the family and leaves the size to the role. */
+.graph .mono { font-size: inherit; letter-spacing: normal; }
+
+/* The top bar: the count is the design's dimmest thing on screen. */
+.graph .graph-search { font: 12px var(--mono); }
+.graph .graph-search input { font: 12px var(--mono); color: var(--p-fg); }
+.graph .graph-search input::placeholder { color: var(--p-muted); }
+.graph .proto-stat { font: 400 11.5px var(--mono); color: var(--p-muted); }
+.graph .proto-fit { font: 500 12px var(--mono); color: var(--p-fg-2); }
+.graph .proto-fit:hover { color: var(--p-fg); }
+
+/* The briefing column. */
+.graph .proto-briefing > header { font: 500 11px var(--mono); color: var(--p-muted); }
+.graph .proto-briefing-body { font-size: 13px; line-height: 1.5; color: var(--p-fg); }
+.graph .proto-briefing-body h3 { font: 500 10.5px var(--mono); color: var(--p-muted); }
+.graph .proto-briefing-body h3 em { color: var(--p-muted); }
+.graph .proto-asof { font: 400 11px var(--mono); color: var(--p-muted); }
+/* Prose in the column is the body's own 13px, as the design's was; only labels,
+   counts and refs step down into mono. */
+.graph .proto-summary { font-size: 13px; line-height: 1.5; color: var(--p-fg-2); }
+.graph .proto-summary b { font-weight: 500; color: var(--p-fg); }
+.graph .proto-camein li { font: 11.5px var(--mono); color: var(--p-fg-2); }
+.graph .proto-camein-label { color: inherit; }
+.graph .proto-delta { font-size: 11.5px; color: var(--p-fg); }
+.graph .proto-learned li { font: 11px var(--mono); }
+.graph .proto-learned-line { font: 13px/1.5 var(--sans); color: var(--p-fg-2); }
+.graph .proto-chip { font: 500 11px var(--mono); color: var(--c, var(--p-fg)); }
+.graph .proto-verdict { font: 500 11px var(--mono); }
+.graph .proto-attention b { font-size: 13px; font-weight: 500; color: var(--p-fg); }
+/* Only the "why" line under a flag's count, not every span in the list. */
+.graph .proto-attention span span { font-size: 12px; color: var(--p-muted); }
+.graph .proto-flag { font-size: 12px; }
+.graph .proto-flag-title { color: var(--p-fg); }
+.graph .proto-flag-side { font: 10.5px var(--mono); color: var(--p-vneg); }
+.graph .proto-next-why { font: 12.5px/1.5 var(--sans); color: var(--p-fg-2); }
+.graph .proto-next button { font-size: 13px; line-height: 1.35; color: var(--p-fg); }
+.graph .proto-next-line { font-size: 12px; color: var(--p-fg-2); }
+.graph .proto-date { font: 400 11.5px var(--mono); color: var(--p-muted); }
+.graph .proto-legend-pill { font: 12px var(--mono); color: var(--p-fg-2); }
+.graph .proto-legend-pill:hover { color: var(--p-fg); }
+
+/* The key and the tooltip. */
+.graph .graph-key { font: 11.5px var(--mono); color: var(--p-fg-2); }
+.graph .graph-key h2 { font: 500 10.5px var(--mono); color: var(--p-muted); }
+.graph .graph-tip { font-size: 12px; color: var(--p-fg); }
+.graph .graph-tip-ref { font: 500 11.5px var(--mono); color: var(--p-muted); }
+.graph .graph-tip-hint { font-size: 11px; color: var(--p-muted); }
+
+/* The roots list is the app's, but it sits on the design's canvas. */
+.graph .graph-panel-h { font: 500 11px var(--mono); color: var(--p-muted); }
+.graph .graph-panel-h b { color: var(--p-fg-2); font-weight: 500; }
+.graph .graph-panel .row { font-size: 12px; }
+.graph .graph-panel .group-h { font: 500 10.5px var(--mono); color: var(--p-muted); }
+.graph .graph-panel-foot { font-size: 11.5px; }
+.graph .graph-focus { font-size: 12px; }
+
+/* The panel's own ladder: title near-white, support mid, machinery dim. Mono is
+   only ever a ref, a count, a cost or a date; the design's headings and prose are
+   the sans, which is why `.briefing-sec h5` keeps the family the app's face gives
+   it rather than the 10.5px mono the prototype's own sheet uses at that role. */
+.graph .peek-bar { height: 42px; padding: 0 8px 0 12px; border-bottom: 0; color: var(--p-muted); }
+.graph .peek-bar > .mono { font-size: 11.5px; color: var(--p-fg-2); }
+.graph .peek-bar .icon-btn { color: var(--p-muted); }
+.graph .peek-bar .icon-btn:hover { color: var(--p-fg); background: var(--p-hover); }
+.graph .peek-crumb { font: 11.5px var(--mono); color: var(--p-muted); }
+button.peek-crumb:hover { color: var(--p-fg); }
+/* The foot is the design's `.ia`: the record's commands, under the body it reads. */
+.graph .peek-foot { flex: none; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--p-line); }
+.graph .peek-foot .btn { border-color: var(--p-line-strong); background: none; color: var(--p-fg-2); font: 11.5px var(--mono); }
+.graph .peek-foot .btn:hover { border-color: var(--p-muted); background: var(--p-hover); color: var(--p-fg); }
+.graph .briefing-crumb { font-size: 11px; }
+.graph .briefing-ref { font: 500 12px var(--mono); }
+/* The design's hero title is 20px over 10.5px labels; the panel read flat until it
+   carried that spread too. */
+.graph .briefing-title { margin-top: 8px; font-size: 20px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.3; color: var(--p-fg); }
+.graph .briefing-sub { font: 11px var(--mono); color: var(--p-fg-2); }
+.graph .briefing-sec h5 { font-size: 11px; font-weight: 500; letter-spacing: normal; color: var(--p-muted); }
+.graph .briefing-sec-side { color: var(--p-muted); }
+.graph .briefing-prose { font-size: 13px; line-height: 1.6; color: var(--p-fg-2); }
+.graph .briefing-prose em { color: var(--p-fg); }
+.graph .briefing-row { font-size: 12px; color: var(--p-fg); }
+.graph .briefing-row-title { color: var(--p-fg); }
+.graph .briefing-row:hover .briefing-row-title { color: var(--p-fg); }
+.graph .briefing-row-ref { font: 11px var(--mono); color: var(--p-muted); }
+.graph .briefing-row-side { font: 10.5px var(--mono); color: var(--p-muted); }
+.graph .briefing-pill { font: 500 11px var(--mono); color: var(--c, var(--p-fg)); }
+.graph .briefing-pill:hover { color: var(--c, var(--p-fg)); }
+/* The verdict bar and its key, at the design's steps. Its proven segment is
+   --p-proven rather than the evidence green, which reads muddy at a bar's width
+   on black and was the main reason the panel looked dulled next to the prototype. */
+.graph .briefing-vbar .is-proven { background: var(--p-proven); }
+.graph .briefing-vbar .is-unproven { background: var(--p-track); }
+.graph .briefing-vbar .is-disproven { background: var(--p-vneg); }
+.graph .briefing-vkey .is-proven { background: var(--p-vpos); }
+.graph .briefing-vkey .is-unproven { background: var(--p-track); }
+.graph .briefing-vkey .is-disproven { background: var(--p-vneg); }
+.graph .briefing-vkey { font-size: 10.5px; color: var(--p-fg-2); }
+.graph .briefing-turn,
+.graph .briefing-turn-title { font-size: 12px; line-height: 1.45; color: var(--p-fg-2); }
+.graph .briefing-turn-date { font: 10.5px var(--mono); color: var(--p-muted); }
+.graph .briefing-next-run { font-size: 12.5px; color: var(--p-fg); }
+.graph .briefing-next-template { color: var(--p-fg-2); }
+.graph .briefing-next-settle { font-size: 12px; color: var(--p-fg-2); }
+.graph .briefing-next-meta { font: 10.5px var(--mono); color: var(--p-muted); }
+.graph .briefing-actions .btn { font: 12px var(--mono); color: var(--p-fg-2); }
+
+/* A cluster's briefing is the panel's own body, so it wears no box of its own:
+   the card it sits in is the box. Its margins line the record's up. */
+.graph .briefing {
+  flex: 1; min-height: 0; background: none; border: 0; border-radius: 0; color: var(--p-fg);
+  padding-bottom: 10px;
+}
+.graph .briefing-hero, .graph .briefing-sec { padding-left: 16px; padding-right: 16px; }

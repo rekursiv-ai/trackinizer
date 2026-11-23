@@ -883,6 +883,9 @@ class TestRoutes:
                     "created": early,
                     "belief_judgement": "proven",
                     "belief_confidence": 0.8,
+                    "owner": None,
+                    "marginal_cost_agent_usd": None,
+                    "marginal_cost_resource_usd": None,
                 },
                 {
                     "id": child_id,
@@ -893,9 +896,14 @@ class TestRoutes:
                     "created": late,
                     "belief_judgement": None,
                     "belief_confidence": None,
+                    "owner": None,
+                    "marginal_cost_agent_usd": None,
+                    "marginal_cost_resource_usd": None,
                 },
             ],
             edge_rows,
+            # The ``edge_added`` audit rows the graph dates each wire by; none here.
+            [],
         ]
         graph = await web.web_graph(
             cast(Request, request),
@@ -954,6 +962,8 @@ class TestRoutes:
                         "valence": None,
                     },
                 ],
+                # The ``edge_added`` audit rows the graph dates each wire by.
+                [],
             ],
         )
         graph = await web.web_graph(
@@ -989,7 +999,7 @@ class TestRoutes:
                 limit=limit,
             )
             assert graph == {"nodes": [], "edges": []}
-            assert engine.conn.fetch.call_args_list[-2].args[1] == limit
+            assert engine.conn.fetch.call_args_list[-3].args[1] == limit
 
     @pytest.mark.asyncio
     async def test_subscribe_streams_sse(self) -> None:
@@ -3351,10 +3361,15 @@ async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
                 "created": datetime(2026, 5, 18, tzinfo=UTC),
                 "belief_judgement": None,
                 "belief_confidence": None,
+                "owner": None,
+                "marginal_cost_agent_usd": None,
+                "marginal_cost_resource_usd": None,
             }
             for node_id, seq, title in ((peer, 1, "Peer"), (focus, 2, "Focus"))
         ],
         [{"from_id": peer, "to_id": focus, "edge_kind": "narrows", "valence": None}],
+        # The ``edge_added`` audit rows the graph dates each wire by; none here.
+        [],
     ]
 
     graph = await web.web_graph(

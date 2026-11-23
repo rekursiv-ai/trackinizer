@@ -149,6 +149,7 @@ def test_asker_reader_keeps_the_humans_personal_rights(
         audiences=asker.read_audiences,
         org="lab.example",
         oversight=role == "admin",
+        assistant="" if assistant is None else assistant.email,
     )
 
 
@@ -164,18 +165,18 @@ class _Policy(DefaultPolicy):
 
 
 @pytest.mark.parametrize(
-    ("orgs", "email", "hosted_domain", "org", "oversight"),
+    ("orgs", "email", "hosted_domain", "org", "every_chat", "oversight"),
     [
-        ("domain", "Ann@Lab.Example", "Lab.example", "lab.example", True),
-        ("domain", "Ann@Lab.Example", None, None, True),
-        ("domain", "sam@gmail.com", None, None, True),
-        ("domain", "agent@service.invalid", "service.invalid", None, False),
-        ("domain", "scout@example.com", "example.com", None, False),
-        ("single", "Ann@Lab.Example", "lab.example", None, True),
-        ("single", "agent@service.invalid", None, None, False),
-        ("single", "scout@example.com", None, None, False),
-        ("individual", "Ann@Lab.Example", "lab.example", None, True),
-        ("individual", "scout@example.com", None, None, False),
+        ("domain", "Ann@Lab.Example", "Lab.example", "lab.example", False, True),
+        ("domain", "Ann@Lab.Example", None, None, False, True),
+        ("domain", "sam@gmail.com", None, None, False, True),
+        ("domain", "agent@service.invalid", "service.invalid", None, False, False),
+        ("domain", "scout@example.com", "example.com", None, False, False),
+        ("single", "Ann@Lab.Example", "lab.example", None, True, True),
+        ("single", "agent@service.invalid", None, None, False, False),
+        ("single", "scout@example.com", None, None, True, False),
+        ("individual", "Ann@Lab.Example", "lab.example", None, False, True),
+        ("individual", "scout@example.com", None, None, False, False),
     ],
 )
 def test_session_reader_follows_the_chat_orgs_setting(
@@ -184,6 +185,7 @@ def test_session_reader_follows_the_chat_orgs_setting(
     email: str,
     hosted_domain: str | None,
     org: str | None,
+    every_chat: bool,
     oversight: bool,
 ) -> None:
     """Only a person has an organisation, which Google's hd claim names, and oversees.
@@ -204,7 +206,9 @@ def test_session_reader_follows_the_chat_orgs_setting(
         email=email.lower(),
         org=org,
         every_session=orgs == "single",
+        every_chat=every_chat,
         oversight=oversight,
+        assistant=SCOUT.email,
     )
     assert (listing.hidden, listing.oversight) == (False, False)
 
@@ -219,6 +223,7 @@ def test_without_auth_the_one_caller_reads_every_session_and_open_chat() -> None
         audiences=AUDIENCES,
         email="no-auth@localhost",
         every_session=True,
+        every_chat=True,
         oversight=True,
     )
 

@@ -1,0 +1,29 @@
+/* The cards take the width the distiller's composition needs: the view's measure
+   sets --kb-card-w from the widest row and the stage width. The fold never sets
+   the var, so its cards keep the stylesheet's 316. */
+.knowledge-card { width: var(--kb-card-w, 316px); min-width: 0; }
+
+/* A wire is a target like a card is: the run takes a wide invisible stroke,
+   and its word takes the click for the readers who aim at words. */
+.kb-wire-hit { fill: none; stroke: rgba(0, 0, 0, 0); stroke-width: 14px; pointer-events: stroke; cursor: pointer; }
+.kb-view .knowledge-said { pointer-events: fill; cursor: pointer; }
+
+/* The flow's column must be bounded or the body never overflows: .knowledge clips
+   (overflow hidden) while .kb-main grows with its content, so the stage below the
+   fold is unreachable. Bound the column, and .knowledge-body's own overflow:auto
+   does the scrolling. */
+.kb-main { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; height: 100%; }
+
+/* The session file strip and its shell: the strip is a normal flow row (never
+   floating over content), the branch below it takes the rest of the height. */
+.kb-with-files { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; height: 100%; }
+.kb-files { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: rgba(20, 21, 22, 0.9); overflow-x: auto; scrollbar-width: thin; }
+.kb-files-label { color: var(--ink-machine); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap; }
+.kb-file-tab { background: var(--surface-raised); border: 1px solid var(--line-strong); color: var(--ink-muted); border-radius: 5px; padding: 2px 10px; font: 11px ui-monospace, Menlo, monospace; cursor: pointer; white-space: nowrap; }
+.kb-file-tab:hover, .kb-file-tab[aria-selected="true"] { border-color: var(--accent); color: var(--accent-hover); }
+
+/* The inline ask inside formation and wire modals: one focused row, typed in place. */
+.kb-modal-ask { display: flex; gap: 8px; align-items: center; width: 100%; }
+.kb-modal-ask input { flex: 1 1 auto; background: var(--surface-raised); border: 1px solid var(--line-strong); color: var(--text);
+  border-radius: 6px; padding: 6px 10px; font: 12px ui-monospace, Menlo, monospace; }
+.kb-modal-ask input:focus { outline: none; border-color: var(--accent); }

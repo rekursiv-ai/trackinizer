@@ -10,6 +10,7 @@ import type { KeptView } from "./legacyViews";
 import type { Selection } from "./facets";
 import type { Range } from "./feed";
 import type { Level } from "./levels";
+import { micros } from "../live/rows";
 
 /**
  * A console view: what it picks (agents and rooms by name or pattern, CLIs),
@@ -28,9 +29,7 @@ export type View = Selection & {
 
 /** The views in the rail's order: pinned first, then the rest, each newest first. */
 export function orderViews(views: readonly View[]): View[] {
-  return views.toSorted(
-    (a, b) => Number(b.pinned) - Number(a.pinned) || b.created.localeCompare(a.created),
-  );
+  return views.toSorted((a, b) => Number(b.pinned) - Number(a.pinned) || micros(b.created) - micros(a.created));
 }
 
 /**

@@ -85,10 +85,11 @@ def main() -> int:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Node:
-    """One inquiry's shape: its kind and status."""
+    """One inquiry's shape: its kind, status and whose line of work it is."""
 
     kind: Inquiry.InquiryKind
     status: Inquiry.Status
+    owner: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -143,6 +144,7 @@ def scrub(graph: Mapping[str, object]) -> Structure:
         Node(
             kind=_known(row.get("kind"), _KINDS),
             status=_known(row.get("status"), _STATUSES),
+            owner=row.get("owner") if isinstance(row.get("owner"), str) else None,
         )
         for _, row in rows
     )
@@ -172,6 +174,8 @@ def dump(structure: Structure) -> str:
 
     Each node is ``[kind, status]`` and each edge ``[from, to, kind, sign]``, the
     kinds and statuses as indexes into the vocabularies the file lists first.
+    Where any node names an owner, nodes carry a third index into an
+    ``owners`` vocabulary the file lists too, -1 for a node with none.
 
     Args:
       structure: The shape to write.
@@ -180,12 +184,24 @@ def dump(structure: Structure) -> str:
       text: The JSON, one line per vocabulary, the nodes and the edges.
 
     """
-    columns = {
+    names: list[str] = []
+    for node in structure.nodes:
+        if node.owner is not None and node.owner not in names:
+            names.append(node.owner)
+    columns: dict[str, object] = {
         "kinds": list(_KINDS),
         "statuses": list(_STATUSES),
         "edge_kinds": list(_EDGE_KINDS),
         "nodes": [
-            [_KINDS.index(node.kind), _STATUSES.index(node.status)]
+            (
+                [_KINDS.index(node.kind), _STATUSES.index(node.status)]
+                if not names
+                else [
+                    _KINDS.index(node.kind),
+                    _STATUSES.index(node.status),
+                    names.index(node.owner) if node.owner is not None else -1,
+                ]
+            )
             for node in structure.nodes
         ],
         "edges": [
@@ -193,6 +209,8 @@ def dump(structure: Structure) -> str:
             for link in structure.edges
         ],
     }
+    if names:
+        columns["owners"] = names
     lines = (
         f"{json.dumps(key)}: {json.dumps(value, separators=(',', ':'))}"
         for key, value in columns.items()
@@ -215,15 +233,21 @@ def load(text: str) -> Structure:
 
     """
     columns = json_loads(text, dict[str, object])
-    kinds = from_plain(columns.get("kinds"), list[str], default=list[str]())
-    statuses = from_plain(columns.get("statuses"), list[str], default=list[str]())
-    edge_kinds = from_plain(columns.get("edge_kinds"), list[str], default=list[str]())
+    kinds = from_plain(columns.get("kinds"), list[str], default=[])
+    statuses = from_plain(columns.get("statuses"), list[str], default=[])
+    edge_kinds = from_plain(columns.get("edge_kinds"), list[str], default=[])
+    # A structure dumped before owners were recorded carries no ``owners`` column
+    # and its node rows are two wide; with one they are three, the third an index
+    # into ``owners``, or -1 for a record nobody owns.
+    owners = from_plain(columns.get("owners"), list[str], default=[])
+    node_rows = _rows(columns.get("nodes"), width=3 if owners else 2)
     nodes = tuple(
         Node(
-            kind=_known(_at(kinds, kind, of="kinds"), _KINDS),
-            status=_known(_at(statuses, status, of="statuses"), _STATUSES),
+            kind=_known(_at(kinds, row[0], of="kinds"), _KINDS),
+            status=_known(_at(statuses, row[1], of="statuses"), _STATUSES),
+            owner=_at(owners, row[2], of="owners") if owners and row[2] >= 0 else None,
         )
-        for kind, status in _rows(columns.get("nodes"), width=2)
+        for row in node_rows
     )
     ends = range(len(nodes))
     edges = tuple(

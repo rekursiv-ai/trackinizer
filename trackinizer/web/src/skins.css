@@ -18,6 +18,7 @@
   --ink-muted: #5a3a20;
   --muted: #6e4d2e;
   --ink-tertiary: #8c6a48;
+  --ink-machine: #755436;
   --line: #dcc390;
   --line-strong: #b8935a;
   --accent: #b4461a;
@@ -45,6 +46,12 @@
   --code-keyword: #a8321e;
   --diff-add: #e2ecc0;
   --diff-del: #f4d4c4;
+  /* The code pane's ramp, this skin's group hues, as the default theme's is (styles.css). */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --sans: Futura, "Century Gothic", "Trebuchet MS", sans-serif;
   --radius: 10px;
   --panel-radius: 16px;
@@ -63,6 +70,7 @@
   --ink-muted: #a9d6ea;
   --muted: #7fa4b8;
   --ink-tertiary: #4f7186;
+  --ink-machine: #93b9cd;
   --line: #18324b;
   --line-strong: #2a5677;
   --accent: #17759b;
@@ -90,6 +98,12 @@
   --code-keyword: #ff7b9c;
   --diff-add: #2ea04326;
   --diff-del: #f8514926;
+  /* The code pane's ramp, this skin's group hues, as the default theme's is (styles.css). */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --sans: Eurostile, "Bank Gothic", "Segoe UI", system-ui, sans-serif;
   --radius: 2px;
   --panel-radius: 4px;
@@ -112,6 +126,7 @@
   --ink-muted: #55ffff;
   --muted: #aaaaaa;
   --ink-tertiary: #5555ff;
+  --ink-machine: #c8c8c8;
   --line: #5555ff;
   --line-strong: #55ffff;
   --accent: #aa0000;
@@ -139,6 +154,13 @@
   --code-keyword: #ff5555;
   --diff-add: #00aa0040;
   --diff-del: #aa000060;
+  /* The code pane's ramp, this skin's group hues, as the default theme's is (styles.css). */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
+  --sans: "Px437 IBM VGA 8x16", "Perfect DOS VGA 437", "Lucida Console", ui-monospace, "Courier New", monospace;
   --sans:
     "Px437 IBM VGA 8x16", "Perfect DOS VGA 437", "Lucida Console", ui-monospace,
     "Courier New", monospace;
@@ -160,6 +182,7 @@
   --ink-muted: #2b2b2b;
   --muted: #4a4a4a;
   --ink-tertiary: #6a6a6a;
+  --ink-machine: #535353;
   --line: #8a8a8a;
   --line-strong: #111111;
   --accent: #c8102e;
@@ -187,6 +210,12 @@
   --code-keyword: #c8102e;
   --diff-add: #c9ecd0;
   --diff-del: #f6c9cf;
+  /* The code pane's ramp, this skin's group hues, as the default theme's is (styles.css). */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --sans: "Press Start 2P", ui-monospace, "Courier New", monospace;
   --mono: var(--sans);
   --radius: 0;
@@ -209,6 +238,7 @@
   --ink-muted: #6dff9a;
   --muted: #3ccf68;
   --ink-tertiary: #1f7a3a;
+  --ink-machine: #55e07f;
   --line: #0b3d1a;
   --line-strong: #13702c;
   --accent: #0a7a2a;
@@ -236,6 +266,12 @@
   --code-keyword: #ff7b7b;
   --diff-add: #00ff4122;
   --diff-del: #ff414128;
+  /* The code pane's ramp, this skin's group hues, as the default theme's is (styles.css). */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --sans: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --radius: 2px;
   --panel-radius: 4px;
@@ -257,6 +293,7 @@
   --ink-muted: #b4b7b4;
   --muted: #a3a6a4;
   --ink-tertiary: #707880;
+  --ink-machine: #a8ada9;
   --line: #373b41;
   --line-strong: #4d5057;
   --accent: #4a6e8a;
@@ -284,6 +321,12 @@
   --code-keyword: #cc6666;
   --diff-add: #b5bd6826;
   --diff-del: #cc666626;
+  /* The code pane's ramp, this skin's group hues, as the default theme's is (styles.css). */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --sans: "JetBrains Mono", "SF Mono", Menlo, ui-monospace, monospace;
   --radius: 0;
   --panel-radius: 0;
@@ -302,6 +345,7 @@
   --ink-muted: #333333;
   --muted: #6b6b6b;
   --ink-tertiary: #9a9a9a;
+  --ink-machine: #6c6c6c;
   --line: #ececec;
   --line-strong: #d6d6d6;
   --accent: #111111;
@@ -329,6 +373,12 @@
   --code-keyword: #b3261e;
   --diff-add: #e9f5ea;
   --diff-del: #fbeaea;
+  /* The code pane's ramp, this skin's group hues, as the default theme's is (styles.css). */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
   --radius: 6px;
   --panel-radius: 8px;
@@ -347,6 +397,7 @@
   --ink-muted: #000000;
   --muted: #333333;
   --ink-tertiary: #555555;
+  --ink-machine: #444444;
   --line: #000000;
   --line-strong: #000000;
   --accent: #0000ee;
@@ -374,6 +425,12 @@
   --code-keyword: #d10000;
   --diff-add: #c8f7d0;
   --diff-del: #ffd0d0;
+  /* The code pane's ramp, this skin's group hues, as the default theme's is (styles.css). */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --sans: "Courier New", ui-monospace, monospace;
   --radius: 0;
   --panel-radius: 0;

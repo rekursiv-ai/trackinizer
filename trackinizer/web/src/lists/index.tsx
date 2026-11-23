@@ -8,7 +8,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { type Meta, useMeta } from "../app/boot";
+import { type Meta, useMeta, useProfile } from "../app/boot";
+import { CodePane } from "../code/CodePane";
+import { codeScope } from "../code/scope";
+import { useStation } from "../stations/useStation";
 import { isPageCounts, isStrings, useTabState } from "../app/tabState";
 import { BulkBar } from "../bulk/BulkBar";
 import { ColumnsView } from "../columns";
@@ -120,6 +123,10 @@ export function InquiryList({
     initialState(kinds, meta),
   );
   const views = offeredViews(kinds);
+  // Code files a tree against the chat session, so it needs the station that names it.
+  // Asked for only on the list that offers Code, so no other list makes the request.
+  const station = useStation({ enabled: views.includes("code") });
+  const profile = useProfile();
   // Columns lives in the hash, with the Issues selected column by column.
   const path =
     route.name === "list" && views.includes("columns") ? (route.columns ?? null) : null;
@@ -305,8 +312,31 @@ export function InquiryList({
     if (shown) return whenIdle(() => void DetailView.preload().catch(() => {}));
   }, [shown]);
 
+  // Code shows no rows, so none of the row tools apply to it: it keeps the header and the
+  // switch that leads back to the list, and nothing else. Every hook above has already run,
+  // so this return changes no hook order.
+  if (view === "code") {
+    return (
+      <div className="view">
+        {/* The switch rides in the header's own slot rather than a tools row of its own:
+            with no tabs, filters or sort to carry, that row held one control and a gap. */}
+        <ViewHeader icon={icon} title={title} beside={<ViewSwitch offered={views} view={view} onChange={pickView} />} />
+        <CodePane scope={codeScope(station.data)} owner={profile.email} />
+      </div>
+    );
+  }
+
+  // Where the switch sits. On the Code list it rides in the header, because the Code view
+  // has no tools row to put it in — and a control that jumped between rows as you toggled
+  // would be worse than either place.
+  const switchInHeader = views.includes("code");
   return (
     <div className="view">
+      <ViewHeader
+        icon={icon}
+        title={title}
+        beside={switchInHeader ? <ViewSwitch offered={views} view={view} onChange={pickView} /> : undefined}
+      />
       <ViewHeader icon={icon} title={title} />
       {/* biome-ignore lint/a11y/noStaticElementInteractions: keeps focus in the list on a press; keys reach the list itself */}
       <div className="view-tools" onMouseDown={keepFocus}>
@@ -362,7 +392,7 @@ export function InquiryList({
             }
           />
         )}
-        <ViewSwitch offered={views} view={view} onChange={pickView} />
+        {switchInHeader ? null : <ViewSwitch offered={views} view={view} onChange={pickView} />}
       </div>
       <FilterChips
         query={query}

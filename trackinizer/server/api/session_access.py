@@ -1,28 +1,29 @@
-"""Authorize who may read, write and message an AgentSession.
+"""Authorize who may read, write, drain and message an AgentSession.
 
 Who reads a session's transcript is one rule,
 :func:`~trackinizer.server.audience.visible_sql`, which every reader of session
 content takes: its audience, and as the server's organisation mode
 (``TRACKINIZER_CHAT_ORGS``) says, its owner, its organisation, the people who oversee
-and, for a science chat, its members. Reading a session controls nothing, since a run
-keeps its input, its records and its life there: only its account or opening key sends
-it input, regardless of transcript visibility, and only they write or end it. The
-opening key always passes, whatever the audience, so a key whose owner lost ``staff`` can
-still run the session it opened; its account must read it too. Only the transcript is
-gated: a hidden session still has an open envelope, and the rows it files stay open.
+and, for a science chat, its members. Whoever reads a session may also write, drain
+and end it, and the key that opened a session always may, whatever the audience, so a
+key whose owner lost ``staff`` can still run the ``staff`` session it opened. Only
+the transcript is gated: a hidden session still has an open envelope, and the rows it
+files stay open.
 
 The configured assistant acts for the person it answers, the ``asker`` it names, on
 that person's rights and none of its own, and the server finds them in its own
-tables. It relays input only for a writer whose account holds the target session,
-even when its own key opened that session. It reads a session for an asker into the
-chat it answers them in, the ``chat`` it names, when the asker reads both. What it reads
-lands in the chat, so every destination reader must be allowed to read it; a
+tables. It relays a line to a session it cannot read for an asker who is a writer and
+is the session's account or reads it. It reads a session for an asker into the chat
+it answers them in, the ``chat`` it names, when the asker reads both. What it reads
+lands in the chat, so it reads no chat and no ``private`` session for anyone; a
 ``staff`` session only once the chat is ``staff`` too
-(:func:`~trackinizer.server.private.chat_audience.raise_chat_audience`), which
+(:func:`~trackinizer.server.visuals.chat_audience.raise_chat_audience`), which
 only the chat's starter makes it; and any other session only when everyone who
 reads the chat reads it too
-(:func:`~trackinizer.server.private.science_chats.chat_readers`). Any chat it
-reads only as the transcript test lets it.
+(:func:`~trackinizer.server.visuals.science_chats.chat_readers`). The
+assistant reads a chat one of its own keys opened by its id and audience alone, as
+it must to answer and fork chats an earlier key of its own opened; any other chat
+only as the transcript test lets it.
 
 A session opens into the audience its key is pinned to, else ``open``, and only into
 one its caller may open into: :func:`granted_audience` refuses a pin the caller no
@@ -30,24 +31,22 @@ longer holds instead of lowering the session to ``open``. A caller asks for
 ``private`` to start a session hidden.
 
 A viewer key mutates only the session it opened. A science chat is stricter: only the
-key that opened it edits its row, and only that key or an admin purges it by id.
-Other rows are purged by their account or an admin. Only a session's account may
-reassign it, since the account controls its input; other rows may also be
-reassigned by an admin. A chat's lines name their poster, and its labels and account
-say who started it and who posted, so a second writer's write would forge a poster
-or hide the chat from History. Its transcript is one part per journal of its agent
-process: a new part comes from its opening key, the configured assistant's or its
-starter's, and each part is written by a key of the account that opened it, so no
-other account rewrites its lines. A chat is known by its ``chat:`` id alone, whoever
-opened it and whether or not an assistant is configured.
-
-Every rule above stays where it is. On top of them, a field edit, a lock and a
-purge by id ask the deployment's access policy (:func:`require_row_write`), whose
-default allows what these rules allow. A write naming a row the caller may not read
-answers 404, as a read of it does (:func:`require_readable`).
+key that opened it edits its row, and only that key or an admin purges it by id,
+where any other row is purged, and moved to another account, by its account or an
+admin. Its lines name their poster, and its labels and account say who started it and
+who posted, so a second writer's write would forge a poster or hide the chat from
+History. Its transcript is one part per run that answered in it: a new part, or a run
+attaching to it, comes from its opening key, the configured assistant's or its
+starter's, and each part is written by the key that opened it alone, so no run
+rewrites another's lines. A chat is known by its ``chat:`` id alone, whoever opened
+it and whether or not an assistant is configured. Under ``--no-auth`` a caller holds no
+key at all, so these key tests fall to the account, which gives nothing away: that mode
+has one account, and anyone reaching its port may already edit everything.
 """
 
 from __future__ import annotations
+
+from collections.abc import Collection
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
@@ -58,66 +57,81 @@ from fastapi import HTTPException
 from treekle import from_plain
 
 from trackinizer.server.access_policy import (
+    AccessPolicy,
     Principal,
     Resource,
     inquiry_read_filter,
 )
 from trackinizer.server.api._deps import (
+    auth_is_disabled,
     get_assistant,
+    get_chat_orgs,
     get_staff,
     get_store,
 )
-from trackinizer.server.api.session_identity import (
-    Asker,
-    asker_reader,
-    hidden_session,
-    is_the_assistant,
-    request_principal,
-    session_reader,
-)
 from trackinizer.server.audience import (
+    SessionReader,
     person_audiences,
+    caller_reader,
     reads_session,
 )
+from trackinizer.server.api.session_identity import Asker, session_reader, request_principal
+from trackinizer.server.auth import ROLE_ORDER, Role
+from trackinizer.server.config import Config
 from trackinizer.server.notify import tx
 from trackinizer.server.values import vetted_sql
-from trackinizer.types.errors import NotFoundError
-from trackinizer.wire.audience import OPEN, PRIVATE
+from trackinizer.server.visuals.chat_audience import raise_chat_audience
+from trackinizer.server.visuals.partners import opener_email
+from trackinizer.server.visuals.science_chats import (
+    chat_readers,
+    read_first_session,
+    read_starter,
+)
+from trackinizer.types.errors import ConflictError, NotFoundError
+from trackinizer.types.inquiries import AgentSession
+from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE, STAFF
+from trackinizer.wire.wire_science_chat import (
+    CHAT_SESSION_PREFIX,
+    chat_conversation_id,
+)
 from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
-
-    from fastapi import Request
+    from fastapi import FastAPI, Request
     from starlette.requests import HTTPConnection
 
     from trackinizer.lib.postgres import Conn
-    from trackinizer.server.access_policy import AccessPolicy
-    from trackinizer.server.auth import AuthIdentity, Role
-    from trackinizer.types.inquiries import AgentSession
+    from trackinizer.server.auth import AuthIdentity
+    from trackinizer.server.config import Assistant
+    from trackinizer.server.store.core import Store
 
 
 __all__ = [
+    "Asker",
     "SessionAccess",
-    "check_row_write",
+    "asker_reader",
     "granted_audience",
+    "hidden_session",
+    "is_a_science_chat",
     "require_attributable",
-    "require_readable",
+    "require_chat_writer",
+    "require_part_writer",
     "require_row_account",
     "require_row_purge",
-    "require_row_write",
+    "require_session",
     "require_session_access",
     "require_session_id_change",
     "require_session_row_write",
     "require_session_write_access",
     "resolve_asker",
+    "session_reader",
 ]
 
 
-type SessionAccess = Literal["read", "write", "input", "post"]
-"""What a caller does to a session: read its transcript, write or end it, run its
-agent (start, stop or serve it), or post it a line or a message."""
+type SessionAccess = Literal["read", "write", "drain", "input", "post"]
+"""What a caller does to a session: read its transcript, write or end it, drain its
+inbound queue, or send it input."""
 
 
 async def resolve_asker(
@@ -144,7 +158,7 @@ async def resolve_asker(
         blank; ``None`` when no one is named or the caller is not the assistant.
 
     """
-    if email is None or not is_the_assistant(identity, get_assistant(request)):
+    if email is None or not _is_the_assistant(identity, get_assistant(request)):
         return None
     async with get_store(request).engine.acquire() as conn:
         row = await conn.fetchrow(
@@ -221,6 +235,146 @@ def require_session_write_access(identity: AuthIdentity, session: AgentSession) 
         raise HTTPException(status_code=403, detail="Own session key required")
 
 
+def is_a_science_chat(session: AgentSession) -> bool:
+    """Say whether ``session`` is a science chat: one under a ``chat:`` id.
+
+    Args:
+      session: The session.
+
+    Returns:
+      chat: Whether its ``cli_session_id`` starts with ``chat:``.
+
+    """
+    return (session.cli_session_id or "").startswith(CHAT_SESSION_PREFIX)
+
+
+def _keyed(request: Request) -> bool:
+    """Say whether this server attributes a session to a caller by its API key.
+
+    ``--no-auth`` resolves a request to the server's one synthetic account before it
+    reads a bearer (``auth.user_of``), so no caller holds a key while a chat session
+    still names one. The account stands in, as the resume path already degrades to
+    ``cli_session_id`` alone (``store/session.py``).
+    """
+    return not auth_is_disabled(request)
+
+
+async def require_chat_writer(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    session: AgentSession,
+) -> None:
+    """Refuse a run on a science chat from a key that may not add a part to it.
+
+    A chat takes a new part, a run attaching to it and that run's close from the key
+    that opened it, any key of the configured assistant's account, or any key of the
+    account that started it (:func:`~trackinizer.server.visuals.science_chats.read_starter`).
+    A browser has no key to own a part by, so it adds none. Any other session passes.
+    Under ``--no-auth`` a keyless caller is asked of its account, the one this server
+    has; with auth on, a caller with no key reaches none of the checks below.
+
+    Args:
+      request: The request, which carries the store and the configuration.
+      identity: Authenticated caller and its API key.
+      session: Target session.
+
+    Raises:
+      HTTPException: 403: ``session`` is a science chat the caller may not add to.
+
+    """
+    if not is_a_science_chat(session) or identity.api_key_id == (
+        session.opened_by_api_key_id
+    ):
+        return
+    assistant = get_assistant(request)
+    conversation_id = chat_conversation_id(session.cli_session_id)
+    may_claim = identity.api_key_id is not None or not _keyed(request)
+    if may_claim and conversation_id is not None:
+        if _is_the_assistant(identity, assistant):
+            return
+        async with get_store(request).engine.acquire() as conn:
+            starter = await read_starter(
+                conn,
+                assistant=assistant,
+                conversation_id=conversation_id,
+            )
+        if (starter or "").lower() == identity.email.lower():
+            return
+    raise HTTPException(
+        status_code=403,
+        detail="A science chat takes a run from its opener, the assistant or its "
+        "starter",
+    )
+
+
+async def require_part_writer(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    session: AgentSession,
+    name: str,
+) -> None:
+    """Refuse a write into a science chat's part by any key but the one that opened it.
+
+    A file the chat holds no part for yet opens one, which :func:`require_chat_writer`
+    decides, as it does a write that names no file. A part opened before parts named
+    their key keeps the chat's old rule: its opening key alone writes it. Any other
+    session passes.
+
+    Args:
+      request: The request, which carries the store.
+      identity: Authenticated caller and its API key.
+      session: Target session.
+      name: The file the write names; empty for one that carries only slash commands.
+
+    Raises:
+      HTTPException: 403: the caller may not write that part, or open a new one.
+
+    """
+    if not is_a_science_chat(session):
+        return
+    manifest = (
+        await get_store(request).read_session_manifest(session.id, name=name)
+        if name
+        else None
+    )
+    if manifest is None:
+        await require_chat_writer(request, identity, session=session)
+    elif manifest.opened_by_api_key_id is None:
+        _refuse_a_stranger(
+            identity,
+            cli_session_id=session.cli_session_id,
+            opener=session.opened_by_api_key_id,
+            keyed=_keyed(request),
+        )
+    elif identity.api_key_id != manifest.opened_by_api_key_id:
+        raise HTTPException(
+            status_code=403,
+            detail="A part of a science chat is written by the key that opened it",
+        )
+
+
+async def require_session(store: Store, session_id: uuid.UUID) -> AgentSession:
+    """Fetch an AgentSession row or raise 404; reject non-session ids.
+
+    Args:
+      store: The store to read from.
+      session_id: The id a route was given.
+
+    Returns:
+      session: The session row.
+
+    Raises:
+      HTTPException: 404: ``session_id`` is no session.
+
+    """
+    row = await store.get_inquiry(session_id)
+    if not isinstance(row, AgentSession):
+        raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
+    return row
+
+
 def granted_audience(identity: AuthIdentity, *, private: bool = False) -> str:
     """Return the audience a session this caller opens is placed in.
 
@@ -253,6 +407,22 @@ def granted_audience(identity: AuthIdentity, *, private: bool = False) -> str:
     raise _not_held(PRIVATE)
 
 
+def hidden_session(audience: str | None) -> HTTPException:
+    """Build the refusal for a session whose transcript the caller does not read.
+
+    Args:
+      audience: The session's audience, named in the body so a caller knows why.
+
+    Returns:
+      refusal: A 403 whose detail carries ``code: session_audience``.
+
+    """
+    return HTTPException(
+        status_code=403,
+        detail={"code": "session_audience", "audience": audience},
+    )
+
+
 async def require_session_access(
     request: Request,
     identity: AuthIdentity,
@@ -263,18 +433,23 @@ async def require_session_access(
 ) -> None:
     """Refuse a caller who may not do ``mode`` to this session.
 
-    Input requires the session's account or opening key; transcript visibility,
-    organisation membership and admin status grant no input rights. When the
-    assistant names an asker, only a writer whose account holds the session passes.
-    A post asks the same, but of a science chat, which takes a line from whoever may
-    post into it (:func:`~trackinizer.server.api.private.chat_sessions.require_poster`).
-    Reading asks the database's transcript rule, with the opening key exempt; writing
-    asks it of the session's account, for the reason input does. A science chat's own
-    rules (:mod:`~trackinizer.server.api.private.chat_sessions`) narrow a reader's
-    writes instead.
+    A session with no audience reads as hidden from everyone but its opening key,
+    so a row that lost its audience fails closed rather than open. Any other caller
+    is asked of the database, by :func:`session_reader`; only the configured
+    assistant reads a chat by its audience alone, and only one it opened.
 
-    The configured assistant acts for an ``asker`` on the asker's rights alone: it
-    reads a session for one only if they read it.
+    Reading grants no control of the session. ``input`` and ``post`` ask the
+    database nothing (:func:`_require_input`): they take the session's account, its
+    delegated writer, or the opening key, and transcript visibility, organisation
+    membership and admin status lend none of them. ``write`` and ``drain`` ask the
+    transcript rule of the session's account, for the reason input does. A science
+    chat's own rules
+    (:mod:`~trackinizer.server.api.private.chat_sessions`) narrow a reader's writes
+    instead.
+
+    The configured assistant acts for an ``asker`` on the asker's rights alone. It
+    reads for one into the ``chat`` it answers them in, under the rules this module
+    names, raising a chat to ``staff`` before it reads a ``staff`` session there.
 
     Args:
       request: The request, which carries the store and the configuration.
@@ -282,29 +457,44 @@ async def require_session_access(
       session: Target session with its audience and opening key.
       mode: What the caller is about to do.
       asker: The user the assistant reads or sends this input for, as the server
-        finds them (:func:`resolve_asker`); ``None`` when none was named. It lends
-        nothing to a caller that is not the assistant.
+        finds them (:func:`resolve_asker`), carrying the conversation it reads for
+        them into; ``None`` when none was named. It lends nothing to a caller that
+        is not the assistant.
 
     Raises:
       HTTPException: 403 ``session_audience``: the caller may not do ``mode`` there,
-        either on its own rights or for the asker it names.
+        on its own rights or for the asker it names. For a read for an asker: 422 ``chat_required``
+        without a chat; 403 ``chat_not_member`` when the asker does not read the
+        chat; 403 ``chat_not_starter`` for a ``staff`` session read into a chat that
+        is not ``staff`` yet for anyone but its starter; 409 ``chat_private`` for one
+        read into a private chat; 409 ``chat_readers`` for any other session that
+        someone who reads the chat does not read.
 
     """
     assistant = get_assistant(request)
-    lender = asker if is_the_assistant(identity, assistant) else None
+    lender = asker if _is_the_assistant(identity, assistant) else None
     if mode in {"input", "post"}:
         _require_input(identity, session=session, asker=lender)
         return
     if mode == "read" and lender is not None:
-        await _require_asker_reads(
+        await _require_read_for(
             request,
+            identity,
             asker=lender,
             session=session,
+            chat=lender.chat,
         )
         return
     if _opened_by(identity, session.opened_by_api_key_id):
         return
     async with get_store(request).engine.acquire() as conn:
+        if mode == "read" and await _assistants_own_chat(
+            conn,
+            identity,
+            assistant=assistant,
+            session=session,
+        ):
+            return
         if (
             mode == "read" or _holds(identity, account=session.account)
         ) and await reads_session(
@@ -316,35 +506,448 @@ async def require_session_access(
     raise hidden_session(session.audience)
 
 
-async def require_row_write(
+
+
+def asker_reader(request: Request, asker: Asker, *, delegated: bool) -> SessionReader:
+    """Describe the person the assistant acts for as the transcript test reads them.
+
+    Args:
+      request: The request, which carries the configuration.
+      asker: The person, as :func:`resolve_asker` finds them.
+      delegated: The assistant reads for them into a chat, which takes away their
+        oversight and the every-chat grant.
+
+    Returns:
+      reader: Their reader on this server.
+
+    """
+    assistant = get_assistant(request)
+    return caller_reader(
+        asker.email,
+        audiences=asker.read_audiences,
+        admin=asker.role == "admin",
+        orgs=get_chat_orgs(request),
+        assistant="" if assistant is None else assistant.email,
+        hosted_domain=asker.hosted_domain,
+        delegated=delegated,
+    )
+
+
+async def require_session_row_write(
     request: Request,
     identity: AuthIdentity,
     target_id: uuid.UUID,
 ) -> None:
-    """Ask the access policy whether the caller may write the row ``target_id``.
+    """Refuse a write by id to a session the caller may not write; other rows pass.
 
-    Runs before the route's write, on a transaction of its own; a route that
-    already holds a connection calls :func:`check_row_write` on it instead.
+    One query reads the row's kind, audience, opening key and ``cli_session_id``,
+    so a generic route (a field edit, a purge) learns whether the id is a session
+    before it acts. A science chat is then written by its opening key alone, and
+    any session by a caller who opened it or reads its audience.
 
     Args:
-      request: The request, which carries the store and its policy.
-      identity: Authenticated caller.
-      target_id: The row a route is about to change or delete.
+      request: The request, which carries the store.
+      identity: Authenticated caller and its API key.
+      target_id: The row a route is about to change.
 
     Raises:
-      AccessDeniedError: The policy refuses; the app answers 403.
+      HTTPException: ``target_id`` is a session the caller may not write.
 
     """
-    principal = await request_principal(request, identity)
-    store = get_store(request)
-    async with store.engine.acquire() as conn, tx(conn):
-        await check_row_write(
-            conn,
-            store.access_policy,
-            principal=principal,
-            target_id=target_id,
+    row = await _read_row(request, target_id=target_id)
+    if row is None or row.kind != "AgentSession":
+        return
+    _require_audience(identity, row=row)
+    _refuse_a_stranger(
+        identity,
+        cli_session_id=row.cli_session_id,
+        opener=row.opener,
+        keyed=_keyed(request),
+    )
+
+
+async def require_row_purge(
+    request: Request,
+    identity: AuthIdentity,
+    target_id: uuid.UUID,
+) -> None:
+    """Refuse a purge by id from a caller who may not delete the row.
+
+    One rule for every row: its account deletes it, and so does an admin. A session
+    also needs its audience, as any write by id does. A science chat's session is the
+    exception: its account is its starter and its lines are its posters', so the key
+    that opened it, or an admin, purges it; ``DELETE /api/chats/<id>`` deletes a whole
+    chat by its starter's rule instead.
+
+    Args:
+      request: The request, which carries the store.
+      identity: Authenticated caller, its role and its API key.
+      target_id: The row a route is about to purge.
+
+    Raises:
+      HTTPException: 403: the caller may not purge ``target_id``.
+
+    """
+    row = await _read_row(request, target_id=target_id)
+    if row is None:
+        return
+    if row.kind == "AgentSession":
+        _require_audience(identity, row=row)
+    if identity.role == "admin":
+        return
+    if row.cli_session_id.startswith(CHAT_SESSION_PREFIX):
+        _refuse_a_stranger(
+            identity,
+            cli_session_id=row.cli_session_id,
+            opener=row.opener,
+            keyed=_keyed(request),
+        )
+    elif not _holds(identity, account=row.account):
+        raise HTTPException(
+            status_code=403,
+            detail="A row is purged by its account or an admin",
         )
 
+
+async def require_row_account(
+    request: Request,
+    identity: AuthIdentity,
+    target_id: uuid.UUID,
+) -> None:
+    """Require the current account to reassign a session; other rows also allow admins.
+
+    A writer who could name themselves a row's account could then purge it, so the
+    purge rule holds only while this one does. A session's account controls its input
+    and visibility, so even an admin may not take it by changing its account: its
+    account is an owner, who reads a hidden one and may show it again, so an admin who
+    moved it to themselves could undo its owner's hide. Other rows keep the
+    account-or-admin rule.
+
+    Args:
+      request: The request, which carries the store.
+      identity: Authenticated caller and its role.
+      target_id: The row whose ``account`` a route is about to change.
+
+    Raises:
+      HTTPException: 403: the caller does not hold the session's account, or is
+        neither the account nor an admin for another kind of row.
+
+    """
+    row = await _read_row(request, target_id=target_id)
+    if row is None or _holds(identity, account=row.account):
+        return
+    if row.kind == "AgentSession":
+        raise HTTPException(
+            status_code=403,
+            detail="A session's account is changed by that account alone",
+        )
+    if identity.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="A row's account is changed by that account or an admin",
+        )
+
+
+async def require_session_id_change(
+    request: Request,
+    identity: AuthIdentity,
+    target_id: uuid.UUID,
+    *,
+    value: str | None,
+) -> None:
+    """Refuse a change of a session's ``cli_session_id`` that could move a chat.
+
+    Only the session's opening key or an admin changes it. And no one moves a session
+    into or out of a science chat's ``chat:<id>``: a chat is named when its session
+    starts, and a session moved under one would be taken by that chat's delete, or
+    could name its starter.
+
+    Args:
+      request: The request, which carries the store.
+      identity: Authenticated caller, its role and its API key.
+      target_id: The row whose ``cli_session_id`` a route is about to set or clear.
+      value: The id it would take; None clears it.
+
+    Raises:
+      HTTPException: 403: either rule refuses the change.
+
+    """
+    row = await _read_row(request, target_id=target_id)
+    if row is None or row.kind != "AgentSession":
+        return
+    if any(
+        (named or "").startswith(CHAT_SESSION_PREFIX)
+        for named in (value, row.cli_session_id)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="A science chat's id is named only when its session starts",
+        )
+    if identity.role != "admin" and (
+        identity.api_key_id is None or identity.api_key_id != row.opener
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="A session's cli_session_id is changed by the key that opened it",
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Row:
+    """What a write by id needs to know of the row: who holds it, a session's access."""
+
+    kind: str
+    account: str
+    cli_session_id: str
+    opener: uuid.UUID | None
+    audience: str | None
+
+
+async def _read_row(request: Request, target_id: uuid.UUID) -> _Row | None:
+    """Read the row a write by id names; None when there is none."""
+    async with get_store(request).engine.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT kind, account, agentsession_cli_session_id AS cli_session_id, "
+            "agentsession_opened_by_api_key_id AS opener, "
+            "agentsession_audience AS audience FROM inquiries WHERE id = $1",
+            target_id,
+        )
+    if row is None:
+        return None
+    return _Row(
+        kind=from_plain(row.get("kind"), str),
+        account=from_plain(row.get("account"), str, default=""),
+        cli_session_id=from_plain(row.get("cli_session_id"), str, default=""),
+        opener=from_plain(row.get("opener"), uuid.UUID, default=None),
+        audience=from_plain(row.get("audience"), str, default=None),
+    )
+
+
+def _require_audience(identity: AuthIdentity, *, row: _Row) -> None:
+    """Refuse a write to a session the caller neither opened nor reads."""
+    if not _opened_by(identity, row.opener) and row.audience not in (
+        identity.read_audiences
+    ):
+        raise hidden_session(row.audience)
+
+
+def _holds(identity: AuthIdentity, *, account: str) -> bool:
+    """Say whether ``identity`` is the account a row is held under."""
+    return account.lower() == identity.email.lower()
+
+
+def _require_input(
+    identity: AuthIdentity,
+    *,
+    session: AgentSession,
+    asker: Asker | None,
+) -> None:
+    """Allow input only from the account, its delegated writer, or the opening key."""
+    # Reading a transcript grants no control of the host that consumes its input, so
+    # this asks nothing of the database: the audience the transcript rule would answer
+    # for cannot open a line into the session.
+    if asker is not None:
+        if asker.role in {"writer", "admin"} and (
+            asker.email.lower() == session.account.lower()
+        ):
+            return
+    elif _opened_by(identity, session.opened_by_api_key_id) or _holds(
+        identity,
+        account=session.account,
+    ):
+        return
+    raise hidden_session(session.audience)
+
+
+def _opened_by(identity: AuthIdentity, opener: uuid.UUID | None) -> bool:
+    """Say whether ``identity``'s key is the one that opened a session."""
+    return identity.api_key_id is not None and identity.api_key_id == opener
+
+
+def _is_the_assistant(identity: AuthIdentity, assistant: Assistant | None) -> bool:
+    """Say whether ``identity`` is the configured assistant's account."""
+    return assistant is not None and identity.email == assistant.email
+
+
+# By its opener, not its audience: everyone holds ``private``, so the audience alone
+# would let the assistant read, for anyone it answers, a hidden chat a person's own
+# key opened. A key the assistant rotated away still names the assistant's account.
+async def _assistants_own_chat(
+    conn: Conn,
+    identity: AuthIdentity,
+    *,
+    assistant: Assistant | None,
+    session: AgentSession,
+) -> bool:
+    """Say whether ``identity`` is the assistant and ``session`` a chat it opened."""
+    if (
+        is_a_science_chat(session)
+        and _is_the_assistant(identity, assistant)
+        and session.audience in identity.read_audiences
+    ):
+        opener = await opener_email(conn, api_key_id=session.opened_by_api_key_id)
+        return (opener or "").lower() == identity.email.lower()
+    return False
+
+
+def _refuse_a_stranger(
+    identity: AuthIdentity,
+    *,
+    cli_session_id: str | None,
+    opener: uuid.UUID | None,
+    keyed: bool,
+) -> None:
+    """Refuse the write to a science chat that ``identity`` did not open.
+
+    ``keyed`` is :func:`_keyed`: a server that issues no keys has no stranger to keep
+    out of the only account's chat.
+    """
+    if keyed and identity.api_key_id != opener and (cli_session_id or "").startswith(
+        CHAT_SESSION_PREFIX,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="A science chat is written by the key that opened it",
+        )
+
+
+def _not_held(audience: str) -> HTTPException:
+    """Build the refusal of a session opened into an audience the caller may not."""
+    return HTTPException(
+        status_code=403,
+        detail={"code": "audience_not_held", "audience": audience},
+    )
+
+
+# Each refusal comes before anything is read, and the chat becomes ``staff`` before the
+# read it guards: the route reads the transcript only once this returns.
+async def _require_read_for(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    asker: Asker,
+    session: AgentSession,
+    chat: uuid.UUID | None,
+) -> None:
+    """Refuse the assistant's read for ``asker`` into ``chat``; raise a chat to staff."""
+    if not asker.read_audiences or is_a_science_chat(session):
+        raise hidden_session(session.audience)
+    if session.audience == PRIVATE:
+        raise hidden_session(session.audience)
+    if chat is None:
+        raise HTTPException(status_code=422, detail={"code": "chat_required"})
+    store = get_store(request)
+    async with store.engine.acquire() as conn:
+        if not await reads_session(
+            conn,
+            reader=asker_reader(request, asker, delegated=True),
+            session_id=session.id,
+        ):
+            raise hidden_session(session.audience)
+        first = await read_first_session(
+            conn,
+            assistant=get_assistant(request),
+            conversation_id=chat,
+        )
+        if first is None or not await reads_session(
+            conn,
+            reader=asker_reader(request, asker, delegated=False),
+            session_id=first,
+        ):
+            raise HTTPException(status_code=403, detail={"code": "chat_not_member"})
+        await _require_chat_takes(
+            conn,
+            request,
+            asker=asker,
+            session=session,
+            chat=chat,
+            first=first,
+        )
+    if session.audience != STAFF:
+        return
+    try:
+        _ = await raise_chat_audience(
+            store,
+            conversation_id=chat,
+            api_key_id=identity.api_key_id,
+            actor=identity.email,
+            reason=f"read {session.id} for {asker.email}",
+        )
+    except ConflictError as error:
+        raise HTTPException(status_code=409, detail={"code": "chat_private"}) from error
+
+
+# A ``staff`` session's read makes the chat ``staff``, which its members who hold no
+# ``staff`` then lose, so only its starter makes it so: anyone else would take the
+# chat from its starter. Any other session lands in a chat whose every reader keeps
+# it, so it must be one each of them reads.
+async def _require_chat_takes(
+    conn: Conn,
+    request: Request,
+    *,
+    asker: Asker,
+    session: AgentSession,
+    chat: uuid.UUID,
+    first: uuid.UUID,
+) -> None:
+    """Refuse a read into ``chat`` that would reach someone the session does not."""
+    assistant = get_assistant(request)
+    if session.audience == STAFF:
+        held = await conn.fetchval(
+            "SELECT agentsession_audience FROM inquiries WHERE id = $1",
+            first,
+        )
+        starter = await read_starter(conn, assistant=assistant, conversation_id=chat)
+        if held == STAFF or (starter or "").lower() == asker.email.lower():
+            return
+        raise HTTPException(status_code=403, detail={"code": "chat_not_starter"})
+    for reader in await chat_readers(
+        conn,
+        assistant=assistant,
+        conversation_id=chat,
+        orgs=get_chat_orgs(request),
+    ):
+        if not await reads_session(conn, reader=reader, session_id=session.id):
+            raise HTTPException(status_code=409, detail={"code": "chat_readers"})
+
+
+async def check_row_write(
+    conn: Conn,
+    policy: AccessPolicy,
+    *,
+    principal: Principal,
+    target_id: uuid.UUID,
+) -> None:
+    """Ask ``policy`` on ``conn`` whether ``principal`` may write ``target_id``.
+
+    A row that does not exist is not asked about: the write it guards answers 404.
+
+    Args:
+      conn: The caller's connection, inside its transaction.
+      policy: The deployment's access policy.
+      principal: The caller, as :func:`request_principal` built it.
+      target_id: The row about to change.
+
+    Raises:
+      AccessDeniedError: The policy refuses.
+
+    """
+    account = await conn.fetchval(
+        "SELECT account FROM inquiries WHERE id = $1",
+        target_id,
+    )
+    if account is None:
+        return
+    await policy.check(
+        conn,
+        principal=principal,
+        resource=Resource(
+            kind="inquiry",
+            id=str(target_id),
+            account=from_plain(account, str),
+        ),
+        action="write",
+    )
 
 async def require_readable(
     request: Request,
@@ -391,267 +994,31 @@ async def require_readable(
     if unread is not None:
         raise NotFoundError(f"inquiry {unread} not found")
 
-
-async def check_row_write(
-    conn: Conn,
-    policy: AccessPolicy,
-    *,
-    principal: Principal,
-    target_id: uuid.UUID,
-) -> None:
-    """Ask ``policy`` on ``conn`` whether ``principal`` may write ``target_id``.
-
-    A row that does not exist is not asked about: the write it guards answers 404.
-
-    Args:
-      conn: The caller's connection, inside its transaction.
-      policy: The deployment's access policy.
-      principal: The caller, as :func:`request_principal` built it.
-      target_id: The row about to change.
-
-    Raises:
-      AccessDeniedError: The policy refuses.
-
-    """
-    account = await conn.fetchval(
-        "SELECT account FROM inquiries WHERE id = $1",
-        target_id,
-    )
-    if account is None:
-        return
-    await policy.check(
-        conn,
-        principal=principal,
-        resource=Resource(
-            kind="inquiry",
-            id=str(target_id),
-            account=from_plain(account, str),
-        ),
-        action="write",
-    )
-
-
-async def require_session_row_write(
+async def require_row_write(
     request: Request,
     identity: AuthIdentity,
     target_id: uuid.UUID,
 ) -> None:
-    """Refuse a write by id to a session the caller may not write; other rows pass.
+    """Ask the access policy whether the caller may write the row ``target_id``.
 
-    One query reads the row's kind, audience, opening key and ``cli_session_id``,
-    so a generic route (a field edit, a purge) learns whether the id is a session
-    before it acts. A science chat is then written by its opening key, and any session
-    by a caller who opened it or reads its audience.
+    Runs before the route's write, on a transaction of its own; a route that
+    already holds a connection calls :func:`check_row_write` on it instead.
 
     Args:
-      request: The request, which carries the store.
-      identity: Authenticated caller and its API key.
-      target_id: The row a route is about to change.
+      request: The request, which carries the store and its policy.
+      identity: Authenticated caller.
+      target_id: The row a route is about to change or delete.
 
     Raises:
-      HTTPException: ``target_id`` is a session the caller may not write.
+      AccessDeniedError: The policy refuses; the app answers 403.
 
     """
-    row = await _read_row(request, target_id=target_id)
-    if row is None or row.kind != "AgentSession":
-        return
-    _require_audience(identity, row=row)
-
-
-async def require_row_purge(
-    request: Request,
-    identity: AuthIdentity,
-    target_id: uuid.UUID,
-) -> None:
-    """Refuse a purge by id from a caller who may not delete the row.
-
-    One rule for every row: its account deletes it, and so does an admin. A session
-    also needs its audience, as any write by id does. A science chat's session is the
-    exception: its account is its starter and its lines are its posters', so the key
-    that opened it, or an admin, purges it; ``DELETE /api/chats/<id>`` deletes a whole
-    chat by its starter's rule instead.
-
-    Args:
-      request: The request, which carries the store.
-      identity: Authenticated caller, its role and its API key.
-      target_id: The row a route is about to purge.
-
-    Raises:
-      HTTPException: 403: the caller may not purge ``target_id``.
-
-    """
-    row = await _read_row(request, target_id=target_id)
-    if row is None:
-        return
-    if row.kind == "AgentSession":
-        _require_audience(identity, row=row)
-    if identity.role == "admin":
-        return
-    if not _holds(identity, account=row.account):
-        raise HTTPException(
-            status_code=403,
-            detail="A row is purged by its account or an admin",
-        )
-
-
-async def require_row_account(
-    request: Request,
-    identity: AuthIdentity,
-    target_id: uuid.UUID,
-) -> None:
-    """Require the current account to reassign a session; other rows also allow admins.
-
-    A session's account controls its input and visibility, so even an admin may not
-    take it by changing its account. Other rows keep the account-or-admin rule.
-
-    Args:
-      request: The request, which carries the store.
-      identity: Authenticated caller and its role.
-      target_id: The row whose ``account`` a route is about to change.
-
-    Raises:
-      HTTPException: 403: the caller does not hold the session's account, or is
-        neither the account nor an admin for another kind of row.
-
-    """
-    row = await _read_row(request, target_id=target_id)
-    if row is None or _holds(identity, account=row.account):
-        return
-    if row.kind == "AgentSession":
-        raise HTTPException(
-            status_code=403,
-            detail="A session's account is changed by that account alone",
-        )
-    if identity.role != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail="A row's account is changed by that account or an admin",
-        )
-
-
-async def require_session_id_change(
-    request: Request,
-    identity: AuthIdentity,
-    target_id: uuid.UUID,
-) -> None:
-    """Refuse a change of a session's ``cli_session_id`` that could move a chat.
-
-    Only the session's opening key or an admin changes it. And no one moves a session
-    into or out of a science chat's ``chat:<id>``: a chat is named when its session
-    starts, and a session moved under one would be taken by that chat's delete, or
-    could name its starter.
-
-    Args:
-      request: The request, which carries the store.
-      identity: Authenticated caller, its role and its API key.
-      target_id: The row whose ``cli_session_id`` a route is about to set or clear.
-      value: The id it would take; None clears it.
-
-    Raises:
-      HTTPException: 403: either rule refuses the change.
-
-    """
-    row = await _read_row(request, target_id=target_id)
-    if row is None or row.kind != "AgentSession":
-        return
-    if identity.role != "admin" and (
-        identity.api_key_id is None or identity.api_key_id != row.opener
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="A session's cli_session_id is changed by the key that opened it",
-        )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _Row:
-    """What a write by id needs to know of the row: who holds it, a session's access."""
-
-    kind: str
-    account: str
-    cli_session_id: str
-    opener: uuid.UUID | None
-    audience: str | None
-
-
-def _not_held(audience: str) -> HTTPException:
-    """Build the refusal of a session opened into an audience the caller may not."""
-    return HTTPException(
-        status_code=403,
-        detail={"code": "audience_not_held", "audience": audience},
-    )
-
-
-async def _require_asker_reads(
-    request: Request,
-    *,
-    asker: Asker,
-    session: AgentSession,
-) -> None:
-    """Refuse the assistant's read for ``asker`` of a session the asker does not read."""
-    async with get_store(request).engine.acquire() as conn:
-        if not await reads_session(
+    principal = await request_principal(request, identity)
+    store = get_store(request)
+    async with store.engine.acquire() as conn, tx(conn):
+        await check_row_write(
             conn,
-            reader=asker_reader(request, asker),
-            session_id=session.id,
-        ):
-            raise hidden_session(session.audience)
-
-
-async def _read_row(request: Request, target_id: uuid.UUID) -> _Row | None:
-    """Read the row a write by id names; None when there is none."""
-    async with get_store(request).engine.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT kind, account, agentsession_cli_session_id AS cli_session_id, "
-            "agentsession_opened_by_api_key_id AS opener, "
-            "agentsession_audience AS audience FROM inquiries WHERE id = $1",
-            target_id,
+            store.access_policy,
+            principal=principal,
+            target_id=target_id,
         )
-    if row is None:
-        return None
-    return _Row(
-        kind=from_plain(row.get("kind"), str),
-        account=from_plain(row.get("account"), str, default=""),
-        cli_session_id=from_plain(row.get("cli_session_id"), str, default=""),
-        opener=from_plain(row.get("opener"), uuid.UUID, default=None),
-        audience=from_plain(row.get("audience"), str, default=None),
-    )
-
-
-def _require_audience(identity: AuthIdentity, *, row: _Row) -> None:
-    """Refuse a write to a session the caller neither opened nor reads."""
-    if not _opened_by(identity, row.opener) and row.audience not in (
-        identity.read_audiences
-    ):
-        raise hidden_session(row.audience)
-
-
-def _holds(identity: AuthIdentity, *, account: str) -> bool:
-    """Say whether ``identity`` is the account a row is held under."""
-    return account.lower() == identity.email.lower()
-
-
-def _require_input(
-    identity: AuthIdentity,
-    *,
-    session: AgentSession,
-    asker: Asker | None,
-) -> None:
-    """Allow input only from the account, its delegated writer, or the opening key."""
-    # Reading a transcript grants no control of the host that consumes its input.
-    if asker is not None:
-        if asker.role in {"writer", "admin"} and (
-            asker.email.lower() == session.account.lower()
-        ):
-            return
-    elif _opened_by(identity, session.opened_by_api_key_id) or _holds(
-        identity,
-        account=session.account,
-    ):
-        return
-    raise hidden_session(session.audience)
-
-
-def _opened_by(identity: AuthIdentity, opener: uuid.UUID | None) -> bool:
-    """Say whether ``identity``'s key is the one that opened a session."""
-    return identity.api_key_id is not None and identity.api_key_id == opener

@@ -534,8 +534,11 @@ class TestRecordTexts:
             "",
             None,
             False,
+            # every_chat and the configured assistant, which `visible_sql` binds too.
+            False,
             False,
             True,
+            "",
         ]
         assert sql == vetted_sql(
             "SELECT r.session_id, r.kind, array_agg(r.text) AS texts "

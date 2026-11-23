@@ -640,7 +640,11 @@ _EMPTY_USER_DATA: dict[str, object] = {
         "tabs": [],
         "last_canvas": {},
     },
+    # The workstream bar, and the canvas's two chat settings.
+    "workstreams": {"order": [], "pinned": [], "hidden": []},
     "settings_artifact_id": None,
+    "chat_provider": "assistant",
+    "chat_tool_calls": False,
 }
 
 

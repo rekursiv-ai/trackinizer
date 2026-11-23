@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { Graph } from "../api/graph";
+import { type Graph, type GraphNode } from "../api/graph";
 import { replay } from "./replay";
 import { edge, node } from "./testing";
-import { must } from "../must";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -12,88 +11,66 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// Sent 3, 1, 2 but made 1, 2, 3: replay goes by `created`, not the answer's order.
-const GRAPH: Graph = {
-  nodes: [
-    node(3, { created: "2026-09-20T00:05:00+00:00" }),
-    node(1, { kind: "Belief", judgement: "proven", confidence: 0.9 }),
-    node(2),
-  ],
-  edges: [edge(2, 1, "proves", { valence: 0.5 }), edge(3, 1)],
-};
-
-function record(speed = () => 1) {
-  const steps: { seqs: number[]; edges: string[] }[] = [];
-  let done = false;
-  const cancel = replay(GRAPH, {
-    speed,
-    step: (grown) =>
-      steps.push({
-        seqs: grown.nodes.map((row) => row.seq),
-        edges: grown.edges.map((row) => row.edge_kind),
-      }),
-    done: () => (done = true),
-  });
-  return { steps, isDone: () => done, cancel };
+/** A field of `count` records, a minute apart, oldest first. */
+function field(count: number): Graph {
+  const nodes: GraphNode[] = Array.from({ length: count }, (_, index) => node(index + 1, { created: madeAt(index) }));
+  return { nodes, edges: count > 1 ? [edge(2, 1)] : [] };
 }
 
-test("replay starts empty, then grows the graph oldest first at 70 ms a node, each edge once both its ends show", () => {
-  const { steps, isDone } = record();
-  expect(steps).toEqual([{ seqs: [], edges: [] }]);
-  vi.advanceTimersByTime(69);
-  expect(steps).toHaveLength(1);
-  vi.advanceTimersByTime(1);
-  expect(steps.at(-1)).toEqual({ seqs: [1], edges: [] });
-  vi.advanceTimersByTime(70);
-  expect(steps.at(-1)).toEqual({ seqs: [1, 2], edges: ["proves"] });
-  expect(isDone()).toBe(false);
-  vi.advanceTimersByTime(70);
-  expect(steps.at(-1)).toEqual({ seqs: [1, 2, 3], edges: ["proves", "narrows"] });
-  expect(isDone()).toBe(true);
+const madeAt = (min: number) => new Date(Date.UTC(2026, 8, 20, 0, min)).toISOString().replace("Z", "+00:00");
+
+/** Run a sweep, recording each frame's reach; returns what it saw and how to stop it. */
+function sweep(graph: Graph) {
+  const reached: number[] = [];
+  let done = 0;
+  const cancel = replay(graph, {
+    step: (fraction) => reached.push(fraction),
+    done: () => {
+      done += 1;
+    },
+  });
+  return { reached, done: () => done, cancel };
+}
+
+test("the sweep reaches the record made at the time it has crossed, and the whole field at its end", () => {
+  const { reached, done } = sweep(field(3));
+  // The design's own length for a small field: 14 s x 3/2500 + 4 s, so 4.017 s.
+  vi.advanceTimersByTime(2008);
+  expect(reached.at(-1)).toBeCloseTo(0.5, 1);
+  expect(done()).toBe(0);
+  vi.advanceTimersByTime(2100);
+  expect(reached.at(-1)).toBe(1);
+  expect(done()).toBe(1);
+  // Never reached, and never stepping, after the end.
+  vi.advanceTimersByTime(5000);
+  expect(reached.at(-1)).toBe(1);
+  expect(done()).toBe(1);
 });
 
-test("each node keeps every field the graph sent, a Belief's judgement and confidence too (CR-08)", () => {
-  let last: Graph | undefined;
-  replay(GRAPH, { speed: () => 1, step: (grown) => (last = grown), done: () => {} });
-  vi.advanceTimersByTime(70 * 3);
-  expect(must(last).nodes.find((row) => row.seq === 1)).toEqual(GRAPH.nodes[1]);
+test("5,000 records cross in the design's 18 seconds, not one timer step apiece (F10)", () => {
+  const { reached, done } = sweep(field(5000));
+  vi.advanceTimersByTime(9000);
+  expect(reached.at(-1)).toBeCloseTo(0.5, 1);
+  expect(done()).toBe(0);
+  vi.advanceTimersByTime(9100);
+  expect(reached.at(-1)).toBe(1);
+  expect(done()).toBe(1);
 });
 
-test("the speed is read before each node, so a change takes effect at the next; 10x waits 16 ms, a frame", () => {
-  let speed = 0.25;
-  const { steps } = record(() => speed);
-  vi.advanceTimersByTime(280);
-  expect(steps).toHaveLength(2);
-  speed = 10;
-  vi.advanceTimersByTime(280);
-  expect(steps).toHaveLength(3);
-  vi.advanceTimersByTime(16);
-  expect(steps).toHaveLength(4);
+test("every frame speaks, so the frontier moves smoothly rather than in jumps", () => {
+  const { reached } = sweep(field(5000));
+  vi.advanceTimersByTime(1000);
+  // A frame every 16 ms, and none of them saying less than the frame before.
+  expect(reached.length).toBeGreaterThan(50);
+  expect(reached.some((fraction, index) => index > 0 && fraction < reached[index - 1]!)).toBe(false);
 });
 
 test("cancelled, it stops where it is", () => {
-  const { steps, isDone, cancel } = record();
-  vi.advanceTimersByTime(70);
+  const { reached, done, cancel } = sweep(field(5000));
+  vi.advanceTimersByTime(1000);
+  const at = reached.length;
   cancel();
-  vi.advanceTimersByTime(1_000);
-  expect(steps).toHaveLength(2);
-  expect(isDone()).toBe(false);
-});
-
-test("replay orders `created` as instants: the server drops a zero fraction, so precision varies (GR-04)", () => {
-  const grown: number[][] = [];
-  const graph: Graph = {
-    nodes: [
-      node(1, { created: "2026-01-01T00:00:00+00:00" }),
-      node(2, { created: "2026-01-01T00:00:00.000001+00:00" }),
-    ],
-    edges: [],
-  };
-  replay(graph, {
-    speed: () => 1,
-    step: (step) => grown.push(step.nodes.map((row) => row.seq)),
-    done: () => {},
-  });
-  vi.advanceTimersByTime(70 * 2);
-  expect(grown).toEqual([[], [1], [1, 2]]);
+  vi.advanceTimersByTime(30_000);
+  expect(reached).toHaveLength(at);
+  expect(done()).toBe(0);
 });

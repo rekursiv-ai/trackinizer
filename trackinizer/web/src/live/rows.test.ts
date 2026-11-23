@@ -1,14 +1,5 @@
 import { expect, test } from "vitest";
-import {
-  CHECK_IDS,
-  idFilter,
-  isPageOf,
-  newerRow,
-  type Page,
-  placeRow,
-  seqRanges,
-  serverOrder,
-} from "./rows";
+import { CHECK_IDS, idFilter, isPageOf, micros, newerRow, type Page, placeRow, seqRanges, serverOrder } from "./rows";
 import { issue, mount, testClient, uuid } from "./testing";
 import { must } from "../must";
 
@@ -109,4 +100,15 @@ test("a row read afresh replaces the one held, unless the one held is a later ve
   ).toBe(held);
   const later = issue(1, { modified: "2026-09-21T00:00:00.000003+00:00" });
   expect(newerRow(later, held)).toBe(later);
+});
+
+test("a timestamp that is missing or unreadable reads as the beginning of time, not a throw", () => {
+  // Everything that orders records runs through here, so a record arriving
+  // without a date took down whatever was drawing it: `undefined.replace`.
+  expect(micros(undefined as unknown as string)).toBe(0);
+  expect(micros(null as unknown as string)).toBe(0);
+  expect(micros("")).toBe(0);
+  expect(micros("not a date")).toBe(0);
+  // What it does read is unchanged, to the microsecond.
+  expect(micros("2026-09-20T01:00:00.000123+00:00")).toBe(Date.parse("2026-09-20T01:00:00+00:00") * 1_000 + 123);
 });

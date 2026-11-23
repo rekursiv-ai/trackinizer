@@ -13,8 +13,13 @@ Only the text the screenshots and the demo show is written by hand, in
 islands and fill its roots list, and the showcase, the island the demo opens
 and the Belief in it that it selects, with descriptions and labels. Every other
 title is built from that file's word lists for its kind, the nodes of a kind taking
-its titles in turn. Every choice follows from a node's index, so every seed writes
-the same.
+its titles in turn, and every record's summary from its prose, so a panel opens on
+text someone has written rather than on a blank — it stands in for theirs, and they
+overwrite it there. Then each record that plausibly spent money is charged its cost
+from the same file's ranges, an Experiment for its GPU-hours and an AgentSession for
+its tokens, through the client's own cost writes; a Belief or an Issue is left at
+zero, because a claim does not spend, testing one does. Every choice follows from a
+node's index, and every cost from a hash of its title, so every seed writes the same.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
+import bisect
 import functools
 import hashlib
 import itertools
@@ -34,6 +40,7 @@ import uuid
 
 from treekle import from_plain, json_loads
 
+from trackinizer.web.scripts.graph_structure import Link, Node, Structure
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
 
@@ -43,12 +50,17 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from trackinizer.types.inquiries import Inquiry
-    from trackinizer.web.scripts.graph_structure import Link, Structure
     from trackinizer.wire.wire_sessions import SessionEnd
 
 
 GRAPH_CONTENTS: Final = _CWD / "graph_contents.json"
 """The hand-written text: roots' titles, newest first, the showcase, word lists."""
+
+
+@functools.lru_cache(maxsize=1)
+def _contents() -> Mapping[str, object]:
+    """``GRAPH_CONTENTS``, read once: a seed gives every node its summary."""
+    return json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
 
 
 class GraphClient(Protocol):
@@ -70,6 +82,18 @@ class GraphClient(Protocol):
         body: SessionEnd | None = None,
     ) -> object:
         """End the session ``session_id``."""
+        ...
+
+    def add_cost(
+        self,
+        target_id: uuid.UUID,
+        field: str,
+        value: float,
+        *,
+        actor: str,
+        reason: str = "",
+    ) -> None:
+        """Add ``value`` USD to one ``marginal_cost`` axis of ``target_id``."""
         ...
 
 
@@ -151,9 +175,9 @@ def islands(structure: Structure) -> Islands:
 def showcase(structure: Structure, found: Islands) -> Showcase:
     """Pick the island the demo opens, and the Belief in it that it selects.
 
-    The island is the one of at most 100 nodes whose Beliefs its own edges cite
-    with the most valences, one of them against, so its evidence draws in both
-    colours and it frames large; the Belief is the one in it cited most.
+    The island is one the newest window holds -- the demo opens on the 1k view
+    -- whose edges carry the most valences, one of them against, so its
+    evidence draws in both colours; the Belief is the one in it cited most.
 
     Args:
       structure: The nodes and edges.
@@ -166,7 +190,6 @@ def showcase(structure: Structure, found: Islands) -> Showcase:
       ValueError: No island has evidence against a Belief in it.
 
     """
-    sizes = Counter(found.home.values())
     cited: Counter[tuple[int, int]] = Counter()
     against: set[int] = set()
     for link in structure.edges:
@@ -183,12 +206,241 @@ def showcase(structure: Structure, found: Islands) -> Showcase:
     weight = Counter[int]()
     for (home, _), count in cited.items():
         weight[home] += count
-    candidates = [r for r in against if sizes[r] <= 100]
+    # The newest fifth of the stream: an island there is a ball in the window
+    # the demo opens, whatever the structure's full size.
+    members: dict[int, list[int]] = {}
+    for n, home in found.home.items():
+        members.setdefault(home, []).append(n)
+    fresh = 0.6 * len(structure.nodes)
+    candidates = [
+        r for r in against if sum(members[r]) / len(members[r]) > fresh
+    ] or list(against)
     if not candidates:
         raise ValueError("no island has evidence against a Belief in it")
     root = max(candidates, key=lambda r: (weight[r], r))
-    belief = max((count, n) for (home, n), count in cited.items() if home == root)
-    return Showcase(root=root, belief=belief[1])
+    beliefs = [
+        (count, n)
+        for (home, n), count in cited.items()
+        if home == root and structure.nodes[n].kind == "Belief"
+    ]
+    # The oldest of the most-cited, so a seed that adds claims to the island
+    # keeps showing the one it showed before.
+    return Showcase(
+        root=root, belief=max(beliefs, key=lambda row: (row[0], -row[1]))[1]
+    )
+
+
+# The exported graph settled each thread on its own evidence: hardly a
+# ``proves`` or ``favors`` crosses islands, while a living graph cites an
+# experiment across neighbouring threads. The mesh between the grouped
+# graph's clusters is those edges, so each Belief gains one citation from a
+# nearby island, its sign turning on its index.
+_SPREAD_LEAD: Final = 500
+"""The widest gap, in creation order, between a Belief and evidence spread finds it."""
+
+
+def spread(structure: Structure) -> Structure:
+    """Return ``structure`` with one cross-island citation added per Belief.
+
+    Each Belief takes one Experiment, Paper or WebResult of another island
+    created within ``_SPREAD_LEAD`` of it: the pair already cited, or whose
+    addition would close a cycle the server would reject, passes to the next
+    candidate. Only cited edges are added, so ``islands`` groups the result
+    the same and ``showcase`` picks the same island.
+
+    Args:
+      structure: The nodes and edges, as ``load`` read them.
+
+    Returns:
+      structure: Its nodes, and its edges with the spread's added.
+
+    """
+    found = islands(structure)
+    home = {n: found.home.get(n, n) for n in range(len(structure.nodes))}
+    cited: set[tuple[int, int]] = set()
+    walks: dict[int, list[int]] = {}
+    for link in structure.edges:
+        if link.kind in {"proves", "favors", "supersedes"}:
+            cited.add((link.from_index, link.to_index))
+            walks.setdefault(link.from_index, []).append(link.to_index)
+
+    def reaches(start: int, stop: int) -> bool:
+        """Whether ``start`` already follows cited edges to ``stop``."""
+        walk = [start]
+        seen = {start}
+        for node in walk:
+            if node == stop:
+                return True
+            for next_ in walks.get(node, ()):
+                if next_ not in seen:
+                    seen.add(next_)
+                    walk.append(next_)
+        return False
+
+    evidence = [
+        n
+        for n, node in enumerate(structure.nodes)
+        if node.kind in {"Experiment", "Paper", "WebResult"}
+    ]
+    added: list[Link] = []
+    for n, node in enumerate(structure.nodes):
+        if node.kind != "Belief":
+            continue
+        near = [
+            m
+            for m in evidence[
+                bisect.bisect_left(evidence, n - _SPREAD_LEAD) : bisect.bisect_right(
+                    evidence,
+                    n + _SPREAD_LEAD,
+                )
+            ]
+            if home[m] != home[n] and (m, n) not in cited and not reaches(n, m)
+        ]
+        if not near:
+            continue
+        # Which candidate takes each Belief follows from its index alone, so
+        # every seed spreads the same way.
+        m = near[(n * 31 + 7) % len(near)]
+        added.append(
+            Link(
+                from_index=m,
+                to_index=n,
+                kind="favors" if n % 3 == 0 else "proves",
+                sign=-1 if n % 4 == 0 else 1,
+            ),
+        )
+        cited.add((m, n))
+        walks.setdefault(m, []).append(n)
+    return Structure(nodes=structure.nodes, edges=(*structure.edges, *added))
+
+
+# The exported graph's newest work is thin on claims: a 286-node thread of
+# experiments and code changes holds no Belief at all, so the overview's
+# blue-on-lavender reads it as a thread that concluded nothing. Every thread
+# of a working size should hold a few claims, so each island under
+# ``_CLAIMS_MIN`` Beliefs gains them between its own nodes, in time order:
+# produced by an older Issue or session of the thread, and proven by a
+# younger Experiment or favored by a younger Paper of it.
+_CLAIMS_MIN: Final = 10
+"""The fewest Beliefs a rooted thread of ``claims`` holds."""
+
+_CLAIMS_ISLAND: Final = 24
+"""The fewest nodes an island must have for ``claims`` to fill it."""
+
+
+def claims(structure: Structure) -> Structure:
+    """Return ``structure`` with each thin island's Beliefs added.
+
+    Args:
+      structure: The nodes and edges, as ``spread`` left them.
+
+    Returns:
+      structure: Its islands' nodes with Beliefs interleaved in creation
+        order, and the ``produced_by``, ``proves`` and ``favors`` that place
+        and settle each claim. Only positive votes are added, so
+        ``showcase``'s candidates and ``islands``' roots hold.
+
+    """
+    found = islands(structure)
+    # A childless Issue turns into a root the moment a claim names it its
+    # producer, splitting the island: only a node that already has children,
+    # or a session (which no root is), can take one.
+    parents = {
+        link.to_index
+        for link in structure.edges
+        if link.kind in {"narrows", "produced_by"}
+    }
+    members: dict[int, list[int]] = {}
+    held: Counter[int] = Counter()
+    for n, node in enumerate(structure.nodes):
+        home = found.home.get(n)
+        if home is not None:
+            members.setdefault(home, []).append(n)
+            if node.kind == "Belief":
+                held[home] += 1
+
+    # How many Beliefs to insert after each of the structure's nodes.
+    after: Counter[int] = Counter()
+    for home, row in sorted(members.items()):
+        if len(row) < _CLAIMS_ISLAND:
+            continue
+        need = _CLAIMS_MIN - held[home]
+        if need <= 0:
+            continue
+        # Half the claims go into the island's last quarter: the demo's
+        # windows show each thread's newest members, and a claim that lands
+        # before the window is a cluster without any blue.
+        head = (need + 1) // 2
+        for j in range(need):
+            if j < head:
+                d = (j + 1) * (len(row) // 4) // (head + 1)
+                after[row[len(row) - 1 - max(d, 1)]] += 1
+            else:
+                after[row[(j - head + 1) * len(row) // (need - head + 1)]] += 1
+
+    nodes: list[Node] = []
+    mapping: dict[int, int] = {}
+    # The new Beliefs' slots: their index once placed, and the thread they join.
+    placed: list[tuple[int, int]] = []
+    for n, node in enumerate(structure.nodes):
+        mapping[n] = len(nodes)
+        nodes.append(node)
+        for _ in range(after[n]):
+            placed.append((len(nodes), n))
+            nodes.append(Node(kind="Belief", status="active"))
+    edges = [
+        Link(
+            from_index=mapping[link.from_index],
+            to_index=mapping[link.to_index],
+            kind=link.kind,
+            sign=link.sign,
+        )
+        for link in structure.edges
+    ]
+    for at, parent in placed:
+        # The Belief's producer: the nearest Issue or session at or before
+        # the node it follows, which stands older by placement and already
+        # has children of its own or is no Issue at all.
+        home = found.home[parent]
+        row = members[home]
+        producer = next(
+            (
+                m
+                for m in reversed(row[: row.index(parent) + 1])
+                if structure.nodes[m].kind == "AgentSession"
+                or (structure.nodes[m].kind == "Issue" and m in parents)
+            ),
+            home,
+        )
+        edges.append(
+            Link(
+                from_index=at,
+                to_index=mapping[producer],
+                kind="produced_by",
+                sign=0,
+            ),
+        )
+        # And its evidence: an Experiment, else a Paper, of the same thread
+        # made after it, which settles the claim or favors it. Which one each
+        # claim takes turns on its slot, so the thread's claims rest on
+        # different runs.
+        later = [m for m in row if mapping[m] > at]
+        evidence = [m for m in later if structure.nodes[m].kind == "Experiment"] or [
+            m for m in later if structure.nodes[m].kind == "Paper"
+        ]
+        if evidence:
+            m = evidence[at % len(evidence)]
+            edges.append(
+                Link(
+                    from_index=mapping[m],
+                    to_index=at,
+                    kind="proves"
+                    if structure.nodes[m].kind == "Experiment"
+                    else "favors",
+                    sign=1,
+                ),
+            )
+    return Structure(nodes=tuple(nodes), edges=tuple(edges))
 
 
 def seed_graph(
@@ -210,7 +462,9 @@ def seed_graph(
     """
     found = islands(structure)
     picked = showcase(structure, found)
-    ids = _write(client, structure, _bodies(structure, found, picked), actor=actor)
+    bodies = _bodies(structure, found, picked)
+    ids = _write(client, structure, bodies, actor=actor)
+    _charge(client, structure, bodies, ids, actor=actor)
     return SeededGraph(ids=tuple(ids), root=ids[picked.root], belief=ids[picked.belief])
 
 
@@ -348,10 +602,7 @@ def _bodies(
     picked: Showcase,
 ) -> list[dict[str, object]]:
     """Each node's submit body: title, status and owner, a Belief's verdict, the showcase's text."""
-    contents = json_loads(
-        GRAPH_CONTENTS.read_text(),
-        dict[str, object],
-    )  # pragma: no mutate -- the committed file is an object; the type is for checkers.
+    contents = _contents()
     written = from_plain(contents["roots"], list[str])
     named = {root: written[k % len(written)] for k, root in enumerate(found.roots)}
     kinds = from_plain(contents.get("kinds"), dict[str, object])
@@ -367,7 +618,10 @@ def _bodies(
         # A complete session is created live and ended after its batch.
         ending = node.kind == "AgentSession" and node.status == "complete"
         title = named.get(n)
-        if title is None:
+        # The showcase's own text replaces the built title, so it takes no
+        # turn of the cycle: a skipped turn would shift every later title
+        # and repeat one where the cycle wraps.
+        if title is None and n not in {picked.root, picked.belief}:
             title = built[node.kind][made[node.kind] % len(built[node.kind])]
             made[node.kind] += 1
         body: dict[str, object] = {
@@ -377,7 +631,7 @@ def _bodies(
             "owner": (
                 f"{_AGENTS[n % len(_AGENTS)]}-{n}"
                 if node.kind == "AgentSession"
-                else f"{_PEOPLE[n % len(_PEOPLE)]}@example.com"
+                else node.owner or f"{_PEOPLE[n % len(_PEOPLE)]}@example.com"
             ),
         }
         if node.kind == "Belief":
@@ -387,6 +641,18 @@ def _bodies(
                 judgement,
                 0.5,
             )
+        stated = body.get("confidence")
+        # Every record is opened with its summary written: a panel that says "add
+        # a summary" on nine hundred rows reads as an empty tool, and the demo is
+        # of a graph people have been keeping. The text stands in for what a
+        # person would have typed, and they overwrite it there.
+        body["description"] = summary_for(
+            node.kind,
+            str(body["title"]),
+            owner=str(body["owner"]),
+            verdict=str(body.get("judgement", "")),
+            confidence=float(stated) if isinstance(stated, float) else None,
+        )
         if n in {picked.root, picked.belief}:
             body |= from_plain(
                 shown.get("root" if n == picked.root else "belief"),
@@ -394,6 +660,157 @@ def _bodies(
             )
         bodies.append(body)
     return bodies
+
+
+# A record's summary, which the panels show under its title.
+#
+# The variants in ``graph_contents.json`` are the hand-written text: each stands
+# in for what a person would have typed, and picks up the record's own words so it
+# reads about the thing its title names. ``{w0}`` and friends are the kind's word
+# lists found inside the title, so a Belief titled "Label smoothing hurts recall"
+# gets "Label smoothing" and "hurts recall" back as slots.
+def summary_for(
+    kind: str,
+    title: str,
+    *,
+    owner: str = "",
+    verdict: str = "",
+    confidence: float | None = None,
+) -> str:
+    """Return the summary ``seed_graph`` gives a record of ``kind`` titled ``title``.
+
+    Args:
+      kind: The record's kind, a key in the contents' ``prose``.
+      title: Its title, which the variant is read against.
+      owner: Who the record is assigned to.
+      verdict: A Belief's judgement.
+      confidence: A Belief's confidence.
+
+    Returns:
+      summary: The variant's text, with the record's own words in it; empty when
+        every variant for the kind names something this record does not have.
+
+    """
+    contents = _contents()
+    prose = from_plain(contents.get("prose"), dict[str, object])
+    variants = from_plain(prose.get(kind), list[str])
+    if not variants:
+        raise ValueError(f"No prose written for kind {kind!r}.")
+    # A variant that names what the record lacks would read as a hole where the
+    # word should be, so it is not offered: a record with no owner gets a summary
+    # that does not name one.
+    missing = [
+        name
+        for name, stated in (
+            ("owner", owner),
+            ("verdict", verdict),
+            ("conf", "" if confidence is None else "0"),
+        )
+        if not stated
+    ]
+    usable = [
+        text
+        for text in variants
+        if not any(f"{{{name}}}" in text for name in missing)
+    ]
+    if not usable:
+        return ""
+    vocabulary = from_plain(
+        from_plain(contents.get("kinds"), dict[str, object]).get(kind),
+        dict[str, object],
+    )
+    words = [
+        from_plain(row, list[str])
+        for row in from_plain(vocabulary.get("words"), list[object], default=[])
+    ]
+    found: dict[str, str] = {}
+    for slot, pool in enumerate(words):
+        hit = next((word for word in pool if word.lower() in title.lower()), "")
+        found[f"w{slot}"] = hit
+        found[f"W{slot}"] = hit[:1].upper() + hit[1:]
+    # Counted over every variant, so a title keeps its summary whether or not the
+    # record has the words some of them name: short of one, it takes the nearest
+    # variant that can be said.
+    return usable[
+        min(
+            int(hashlib.blake2b(title.encode(), digest_size=8).hexdigest(), 16)
+            % len(variants),
+            len(usable) - 1,
+        )
+    ].format(
+        Title=title,
+        title=title[:1].lower() + title[1:],
+        owner=owner,
+        verdict=verdict,
+        conf="" if confidence is None else f"{confidence:.2f}",
+        **found,
+    )
+
+
+# A record's cost, which the ledger keeps beside its summary.
+#
+# The ranges in ``graph_contents.json`` are the lab's own: an Experiment's GPU-hours,
+# an AgentSession's tokens. The two axes -- ``agent`` and ``resource`` -- are charged
+# through the client's ``add_cost``, one write each, because the running totals on an
+# inquiry row are not settable fields but the sum of its change log. A kind absent
+# from the block, a Belief or an Issue, is left at zero: stating a claim costs
+# nothing, and the honest story and the cheap one agree that the spend is on the runs
+# that tested it, not the record that holds the verdict.
+_AGENT_AXIS: Final = "marginal_cost_agent_usd"
+_RESOURCE_AXIS: Final = "marginal_cost_resource_usd"
+
+
+def cost_for(kind: str, title: str) -> dict[str, float]:
+    """Return the axes ``seed_graph`` charges a record of ``kind`` titled ``title``.
+
+    Args:
+      kind: The record's kind, a key in the contents' ``cost``, or absent for a kind
+        that spends nothing.
+      title: Its title, which the value is drawn from, so two seeds charge the same.
+
+    Returns:
+      cost: Each axis name the record pays, mapped to its USD amount; empty when the
+        kind spends nothing.
+
+    """
+    block = from_plain(_contents().get("cost"), dict[str, object])
+    spans = block.get(kind)
+    if not isinstance(spans, Mapping):
+        # A kind absent from the block -- a Belief, an Issue -- spends nothing.
+        return {}
+    charged: dict[str, float] = {}
+    for axis, field in (("agent", _AGENT_AXIS), ("resource", _RESOURCE_AXIS)):
+        row = from_plain(spans.get(axis), list[float])
+        if len(row) != 2:
+            continue
+        low, high = row
+        # The same title, the same figure: a value between the bounds at the position
+        # the title's hash lands on, drawn to a cent, exactly as ``summary_for`` picks
+        # a variant from the hash rather than the roll of a die.
+        span = int(hashlib.blake2b(title.encode(), digest_size=8).hexdigest(), 16)
+        amount = round(low + span / 2**64 * (high - low), 2)
+        if amount > 0:
+            charged[field] = amount
+    return charged
+
+
+def _charge(
+    client: GraphClient,
+    structure: Structure,
+    bodies: Sequence[Mapping[str, object]],
+    ids: Sequence[uuid.UUID],
+    *,
+    actor: str,
+) -> None:
+    """Accrue each created record's cost through ``client``, in node order.
+
+    Every spend-bearing kind gets one ``add_cost`` write per axis it pays; a Belief or
+    an Issue, whose cost is empty, is written nothing at all. Node order fixes the
+    sequence, so two seeds make the same writes in the same order.
+    """
+    for n, node in enumerate(structure.nodes):
+        for field, amount in cost_for(node.kind, str(bodies[n]["title"])).items():
+            client.add_cost(ids[n], field, amount, actor=actor)
 
 
 def _verdicts(structure: Structure) -> dict[int, str]:

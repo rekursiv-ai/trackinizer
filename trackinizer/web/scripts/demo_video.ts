@@ -101,8 +101,11 @@ async function record(
   // Headless Chromium draws no pointer, so the page draws one where the mouse is.
   await context.addInitScript(drawPointer);
   const page = await context.newPage();
-  await page.goto(`${origin}/trax/graph`);
-  await page.locator(".graph-count").filter({ hasText: "5,000 nodes" }).waitFor();
+  await page.goto(`${origin}/app/#/graph`);
+  // The same wait the screenshots take, and for the same reason: the header's
+  // counts are a display that has already been renamed and reworded once, and
+  // waiting on their text broke the recording silently each time.
+  await graphSettled(page);
   const start = performance.now();
   const clock = () => (performance.now() - start) / 1000;
   mkdirSync(join(data, "frames"), { recursive: true });

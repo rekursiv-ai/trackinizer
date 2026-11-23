@@ -561,6 +561,17 @@ class _FakeClient:
     ) -> None:
         self.calls.append(("session_end", session_id, body))
 
+    def add_cost(
+        self,
+        target_id: uuid.UUID,
+        field: str,
+        value: float,
+        *,
+        actor: str,
+        reason: str = "",  # noqa: ARG002 -- the audit note is not exercised here.
+    ) -> None:
+        self.calls.append(("add_cost", target_id, field, value, actor))
+
     def post(self, path: str, *, body: object = None) -> PlainTree:
         """Publish an Artifact; answer with its id, as the server does."""
         assert path == "/api/artifacts/content"

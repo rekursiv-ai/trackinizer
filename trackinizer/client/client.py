@@ -93,6 +93,13 @@ if TYPE_CHECKING:
         wire_variables,
     )
     from trackinizer.wire.filters import Filter
+    from trackinizer.wire.wire_code import (
+        CodeDiff,
+        CodeFile,
+        CodeSnapshot,
+        CodeSnapshotHead,
+    )
+    from trackinizer.wire.wire_exec import ExecRequest, ExecResult, ExecWait
     from trackinizer.wire.wire_capture import CaptureImage
     from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
     from trackinizer.wire.wire_daemon import (
@@ -2835,6 +2842,23 @@ class Client:
             wire_daemon.REVOKE_PATH.format(name=quote(name, safe="")),
         )
 
+    def my_email(self) -> str:
+        """Return the email the server authenticated this caller as.
+
+        The code store files every blob and snapshot under an owner email, and refuses
+        one that is not the caller's unless the caller holds ``staff``, so a client
+        writing code must know its own.
+
+        Returns:
+          email: The caller's email, lowercased as the store compares it.
+
+        """
+        where = "/api/me/profile"
+        response = self._request("GET", where)
+        email = response.get("email") if isinstance(response, Mapping) else None
+        if not isinstance(email, str) or not email:
+            raise ClientError(f"{where} named no email for this caller")
+        return email.lower()
     def host_runs(self, name: str) -> list[HostRun]:
         """Return the agent processes on the caller's host; 404 for another's."""
         where = wire_hosts.HOST_RUNS_PATH.format(name=quote(name, safe=""))
@@ -2982,6 +3006,65 @@ class Client:
                 return None
             raise
         return _validate_model(wire_code.CodeSnapshot, response, where)
+
+    def code_file(self, record_id: uuid.UUID, *, path: str) -> CodeFile | None:
+        """Return one file of a record's snapshot, with its text.
+
+        Args:
+          record_id: The record whose snapshot holds the file.
+          path: The file's path in that snapshot.
+
+        Returns:
+          file: Its path, hash and text; ``None`` when the snapshot maps no such path,
+            or holds none the caller reads, which the server answers 404 for alike.
+
+        """
+        where = wire_code.CODE_FILE_PATH.format(record_id=record_id)
+        try:
+            response = self._request("GET", where, params={"path": path})
+        except ClientError as error:
+            if error.status_code == 404:
+                return None
+            raise
+        return _validate_model(wire_code.CodeFile, response, where)
+
+    def code_diff(
+        self,
+        from_record: uuid.UUID,
+        to_record: uuid.UUID,
+        *,
+        context: int = wire_code.DEFAULT_DIFF_CONTEXT,
+    ) -> CodeDiff | None:
+        """Return how ``to_record``'s code differs from ``from_record``'s, path by path.
+
+        Args:
+          from_record: The record whose snapshot is the old side.
+          to_record: The record whose snapshot is the new side.
+          context: Lines of context around each change, at most
+            ``MAX_DIFF_CONTEXT``.
+
+        Returns:
+          diff: Each path that differs, sorted, with its unified diff; ``None`` when
+            either record has no snapshot the caller reads, which the server answers
+            404 for alike, so a private snapshot is never revealed by the difference.
+
+        """
+        where = wire_code.CODE_DIFF_PATH
+        try:
+            response = self._request(
+                "GET",
+                where,
+                params={
+                    "from": str(from_record),
+                    "to": str(to_record),
+                    "context": context,
+                },
+            )
+        except ClientError as error:
+            if error.status_code == 404:
+                return None
+            raise
+        return _validate_model(wire_code.CodeDiff, response, where)
 
     # -- Direct GPU jobs. The server only brokers control messages; code and results
     # travel between the dev box and the node over ssh.

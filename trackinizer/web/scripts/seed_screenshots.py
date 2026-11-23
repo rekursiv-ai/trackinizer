@@ -82,6 +82,9 @@ def main() -> int:
     )
     _add_arguments(parser)
     flags = cast(_Flags, parser.parse_args())
+    # The synth structure is the design's generator whole: its threads already
+    # hold their own claims and cross-link 7% of their evidence, so no spread
+    # and no filled-in claims are added on top.
     structure = load(GRAPH_STRUCTURE.read_text())
     # The large graph's heaviest batch walks some 100,000 steps of the server's change
     # cascade (seed_graph.cascade_order): two minutes on a PGlite server, and a retry

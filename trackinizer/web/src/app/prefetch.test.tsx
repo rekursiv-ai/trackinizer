@@ -19,6 +19,7 @@ import { loginUrl } from "./session";
 import { must } from "../must";
 
 // The graph draws on a canvas, which jsdom lacks: a renderer that draws nothing stands in.
+vi.mock("../graph/canvasRenderer", async () => ({ canvasRenderer: new (await import("../graph/testing")).FakeRenderer().create }));
 vi.mock("../graph/renderer", async () => ({
   forceGraphRenderer: new (await import("../graph/testing")).FakeRenderer().create,
 }));
@@ -31,13 +32,15 @@ const BOOT = [
   "/api/meta/fields",
 ];
 /** Reads the shell sends once it renders, beside its view's: never started early. */
-const SHELL: string[] = [];
+const SHELL: string[] = ["/api/terminals/hosts"];
 const PROFILE = {
   user_id: "u1",
   email: "ada@example.com",
   name: "Ada",
   role: "writer",
   last_login: null,
+  visual_workspace_enabled: false,
+  ...AGREED,
 };
 
 const BODIES: { [path: string]: unknown } = {
@@ -185,12 +188,15 @@ test.each(["#/list/Issue", "#/list/issue", "#/list"])(
 test.each([
   ["", []],
   ["#/graph", []],
-  // Opened on a focus, the graph selects it, and Peek reads its detail.
-  ["#/graph?focus=Issue/7&hops=2", ["/api/inquiries/Issue/7", `/api/web/get/${ID}`]],
+  // Opened on a focus, the graph selects the node it draws, and the panel reads its record.
+  ["#/graph?focus=Issue/7&hops=2", [`/api/web/get/${ID}`]],
 ])(
   "a link to the graph (%j), the empty hash too, starts its read before the app, which shows it: none goes out twice",
   async (hash, peeked) => {
     const sent = await open(hash, [...BOOT, "/api/web/graph"]);
+    expect(await screen.findByText("1 node, 0 edges")).toBeTruthy();
+    expect(sent.find(({ path }) => path === "/api/web/graph")?.query).toBe("?limit=1000");
+    await waitFor(() => expect(reads(sent)).toEqual([...BOOT, ...SHELL, "/api/web/graph", ...peeked].sort()));
     expect(await screen.findByText("1 node")).toBeTruthy();
     expect(sent.find(({ path }) => path === "/api/web/graph")?.query).toBe(
       "?limit=1000",
@@ -215,6 +221,8 @@ test("a graph this tab has kept reads as kept: nothing is started for it", async
   };
   sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify(kept));
   const sent = await open("#/graph", BOOT);
+  expect(await screen.findByText("1 node, 0 edges")).toBeTruthy();
+  expect(sent.filter(({ path }) => path === "/api/web/graph").map(({ query }) => query)).toEqual(["?limit=100"]);
   expect(await screen.findByText("1 node")).toBeTruthy();
   expect(
     sent.filter(({ path }) => path === "/api/web/graph").map(({ query }) => query),
@@ -415,6 +423,22 @@ test("a view that reads once the stream is open needs no catching up when it ope
 test.each([
   ["#/list/Issue", "Issue from the started read", "/api/inquiries"],
   ["#/ref/Issue/7", "Issue seven", `/api/web/get/${ID}`],
+  ["#/graph", "1 node, 0 edges", "/api/web/graph"],
+])("a view on %s whose read started before the stream opened catches up when it opens", async (hash, shown, read) => {
+  vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 2 });
+  FakeEventSource.reset();
+  const sent = serve();
+  history.replaceState(null, "", hash);
+  openEarlyStream();
+  prefetch(location.hash);
+  await waitFor(() => expect(sent.map(({ path }) => path)).toContain(read), { interval: 1 });
+  await act(() => vi.advanceTimersByTimeAsync(5));
+  openStreams();
+  render(<App assign={vi.fn()} />);
+  await screen.findByText(shown);
+  openStreams();
+  expect((await caughtUp(sent)).filter((path) => path === read)).toEqual([read, read]);
+});
   ["#/graph", "1 node", "/api/web/graph"],
 ])(
   "a view on %s whose read started before the stream opened catches up when it opens",

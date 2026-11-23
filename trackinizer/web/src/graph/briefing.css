@@ -1,0 +1,78 @@
+/* The cluster briefing (ThreadBriefing.tsx), on a root's own record panel
+   (GraphRecord.tsx): the design prototype's panels, on the app's tokens. Colours read the list panels' (--text, --muted,
+   --line), the graph's own valence hues (--g-vpos, --g-vneg) at the panel step
+   the design uses (--p-vpos, --p-vneg), and each reference's kind hue, which the
+   components pass in as `--c`. */
+
+.briefing {
+  display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+}
+.briefing-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 1; }
+.briefing-crumb { font-size: 12px; }
+.briefing-hero { padding: 12px 14px 4px; }
+.briefing-ref { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+/* The hero's own reference, wearing its kind's hue as the design's `.ref` does. */
+.briefing-ref-kind { display: inline-flex; align-items: center; gap: 6px; }
+.briefing-title { margin: 6px 0 0; font-size: 16px; font-weight: 550; line-height: 1.35; text-wrap: balance; }
+.briefing-sub { margin: 4px 0 0; font-size: 11.5px; }
+
+.briefing-verdicts { margin-top: 10px; }
+.briefing-vbar { display: flex; gap: 1px; height: 4px; border-radius: 2px; overflow: hidden; background: var(--surface-raised); }
+.briefing-vbar span { display: block; height: 100%; }
+.briefing-vbar .is-proven, .briefing-vkey .is-proven { background: var(--l-evidence); }
+.briefing-vbar .is-unproven { background: var(--surface-hover); }
+.briefing-vbar .is-disproven { background: var(--l-against); }
+.briefing-vkey { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 7px; font-size: 10.5px; color: var(--muted); }
+.briefing-vkey i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+.briefing-vkey .is-proven { background: var(--l-evidence); }
+.briefing-vkey .is-unproven { background: var(--surface-hover); }
+.briefing-vkey .is-disproven { background: var(--l-against); }
+.briefing-vkey-side { flex-basis: 100%; color: var(--muted); }
+
+.briefing-sec { padding: 14px 14px 4px; }
+.briefing-sec h5 { display: flex; margin: 0 0 7px; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: lowercase; }
+.briefing-sec-side { margin-left: auto; color: var(--muted); }
+.briefing-prose { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+
+/* A record read inside a briefing: its own summary, and its parents, children,
+   changes and fields. `.record` is written as a panel that scrolls on its own
+   at its own width, so here it gives both up and flows with the briefing, keeping
+   only the inks and the editors' scope that block declares. */
+.briefing .record-brief { flex: none; min-height: 0; overflow: visible; padding: 0 14px; }
+
+.briefing-turns { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 1px solid var(--line-strong); }
+.briefing-turn { position: relative; padding: 0 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.briefing-turn::before { content: ""; position: absolute; left: -16px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.briefing-turn-date { display: block; font-size: 10.5px; color: var(--muted); }
+.briefing-turn-what { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; }
+.briefing-turn-title { color: var(--muted); }
+
+.briefing-next { display: block; padding: 8px 8px 9px; margin: 0 -8px; border-bottom: 1px solid var(--row-divider); border-radius: 6px; }
+.briefing-next:hover { background: var(--surface-hover); }
+.briefing-next-run { font-size: 12.5px; line-height: 1.55; color: var(--text); }
+.briefing-next-template { color: var(--muted); }
+.briefing-next-settle { margin-top: 3px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.briefing-next-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 4px; font-size: 10.5px; color: var(--muted); }
+
+.briefing-row { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 8px; width: 100%; padding: 4px 5px; margin: 0 -5px 1px; border-radius: 5px; text-align: left; font-size: 12px; color: var(--text); }
+.briefing-row:hover { background: var(--surface-hover); }
+.briefing-row-ref { color: var(--muted); }
+.briefing-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.briefing-row:hover .briefing-row-title { color: var(--text); }
+.briefing-row-side { color: var(--muted); font-size: 11px; }
+.briefing-dot { width: 7px; height: 7px; border-radius: 50%; }
+.briefing-dot.is-proven { background: var(--g-kind-Belief, var(--l-evidence)); }
+.briefing-dot.is-open { background: var(--g-kind-Belief, var(--muted)); opacity: .55; }
+.briefing-dot.is-hollow { background: none; border: 1.3px solid var(--g-kind-Belief, var(--l-against)); }
+
+/* The design's `.pill`: a reference wears its kind's hue, passed in as `--c`. */
+.briefing-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--c, var(--line-strong)) 70%, transparent); background: color-mix(in srgb, var(--c, var(--surface-raised)) 14%, transparent); color: var(--c, var(--ink-muted)); font-size: 10.5px; }
+.briefing-pill:hover { background: color-mix(in srgb, var(--c, var(--surface-raised)) 24%, transparent); }
+
+
+
+/* The cluster briefing's actions, and the Peek bar's breadcrumb. */
+.briefing-actions { display: flex; gap: 8px; margin-top: 10px; }
+.briefing-actions .btn { font-size: 11px; }

@@ -1,18 +1,14 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { type DrawNode, GraphModel } from "./model";
+import { EDGE_GROUPS } from "./canvasRenderer";
 import { forceGraphRenderer, type Renderer } from "./renderer";
 import { node, PALETTE } from "./testing";
-import { must } from "../must";
 
 // jsdom has no canvas: force-graph is replaced by one that keeps what the
 // renderer gives it and where it puts the camera.
 const { FakeForceGraph } = vi.hoisted(() => {
   /** A d3 force's settings, each of which chains. */
-  const FORCE = {
-    strength: () => FORCE,
-    distance: () => FORCE,
-    distanceMax: () => FORCE,
-  };
+  const FORCE = { strength: () => FORCE, distance: () => FORCE, distanceMax: () => FORCE };
   /** Settings the renderer makes once and these tests never read; each chains. */
   const CHAINED = [
     "nodeVisibility",
@@ -24,6 +20,7 @@ const { FakeForceGraph } = vi.hoisted(() => {
     "linkColor",
     "linkDirectionalArrowLength",
     "linkDirectionalArrowRelPos",
+    "linkCurvature",
     "d3VelocityDecay",
     "d3AlphaDecay",
     "d3AlphaMin",
@@ -31,6 +28,7 @@ const { FakeForceGraph } = vi.hoisted(() => {
     "onNodeClick",
     "onBackgroundClick",
     "onRenderFramePost",
+    "onEngineTick",
     "d3ReheatSimulation",
     "_destructor",
   ];
@@ -111,8 +109,8 @@ beforeEach(() => {
   );
   renderer = forceGraphRenderer(
     document.createElement("div"),
-    { hover: () => {}, click: () => {}, doubleClick: () => {} },
-    () => ({ right: 0 }),
+    { hover: () => {}, click: () => {}, doubleClick: () => {}, island: () => {} },
+    () => ({ right: 0, left: 0 }),
   );
 });
 
@@ -123,16 +121,14 @@ afterEach(() => {
 
 /** The graph's camera. */
 function graph(): InstanceType<typeof FakeForceGraph> {
-  return must(FakeForceGraph.last);
+  return FakeForceGraph.last!;
 }
 
 /** Drawn nodes at `places`, numbered from 1. */
 function placed(places: readonly (readonly [number, number])[]): DrawNode[] {
   const model = new GraphModel(PALETTE);
   model.apply({ nodes: places.map((_, n) => node(n + 1)), edges: [] });
-  return model.nodes.map((drawn, n) =>
-    Object.assign(drawn, { x: must(places[n])[0], y: must(places[n])[1] }),
-  );
+  return model.nodes.map((drawn, n) => Object.assign(drawn, { x: places[n]![0], y: places[n]![1] }));
 }
 
 test("the layout stops by cooling alone, never by the clock: a tab opened in the background, given no frames for 15 s, still lays out once shown", () => {
@@ -141,12 +137,7 @@ test("the layout stops by cooling alone, never by the clock: a tab opened in the
 
 test("a fit frames 150,000 nodes, more than a call can take as arguments", () => {
   const [first] = placed([[0, 0]]);
-  const nodes = Array.from({ length: 150_000 }, (_, n) => ({
-    ...must(first),
-    id: String(n),
-    x: n,
-    y: -n,
-  }));
+  const nodes = Array.from({ length: 150_000 }, (_, n) => ({ ...first!, id: String(n), x: n, y: -n }));
   renderer.setData(nodes, [], null);
   renderer.fit();
   expect(graph().centre).toEqual([149_999 / 2, -149_999 / 2]);
@@ -158,15 +149,36 @@ test("grouping keeps what the view asked to frame: a focus's nodes, not every no
     [10, 0],
     [1_000, 1_000],
   ]);
-  const near = (drawn: DrawNode) => must(drawn.x) < 100;
+  // The layout engine moves the nodes as it packs them, so the frame is judged
+  // against where the framed pair stand now, not where they stood.
+  const pair = nodes.slice(0, 2);
+  const nearIds = new Set(pair.map(({ id }) => id));
+  const near = (drawn: DrawNode) => nearIds.has(drawn.id);
+  const centreOf = (list: readonly DrawNode[]): [number, number] => [
+    (Math.min(...list.map((n) => n.x!)) + Math.max(...list.map((n) => n.x!))) / 2,
+    (Math.min(...list.map((n) => n.y!)) + Math.max(...list.map((n) => n.y!))) / 2,
+  ];
   renderer.setData(nodes, [], () => true);
   renderer.fit(near);
   renderer.group(null);
   graph().settle();
-  expect([graph().centre, graph().scale]).toEqual([[5, 0], 4]);
+  expect([graph().centre, graph().scale]).toEqual([centreOf(pair), 4]);
   // Grouping a settled graph frames it again once the islands form, as last asked.
   renderer.group(() => "island");
   graph().centerAt(0, 0);
   graph().settle();
-  expect(graph().centre).toEqual([5, 0]);
+  expect(graph().centre).toEqual(centreOf(pair));
+});
+
+test("a citation that says nothing about which way it votes is not drawn as support", () => {
+  // `(valence ?? 0) >= 0` read an absent sign as a positive one, so a graph that
+  // records no valence — which another producer need not — came out wholly in the
+  // mint of supporting evidence: the view asserting what the data never said.
+  const unsigned = EDGE_GROUPS.filter((group) => group.of({ kind: "proves" } as never));
+  expect(unsigned.map((group) => group.sign)).toEqual([false]);
+  const flat = EDGE_GROUPS.filter((group) => group.of({ kind: "proves", valence: 0 } as never));
+  expect(flat.map((group) => group.sign)).toEqual([false]);
+  // A sign, either way, still reads as evidence.
+  expect(EDGE_GROUPS.filter((group) => group.of({ kind: "proves", valence: 0.6 } as never)).map((g) => [g.sign, g.positive])).toEqual([[true, true]]);
+  expect(EDGE_GROUPS.filter((group) => group.of({ kind: "proves", valence: -0.6 } as never)).map((g) => [g.sign, g.positive])).toEqual([[true, false]]);
 });

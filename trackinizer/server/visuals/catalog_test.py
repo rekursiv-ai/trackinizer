@@ -27,11 +27,13 @@ def test_default_canvas_builds_the_default_catalog() -> None:
     assert [visual.type for visual in default_catalog().visuals] == [
         "trax.browse",
         "trax.subgraph",
+        "trax.knowledge",
         "trax.timeline",
         "trax.artifact",
         "trax.summary",
         "trax.files",
         "trax.terminal",
+        "trax.blocks",
     ]
 
 
@@ -81,11 +83,13 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
     assert kinds == {
         "trax.browse": [],
         "trax.subgraph": None,
+        "trax.knowledge": None,
         "trax.timeline": None,
         "trax.artifact": ["Artifact"],
         "trax.summary": ["Issue", "AgentSession"],
         "trax.files": None,
         "trax.terminal": None,
+        "trax.blocks": None,
     }
 
 
@@ -172,6 +176,7 @@ def test_files_takes_any_record_and_bounds_its_narrowing() -> None:
         ),
         "requires": ["record"],
         "default_size": "wide",
+        "default_placement": None,
         "parameter_schema": {
             "path": {
                 "type": "string",

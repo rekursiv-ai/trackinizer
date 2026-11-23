@@ -12,6 +12,7 @@ from treekle.absent import Absent
 import pytest
 
 from trackinizer.client.client import ArtifactRevision, Client, EdgeWrite
+
 from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
@@ -19,6 +20,7 @@ from trackinizer.wire.filters import (
     FILTER_FIELD_ALIASES,
     Filter,
 )
+from trackinizer.wire import wire_code
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
@@ -43,9 +45,12 @@ from trackinizer.wire.wire_sessions import (
     SessionStartResponse,
 )
 from trackinizer.wire.wire_terminals import TerminalHosts, TerminalOpened
+from trackinizer.wire import wire_code
+from trackinizer.wire.wire_code import CodeDiff, CodeFile
 
 
 if TYPE_CHECKING:
+    from trackinizer.wire.wire_code import CodeDiff, CodeFile
     from collections.abc import Callable, Iterator, Mapping, Sequence
     from types import TracebackType
 
@@ -311,6 +316,27 @@ class FakeClient:
         """Exit the context manager, closing resources."""
         del exc_type, exc, tb
         self.close()
+
+    def my_email(self) -> str:
+        """Return the email the caller is authenticated as."""
+        self.calls.append(("my_email", (), {}))
+        return self.author or "fake@example.com"
+
+    def code_file(self, record_id: uuid.UUID, *, path: str) -> CodeFile | None:
+        """Return one file of a record's snapshot, with its text."""
+        self.calls.append(("code_file", (record_id,), {"path": path}))
+        return None
+
+    def code_diff(
+        self,
+        from_record: uuid.UUID,
+        to_record: uuid.UUID,
+        *,
+        context: int = wire_code.DEFAULT_DIFF_CONTEXT,
+    ) -> CodeDiff | None:
+        """Return how one record's code differs from another's, path by path."""
+        self.calls.append(("code_diff", (from_record, to_record), {"context": context}))
+        return None
 
     def resolve_id(self, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
         """Resolve id."""
@@ -1269,6 +1295,29 @@ class FakeClient:
     def remove_author(self, target_id: uuid.UUID, author: str, *, actor: str) -> None:
         """Remove author."""
         self.calls.append(("remove_author", (target_id, author), {"actor": actor}))
+
+    def my_email(self) -> str:
+        """Return the account this fake answers as; the code store files blobs under it."""
+        self.calls.append(("my_email", (), {}))
+        return "ada@example.com"
+
+    def code_file(self, record_id: uuid.UUID, *, path: str) -> CodeFile | None:
+        """Record the read; this fake holds no snapshot, so it finds no file."""
+        self.calls.append(("code_file", (record_id,), {"path": path}))
+        return None
+
+    def code_diff(
+        self,
+        from_record: uuid.UUID,
+        to_record: uuid.UUID,
+        *,
+        context: int = wire_code.DEFAULT_DIFF_CONTEXT,
+    ) -> CodeDiff | None:
+        """Record the read; with no snapshots there is nothing to compare."""
+        self.calls.append(
+            ("code_diff", (from_record, to_record), {"context": context}),
+        )
+        return None
 
 
 @pytest.fixture

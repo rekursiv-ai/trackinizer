@@ -1,0 +1,40 @@
+/* POINT AT IT AND ASK. The selection is a hairline ring in --text, the same emphasis
+   every selected state here takes; the ask line is one field and one word. */
+.ui-askable { position:relative; }
+/* Pointable nodes say so on hover only — a surface covered in permanent affordances
+   reads as a form, and this is a reading surface that happens to answer back. */
+.ui-askable [data-node]:hover { outline:1px solid var(--line); outline-offset:3px; cursor:pointer; }
+.ui-ask-ring { position:absolute; pointer-events:none; outline:1px solid var(--text);
+  outline-offset:3px; border-radius:var(--radius); }
+.ui-ask { position:absolute; z-index:30; display:flex; align-items:center; gap:8px;
+  padding:6px 8px; background:var(--surface); border:1px solid var(--text);
+  border-radius:var(--radius); font:400 12px/1.4 var(--mono); }
+.ui-ask input { flex:1 1 auto; min-width:260px; background:none; border:0; color:var(--text);
+  font:400 12px/1.4 var(--mono); outline:none; }
+.ui-ask input::placeholder { color:var(--ink-machine); }
+.ui-ask button { background:none; border:0; color:var(--text); cursor:pointer;
+  font:400 12px/1.4 var(--mono); padding:2px 4px; }
+.ui-ask button:disabled { color:var(--ink-machine); cursor:default; }
+
+/* The exchange is placed where it was asked, and stays there once the ring is gone:
+   both states take the same box, so an answer does not jump when it arrives. It is
+   capped rather than stretched — an answer wider than the node it is about reads as
+   a new section of the page instead of a remark on one part of it. */
+.ui-ask-answer, .ui-ask-waiting { position: absolute; z-index: 2147480000;
+  width: min(560px, 100%); max-height: 46vh; overflow: auto; }
+/* Both states are opaque: the box sits over the page it is about, and a transparent
+   one puts two sentences on top of the paragraph below the node, which is unreadable. */
+.ui-ask-answer, .ui-ask-waiting { background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: 8px; padding: 10px 13px; }
+.ui-ask-q { font-size: 10.5px; color: var(--ink-machine); margin-bottom: 6px; padding-right: 18px; }
+.ui-ask-close { position: absolute; top: 6px; right: 7px; background: none; border: 0; padding: 0 3px;
+  color: var(--ink-machine); cursor: pointer; font: 400 13px/1 var(--mono); }
+.ui-ask-close:hover { color: var(--text); }
+.ui-ask-a { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+/* The answer is markdown, so it brings its own blocks. They are tightened to a remark
+   on one node: the first line sits against the question, and a table scrolls in place
+   rather than widening the box past the thing it is about. */
+.ui-ask-a > :first-child { margin-top: 0; }
+.ui-ask-a > :last-child { margin-bottom: 0; }
+.ui-ask-a table { display: block; overflow-x: auto; max-width: 100%; }
+.ui-ask-thinking { font-size: 10.5px; color: var(--ink-machine); }

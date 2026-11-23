@@ -1,0 +1,6 @@
+/* THE IMAGE NODE. A hairline and a step of surface — the law's own elevation — never
+   a shadow around a figure, which is exactly the chrome the law forbids elsewhere. */
+.ui-image { margin: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+.ui-image img { display: block; width: 100%; height: auto; }
+/* The caption locates what the figure is, so it is machine ink, not read. */
+.ui-image figcaption { padding: 7px 12px; border-top: 1px solid var(--line); color: var(--ink-machine); font: 400 11px/1.5 var(--mono); }

@@ -282,5 +282,96 @@
         ]
       ]
     }
+  },
+  "prose": {
+    "_note": "Each record's written summary: a variant per kind, chosen by a hash of its title. {Title}/{title} stand for the record's title, {owner} for the one named on it, {verdict}/{conf} for a Belief's judgement, and {W0} {w1} {w2} for the words its own title was built from. Every kind's list is long enough that two records of a kind opened together rarely read alike.",
+    "Issue": [
+      "{Title} — the ask, and it is narrower than it reads. Whoever picks it up starts from the runs under it, not from memory.\n\n**Done when** the numbers are on a child of this record and two of them agree.",
+      "Opened after the same question came up twice in one week and no one could say what it had cost. Each Belief under this Issue is one explanation; each Experiment, evidence for one side of it.\n\n**Done when** the summary above reads as an answer rather than a question.",
+      "Narrow enough to run, which most of the tree above it is not. The work goes on the children; this record keeps the argument.\n\n**Done when** every claim under it carries at least one load-bearing citation.",
+      "{owner} took this after the last review, when it became clear the old notes would not survive a rerun. Nothing here counts as settled until it is written below.\n\n**Done when** someone who was not in the room can repeat what is claimed here.",
+      "Split off from the sweep's failures, where this was the one thing nobody could explain. The dead ends are recorded too, so the next person does not walk them again.\n\n**Done when** the verdicts on the claims under it stop moving."
+    ],
+    "Belief": [
+      "{W0} {w1} — the reading of the runs that touched it, not a guess. Where it breaks is at the sizes nobody has run yet.\n\nConfidence {conf}. Two records downstream lean on it, which is why it has not been dropped.",
+      "The claim, stated once: {title}. It came out of the sweeps rather than from a hunch, and {verdict} is the honest word for where it stands.\n\nConfidence {conf} is the author's own; the ledger beside it is what the citations carry.",
+      "{W0} {w1}. Held because every run that varied it moved the same way, and the effect survived a rerun.\n\nVerdict {verdict} at confidence {conf}; a larger size is what would change it.",
+      "{owner} put this here after the second sweep agreed with the first. It is the shortest form of what we saw.\n\nConfidence {conf}, and no higher until a seed is rerun past 1B.",
+      "Stated plainly: {title}. The disagreement is in the reruns, not the measurement, which is why it is not proven.\n\nConfidence {conf}; the experiments under it are what would move it."
+    ],
+    "Experiment": [
+      "Ran to answer one question, and nothing else. {owner} set it up before the sweep and left it alone once it started.\n\nThe numbers are in the artifact it produced; the claims it cites are the ones it was meant to test.",
+      "{Title}: the seed and the size are in the title because both changed the answer. Reruns of this are welcome; edits to its setup are not.\n\nRead it beside the sweep it came from, not on its own.",
+      "Set up after the last review said the effect could be noise. It is one run on one configuration, and it is written up as such.\n\nWhat it settles, if anything, is on the Belief it cites.",
+      "The point of this run was to see whether it held when the size moved. It finished clean, which is not the same as it settling anything.\n\n{owner} logged the results; the claims take them from there.",
+      "{Title} — the third of its family, and the one whose logs survived. The others are in the artifact store.\n\nAnyone repeating it should keep the seed in the title."
+    ],
+    "CodeChange": [
+      "{Title} — the change is small and the reason is in the diff. It went in during the sweep work and does not have a thread of its own.\n\nReverting is safe; the evals that depend on it read the same either way.",
+      "Written while the failure was being chased; this is the fix that stuck. The tests it needed are the reruns under it.\n\n{owner} landed it and moved on.",
+      "One behaviour, one file. It changes no interface, so the record exists to explain why it was worth a run at all.\n\nParked here so the next postmortem finds it.",
+      "{Title} — landed between two sweeps so neither would have to be rerun. It is the kind of change that only matters when it is wrong."
+    ],
+    "Artifact": [
+      "{Title} — the numbers behind the claims above it. Written from the runs as they finished, not tidied afterwards.\n\nIf a figure here disagrees with a rerun, the rerun is right and this needs an edit.",
+      "Kept because two Beliefs cite it and neither would survive its being wrong. {owner} wrote it; the tables are the source.",
+      "The read-out of the sweep. Everything above it in the tree points here for its numbers, which is a lot of weight for one file.\n\nSuperseded by the next sweep, and marked when it is.",
+      "{Title} — one page, because the meeting it was for lasted ten minutes. The plots behind it are in the run directory."
+    ],
+    "WebSearch": [
+      "Run while the sweep was still going, looking for someone else's negative result. What came back is filed under it, and the useful ones are the two that disagree with us.",
+      "{Title} — one query, kept so that a rerun of the search does not look like a new idea. Nothing here is evidence on its own.",
+      "Searched after the same paper was cited twice without anyone reading it. {owner} ran it and left the picking to the results.",
+      "The query is the whole record: what was asked, and when. The reading is on the results it kept."
+    ],
+    "WebResult": [
+      "Found while looking into this, and cited where it supports a claim — only for the section that reads our way.\n\nNot reproduced; the numbers are the authors'.",
+      "{Title} — the part that matters to us is one figure, so the citation carries the whole record. {owner} filed it.",
+      "Kept because it is the closest published setup to ours. Where it differs: their seeds, their data mix, and nobody has reran it.",
+      "Read once, skimmed twice, cited by one Belief that would rather not have to."
+    ],
+    "Paper": [
+      "Cited for one result. Read once, by {owner}, and the reading is what the claim under it says.\n\nIts numbers are its own setup; ours have not reproduced them.",
+      "{Title} — in the tree because a Belief leans on its middle section. Nothing here was run by us.\n\nWorth a rerun before it carries a second load-bearing citation.",
+      "Picked up in the search for the same effect and kept for one number in it. The rest of it is background.",
+      "The paper two of our claims rest on, which is more weight than the authors intended for it."
+    ],
+    "AgentSession": [
+      "{Title} — {owner} ran it to completion and left the results where they belong: under the claims it touched.\n\nThe transcript is the log; this record is only its receipt.",
+      "A session opened so the sweep's failures had somewhere to go. Anything it concluded is on a Belief, not here.",
+      "Ran unattended. What it changed is in the records it produced, and what it could not decide is still open above them.",
+      "{Title}, second attempt. The first is in the log and the outcome is on the children."
+    ]
+  },
+  "cost": {
+    "_note": "What a seed charges each record, in USD, on the two axes the ledger keeps: agent (the LLM spend of whoever or whatever ran the step) and resource (the compute it triggered). A kind missing here is written at zero and gets no cost write at all. That is deliberate for Issue and Belief, and it is the honest story as much as the cheap one: a claim and the question it answers cost nothing to state, and testing them is where the money goes, so the spend belongs on the runs and sessions that did the work, not on the record holding the verdict. Nor is it free to leave them charged: a cost write is a marginal_cost change, which alerts each dependent one hop, and the roots of the big islands fan out to a thread's whole width at once. The ranges are an ML research lab's. An Experiment is GPU-hours, so its resource cost dwarfs everything and its agent cost is the few dollars of watching it. An AgentSession is the opposite: tokens, little compute. A CodeChange sits between, a rerun of something and the writing of it. An Artifact is a render and a page. Paper, WebResult and WebSearch are near free -- a download, a parse, one search call -- so their ranges are pennies, kept above zero so the row reads as spent-something, which it did. Every axis of a priced kind stays above zero, so each carries a cost on both. Each value is picked from its range by a hash of the title, as the summary is, so two seeds write the same number.",
+    "Experiment": {
+      "agent": [0.2, 1.8],
+      "resource": [45.0, 260.0]
+    },
+    "AgentSession": {
+      "agent": [1.2, 16.0],
+      "resource": [0.01, 0.4]
+    },
+    "CodeChange": {
+      "agent": [0.4, 3.6],
+      "resource": [1.5, 22.0]
+    },
+    "Artifact": {
+      "agent": [0.02, 0.3],
+      "resource": [0.1, 2.5]
+    },
+    "Paper": {
+      "agent": [0.02, 0.4],
+      "resource": [0.05, 0.6]
+    },
+    "WebResult": {
+      "agent": [0.01, 0.2],
+      "resource": [0.01, 0.15]
+    },
+    "WebSearch": {
+      "agent": [0.01, 0.12],
+      "resource": [0.01, 0.05]
+    }
   }
 }

@@ -56,6 +56,7 @@ from trackinizer.server.api import (
     terminal_routes,
     tool_routes,
     variables_routes,
+    visuals_routes,
 )
 from trackinizer.server.api._deps import (
     host_changes,
@@ -289,6 +290,7 @@ def _start_addon_services(
 # them, and the web app's schema dump builds its own app from the same tuple rather
 # than copying the module-level ``app``, which tests reconfigure.
 ROUTERS: Final = (
+    visuals_routes.router,
     addons_routes.router,
     admin_routes.router,
     auth_routes.router,

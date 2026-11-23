@@ -20,7 +20,10 @@ Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar b
 - **confidence** ∈ [0,1] — calibrated probability the proposition is true; `0.5`
   is the neutral prior. Orthogonal to judgement and status.
 - **citations** — at least the load-bearing evidence, as signed edges (below).
-- `description` — the argument/context when the title alone underspecifies.
+- `description` — the argument/context when the title alone underspecifies. It is
+  also the body a fold card prints: with none the card falls back to listing the
+  edges it rests on (`→ cites K#4 · came from K#7`), so the claim reads as a bare
+  headline over its own wiring.
 
 ## Citations: the epistemic edge (NOT paper→paper)
 
@@ -50,7 +53,9 @@ is expressed as both `proves`/`favors` the same Belief, not one citing the other
 
 - A topic as the title instead of a falsifiable sentence.
 - Citing a Paper FROM a Belief in the wrong direction (evidence points UP at the
-  claim; the stored edge is Artifact→Belief).
+  claim; the stored edge is Artifact→Belief). Only that upward edge draws a wire in
+  the fold: an outward one prints as the citing card's own `→` line and never a run,
+  so claims that each point only at their papers fold into cards joined by nothing.
 - Using a separate edge kind for "against" instead of negative valence.
 - Leaving judgement/confidence at defaults after evidence has accrued.
 - A Belief with no citations presented as settled.

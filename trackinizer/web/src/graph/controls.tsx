@@ -11,21 +11,24 @@ import { capitalize, StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
 import { EmptyState } from "../ui/view";
-import { linkLook, type Palette } from "./encode";
+import { type Palette, panelKind, panelTint, panelValence } from "./encode";
 import type { DrawNode } from "./model";
 import { hopsName } from "./search";
-import { must } from "../must";
 
-/** The kinds and statuses the Filter hides. */
+/** The kinds, statuses and owners the Filter hides. */
 export type Hidden = {
   readonly kinds: readonly string[];
   readonly statuses: readonly string[];
+  readonly owners: readonly string[];
 };
 type Field = keyof Hidden;
 
 /**
- * The Filter menu, as a list's: pick Kind or Status, then tick what shows. Each
- * value has its count among the nodes loaded; all show at first.
+ * The Filter menu, as a list's: pick Kind, Status or Owner, then tick what
+ * shows. Each value has its count among the nodes loaded; all show at first.
+ * Owner lists the people: a session's owner is the agent that ran it, since
+ * the server keys live sessions by owner, so the people are every other
+ * record's owner -- and ticking one off leaves that person's lines of work.
  */
 export function FilterMenu({
   meta,
@@ -39,8 +42,8 @@ export function FilterMenu({
   onToggle: (field: Field, value: string) => void;
 }) {
   const [field, setField] = useState<Field | null>(null);
-  const tally = (pick: (node: GraphNode) => string, value: string) =>
-    String(nodes.filter((node) => pick(node) === value).length);
+  const tally = (pick: (node: GraphNode) => string, value: string) => String(nodes.filter((node) => pick(node) === value).length);
+  const people = [...new Set(nodes.flatMap((node) => (node.kind !== "AgentSession" && node.owner !== undefined ? [node.owner] : [])))].sort();
   const options: MenuOption[] =
     field === "kinds"
       ? meta.kinds.map((kind) => ({
@@ -58,21 +61,18 @@ export function FilterMenu({
             hint: tally((node) => node.status, status),
             checked: !hidden.statuses.includes(status),
           }))
-        : FIELDS.map(([value, label]) => ({
-            value,
-            label,
-            icon: <Icon name="filter" size={14} />,
-          }));
-  const count = hidden.kinds.length + hidden.statuses.length;
+        : field === "owners"
+          ? people.map((owner) => ({
+              value: owner,
+              label: owner,
+              hint: tally((node) => node.owner ?? "", owner),
+              checked: !hidden.owners.includes(owner),
+            }))
+          : FIELDS.map(([value, label]) => ({ value, label, icon: <Icon name="filter" size={14} /> }));
+  const count = hidden.kinds.length + hidden.statuses.length + hidden.owners.length;
   return (
     <Menu
-      label={
-        field === "kinds"
-          ? "Show kinds…"
-          : field === "statuses"
-            ? "Show statuses…"
-            : "Filter by…"
-      }
+      label={field === "kinds" ? "Show kinds…" : field === "statuses" ? "Show statuses…" : field === "owners" ? "Show owners…" : "Filter by…"}
       trigger={
         <button type="button" className="btn ghost">
           <Icon name="filter" size={14} />
@@ -110,26 +110,18 @@ export function FilterChips({
 }) {
   const chips = FIELDS.filter(([field]) => hidden[field].length > 0);
   if (chips.length === 0) return null;
-  const name = (field: Field, value: string) =>
-    field === "kinds" ? kindLook(value).plural : capitalize(value);
+  const name = (field: Field, value: string) => (field === "kinds" ? kindLook(value).plural : field === "owners" ? value : capitalize(value));
   const phrase = (field: Field) => {
     const shown = present[field].filter((value) => !hidden[field].includes(value));
-    const named = (values: readonly string[]) =>
-      values.map((value) => name(field, value)).join(", ");
-    return shown.length > 0 && shown.length < hidden[field].length
-      ? `is ${named(shown)}`
-      : `is not ${named(hidden[field])}`;
+    const named = (values: readonly string[]) => values.map((value) => name(field, value)).join(", ");
+    return shown.length > 0 && shown.length < hidden[field].length ? `is ${named(shown)}` : `is not ${named(hidden[field])}`;
   };
   return (
     <div className="fchips">
       {chips.map(([field, label]) => (
         <span key={field} className="fchip">
           <span className="k">{label}</span> {phrase(field)}
-          <button
-            type="button"
-            aria-label={`Remove the ${label} filter`}
-            onClick={() => onRemove(field)}
-          >
+          <button type="button" aria-label={`Remove the ${label} filter`} onClick={() => onRemove(field)}>
             <Icon name="x" size={12} />
           </button>
         </span>
@@ -146,30 +138,14 @@ export function FilterChips({
  * as 2500, 2,500 or 2.5k. A typed count offers only the option of that count, a
  * preset or its own; matched as text, 50 would offer 5k first.
  */
-export function LimitMenu({
-  limit,
-  onLimit,
-}: {
-  limit: number;
-  onLimit: (limit: number) => void;
-}) {
-  const presets = LIMITS.map(([value, name]) => ({
-    value: String(value),
-    label: `${name} nodes`,
-    checked: value === limit,
-  }));
-  const typed = LIMITS.some(([value]) => value === limit)
-    ? []
-    : [{ value: String(limit), label: `${limitName(limit)} nodes`, checked: true }];
+export function LimitMenu({ limit, onLimit }: { limit: number; onLimit: (limit: number) => void }) {
+  const presets = LIMITS.map(([value, name]) => ({ value: String(value), label: `${name} nodes`, checked: value === limit }));
+  const typed = LIMITS.some(([value]) => value === limit) ? [] : [{ value: String(limit), label: `${limitName(limit)} nodes`, checked: true }];
   return (
     <Menu
       label="Nodes to show…"
       trigger={
-        <button
-          type="button"
-          className="btn ghost"
-          title="The newest inquiries to draw, each with the older ones it links to"
-        >
+        <button type="button" className="btn ghost" title="The newest inquiries to draw, each with the older ones it links to">
           <Icon name="layers" size={14} />
           Nodes: {limitName(limit)}
         </button>
@@ -177,15 +153,11 @@ export function LimitMenu({
       options={[...presets, ...typed]}
       match={(option, text) => {
         const count = parseCount(text);
-        return count === null
-          ? option.label.toLowerCase().includes(text.toLowerCase())
-          : option.value === String(count);
+        return count === null ? option.label.toLowerCase().includes(text.toLowerCase()) : option.value === String(count);
       }}
       fixed={(text) => {
         const count = parseCount(text);
-        return count === null ||
-          count === limit ||
-          LIMITS.some(([value]) => value === count)
+        return count === null || count === limit || LIMITS.some(([value]) => value === count)
           ? []
           : [{ value: String(count), label: `${limitName(count)} nodes` }];
       }}
@@ -196,16 +168,14 @@ export function LimitMenu({
 
 /** How the limit reads: `1k`, `2,500`, `All`. */
 function limitName(limit: number): string {
-  return (
-    LIMITS.find(([value]) => value === limit)?.[1] ?? limit.toLocaleString("en-US")
-  );
+  return LIMITS.find(([value]) => value === limit)?.[1] ?? limit.toLocaleString("en-US");
 }
 
 /** The count `text` names, as 2500, 2,500 or 2.5k, or null for anything else or one past All. */
 function parseCount(text: string): number | null {
   const found = /^(\d[\d,]*(?:\.\d+)?)\s*(k?)$/i.exec(text.trim());
   if (!found) return null;
-  const count = Number(must(found[1]).replaceAll(",", "")) * (found[2] ? 1000 : 1);
+  const count = Number(found[1]!.replaceAll(",", "")) * (found[2] ? 1000 : 1);
   return Number.isInteger(count) && count >= 1 && count <= ALL_NODES ? count : null;
 }
 
@@ -225,20 +195,12 @@ export function ReplayMenu({
     <Menu
       label="Replay at…"
       trigger={
-        <button
-          type="button"
-          className="btn ghost"
-          title="Grow the graph again in the order it was made"
-        >
+        <button type="button" className="btn ghost" title="Grow the graph again in the order it was made">
           <Icon name="clock" size={14} />
           {running ? `Replaying at ${speed}x` : "Replay"}
         </button>
       }
-      options={SPEEDS.map((option) => ({
-        value: String(option),
-        label: `${option}x`,
-        checked: running && option === speed,
-      }))}
+      options={SPEEDS.map((option) => ({ value: String(option), label: `${option}x`, checked: running && option === speed }))}
       fixed={() => (running ? [{ value: STOP, label: "Stop" }] : [])}
       onPick={(value) => (value === STOP ? onStop() : onSpeed(Number(value)))}
     />
@@ -297,11 +259,7 @@ export function FocusRow({
       <span className="fchip">
         {node ? <KindIcon kind={node.kind} size={14} /> : null}
         {node ? <StatusGlyph status={node.status} size={12} /> : null}
-        <span className="graph-focus-name">
-          {node
-            ? `${name} · ${node.title || "(untitled)"}`
-            : `${name} is not among the nodes loaded`}
-        </span>
+        <span className="graph-focus-name">{node ? `${name} · ${node.title || "(untitled)"}` : `${name} is not among the nodes loaded`}</span>
         <button type="button" aria-label="Clear the focus" onClick={onClear}>
           <Icon name="x" size={12} />
         </button>
@@ -319,9 +277,7 @@ export function FocusRow({
                 onClick={() => onHops(option)}
               >
                 {option === "all" ? "All" : option}
-                <span className="graph-seg-count num">
-                  {counts[option].toLocaleString("en-US")}
-                </span>
+                <span className="graph-seg-count num">{counts[option].toLocaleString("en-US")}</span>
               </button>
             ))}
           </div>
@@ -341,18 +297,13 @@ export function FocusRow({
                 Through: {through}
               </button>
             }
-            options={edgeKinds.map((kind) => ({
-              value: kind,
-              label: edgeName(kind),
-              checked: !skipEdges.includes(kind),
-            }))}
+            options={edgeKinds.map((kind) => ({ value: kind, label: edgeName(kind), checked: !skipEdges.includes(kind) }))}
             multi
             onPick={onSkip}
           />
           <span className="spacer" />
           <span className="muted num">
-            {lit.nodes.toLocaleString("en-US")} nodes ·{" "}
-            {lit.edges.toLocaleString("en-US")} edges
+            {lit.nodes.toLocaleString("en-US")} nodes · {lit.edges.toLocaleString("en-US")} edges
           </span>
         </>
       ) : null}
@@ -361,13 +312,14 @@ export function FocusRow({
 }
 
 /**
- * The key over the canvas, under three headings. Kinds lists each kind loaded
- * as a button, as a chart legend's entries are: a hidden kind clicked shows it
- * too, and a shown one shows only it, unless it is the only one shown, which
- * shows every kind. Only it hides every other kind, those not loaded yet too,
- * so a kind a later read brings stays hidden. Each sets the kinds Filter hides;
- * a hidden kind has no count. Links names each edge kind drawn by its stroke,
- * as the detail names it, and Status each status drawn by its ring.
+ * The key over the canvas, in the design's four sections. `beliefs` reads a
+ * Belief's three verdicts; `nodes, full color when zoomed in` lists each kind
+ * loaded as a button, as a chart legend's entries are: a hidden kind clicked
+ * shows it too, and a shown one shows only it, unless it is the only one shown,
+ * which shows every kind — each sets the kinds Filter hides, and a hidden kind
+ * has no count. `between clusters` names the one hairline, and `links`
+ * lists every edge kind by its stroke with how many are loaded, as toggle
+ * buttons: one clicked hides that kind's wires, as `Through` does.
  */
 export function Key({
   id,
@@ -378,6 +330,8 @@ export function Key({
   edges,
   hiddenKinds,
   onHiddenKinds,
+  hiddenEdges,
+  onHiddenEdges,
 }: {
   id: string;
   meta: Meta;
@@ -390,112 +344,97 @@ export function Key({
   edges: readonly { readonly kind: string; readonly valence?: number }[];
   hiddenKinds: readonly string[];
   onHiddenKinds: (hiddenKinds: readonly string[]) => void;
+  hiddenEdges: readonly string[];
+  onHiddenEdges: (hiddenEdges: readonly string[]) => void;
 }) {
   const counts = tally(nodes.map((node) => node.kind));
+  const edgeCounts = tally(edges.map((edge) => edge.kind));
+  // The panel's colours: one step lighter than the graph's, as the design's are.
   const shown = kinds.filter((kind) => !hiddenKinds.includes(kind));
-  const pick = (
-    kind: string,
-  ): { readonly title: string; readonly hidden: readonly string[] } => {
+  const pick = (kind: string): { readonly title: string; readonly hidden: readonly string[] } => {
     const { plural } = kindLook(kind);
-    if (hiddenKinds.includes(kind))
-      return {
-        title: `Show ${plural} too`,
-        hidden: hiddenKinds.filter((other) => other !== kind),
-      };
+    if (hiddenKinds.includes(kind)) return { title: `Show ${plural} too`, hidden: hiddenKinds.filter((other) => other !== kind) };
     if (shown.length === 1) return { title: "Show every kind", hidden: [] };
-    return {
-      title: `Show only ${plural}`,
-      hidden: meta.kinds.filter((other) => other !== kind),
-    };
+    return { title: `Show only ${plural}`, hidden: meta.kinds.filter((other) => other !== kind) };
   };
-  const statuses = new Set(nodes.map((node) => node.status));
-  const strokes = [
-    ...Object.keys(meta.edges)
-      .filter((kind) =>
-        edges.some((edge) => edge.kind === kind && edge.valence === undefined),
-      )
-      .map((kind) => ({
-        name: sentence(must(meta.edges[kind]).forward),
-        look: linkLook({ kind }, 0, palette),
-      })),
-    ...(edges.some((edge) => edge.valence !== undefined && edge.valence >= 0)
-      ? [{ name: "Supports", look: { color: palette.support, dash: null } }]
-      : []),
-    ...(edges.some((edge) => edge.valence !== undefined && edge.valence < 0)
-      ? [{ name: "Against", look: { color: palette.against, dash: null } }]
-      : []),
-  ];
-  const sections = [
-    {
-      name: "Kinds",
-      items: kinds.map((kind) => {
-        const on = shown.includes(kind);
-        const next = pick(kind);
-        return (
-          <li key={kind}>
-            <button
-              type="button"
-              aria-pressed={on}
-              title={next.title}
-              onClick={() => onHiddenKinds(next.hidden)}
-            >
-              <span className="graph-mark">
-                <span
-                  className="graph-dot"
-                  style={{ background: palette.kinds[kind] ?? palette.fallback }}
-                />
-              </span>
-              {kindLook(kind).plural}
-              {on ? <span className="graph-tally num">{counts.get(kind)}</span> : null}
-            </button>
-          </li>
-        );
-      }),
-    },
-    {
-      name: "Links",
-      items: strokes.map(({ name, look }) => (
-        <li key={name}>
-          <span className="graph-mark">
-            <span
-              className="graph-stroke"
-              style={{
-                borderTopColor: look.color,
-                borderTopStyle: look.dash ? "dashed" : "solid",
-              }}
-            />
-          </span>
-          {name}
-        </li>
-      )),
-    },
-    {
-      name: "Status",
-      items: (meta.enums.status ?? [])
-        .filter((status) => statuses.has(status))
-        .map((status) => (
-          <li key={status}>
-            <span className="graph-mark">
-              <span
-                className="graph-ring"
-                style={{ borderColor: palette.status[status] ?? palette.fallback }}
-              />
-            </span>
-            {capitalize(status)}
-          </li>
-        )),
-    },
-  ];
+  const belief = palette.kinds.Belief ?? palette.fallback;
+  const linkRows = Object.keys(meta.edges)
+    .filter((kind) => edgeCounts.has(kind))
+    .map((kind) => {
+      const cited = kind === "proves" || kind === "favors";
+      return {
+        kind,
+        name: sentence(meta.edges[kind]!.forward),
+        color: cited ? panelValence(palette.support) : panelTint(palette.edges[kind] ?? palette.fallback),
+        dashed: kind === "favors",
+        count: (edgeCounts.get(kind) ?? 0) as number,
+      };
+    });
   return (
     <aside id={id} className="graph-key" aria-label="Key">
-      {sections
-        .filter(({ items }) => items.length > 0)
-        .map(({ name, items }) => (
-          <div key={name}>
-            <h2 id={`${id}-${name}`}>{name}</h2>
-            <ul aria-labelledby={`${id}-${name}`}>{items}</ul>
-          </div>
-        ))}
+      <div>
+        <h2 id={`${id}-beliefs`}>beliefs</h2>
+        <ul aria-labelledby={`${id}-beliefs`}>
+          <li><span className="graph-mark"><span className="graph-dot" style={{ background: belief }} /></span>proven</li>
+          <li><span className="graph-mark"><span className="graph-dot" style={{ background: belief, opacity: 0.55 }} /></span>unproven</li>
+          <li><span className="graph-mark"><span className="graph-ring" style={{ borderColor: belief }} /></span>disproven</li>
+        </ul>
+      </div>
+      <div>
+        <h2 id={`${id}-kinds`}>nodes, full color when zoomed in</h2>
+        <ul aria-labelledby={`${id}-kinds`}>
+          {kinds.map((kind) => {
+            const on = shown.includes(kind);
+            const next = pick(kind);
+            return (
+              <li key={kind}>
+                <button type="button" aria-pressed={on} title={next.title} onClick={() => onHiddenKinds(next.hidden)}>
+                  <span className="graph-mark">
+                    <span className="graph-dot" style={{ background: panelKind(palette, kind) }} />
+                  </span>
+                  {kindLook(kind).plural}
+                  {on ? <span className="graph-tally num">{counts.get(kind)}</span> : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+      <div>
+        <h2 id={`${id}-between`}>between clusters</h2>
+        <ul aria-labelledby={`${id}-between`}>
+          {/* One line, because the canvas draws one: across the gaps a wire says
+              the islands are joined, and the kind and the side it takes are read
+              inside an island or off a hover's rays. The key named two hues the
+              field no longer draws. */}
+          <li><span className="graph-mark"><span className="graph-stroke" style={{ borderTopColor: palette.fallback }} /></span>a wire between two clusters</li>
+        </ul>
+      </div>
+      <div>
+        <h2 id={`${id}-links`}>links</h2>
+        <ul aria-labelledby={`${id}-links`}>
+          {linkRows.map((row) => {
+            const off = hiddenEdges.includes(row.kind);
+            return (
+              <li key={row.kind}>
+                <button
+                  type="button"
+                  aria-pressed={!off}
+                  title={off ? `Show ${row.name.toLowerCase()} links` : `Hide ${row.name.toLowerCase()} links`}
+                  onClick={() => onHiddenEdges(hiddenEdges.includes(row.kind) ? hiddenEdges.filter((other) => other !== row.kind) : [...hiddenEdges, row.kind])}
+                >
+                  <span className="graph-mark">
+                    <span className="graph-stroke" style={{ borderTopColor: row.color, borderTopStyle: row.dashed ? "dashed" : "solid" }} />
+                  </span>
+                  {row.name}
+                  <span className="graph-tally num">{off ? null : row.count}</span>
+                </button>
+              </li>
+            );
+          })}
+          <li><span className="graph-mark"><span className="graph-stroke" style={{ borderTopColor: panelValence(palette.against) }} /></span>argues against</li>
+        </ul>
+      </div>
     </aside>
   );
 }
@@ -505,25 +444,9 @@ export function Key({
  * and status as the app draws them, its ref and, under a focus, its hops from
  * it (`far`); its title; and `hint`, what a click does where it is drawn.
  */
-export function Tooltip({
-  node,
-  x,
-  y,
-  far,
-  hint,
-}: {
-  node: DrawNode;
-  x: number;
-  y: number;
-  far: number | undefined;
-  hint: string;
-}) {
+export function Tooltip({ node, x, y, far, hint }: { node: DrawNode; x: number; y: number; far: number | undefined; hint: string }) {
   return (
-    <div
-      className="graph-tip"
-      role="tooltip"
-      style={{ left: x + TIP_OFFSET_PX, top: y + TIP_OFFSET_PX }}
-    >
+    <div className="graph-tip" role="tooltip" style={{ left: x + TIP_OFFSET_PX, top: y + TIP_OFFSET_PX }}>
       <div className="graph-tip-ref">
         <KindIcon kind={node.kind} size={12} />
         <StatusGlyph status={node.status} size={12} />
@@ -537,38 +460,16 @@ export function Tooltip({
 }
 
 /** Zoom in and out by `ZOOM_STEP`, and frame every node shown, at the canvas's foot. */
-export function ZoomButtons({
-  onZoom,
-  onFit,
-}: {
-  onZoom: (factor: number) => void;
-  onFit: () => void;
-}) {
+export function ZoomButtons({ onZoom, onFit }: { onZoom: (factor: number) => void; onFit: () => void }) {
   return (
     <div className="graph-zoom" role="group" aria-label="Zoom">
-      <button
-        type="button"
-        className="icon-btn"
-        aria-label="Zoom in"
-        onClick={() => onZoom(ZOOM_STEP)}
-      >
+      <button type="button" className="icon-btn" aria-label="Zoom in" onClick={() => onZoom(ZOOM_STEP)}>
         <Icon name="plus" size={15} />
       </button>
-      <button
-        type="button"
-        className="icon-btn"
-        aria-label="Zoom out"
-        onClick={() => onZoom(1 / ZOOM_STEP)}
-      >
+      <button type="button" className="icon-btn" aria-label="Zoom out" onClick={() => onZoom(1 / ZOOM_STEP)}>
         −
       </button>
-      <button
-        type="button"
-        className="icon-btn"
-        aria-label="Fit"
-        title="Frame every node shown (F)"
-        onClick={onFit}
-      >
+      <button type="button" className="icon-btn" aria-label="Fit" title="Frame every node shown (F)" onClick={onFit}>
         <Icon name="maximize" size={14} />
       </button>
     </div>
@@ -576,24 +477,13 @@ export function ZoomButtons({
 }
 
 /** Over the canvas, in place of a graph too big to draw unasked: draw it, or read the newest `ASK_ABOVE` instead. */
-export function AskToDraw({
-  count,
-  onDraw,
-  onFewer,
-}: {
-  count: number;
-  onDraw: () => void;
-  onFewer: () => void;
-}) {
+export function AskToDraw({ count, onDraw, onFewer }: { count: number; onDraw: () => void; onFewer: () => void }) {
   return (
     <div className="graph-ask">
-      <EmptyState
-        icon={<Icon name="graph" size={24} />}
-        title={`Draw ${count.toLocaleString("en-US")} nodes?`}
-      >
+      <EmptyState icon={<Icon name="graph" size={24} />} title={`Draw ${count.toLocaleString("en-US")} nodes?`}>
         <p>
-          Laying out more than {ASK_ABOVE.toLocaleString("en-US")} nodes keeps this tab
-          busy until it settles, longer the more there are.
+          Laying out more than {ASK_ABOVE.toLocaleString("en-US")} nodes keeps this tab busy until it settles, longer the more
+          there are.
         </p>
         <span className="w-actions">
           <button type="button" className="btn primary" onClick={onDraw}>
@@ -626,13 +516,13 @@ function tally(values: readonly string[]): Map<string, number> {
 const FIELDS = [
   ["kinds", "Kind"],
   ["statuses", "Status"],
+  ["owners", "Owner"],
 ] as const satisfies readonly (readonly [Field, string])[];
-/** The node limits offered, by name: v1's three, and every inquiry. */
+/** The node limits offered, by name: the three the design draws, and any count typed in. */
 const LIMITS = [
-  [100, "100"],
   [1000, "1k"],
+  [2500, "2.5k"],
   [5000, "5k"],
-  [ALL_NODES, "All"],
 ] as const;
 /** v1's Replay speeds. */
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 10];

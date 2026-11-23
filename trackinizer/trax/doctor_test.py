@@ -161,6 +161,7 @@ def test_stale_skills_report_the_repair_command(
     source.mkdir(parents=True)
     for path in (
         source / "SKILL.md",
+        source / "DESIGN.md",
         package / "docs/grammar.lark",
         package / "docs/GRAMMAR.md",
     ):

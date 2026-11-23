@@ -1,5 +1,30 @@
 /* The peek panel (Peek.tsx): an inquiry's detail over the right of a list or the graph. */
 .peek {
+  position: absolute; top: 0; right: 0; bottom: 0; width: var(--peek-w, min(540px, 100%)); z-index: 15;
+  background: var(--bg); border-left: 1px solid var(--line-strong);
+  box-shadow: -24px 0 60px #0008; display: flex; flex-direction: column;
+}
+/* Its left edge is the handle that sets `--peek-w`: a strip of the panel's own
+   width, so the pointer reaches it before the view behind, and quiet until asked
+   for — the grip and the line both come on hover or focus. */
+.peek-edge {
+  position: absolute; z-index: 3; top: 0; bottom: 0; left: 0; width: 9px;
+  cursor: col-resize; touch-action: none; user-select: none;
+}
+.peek-edge::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 2px;
+  background: var(--line-strong); opacity: 0; transition: opacity .12s;
+}
+.peek-edge::after {
+  content: ""; position: absolute; top: 50%; left: 3px; width: 3px; height: 26px;
+  transform: translateY(-50%); border-radius: 2px; background: var(--muted); opacity: 0;
+  transition: opacity .12s;
+}
+.peek-edge:hover::before, .peek-edge:focus-visible::before { opacity: 1; }
+.peek-edge:hover::after, .peek-edge:focus-visible::after { opacity: .7; }
+.peek-edge:focus-visible { outline: none; }
+.peek-bar { display: flex; align-items: center; gap: 6px; height: 40px; flex-shrink: 0; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.peek-bar .icon-btn { display: grid; place-items: center; }
   position: absolute;
   top: 0;
   right: 0;
@@ -40,6 +65,10 @@
 }
 /* Peek's detail shows its rail whatever the detail page chose, with no button
    for it: Peek's own collapse button is in the corner above, alike. */
+.peek .detail-top .panel-toggle { display: none; }
+.peek .d-rail[hidden] { display: flex; }
+.peek-crumb { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--muted); }
+button.peek-crumb:hover { color: var(--text); text-decoration: underline; }
 .peek .detail-top .panel-toggle {
   display: none;
 }

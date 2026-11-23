@@ -1,0 +1,138 @@
+/* The design library's ink. Every rule here is a decision the prototype was
+   measured against, restated in the app's own tokens so the light theme draws it
+   too: --text for what is read, --ink-machine (the neutral grey, r=g=b) for what
+   only locates, and the two evidence tints on a mark's glyph and nowhere else. */
+
+.ui-sec {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 10px;
+  font: 400 10.5px/1 var(--mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-machine);
+}
+.ui-sec:first-child { margin-top: 0; }
+/* A label names the section, so a reader reads it: white, and heavy enough to sit
+   above the prose it heads. Grey stays on the hairline and the measure at its end,
+   which only locate. */
+.ui-sec b { font-weight: 500; color: var(--text); }
+/* The hairline carries the width, so the size at its end is read as the measure
+   of the thing named at the start. */
+.ui-sec s { flex: 1 1 auto; min-width: 0; height: 1px; background: var(--line); }
+.ui-sec em {
+  flex: none;
+  font-style: normal;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 11px;
+  color: var(--ink-machine);
+}
+
+/* PROSE AND MARKS ARE WHAT A PANE IS READ FOR, so they take the theme's prose face
+   and its white — never a step back, which is what made a summary unreadable at 11px
+   grey. The monospace face stays on the labels, the paths and the ledger line; of
+   those a label is the one that is read, so it wears white and the other two stay
+   machine grey. */
+.ui-prose {
+  margin: 0;
+  font: 400 15px/1.7 var(--sans);
+  color: var(--text);
+}
+.ui-prose.is-lead { margin-bottom: 11px; }
+
+.ui-marks { display: flex; flex-direction: column; gap: 6px; }
+.ui-mark {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin: 0;
+  font: 400 14px/1.65 var(--sans);
+  color: var(--text);
+}
+/* The glyph column is fixed width so the words of two marks align whatever the
+   glyph, and the level hue is spent on neither it nor a word: a glyph takes the machine
+   grey, and only the two evidence tints below step outside the three inks — a diff's
+   green in and pink out are what a reviewer reads the mark FOR. The mark itself
+   stays monospace: it is a sign, not the first letter of the sentence beside it. */
+.ui-mark b { flex: none; width: 9px; font: 400 12px/1.65 var(--mono); color: var(--ink-machine); }
+.ui-mark.is-fit b { color: var(--l-evidence); }
+.ui-mark.is-finding b { color: var(--l-against); }
+/* A flag marks a measured row rather than a sentence, so it is set in the gutter's own
+   chrome size. The hue stays on the glyph: an earlier version tinted the word too,
+   reasoning that the gutter exists to carry the verdict — law.test.ts and
+   review.test.tsx both refused it, and they were right. `▲` in the evidence tint
+   beside a white row is already the thing the eye goes to; the word only names which
+   reading it was. */
+.ui-mark.is-flag { gap: 6px; font: 400 10.5px/1.6 var(--mono); color: var(--ink-machine); }
+.ui-mark.is-flag b { width: auto; color: var(--l-against); }
+
+/* PATHS LOCATE. Two to a row, because a pane this wide wastes a column, and at
+   the machine ink, because the sentence above them already said what they are. */
+.ui-paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 26px;
+}
+.ui-paths span {
+  color: var(--ink-machine);
+  font: 400 12px/1.5 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+/* The ledger's own line locates, so it is machine ink rather than the chrome grey
+   that barely stands off a dark pane. */
+.ui-note {
+  margin: 14px 0 0;
+  font: 400 11px/1.6 var(--mono);
+  color: var(--ink-machine);
+}
+
+/* DOCUMENT HEADINGS. The scale is 1.32 between ranks — enough that a reader sees the
+   shape of a page in their peripheral vision, which is the whole job of a heading and
+   the thing a column of 10.5px uppercase rules cannot do. Weight carries the rank with
+   size rather than instead of it, and all three take the reading white: a heading is
+   read, so no step back, and no hue, because hue on this surface is a verdict.
+   The space above a heading is roughly twice the space below it, so a heading binds
+   to the text it opens rather than floating between two blocks. */
+.ui-h { margin: 0; color: var(--text); font-family: var(--sans); letter-spacing: -0.011em; }
+.ui-h1 { margin-bottom: 14px; font-size: 25px; font-weight: 600; line-height: 1.22; letter-spacing: -0.018em; }
+.ui-h2 { margin: 32px 0 12px; font-size: 18.5px; font-weight: 600; line-height: 1.32; }
+/* The third rank is prose size: past it a reader stops reading rank and starts reading
+   emphasis, so the fourth is a `lead` paragraph and not a smaller heading. */
+.ui-h3 { margin: 24px 0 8px; font-size: 15px; font-weight: 600; line-height: 1.4; }
+.ui-h1:first-child, .ui-h2:first-child, .ui-h3:first-child { margin-top: 0; }
+/* A ticked token in a heading keeps the heading's own size and weight: it is the same
+   word at the same rank, set in the machine face because it is an address. */
+.ui-h .ui-tok { font-size: 0.94em; font-weight: inherit; }
+
+/* A MACHINE LINE is read for its figures, so the whole row takes the machine face at
+   the reading ink — a number set in the prose face reads as a word about a quantity
+   rather than the quantity. The first cell is the name the column is scanned by and
+   keeps its width; the rest give way. Cells are spaced by the row's own gap, so a
+   composed row of these aligns without anybody writing a grid. */
+.ui-mrow {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0;
+  font: 400 12.5px/1.75 var(--mono);
+  color: var(--text);
+}
+.ui-mrow > :first-child { flex-shrink: 0; min-width: 7.5em; }
+/* A cell past the first locates rather than reads — it is the unit or the source on a
+   row whose figure is already white. */
+.ui-mrow > :not(:first-child) { color: var(--ink-machine); }
+/* The figure itself stays white wherever it sits: a cell may name its own number. */
+.ui-mrow .ui-tok { color: var(--text); }
+
+/* A token the model put between ticks is a thing in the code: a column, a file, a
+   command. It takes the machine face at the reading ink — the sentence around it is
+   the argument, this is its address — and no box, because a pane whose every third
+   word is framed is a pane of chrome. */
+.ui-tok {
+  font-family: var(--mono);
+  font-size: 0.93em;
+  color: var(--text);
+}

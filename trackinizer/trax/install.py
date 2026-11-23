@@ -130,6 +130,7 @@ def bundled_skills() -> Path:
     try:
         for resource in (
             root / "trax/SKILL.md",
+            root / "trax/DESIGN.md",
             docs / "grammar.lark",
             docs / "GRAMMAR.md",
         ):
