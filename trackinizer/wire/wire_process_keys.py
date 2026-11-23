@@ -140,6 +140,9 @@ PROCESS_KEY_ROUTES: Final[Mapping[tuple[str, str], Scope]] = _route_union(
         # Its account's spend today and what of its allowance and credit is left, which
         # it tells the person before it starts work that spends them.
         ("GET", "/api/addons/knowspend/today"): "account",
+        # Its account's campaign iterations: a lead stamps each one's score, checked;
+        # the route refuses another account's row.
+        ("POST", "/api/addons/campaignscores/iterations/{seq}"): "account",
         # Its account's hosts, which its agents' tools run on.
         ("GET", "/api/terminals/hosts"): "account",
         ("GET", "/api/terminals/hosts/changes"): "account",

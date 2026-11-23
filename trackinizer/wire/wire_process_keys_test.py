@@ -77,6 +77,7 @@ def test_each_route_is_the_one_its_client_dials() -> None:
         ("PUT", "/api/addons/knowspend/limits"),
         ("GET", "/api/addons/knowspend/campaigns"),
         ("GET", "/api/addons/knowspend/today"),
+        ("POST", "/api/addons/campaignscores/iterations/{seq}"),
         ("GET", JOBS_PATH),
         ("GET", "/api/inquiries"),
         ("GET", "/api/inquiries/next_issue"),
