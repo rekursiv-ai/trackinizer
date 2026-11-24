@@ -34,7 +34,7 @@ runs; leaving an addon out switches it off everywhere at once.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 from uuid import UUID
@@ -58,6 +58,7 @@ __all__ = [
     "ServerContext",
     "ServerService",
     "ServiceDescription",
+    "SharedAddon",
     "StandaloneContext",
     "StandaloneService",
 ]
@@ -213,6 +214,25 @@ class Addon(Protocol):
 
     def manifest(self) -> AddonManifest:
         """Return the addon's parts; must not open connections or read secrets."""
+        ...
+
+
+@runtime_checkable
+class SharedAddon(Protocol):
+    """An addon that reuses already-built sibling addons from its deployment."""
+
+    def bind_siblings(
+        self,
+        config: object,
+        built: Mapping[int, Addon],
+    ) -> None:
+        """Bind shared sibling addons before :meth:`Addon.manifest` runs.
+
+        Args:
+          config: This addon's uncopied config as held on the deployment config.
+          built: Top-level addons built by the deployment, keyed by ``id(config)``.
+
+        """
         ...
 
 

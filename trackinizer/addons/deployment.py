@@ -18,6 +18,7 @@ from trackinizer.addons.addon import (
     AddonCatalogBody,
     AddonDescription,
     AddonManifest,
+    SharedAddon,
 )
 from trackinizer.server.access_policy import AccessPolicy, DefaultPolicy
 from trackinizer.server.visuals.catalog import Canvas
@@ -73,6 +74,8 @@ class Deployment:
         self.visuals = config.visuals.make()
         self.manifests: dict[str, AddonManifest] = {}
         descriptions: list[AddonDescription] = []
+        built_addons: list[tuple[str, Makeable[object], Addon]] = []
+        by_config: dict[int, Addon] = {}
         for name, addon in _addon_configs(config):
             built = addon.make()
             if not isinstance(built, Addon):
@@ -81,6 +84,12 @@ class Deployment:
                     "manifest(); every field of a deployment but 'visuals' is an "
                     "addon config or None.",
                 )
+            built_addons.append((name, addon, built))
+            by_config[id(addon)] = built
+        for _name, addon, built in built_addons:
+            if isinstance(built, SharedAddon):
+                built.bind_siblings(addon, by_config)
+        for name, _addon, built in built_addons:
             manifest = self.manifests[name] = built.manifest()
             try:
                 descriptions.append(manifest.describe(name))
