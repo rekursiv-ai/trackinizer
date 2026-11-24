@@ -412,9 +412,13 @@ GET /api/web/{search,recent_changes,lookup/<id>,get/<id>}   # web app read API
 Trackinizer's automated cascade lives in `Store`. It never mutates
 author-owned fields -- it emits re-assessment alerts.
 
-1. When an inquiry changes, Store finds every parent with an edge to that
-   child and emits `dependency_changed` on the parent.
-2. The alert recurses upward through the edge graph.
+1. When an inquiry changes, Store walks dependent parents upward through
+   the edge graph.
+2. Each subscribed dependent receives a `dependency_changed` row on
+   `change_log`. Unsubscribed intermediates emit no row (and take no row
+   lock on `inquiries`), but the walk continues through them carrying the
+   last emitted `change_id` so subscribed ancestors still receive alerts
+   with a valid `caused_by` chain.
 3. A visited set plus write-time acyclicity keep the cascade finite.
 
 Refutation is not a separate edge: a contradicting result is a `proves`

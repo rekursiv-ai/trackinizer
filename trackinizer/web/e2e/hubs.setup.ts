@@ -41,6 +41,7 @@ setup("the hubs the detail specs read", async ({ request }) => {
         description:
           "See Belief#1, [the plan](https://example.com/plan) and `Issue#1` in code.",
         priority: 10,
+        subscribers: ["watcher"],
       }),
       ...Array.from({ length: DETAIL_CHILDREN }, (_, k) => issue(`Hub child ${k}`)),
       issue("Second parent"),
