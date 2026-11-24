@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
@@ -32,6 +33,10 @@ from trackinizer.wire.wire_terminals import (
     TERMINAL_HOSTS_PATH,
 )
 from trackinizer.wire.wire_tools import TOOLS_WS_PATH
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def test_each_route_is_the_one_its_client_dials() -> None:
@@ -105,11 +110,26 @@ def test_each_route_is_the_one_its_client_dials() -> None:
 
 
 def test_the_records_routes_keep_their_scope_in_the_one_list() -> None:
-    """A merge must never widen a key: a session's records stay its own tree's."""
+    """A merge never widens a key: transcripts read account-wide, written in tree."""
+    parts, records = _template(session_parts_path), _template(session_records_path)
+
     assert {route: PROCESS_KEY_ROUTES.get(route) for route in RECORDS_ROUTES} == dict(
         RECORDS_ROUTES,
     )
-    assert RECORDS_ROUTES[("GET", _records_template())] == "tree"
+    assert {
+        route: PROCESS_KEY_ROUTES[route]
+        for route in (
+            ("GET", parts),
+            ("GET", records),
+            ("POST", records),
+            (WEBSOCKET, SESSION_PROCESS_WS_PATH),
+        )
+    } == {
+        ("GET", parts): "account",
+        ("GET", records): "account",
+        ("POST", records): "tree",
+        (WEBSOCKET, SESSION_PROCESS_WS_PATH): "tree",
+    }
     assert {method for method, _ in RECORDS_ROUTES} == {"GET"}
 
 
@@ -218,9 +238,9 @@ def test_a_parameter_names_no_empty_segment() -> None:
     ] == [None, ("GET", "/api/inquiries/{target_id}")]
 
 
-def _records_template() -> str:
-    """Return the records route's template, as the session wire spells its path."""
-    return session_records_path(UUID(int=0)).replace(str(UUID(int=0)), "{session_id}")
+def _template(path: Callable[[UUID], str]) -> str:
+    """Return a session route's template, as the session wire spells its path."""
+    return path(UUID(int=0)).replace(str(UUID(int=0)), "{session_id}")
 
 
 if __name__ == "__main__":

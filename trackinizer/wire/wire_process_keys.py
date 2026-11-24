@@ -41,9 +41,9 @@ RECORDS_ROUTES: Final[Mapping[tuple[str, str], Scope]] = MappingProxyType(
     {
         # Its agents' record reads, which run trax's read commands: every route those
         # commands call, each a GET, and no write. A read trax sends as a POST (metrics
-        # query and rank) is not listed. Each applies the caller's read filter. Routes
-        # listed for other tools keep their scope here: a session's parts and records
-        # stay its own tree's.
+        # query and rank) is not listed. Each applies the caller's read filter, and a
+        # session's parts and records the transcript test (``require_session_access``):
+        # the key reads every transcript its person reads, beyond its own tree.
         ("GET", "/api/inquiries"): "account",
         ("GET", "/api/inquiries/{kind}/{seq}"): "account",
         ("GET", "/api/inquiries/next_issue"): "account",
@@ -56,8 +56,8 @@ RECORDS_ROUTES: Final[Mapping[tuple[str, str], Scope]] = MappingProxyType(
         ("GET", "/api/web/search_sessions"): "account",
         ("GET", "/api/web/search_inquiries"): "account",
         ("GET", "/api/version"): "account",
-        ("GET", "/api/sessions/{session_id}/parts"): "tree",
-        ("GET", "/api/sessions/{session_id}/records"): "tree",
+        ("GET", "/api/sessions/{session_id}/parts"): "account",
+        ("GET", "/api/sessions/{session_id}/records"): "account",
     },
 )
 """The routes an agent's record reads call, by method and path, with their scopes."""
@@ -109,10 +109,11 @@ def _route_union(
 
 PROCESS_KEY_ROUTES: Final[Mapping[tuple[str, str], Scope]] = _route_union(
     {
-        # Its own session: the parts and records it restores its journal from, the
-        # records it saves, and its socket.
-        ("GET", "/api/sessions/{session_id}/parts"): "tree",
-        ("GET", "/api/sessions/{session_id}/records"): "tree",
+        # Its own session: the parts and records it restores its journal from (read
+        # account-wide, as :data:`RECORDS_ROUTES` lists them), the records it saves,
+        # and its socket.
+        ("GET", "/api/sessions/{session_id}/parts"): "account",
+        ("GET", "/api/sessions/{session_id}/records"): "account",
         ("POST", "/api/sessions/{session_id}/records"): "tree",
         (WEBSOCKET, "/api/sessions/{session_id}/process/ws"): "tree",
         # The session of each agent its agents spawn, which the start route opens
