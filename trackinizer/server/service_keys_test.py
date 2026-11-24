@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, override
 
 import stat
 import uuid
@@ -122,7 +122,16 @@ async def test_a_missing_account_is_made_told_and_keyed(
 
     await _ensure(conn, named, told)
 
-    assert (conn.executed[0], conn.executed[-1]) == ((_LOCK, ()), (_UNLOCK, ()))
+    assert (conn.executed[:5], conn.executed[-1]) == (
+        [
+            ("BEGIN", ()),
+            ("SET LOCAL statement_timeout = 0", ()),
+            ("SET LOCAL lock_timeout = 0", ()),
+            (_LOCK, ()),
+            ("COMMIT", ()),
+        ],
+        (_UNLOCK, ()),
+    )
     [(account_id, email, name, role)] = conn.statements("INSERT INTO users")
     assert (email, name, role) == ("chat@service.invalid", "chat", "writer")
     assert isinstance(account_id, uuid.UUID)
@@ -242,6 +251,36 @@ async def test_an_account_not_as_named_is_refused(
     assert not (named / "chat").exists()
     assert conn.statements("INSERT") == []
     assert conn.executed[-1] == (_UNLOCK, ())
+
+
+@pytest.mark.asyncio
+async def test_failed_lock_acquire_skips_unlock_and_failed_commit_unlocks(
+    named: Path,
+) -> None:
+    """Unlock runs iff ``pg_advisory_lock`` succeeded, even when ``COMMIT`` fails."""
+
+    class _FailOn(_Conn):
+        def __init__(self, fail_sql: str) -> None:
+            super().__init__(account=None, keys=[])
+            self._fail_sql = fail_sql
+
+        @override
+        async def execute(self, sql: str, *args: object) -> str:
+            await super().execute(sql, *args)
+            if sql == self._fail_sql:
+                raise RuntimeError(f"boom on {sql}")
+            return "UPDATE 0"
+
+    lock_failed = _FailOn(_LOCK)
+    with pytest.raises(RuntimeError, match="boom"):
+        await _ensure(lock_failed, named)
+    assert (_UNLOCK, ()) not in lock_failed.executed
+
+    commit_failed = _FailOn("COMMIT")
+    with pytest.raises(RuntimeError, match="boom"):
+        await _ensure(commit_failed, named)
+    assert commit_failed.statements("INSERT") == []
+    assert commit_failed.executed[-1] == (_UNLOCK, ())
 
 
 if __name__ == "__main__":

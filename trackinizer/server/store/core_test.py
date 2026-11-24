@@ -737,6 +737,65 @@ class TestStoreBootstrap:
 
         seed.assert_awaited_once_with(engine.conn, policy=store.access_policy)
 
+    @pytest.mark.asyncio
+    async def test_bootstrap_acquires_advisory_lock_inside_untimed_tx(self) -> None:
+        """The startup advisory lock clears both timeouts via ``SET LOCAL``."""
+        store, engine = make_store()
+
+        await store.bootstrap()
+
+        sqls = executed_sql(engine.conn)
+        assert sqls[:5] == [
+            "BEGIN",
+            "SET LOCAL statement_timeout = 0",
+            "SET LOCAL lock_timeout = 0",
+            "SELECT pg_advisory_lock(hashtext('trackinizer.bootstrap'))",
+            "COMMIT",
+        ]
+        assert (
+            sqls[-1] == "SELECT pg_advisory_unlock(hashtext('trackinizer.bootstrap'))"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_skips_unlock_when_advisory_lock_fails(self) -> None:
+        """A failed lock acquisition must not emit an unowned ``pg_advisory_unlock``."""
+        conn = make_conn()
+
+        async def execute(sql: str, *_args: object) -> str:
+            if "pg_advisory_lock" in sql:
+                raise asyncpg.exceptions.LockNotAvailableError("lock failed")
+            return "OK"
+
+        conn.execute = AsyncMock(side_effect=execute)
+        store, _engine = make_store(conn)
+
+        with pytest.raises(asyncpg.exceptions.LockNotAvailableError):
+            await store._bootstrap_once(())
+
+        assert not any("pg_advisory_unlock" in sql for sql in executed_sql(conn))
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_unlocks_when_lock_commit_fails_after_acquire(self) -> None:
+        """A session lock taken before a failed ``COMMIT`` is still explicitly unlocked."""
+        conn = make_conn()
+
+        async def execute(sql: str, *_args: object) -> str:
+            if sql == "COMMIT":
+                raise asyncpg.exceptions.SerializationError("commit failed")
+            return "OK"
+
+        conn.execute = AsyncMock(side_effect=execute)
+        store, _engine = make_store(conn)
+
+        with pytest.raises(asyncpg.exceptions.SerializationError):
+            await store._bootstrap_once(())
+
+        sqls = executed_sql(conn)
+        assert not any("applied_migrations" in sql for sql in sqls)
+        assert (
+            sqls[-1] == "SELECT pg_advisory_unlock(hashtext('trackinizer.bootstrap'))"
+        )
+
 
 class _Execute(Protocol):
     async def __call__(self, sql: str, *args: object) -> object: ...
