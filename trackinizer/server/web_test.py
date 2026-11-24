@@ -748,7 +748,8 @@ class TestRoutes:
     ) -> None:
         engine = FakeEngine()
         request = _request(_store(engine), engine)
-        engine.conn.fetch.return_value = []
+        key_id = new_uuid()
+        engine.conn.fetch.side_effect = [[{"id": key_id}], []]
 
         await web.web_worked_on(
             cast(Request, request),
@@ -756,12 +757,42 @@ class TestRoutes:
             limit=7,
         )
 
-        call = engine.conn.fetch.call_args
-        assert call is not None
-        sql = str(call.args[0])
-        # The reader's access gates every change it counts.
+        assert engine.conn.fetch.await_count == 2
+        key_call, work_call = engine.conn.fetch.await_args_list
+        assert "FROM api_keys k" in str(key_call.args[0])
+        assert key_call.args[1:] == (_TEST_IDENTITY.email,)
+        sql = str(work_call.args[0])
+        # Matches the partial index predicate with static literals and gates on
+        # ``inquiry_read_filter`` after grouping by subject_id.
+        assert f"AND c.kind NOT IN {web._NOT_WORK_SQL}" in sql
+        assert "c.api_key_id = ANY($2::uuid[])" in sql
+        assert "c.api_key_id IS NULL AND c.actor = $3" in sql
         assert "@> ARRAY['workspace']::text[] AND (" in sql
-        assert call.args[1:4] == (7, _TEST_IDENTITY.email, list(web._NOT_WORK))
+        assert work_call.args[1:4] == (7, [key_id], _TEST_IDENTITY.email)
+        executed = [str(c.args[0]) for c in engine.conn.execute.call_args_list]
+        assert any("SET LOCAL statement_timeout" in s for s in executed)
+
+    @pytest.mark.asyncio
+    async def test_heavy_read_bulkhead_fails_fast_with_503_when_saturated(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        engine = FakeEngine()
+        store = _store(engine)
+        request = _request(store, engine)
+        monkeypatch.setattr(web, "_HEAVY_READ_ACQUIRE_TIMEOUT_SEC", 0.01)
+        store.heavy_read_semaphore = asyncio.Semaphore(0)
+
+        with pytest.raises(HTTPException) as caught:
+            await web.web_worked_on(
+                cast(Request, request),
+                identity=_TEST_IDENTITY,
+                limit=5,
+            )
+
+        assert caught.value.status_code == 503
+        assert caught.value.headers == {"Retry-After": "2"}
+        engine.conn.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("limit", [0, 101])

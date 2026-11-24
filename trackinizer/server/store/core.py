@@ -351,6 +351,8 @@ class _LifecycleMixin(_StoreShared):
                     )
                     if is_fresh_database:
                         async with tx(conn):
+                            await conn.execute("SET LOCAL statement_timeout = 0")
+                            await conn.execute("SET LOCAL lock_timeout = 0")
                             await conn.execute(
                                 substitute_schema_placeholders(baseline_body),
                             )
@@ -378,6 +380,8 @@ class _LifecycleMixin(_StoreShared):
                 ]
                 for name, body in pending:
                     async with tx(conn):
+                        await conn.execute("SET LOCAL statement_timeout = 0")
+                        await conn.execute("SET LOCAL lock_timeout = 0")
                         await conn.execute(body)
                         await conn.execute(
                             "INSERT INTO applied_migrations (name) VALUES ($1) "

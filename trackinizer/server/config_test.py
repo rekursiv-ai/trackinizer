@@ -135,6 +135,52 @@ class TestPureFunctions:
         assert isinstance(engine, PostgresEngine)
         assert engine._dsn == "postgresql:///x"
         assert engine.listen_channel == NOTIFY_CHANNEL
+        assert engine._max_size == 16
+        assert engine._acquire_timeout == 5.0
+        assert engine._pool_server_settings == {
+            "jit": "off",
+            "statement_timeout": "30000",
+            "lock_timeout": "5000",
+            "idle_in_transaction_session_timeout": "30000",
+        }
+
+    def testbuild_engine_pg_honors_pool_and_timeout_env_overrides(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_ENGINE", "pg")
+        monkeypatch.setenv("TRACKINIZER_DSN", "postgresql:///x")
+        monkeypatch.setenv("TRACKINIZER_DB_POOL_SIZE", "24")
+        monkeypatch.setenv("TRACKINIZER_DB_ACQUIRE_TIMEOUT_SEC", "2.5")
+        monkeypatch.setenv("TRACKINIZER_DB_STATEMENT_TIMEOUT_MS", "15000")
+        monkeypatch.setenv("TRACKINIZER_DB_LOCK_TIMEOUT_MS", "3000")
+        engine = build_engine()
+        assert isinstance(engine, PostgresEngine)
+        assert engine._max_size == 24
+        assert engine._acquire_timeout == 2.5
+        assert engine._pool_server_settings["statement_timeout"] == "15000"
+        assert engine._pool_server_settings["lock_timeout"] == "3000"
+
+    @pytest.mark.parametrize(
+        ("var", "value"),
+        [
+            ("TRACKINIZER_DB_POOL_SIZE", "0"),
+            ("TRACKINIZER_DB_ACQUIRE_TIMEOUT_SEC", "0"),
+            ("TRACKINIZER_DB_ACQUIRE_TIMEOUT_SEC", "nan"),
+            ("TRACKINIZER_DB_ACQUIRE_TIMEOUT_SEC", "not-a-float"),
+            ("TRACKINIZER_DB_STATEMENT_TIMEOUT_MS", "0"),
+            ("TRACKINIZER_DB_LOCK_TIMEOUT_MS", "-5"),
+        ],
+    )
+    def test_config_rejects_invalid_db_guardrail_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        var: str,
+        value: str,
+    ) -> None:
+        monkeypatch.setenv(var, value)
+        with pytest.raises(ConfigError, match=var):
+            Config.from_env()
 
     def testbuild_engine_pg_missing_dsn(
         self,

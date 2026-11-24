@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import asyncio
+
 from trackinizer.server.access_policy import AccessPolicy, DefaultPolicy
 
 
@@ -56,3 +58,6 @@ class _StoreShared:
         # sha256 of the presented secret so no plaintext token is held in
         # memory. Per-instance for the same reasons as the throttle above.
         self._verified_bearers: dict[bytes, tuple[AuthIdentity, float]] = {}
+        # Bulkhead cap for concurrent heavy web read routes so a burst of
+        # analytical reads cannot starve auth, writes, heartbeats, or relays.
+        self.heavy_read_semaphore: asyncio.Semaphore = asyncio.Semaphore(4)

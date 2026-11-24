@@ -150,11 +150,14 @@ async def test_the_index_is_made_for_the_key_at_its_width() -> None:
     await ensure_index(cast("Conn", conn), _SETTINGS)
 
     assert executed_sql(conn) == [
+        "BEGIN",
+        "SET LOCAL statement_timeout = 0",
         (
             "CREATE INDEX IF NOT EXISTS vectors_hnsw_0123456789abcdef "
             "ON embedding.vectors USING hnsw ((embedding::halfvec(2)) halfvec_cosine_ops) "
             "WHERE settings = '0123456789abcdef'"
         ),
+        "COMMIT",
     ]
 
 

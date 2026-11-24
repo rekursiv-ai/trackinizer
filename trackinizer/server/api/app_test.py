@@ -21,6 +21,7 @@ import pytest
 
 from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import FakeEngine, make_store
+from trackinizer.lib.postgres import PoolAcquireTimeoutError
 from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api import app, daemon_routes, meta_routes, query
 from trackinizer.server.api.app import (
@@ -31,7 +32,10 @@ from trackinizer.server.api.app import (
     data_error_handler,
     fk_violation_handler,
     lifespan,
+    lock_not_available_handler,
     not_found_handler,
+    pool_acquire_timeout_handler,
+    query_canceled_handler,
     unique_violation_handler,
     validation_handler,
 )
@@ -164,6 +168,23 @@ class TestCLIHelpers:
         assert response.status_code == 422
         assert body == {"detail": "bad input", "code": "validation"}
 
+    def test_timeout_and_saturation_handlers_emit_504_and_503_retry_after(self) -> None:
+        req = cast(Request, Mock())
+        canceled = asyncio.run(
+            query_canceled_handler(req, asyncpg.QueryCanceledError("timeout")),
+        )
+        locked = asyncio.run(
+            lock_not_available_handler(req, asyncpg.LockNotAvailableError("lock")),
+        )
+        busy = asyncio.run(
+            pool_acquire_timeout_handler(req, PoolAcquireTimeoutError("pool")),
+        )
+        assert canceled.status_code == 504
+        assert locked.status_code == 503
+        assert locked.headers["Retry-After"] == "2"
+        assert busy.status_code == 503
+        assert busy.headers["Retry-After"] == "2"
+
 
 _FAILURES: Final[tuple[tuple[Exception, int, str], ...]] = (
     (ConflictError("clash"), 409, "clash"),
@@ -204,6 +225,21 @@ _FAILURES: Final[tuple[tuple[Exception, int, str], ...]] = (
         ),
         422,
         "invalid",
+    ),
+    (
+        asyncpg.QueryCanceledError("canceling statement due to statement timeout"),
+        504,
+        "database query timed out",
+    ),
+    (
+        asyncpg.LockNotAvailableError("canceling statement due to lock timeout"),
+        503,
+        "database lock busy; retry shortly",
+    ),
+    (
+        PoolAcquireTimeoutError("postgres pool acquire timed out after 5.00s"),
+        503,
+        "database pool busy; retry shortly",
     ),
 )
 """What each failure route raises, and the status and detail its handler answers."""

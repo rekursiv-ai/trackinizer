@@ -278,6 +278,7 @@ class TestSchema:
             "schema.080.sql",
             "schema.081.sql",
             "schema.082.sql",
+            "schema.083.sql",
         ]
 
     def test_the_pin_check_spells_the_wire_shape(self) -> None:
@@ -293,6 +294,15 @@ class TestSchema:
             assert "idx_inquiries_agentsession_cli_session_id" in sql
             assert "idx_inquiries_science_chat_sessions" in sql
             assert "idx_science_chat_shares_email" in sql
+
+    def test_migration_083_and_baseline_declare_worked_on_index_and_changelog_autovacuum(
+        self,
+    ) -> None:
+        """The baseline and 083 both define the worked_on partial index and autovacuum options."""
+        for sql in (load_sql("schema"), load_sql("schema.083")):
+            assert "idx_change_log_work_key_created" in sql
+            assert "autovacuum_analyze_threshold = 50000" in sql
+        assert "idx_change_log_work_key_created" not in load_sql("schema.082")
 
     def test_the_session_audience_column_spells_the_wire_shape(self) -> None:
         """``types`` cannot import ``wire``, so the two spellings are compared here."""

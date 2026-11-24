@@ -27,6 +27,7 @@ import asyncpg
 
 from trackinizer.addons.addon import ServerContext
 from trackinizer.addons.deployment import Deployment, supervise
+from trackinizer.lib.postgres import PoolAcquireTimeoutError
 from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api import (
     addons_routes,
@@ -111,7 +112,10 @@ __all__ = [
     "conflict_handler",
     "fk_violation_handler",
     "lifespan",
+    "lock_not_available_handler",
     "not_found_handler",
+    "pool_acquire_timeout_handler",
+    "query_canceled_handler",
     "request_validation_handler",
     "unique_violation_handler",
     "validation_handler",
@@ -359,6 +363,9 @@ def bare_app() -> FastAPI:
     built.exception_handler(asyncpg.CheckViolationError)(check_violation_handler)
     built.exception_handler(asyncpg.DataError)(data_error_handler)
     built.exception_handler(asyncpg.UniqueViolationError)(unique_violation_handler)
+    built.exception_handler(asyncpg.QueryCanceledError)(query_canceled_handler)
+    built.exception_handler(asyncpg.LockNotAvailableError)(lock_not_available_handler)
+    built.exception_handler(PoolAcquireTimeoutError)(pool_acquire_timeout_handler)
     # The visual routes read the catalog from ``app.state.visual_catalog``, so it
     # is set on every app; ``attach_deployment`` swaps in a configured one.
     built.state.deployment = Deployment.Config().make()
@@ -703,6 +710,76 @@ async def unique_violation_handler(
     return JSONResponse(
         status_code=409,
         content={"detail": "unique constraint violated"},
+    )
+
+
+async def query_canceled_handler(
+    request: Request,
+    exc: asyncpg.QueryCanceledError,
+) -> JSONResponse:
+    """Translate an uncaught Postgres statement cancellation into HTTP 504.
+
+    Routes with caller-supplied filters wrap their query in
+    :func:`~trackinizer.server.api._regex_guard.regex_failures_as_400`,
+    which maps timeouts to 400. Any other query hitting the server's default
+    ``statement_timeout`` lands here as 504 instead of leaking as a 500.
+
+    Args:
+      request: FastAPI Request object (unused).
+      exc: QueryCanceledError from asyncpg (unused).
+
+    Returns:
+      response: JSON response with 504 status.
+
+    """
+    del request, exc
+    return JSONResponse(
+        status_code=504,
+        content={"detail": "database query timed out"},
+    )
+
+
+async def lock_not_available_handler(
+    request: Request,
+    exc: asyncpg.LockNotAvailableError,
+) -> JSONResponse:
+    """Translate a Postgres ``lock_timeout`` failure into HTTP 503.
+
+    Args:
+      request: FastAPI Request object (unused).
+      exc: LockNotAvailableError from asyncpg (unused).
+
+    Returns:
+      response: JSON response with 503 status and Retry-After header.
+
+    """
+    del request, exc
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "database lock busy; retry shortly"},
+        headers={"Retry-After": "2"},
+    )
+
+
+async def pool_acquire_timeout_handler(
+    request: Request,
+    exc: PoolAcquireTimeoutError,
+) -> JSONResponse:
+    """Translate Postgres pool saturation into HTTP 503 instead of hanging.
+
+    Args:
+      request: FastAPI Request object (unused).
+      exc: PoolAcquireTimeoutError from PostgresEngine.acquire (unused).
+
+    Returns:
+      response: JSON response with 503 status and Retry-After header.
+
+    """
+    del request, exc
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "database pool busy; retry shortly"},
+        headers={"Retry-After": "2"},
     )
 
 
