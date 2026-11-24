@@ -165,11 +165,14 @@ async def test_the_rounds_run_until_one_finds_nothing(
     assert written == 3
     assert asked == [(SweepState(), 5), (states[0], 5)]
     assert [str(call.args[0]) for call in engine.conn.execute.await_args_list] == [
+        "BEGIN",
+        "SET LOCAL statement_timeout = 0",
         (
             f"CREATE INDEX IF NOT EXISTS vectors_hnsw_{arm.settings.key} "
             "ON embedding.vectors USING hnsw ((embedding::halfvec(8)) halfvec_cosine_ops) "
             f"WHERE settings = '{arm.settings.key}'"
         ),
+        "COMMIT",
     ]
     assert f"embedding settings {arm.settings.key}" in caplog.text
     assert "re-embedded 3 units, " in caplog.text
