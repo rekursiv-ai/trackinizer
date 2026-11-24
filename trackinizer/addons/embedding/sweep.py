@@ -124,10 +124,9 @@ class Sweep:
                 slice_units=self.slice_units,
             )
             if not state.worked:
-                # The wait between idle rounds; new text waits at most this long.
                 await asyncio.sleep(
                     self.interval_sec,
-                )  # house-ignore[sleep] -- See above.
+                )  # house-ignore[sleep] -- The wait between idle rounds.
 
 
 # Audience: internal -- a background job; it returns where it stands, nothing it read.

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, TypedDict, TypeGuard, cast, override
+from typing import TYPE_CHECKING, Concatenate, TypedDict, TypeGuard, cast, override
 from urllib.parse import parse_qsl
 
 import argparse
@@ -86,7 +87,12 @@ from trackinizer.wire.wire_session_ir import (
     ManifestBody,
     RecordBody,
 )
-from trackinizer.wire.wire_sessions import SessionAgent, SessionStart
+from trackinizer.wire.wire_session_relay import ProcessSpec
+from trackinizer.wire.wire_sessions import (
+    SessionAgent,
+    SessionEnd,
+    SessionStart,
+)
 from trackinizer.wire.wire_terminals import (
     HOST_TERMINAL_WAIT_PATH,
     TERMINAL_HOSTS_CHANGES_PATH,
@@ -4247,6 +4253,74 @@ def test_a_held_waits_delivery_identity_is_independent_between_pending_hosts() -
     assert len({keys[0], keys[1], keys[3]}) == 3
 
 
+def test_start_process_puts_its_spec_as_json() -> None:
+    """The spec goes out as JSON; a refused start still names what was sent."""
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(409, json={"detail": {"code": "busy", "message": "x"}})
+
+    session = uuid.UUID(int=1)
+    spec = ProcessSpec(host="lab-box", args=("--model", "opus"))
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        pytest.raises(ClientError),
+    ):
+        client.start_process(session, spec)
+
+    assert json_loads(sent[0].content) == {
+        "host": "lab-box",
+        "args": ["--model", "opus"],
+    }
+
+
+def test_a_name_is_one_path_segment_with_its_slash_escaped() -> None:
+    sent: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(str(request.url))
+        return httpx2.Response(404, json={"detail": {"code": "x", "message": "y"}})
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        pytest.raises(ClientError),
+    ):
+        client.get_host("a/b")
+
+    assert sent == ["https://server" + HOST_PATH.format(name="a%2Fb")]
+
+
+def test_an_edit_and_an_edge_without_a_reason_send_none() -> None:
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        if request.method == "PUT":
+            return httpx2.Response(200, json=None)
+        return httpx2.Response(200, json={"created": True, "change_id": None})
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        client.edit(uuid.UUID(int=1), "text", "x", actor="me")
+        client.add_edge(uuid.UUID(int=1), uuid.UUID(int=2), "Supports", actor="me")
+
+    assert json_loads(sent[0].content) == {"value": "x", "actor": "me"}
+    assert json_loads(sent[1].content) == {"actor": "me"}
+
+
+def test_a_get_sends_no_idempotency_key() -> None:
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, json={})
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        client.get("/api/x")
+
+    assert "Idempotency-Key" not in sent[0].headers
+
+
 @pytest.mark.parametrize("use_filters", [False, True], ids=["ids", "filters"])
 def test_rank_metrics_preserves_selection_controls_and_ranked_rows(
     use_filters: bool,
@@ -5041,6 +5115,11 @@ def test_the_idempotency_key_is_sent_with_its_canonical_casing() -> None:
             ("connect_error", "connection_reset"),
         ),
         (httpx2.ConnectError("Name or service not known"), ("connect_error",) * 2),
+        (httpx2.ConnectTimeout("timed out"), ("connect_timeout",) * 2),
+        (
+            httpx2.ConnectTimeout("_ssl.c: The handshake operation timed out"),
+            ("connect_timeout", "tls_handshake_timeout"),
+        ),
         (httpx2.ReadTimeout("timed out"), ("read_timeout",) * 2),
         (httpx2.ReadError("eof"), ("read_error",) * 2),
         (httpx2.WriteTimeout("timed out"), ("write_timeout",) * 2),
@@ -5233,6 +5312,767 @@ def _check_lines(method: ast.FunctionDef) -> list[int]:
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "self"
     ]
+
+
+_ID = uuid.UUID(int=1)
+_OTHER_ID = uuid.UUID(int=2)
+
+
+def _bind[**P](
+    method: Callable[Concatenate[Client, P], object],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> Callable[[Client], object]:
+    """Return a call of ``method`` with these arguments, to run on any client."""
+
+    def call(client: Client) -> object:
+        return method(client, *args, **kwargs)
+
+    return call
+
+
+_MALFORMED_ANSWERS: list[
+    tuple[str, Callable[[Client], object], tuple[PlainTree, ...]]
+] = [
+    (
+        "get_inquiry",
+        _bind(Client.get_inquiry, SeqRef(kind="Issue", seq=3)),
+        ({"id": str(_ID)}, []),
+    ),
+    ("next_issue", _bind(Client.next_issue), ([],)),
+    ("claim_next_issue", _bind(Client.claim_next_issue, owner="ada"), ([],)),
+    ("inquiry_cost", _bind(Client.inquiry_cost, _ID), ([],)),
+    ("derived_confidence", _bind(Client.derived_confidence, _ID), ([],)),
+    ("derived_authority", _bind(Client.derived_authority, _ID), ([],)),
+    ("recent_changes_list", _bind(Client.recent_changes), ({},)),
+    ("recent_changes_row", _bind(Client.recent_changes), ([1],)),
+    ("submit_id", _bind(Client.submit, "Issue", {}), ({"id": "x"},)),
+    (
+        "submit_batch_item",
+        _bind(Client.submit_batch, [("Issue", {})]),
+        ({"ids": ["x"]},),
+    ),
+    (
+        "submit_batch_list",
+        _bind(Client.submit_batch, [("Issue", {})]),
+        ({"ids": {}},),
+    ),
+    ("submit_batch_field", _bind(Client.submit_batch, [("Issue", {})]), ({},)),
+    (
+        "resolve_ids_field",
+        _bind(Client.resolve_ids, [UuidRef(uuid=_ID)]),
+        ({},),
+    ),
+    (
+        "resolve_ids_mapping",
+        _bind(Client.resolve_ids, [UuidRef(uuid=_ID)]),
+        ({"found": []},),
+    ),
+    ("read_canvas", _bind(Client.read_canvas, _ID), ([],)),
+    ("rename_canvas", _bind(Client.rename_canvas, _ID, name="a"), ([],)),
+    ("rename_workspace", _bind(Client.rename_workspace, _ID, title="a"), ([],)),
+    (
+        "apply_canvas_operation",
+        _bind(Client.apply_canvas_operation, _ID, operation={"kind": "show"}),
+        ({"revision": 1}, []),
+    ),
+    (
+        "live_revision_missing",
+        _bind(Client.apply_canvas_operation, _ID, operation={"kind": "show"}),
+        ({},),
+    ),
+    (
+        "live_revision_not_int",
+        _bind(Client.apply_canvas_operation, _ID, operation={"kind": "show"}),
+        ({"revision": "x"},),
+    ),
+    ("navigate", _bind(Client.navigate, _ID, route="#/x"), ([],)),
+    ("highlight", _bind(Client.highlight, _ID, ids=[]), ([],)),
+    ("set_preferences", _bind(Client.set_preferences, _ID, change={}), ([],)),
+    ("chat_window", _bind(Client.chat_window, _ID, hidden=True), ([],)),
+    (
+        "code_missing",
+        _bind(Client.code_missing, "a@x.y", hashes=[_CODE_SHA]),
+        ([],),
+    ),
+    (
+        "code_put_blobs",
+        _bind(Client.code_put_blobs, "a@x.y", blobs={_CODE_SHA: "abc"}),
+        ([],),
+    ),
+    (
+        "code_put_snapshot",
+        _bind(
+            Client.code_put_snapshot,
+            _ID,
+            owner="a@x.y",
+            private=False,
+            parent_record_id=None,
+            files={},
+        ),
+        ([],),
+    ),
+    ("code_snapshot", _bind(Client.code_snapshot, _ID), ([],)),
+    ("disconnect_host", _bind(Client.disconnect_host, "gpu-box"), ([],)),
+    ("enroll_host", _bind(Client.enroll_host, "gpu-box"), ([],)),
+    ("get_host", _bind(Client.get_host, "gpu-box"), ([],)),
+    (
+        "heartbeat_host",
+        _bind(Client.heartbeat_host, _ID, instance=_INSTANCE, daemon_version="0.1"),
+        ([],),
+    ),
+    ("host_job_cancel", _bind(Client.host_job_cancel, 1), ([],)),
+    ("host_job_list", _bind(Client.host_job_list), ([],)),
+    (
+        "host_job_submit",
+        _bind(
+            Client.host_job_submit,
+            HostJobSubmit(
+                host="gx10",
+                argv=["python", "x.py"],
+                gpus=1,
+                memory_mb=2_048,
+                minutes=5,
+                remote="https://github.com/o/r.git",
+                ref="refs/heads/main",
+                commit=_JOB_COMMIT,
+            ),
+        ),
+        ([],),
+    ),
+    ("host_job_view", _bind(Client.host_job_view, 1), ([],)),
+    ("host_job_log", _bind(Client.host_job_log, 1, offset=0, wait=0), ([],)),
+    ("host_runs", _bind(Client.host_runs, "gpu-box"), ([],)),
+    ("hosts_version", _bind(Client.hosts_version, since=None, wait_sec=0), ([],)),
+    ("job_cancel", _bind(Client.job_cancel, 1), ([],)),
+    ("job_grant", _bind(Client.job_grant, 1, wait=0), ([],)),
+    ("job_grant_serial", _bind(Client.job_grant_serial, 1, 2, wait=0), ([],)),
+    ("job_list", _bind(Client.job_list), ([],)),
+    (
+        "job_read_grant",
+        _bind(Client.job_read_grant, 1, ReadGrantBody(public_key=_JOB_KEY)),
+        ([],),
+    ),
+    ("job_secret_names", _bind(Client.job_secret_names), ([],)),
+    (
+        "job_start",
+        _bind(
+            Client.job_start,
+            1,
+            StartBody(commit=_JOB_COMMIT, bundle_sha256="b" * 64, bundle_bytes=10),
+        ),
+        ([],),
+    ),
+    (
+        "job_submit",
+        _bind(
+            Client.job_submit,
+            SubmitBody(
+                public_key=_JOB_KEY,
+                gpus=1,
+                minutes=5,
+                argv=["python", "x.py"],
+                commit=_JOB_COMMIT,
+            ),
+        ),
+        ([],),
+    ),
+    ("job_view", _bind(Client.job_view, 1), ([],)),
+    (
+        "join_host",
+        _bind(
+            Client.join_host,
+            "gpu-box",
+            token=_ENROLLMENT_TOKEN,
+            instance=_INSTANCE,
+            daemon_version="0.1",
+            facts={},
+        ),
+        ([],),
+    ),
+    ("list_hosts", _bind(Client.list_hosts), ([],)),
+    ("list_variables", _bind(Client.list_variables), ([],)),
+    (
+        "log_metrics",
+        _bind(Client.log_metrics, _ID, [MetricPoint(key="loss", step=1, value=0.5)]),
+        ([],),
+    ),
+    ("logout_host", _bind(Client.logout_host, "gpu-box"), ([],)),
+    (
+        "open_terminal",
+        _bind(Client.open_terminal, OpenTerminal(host="gx10", rows=40, cols=120)),
+        ([],),
+    ),
+    ("query_metrics", _bind(Client.query_metrics, _ID, masks=[]), ([],)),
+    ("rank_metrics", _bind(Client.rank_metrics, [_ID], masks=[]), ([],)),
+    ("read_metrics", _bind(Client.read_metrics, _ID), ([],)),
+    ("read_session_parts", _bind(Client.read_session_parts, _ID), ([],)),
+    ("read_session_records", _bind(Client.read_session_records, _ID), ([],)),
+    ("session_end", _bind(Client.session_end, _ID), ([],)),
+    (
+        "session_start",
+        _bind(Client.session_start, SessionStart(cli="codex")),
+        ([],),
+    ),
+    ("terminal_hosts", _bind(Client.terminal_hosts), ([],)),
+    (
+        "wait_exec",
+        _bind(Client.wait_exec, _ID, instance=_INSTANCE, wait_sec=0),
+        ([],),
+    ),
+    (
+        "wait_host_work",
+        _bind(Client.wait_host_work, _ID, instance=_INSTANCE, wait_sec=0),
+        ([],),
+    ),
+    (
+        "wait_session_serve",
+        _bind(Client.wait_session, _ID, instance=_INSTANCE, wait_sec=0),
+        ([],),
+    ),
+    (
+        "wait_session_stop",
+        _bind(Client.wait_session, _ID, instance=_INSTANCE, wait_sec=0),
+        ({"type": "stop"},),
+    ),
+    (
+        "wait_terminals",
+        _bind(Client.wait_terminals, _ID, instance=_INSTANCE, wait_sec=0),
+        ([],),
+    ),
+    (
+        "wait_tools",
+        _bind(Client.wait_tools, _ID, instance=_INSTANCE, wait_sec=0),
+        ([],),
+    ),
+    (
+        "write_metrics_masked",
+        _bind(
+            Client.write_metrics_masked,
+            _ID,
+            masks=[MetricMaskClause(axis="key", op="is", value="loss")],
+            value=1.0,
+        ),
+        ([],),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "answers"),
+    [
+        pytest.param(call, answers, id=name)
+        for name, call, answers in _MALFORMED_ANSWERS
+    ],
+)
+def test_a_malformed_answer_names_the_route_it_came_from(
+    call: Callable[[Client], object],
+    answers: tuple[PlainTree, ...],
+) -> None:
+    """Each answer in turn comes back to the call; the last one repeats."""
+    paths: list[str] = []
+    queue = list(answers)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        paths.append(request.url.path)
+        return httpx2.Response(200, json=queue.pop(0) if len(queue) > 1 else queue[0])
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        pytest.raises(ClientError) as raised,
+    ):
+        _ = call(client)
+
+    assert str(raised.value).startswith(f"{paths[-1]} returned a malformed ")
+
+
+def _refuse(request: httpx2.Request) -> httpx2.Response:
+    raise AssertionError(f"no request expected, got {request.url}")
+
+
+_REFUSED_BODIES: list[tuple[str, Callable[[Client], object], str, list[str]]] = [
+    (
+        "code_missing",
+        _bind(Client.code_missing, "a@x.y", hashes=["bad", "worse"]),
+        "code blob check",
+        ["sha256", "sha256"],
+    ),
+    (
+        "code_put_blobs",
+        _bind(Client.code_put_blobs, "a@x.y", blobs={"bad": "x"}),
+        "code blobs",
+        ["blobs"],
+    ),
+    (
+        "code_put_snapshot",
+        _bind(
+            Client.code_put_snapshot,
+            _ID,
+            owner="a@x.y",
+            private=False,
+            parent_record_id=None,
+            files={"a.py": "bad"},
+        ),
+        f"code snapshot of {_ID}",
+        ["files"],
+    ),
+    (
+        "join_host",
+        _bind(
+            Client.join_host,
+            "gpu-box",
+            token=_ENROLLMENT_TOKEN,
+            instance=_INSTANCE,
+            daemon_version="0.1",
+            facts={"Bad Key": "x"},
+        ),
+        "join of host 'gpu-box'",
+        ["facts"],
+    ),
+    (
+        "heartbeat_host",
+        _bind(
+            Client.heartbeat_host,
+            _HOST_ID,
+            instance=_INSTANCE,
+            daemon_version="0.1",
+            facts={"Bad Key": "x"},
+        ),
+        f"heartbeat of host {_HOST_ID}",
+        ["facts"],
+    ),
+    (
+        "job_put_secret",
+        _bind(Client.job_put_secret, "HF_TOKEN", ""),
+        "secret 'HF_TOKEN'",
+        ["value"],
+    ),
+    (
+        "put_host",
+        _bind(Client.put_host, "gpu-box", role="Dev", how="x" * (MAX_HOW_CHARS + 1)),
+        "host 'gpu-box'",
+        ["role", "how"],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "what", "fields"),
+    [
+        pytest.param(call, what, fields, id=name)
+        for name, call, what, fields in _REFUSED_BODIES
+    ],
+)
+def test_a_refused_body_names_what_it_was_for_and_each_field(
+    call: Callable[[Client], object],
+    what: str,
+    fields: list[str],
+) -> None:
+    with (
+        Client("https://server", transport=httpx2.MockTransport(_refuse)) as client,
+        pytest.raises(ClientError) as raised,
+    ):
+        _ = call(client)
+
+    problems = str(raised.value).removeprefix(f"{what} ").split("; ")
+    assert [problem.split(":")[0] for problem in problems] == fields
+
+
+def test_a_rank_without_a_selection_names_the_rank() -> None:
+    with (
+        Client("https://server", transport=httpx2.MockTransport(_refuse)) as client,
+        pytest.raises(ClientError) as raised,
+    ):
+        _ = client.rank_metrics([], masks=[])
+
+    assert str(raised.value).startswith("metric rank Value error, ")
+
+
+_HELD_READS: list[tuple[str, Callable[[Client], object], float]] = [
+    (
+        "wait_terminals",
+        _bind(Client.wait_terminals, _ID, instance=_INSTANCE, wait_sec=25),
+        35.0,
+    ),
+    ("wait_exec", _bind(Client.wait_exec, _ID, instance=_INSTANCE, wait_sec=25), 35.0),
+    (
+        "wait_tools",
+        _bind(Client.wait_tools, _ID, instance=_INSTANCE, wait_sec=25),
+        35.0,
+    ),
+    (
+        "wait_session",
+        _bind(Client.wait_session, _ID, instance=_INSTANCE, wait_sec=25),
+        35.0,
+    ),
+    (
+        "wait_host_work",
+        _bind(Client.wait_host_work, _ID, instance=_INSTANCE, wait_sec=25),
+        35.0,
+    ),
+    ("hosts_version", _bind(Client.hosts_version, since=None, wait_sec=25), 35.0),
+    ("job_grant", _bind(Client.job_grant, 1, wait=25), 35.0),
+    ("job_grant_serial", _bind(Client.job_grant_serial, 1, 2, wait=25), 35.0),
+    ("host_job_log", _bind(Client.host_job_log, 1, offset=0, wait=25), 60.0),
+    (
+        "unheld_wait_keeps_the_client_default",
+        _bind(Client.wait_terminals, _ID, instance=_INSTANCE, wait_sec=0),
+        30.0,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [pytest.param(call, expected, id=name) for name, call, expected in _HELD_READS],
+)
+def test_a_held_request_reads_longer_than_the_hold(
+    call: Callable[[Client], object],
+    expected: float,
+) -> None:
+    reads: list[float | None] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        reads.append(_read_timeout(request))
+        return httpx2.Response(200, content=b"")
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        suppress(ClientError),
+    ):
+        _ = call(client)
+
+    assert reads == [expected]
+
+
+_SENT_ONCE: list[tuple[str, Callable[[Client], object]]] = [
+    ("version", _bind(Client.hosts_version, since=None, wait_sec=0)),
+    ("work", _bind(Client.wait_host_work, _ID, instance=_INSTANCE, wait_sec=0)),
+]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [pytest.param(call, id=name) for name, call in _SENT_ONCE],
+)
+def test_a_held_read_is_sent_once(
+    call: Callable[[Client], object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[httpx2.Request] = []
+    pauses: list[float] = []
+    monkeypatch.setattr("trackinizer.client.client.time.sleep", pauses.append)
+    with (
+        _recording(sent, *(httpx2.Response(503, text="down") for _ in range(3))) as c,
+        pytest.raises(ClientError),
+    ):
+        _ = call(c)
+
+    assert len(sent) == 1
+
+
+def test_a_transport_failure_logs_one_line_of_its_context(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        raise httpx2.ReadTimeout("timed out")
+
+    client = Client("https://server", transport=httpx2.MockTransport(handler))
+    client._created_at = 100.0
+    monkeypatch.setattr("trackinizer.client.client.time.monotonic", lambda: 103.5)
+    with client, caplog.at_level(logging.WARNING), pytest.raises(ClientError):
+        client.post("/api/x", retry_attempts=1)
+
+    [record] = [r for r in caplog.records if r.name.endswith("client.client")]
+    assert record.getMessage() == (
+        "event=trackinizer_transport_failure method=POST path=/api/x "
+        f"server=https://server client_id={client._client_id} "
+        "client_request_index=1 attempt=1 client_age_sec=3.500000 "
+        "failure_class=read_timeout failure_detail=read_timeout "
+        "error_type=ReadTimeout error=timed out"
+    )
+    assert record.__dict__["client_age_sec"] == 3.5
+
+
+def test_submit_mints_a_key_unless_the_caller_names_one() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        *(httpx2.Response(200, json={"id": str(_ID)}) for _ in range(3)),
+    ) as client:
+        ids = [
+            client.submit("Issue", {"title": "a"}),
+            client.submit("Issue", {"title": "a"}),
+            client.submit("Issue", {"title": "a", "idempotency_key": "mine"}),
+        ]
+
+    bodies = [json_loads(r.content, dict[str, object]) for r in sent]
+    assert ids == [_ID] * 3
+    assert {r.url.path for r in sent} == {"/api/inquiries/issue"}
+    assert [b["title"] for b in bodies] == ["a"] * 3
+    minted = [uuid.UUID(str(b["idempotency_key"])) for b in bodies[:2]]
+    assert minted[0] != minted[1]
+    assert bodies[2]["idempotency_key"] == "mine"
+
+
+@pytest.mark.parametrize(
+    ("value", "op", "sent"),
+    [(0, "add", 0), (2.5, "add", 2.5), (-2.5, "sub", 2.5)],
+)
+def test_a_cost_delta_is_added_unless_it_is_negative(
+    value: float,
+    op: str,
+    sent: float,
+) -> None:
+    requests: list[httpx2.Request] = []
+    with _recording(requests, httpx2.Response(204)) as client:
+        client.add_cost(_ID, "marginal_cost_agent_usd", value, actor="ada")
+
+    assert json_loads(requests[0].content) == {"op": op, "value": sent, "actor": "ada"}
+
+
+def test_add_edge_sends_every_annotation_it_is_given() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        httpx2.Response(200, json={"created": True, "change_id": str(_ID)}),
+    ) as client:
+        written = client.add_edge(
+            _ID,
+            _OTHER_ID,
+            "proves",
+            actor="ada",
+            priority=2,
+            note="n",
+            valence=0.5,
+            labels=["a"],
+            reason="r",
+        )
+
+    assert written == EdgeWrite(created=True, changed=True)
+    assert sent[0].url.path == f"/api/edges/{_ID}/proves/{_OTHER_ID}"
+    assert json_loads(sent[0].content) == {
+        "actor": "ada",
+        "priority": 2,
+        "note": "n",
+        "valence": 0.5,
+        "labels": ["a"],
+        "reason": "r",
+    }
+
+
+def test_annotate_edge_sends_a_tuple_of_labels_as_a_list() -> None:
+    client = _ClientSpy()
+    client.annotate_edge(_ID, _OTHER_ID, "proves", actor="ada", labels=("a", "b"))
+
+    [(_, _, body)] = client.request_calls
+    assert body == {"value": ["a", "b"], "actor": "ada"}
+
+
+def test_list_kind_all_advances_the_offset_by_a_whole_page() -> None:
+    full = [{"n": n} for n in range(MAX_LIST_LIMIT)]
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        httpx2.Response(200, json=full),
+        httpx2.Response(200, json=full),
+        httpx2.Response(200, json=full[:1]),
+    ) as client:
+        rows = client.list_kind_all("Issue")
+
+    assert len(rows) == 2 * MAX_LIST_LIMIT + 1
+    assert [r.url.params["offset"] for r in sent] == [
+        "0",
+        str(MAX_LIST_LIMIT),
+        str(2 * MAX_LIST_LIMIT),
+    ]
+
+
+def test_reads_send_their_documented_defaults() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        httpx2.Response(200, json=[]),
+        httpx2.Response(200, json={}),
+        httpx2.Response(200, json={}),
+        httpx2.Response(200, json={"part": 0, "records": []}),
+    ) as client:
+        client.recent_changes()
+        client.inquiry_cost(_ID)
+        client.inquiry_cost(_ID, deep=True)
+        client.read_session_records(_ID)
+
+    assert dict(sent[0].url.params) == {"limit": "50"}
+    assert dict(sent[1].url.params) == {}
+    assert dict(sent[2].url.params) == {"deep": "true"}
+    assert dict(sent[3].url.params) == {
+        "part": "0",
+        "after_idx": "-1",
+        "limit": str(MAX_LIST_LIMIT),
+        "plaintext_only": "False",
+    }
+
+
+def test_search_inquiries_sends_the_kind_only_when_named() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        httpx2.Response(200, json={}),
+        httpx2.Response(200, json={}),
+    ) as client:
+        client.search_inquiries("q")
+        client.search_inquiries("q", kind="Issue")
+
+    assert [dict(r.url.params) for r in sent] == [
+        {"q": "q", "mode": "fused", "limit": "20"},
+        {"q": "q", "mode": "fused", "kind": "Issue", "limit": "20"},
+    ]
+
+
+def test_a_status_change_and_a_purge_send_an_empty_reason_by_default() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(sent, *(httpx2.Response(204) for _ in range(3))) as client:
+        client.transition_status(_ID, expected_from="open", to="done", actor="ada")
+        client.transition_app(_ID, expected_from=None, to={"a": 1}, actor="ada")
+        client.purge(_ID, actor="ada")
+
+    assert [json_loads(r.content) for r in sent] == [
+        {
+            "actor": "ada",
+            "value": "done",
+            "mode": "cas",
+            "expected": "open",
+            "reason": "",
+        },
+        {
+            "actor": "ada",
+            "value": {"a": 1},
+            "mode": "cas",
+            "expected": None,
+            "reason": "",
+        },
+        {"actor": "ada", "reason": ""},
+    ]
+
+
+def test_wait_until_ready_probes_every_quarter_second_for_thirty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [0.0]
+    pauses: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        clock[0] += seconds
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        raise httpx2.ConnectError("refused")
+
+    monkeypatch.setattr("trackinizer.client.client.time.sleep", sleep)
+    monkeypatch.setattr(
+        "trackinizer.client.client.time.monotonic",
+        lambda: clock[0],
+    )
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        pytest.raises(ClientError),
+    ):
+        client.wait_until_ready()
+
+    assert pauses == [0.25] * 120
+
+
+def test_wait_until_ready_says_the_server_died() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        raise httpx2.ConnectError("refused")
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        pytest.raises(
+            ClientError,
+            match=r"^server process died before becoming ready$",
+        ),
+    ):
+        client.wait_until_ready(alive=lambda: False)
+
+
+def test_a_server_error_that_echoes_the_secret_is_redacted_in_place() -> None:
+    sent: list[httpx2.Request] = []
+    answer = httpx2.Response(400, text="bad value hf_SECRETVALUE end")
+    with _recording(sent, answer) as client, pytest.raises(ClientError) as raised:
+        client.job_put_secret("HF_TOKEN", "hf_SECRETVALUE")
+
+    path = JOB_SECRET_PATH.format(name="HF_TOKEN")
+    assert str(raised.value) == f"PUT {path} -> 400: bad value [redacted] end"
+
+
+def test_a_snapshot_says_what_the_upload_left_out() -> None:
+    record = uuid.uuid4()
+    sent: list[httpx2.Request] = []
+    head = {**_CODE_HEAD, "record_id": str(record)}
+    with _recording(sent, httpx2.Response(200, json=head)) as client:
+        client.code_put_snapshot(
+            record,
+            owner="a@x.y",
+            private=False,
+            parent_record_id=None,
+            files={},
+            partial="left out b.bin",
+        )
+
+    assert json_loads(sent[0].content, dict[str, object])["partial"] == "left out b.bin"
+
+
+def test_session_end_posts_the_body_it_is_given_or_an_empty_one() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        *(httpx2.Response(200, json={"id": str(_ID)}) for _ in range(2)),
+    ) as client:
+        client.session_end(_ID)
+        client.session_end(
+            _ID,
+            SessionEnd(
+                ended=datetime(2026, 11, 7, 12, tzinfo=UTC),
+                cli_session_id="c",
+                actor="ada",
+            ),
+        )
+
+    bare, full = (json_loads(r.content, dict[str, object]) for r in sent)
+    assert bare == {"ended": None, "cli_session_id": None, "actor": None}
+    assert str(full["ended"]).startswith("2026-11-07T12:00:00")
+    assert (full["cli_session_id"], full["actor"]) == ("c", "ada")
+
+
+def test_a_refused_export_stream_quotes_the_body_it_read() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(400, content=iter([b"boom"]))
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        pytest.raises(ClientError) as raised,
+    ):
+        list(client.export())
+
+    assert str(raised.value) == f"GET {EXPORT_API_PATH} -> 400: boom"
+
+
+def test_an_unanswered_exec_wait_keeps_its_key_only_for_its_own_instance() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(sent, *(httpx2.Response(200, json=[]) for _ in range(3))) as c:
+        for instance in (_INSTANCE, _OTHER_ID, _INSTANCE):
+            with pytest.raises(ClientError):
+                _ = c.wait_exec(_ID, instance=instance, wait_sec=0)
+
+    keys = [r.headers["Idempotency-Key"] for r in sent]
+    assert keys[0] == keys[2]
+    assert keys[0] != keys[1]
 
 
 if __name__ == "__main__":

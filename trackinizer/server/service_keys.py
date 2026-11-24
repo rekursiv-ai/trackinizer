@@ -109,7 +109,7 @@ async def _ensure(
                 ceiling=role,
             )
             stage_token_file(path, secret)
-        # pragma: no mutate[case-insensitive] start
+        # pragma: no mutate[case-insensitive] start -- Postgres ignores the case of keywords and unquoted names.
         revoked = await conn.execute(
             "UPDATE api_keys SET revoked_at = clock_timestamp() "
             "WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL",
@@ -147,7 +147,7 @@ async def _account(
     role: Role,
 ) -> uuid.UUID:
     """Return the account's id, making it when it is missing."""
-    # pragma: no mutate[case-insensitive] start
+    # pragma: no mutate[case-insensitive] start -- Postgres ignores the case of keywords and unquoted names.
     row = await conn.fetchrow(
         "SELECT id, role, status FROM users WHERE email = $1 FOR UPDATE",
         email,
@@ -185,7 +185,7 @@ async def _working_key(
     """Return the id of ``secret`` when it is a live, unpinned key of the account at ``role``."""
     if not secret:
         return None
-    # pragma: no mutate[case-insensitive] start
+    # pragma: no mutate[case-insensitive] start -- Postgres ignores the case of keywords and unquoted names.
     rows = await conn.fetch(
         "SELECT id, secret_hash, role, open_into, revoked_at FROM api_keys "
         "WHERE user_id = $1 AND prefix = $2",

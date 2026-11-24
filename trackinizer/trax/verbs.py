@@ -3235,7 +3235,7 @@ def _records_parser() -> argparse.ArgumentParser:
     """Return the parser of the ``records`` action's own flags."""
     parser = TraxArgumentParser(
         prog="trax agentsession SEQ records",
-        exit_on_error=False,  # pragma: no mutate[truthiness]
+        exit_on_error=False,  # pragma: no mutate[truthiness] -- argparse reads exit_on_error only for its truth.
     )
     parser.add_argument("--part", type=int)
     parser.add_argument("--to", metavar="PART:IDX")

@@ -231,7 +231,9 @@ async def search_sessions(
         query = await _spawned_below(engine, query, cli_session_id=spawned) or UUID(
             int=0,
         )
-    scope = replace(scope, kinds=())  # pragma: no mutate[truthiness]
+    # pragma: no mutate[truthiness] start -- Only truth is read.
+    scope = replace(scope, kinds=())
+    # pragma: no mutate end
     nearest = (
         None
         if vectors is None or mode not in ("fused", "vector")

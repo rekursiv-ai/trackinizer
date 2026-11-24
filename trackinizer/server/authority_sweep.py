@@ -114,6 +114,5 @@ async def authority_sweep_loop(
                 last_count = current
                 elapsed = 0.0
                 first_pass = False
-        # A periodic sweep; the interval is the schedule.
-        await asyncio.sleep(min_interval_sec)  # house-ignore[sleep] -- See above.
+        await asyncio.sleep(min_interval_sec)  # house-ignore[sleep] -- Sweep period.
         elapsed += min_interval_sec

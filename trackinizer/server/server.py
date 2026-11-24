@@ -153,7 +153,7 @@ def _packaged_app(package: Path) -> Path | None:
 def _parse_args(
     parser: argparse.ArgumentParser,
     argv: list[str] | None = None,
-) -> tuple[_Flags, list[str]]:  # pragma: no mutate block
+) -> tuple[_Flags, list[str]]:  # pragma: no mutate block -- Help text and flag wiring.
     """Register this layer's flags; return ``(parsed, leftover)``."""
     parser.add_argument(
         "--engine",

@@ -321,7 +321,7 @@ class _LifecycleMixin(_StoreShared):
     async def _bootstrap_once(
         self,
         addon_migrations: Sequence[tuple[str, str]],
-    ) -> None:  # pragma: no mutate block
+    ) -> None:  # pragma: no mutate block -- Its SQL needs a real database.
         """One idempotent bootstrap pass; see :meth:`bootstrap`."""
         async with self.engine.acquire() as conn:
             await conn.execute(

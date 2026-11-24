@@ -10,6 +10,7 @@ from typing import cast
 import argparse
 import os
 import re
+import shutil
 import time
 
 import pytest
@@ -35,6 +36,7 @@ from trackinizer.server.config import (
     parse_service_keys,
     parse_staff,
     parse_terminal_stun,
+    session_max_age_from_env,
     session_secret_from_file,
 )
 from trackinizer.server.notify import NOTIFY_CHANNEL
@@ -278,6 +280,175 @@ class TestSessionMaxAge:
             Config.from_env()
 
 
+def _owner_always_dead(dir_name: str) -> bool:
+    del dir_name
+    return True
+
+
+@pytest.mark.parametrize("raw", ["0", "65537"])
+def test_agent_socket_cap_rejects_zero_and_above_the_maximum(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", raw)
+    with pytest.raises(ConfigError, match="between 1 and 65536"):
+        _ = Config.from_env()
+
+
+def test_tool_caps_accept_one_and_the_maximum(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", "1")
+    assert Config.from_env().tool_agent_sockets_per_host == 1
+    monkeypatch.setenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", "65536")
+    assert Config.from_env().tool_agent_sockets_per_host == 65_536
+
+
+def test_from_args_refuses_a_stream_cap_above_the_wire_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", "257")
+    with pytest.raises(ConfigError, match="between 1 and 256"):
+        _ = Config.from_args(_server_args())
+
+
+def test_parse_staff_skips_empty_entries_and_keeps_the_rest() -> None:
+    assert parse_staff("a@x.y,,b@x.y") == ("a@x.y", "b@x.y")
+
+
+def test_session_max_age_accepts_one_second(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "1")
+    assert session_max_age_from_env() == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "match"),
+    [("notanint", "must be an integer"), ("0", "must be >= 1")],
+)
+def test_session_max_age_names_the_setting_it_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+    match: str,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", raw)
+    with pytest.raises(ConfigError, match=match):
+        _ = session_max_age_from_env()
+
+
+def test_a_new_session_secret_is_64_hex_characters(tmp_path: Path) -> None:
+    secret = session_secret_from_file(str(tmp_path / "secret"))
+    assert re.fullmatch(r"[0-9a-f]{64}", secret)
+
+
+def test_session_secret_file_is_read_as_utf8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "secret"
+    target.write_text("ab\n", encoding="utf-8")
+    reads: list[str | None] = []
+    read_text = Path.read_text
+
+    def spy(self: Path, *, encoding: str | None = None) -> str:
+        reads.append(encoding)
+        return read_text(self, encoding=encoding)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+    assert session_secret_from_file(str(target)) == "ab"
+    assert reads == ["utf-8"]
+
+
+def test_prune_skips_a_file_and_still_removes_a_dead_owners_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_child = tmp_path / "0-file"
+    file_child.write_text("x")
+    dead = tmp_path / "1-dead"
+    dead.mkdir()
+    os.utime(dead, (0, 0))
+    monkeypatch.setattr(
+        "trackinizer.server.config._owner_dead",
+        _owner_always_dead,
+    )
+
+    def children(self: Path) -> list[Path]:
+        return [file_child, dead] if self == tmp_path else []
+
+    monkeypatch.setattr(Path, "iterdir", children)
+    _prune_stale_ephemeral_dirs(tmp_path, stale_seconds=60)
+    assert not dead.exists()
+
+
+def test_prune_keeps_a_dir_exactly_as_old_as_the_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 1_000_000.0
+    edge = tmp_path / "1-edge"
+    edge.mkdir()
+    os.utime(edge, (now - 3600, now - 3600))
+    stale = tmp_path / "2-stale"
+    stale.mkdir()
+    os.utime(stale, (now - 3601, now - 3601))
+    monkeypatch.setattr(
+        "trackinizer.server.config._owner_dead",
+        _owner_always_dead,
+    )
+    monkeypatch.setattr(time, "time", lambda: now)
+    _prune_stale_ephemeral_dirs(tmp_path, stale_seconds=3600)
+    assert edge.exists()
+    assert not stale.exists()
+
+
+def test_prune_survives_a_child_it_cannot_stat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad = tmp_path / "1-bad"
+    bad.mkdir()
+    good = tmp_path / "2-good"
+    good.mkdir()
+    os.utime(good, (0, 0))
+    real_stat = Path.stat
+
+    def stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self.name == "1-bad":
+            raise PermissionError(self)
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(
+        "trackinizer.server.config._owner_dead",
+        _owner_always_dead,
+    )
+    monkeypatch.setattr(Path, "stat", stat)
+    _prune_stale_ephemeral_dirs(tmp_path, stale_seconds=60)
+    assert bad.exists()
+    assert not good.exists()
+
+
+def test_prune_ignores_a_removal_that_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dead = tmp_path / "1-dead"
+    dead.mkdir()
+    os.utime(dead, (0, 0))
+    removals: list[bool] = []
+
+    def rmtree(path: Path, *, ignore_errors: bool = False) -> None:
+        del path
+        removals.append(ignore_errors)
+        if not ignore_errors:
+            raise OSError("the directory is busy")
+
+    monkeypatch.setattr(
+        "trackinizer.server.config._owner_dead",
+        _owner_always_dead,
+    )
+    monkeypatch.setattr(shutil, "rmtree", rmtree)
+    _prune_stale_ephemeral_dirs(tmp_path, stale_seconds=60)
+    assert removals == [True]
+
+
 class TestFromEnv:
     """Every environment variable reaches its own field, and each has its default."""
 
@@ -411,9 +582,20 @@ class TestParsers:
     def test_pruning_reclaims_only_old_dirs_of_dead_owners(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Past any pid_max, so no process owns it; kill(2) answers ESRCH.
         dead = 2**30
+        real_kill = os.kill
+
+        def kill(pid: int, sig: int) -> None:
+            if sig != 0:
+                raise AssertionError("the liveness check sends signal 0 only")
+            if pid == dead:
+                raise ProcessLookupError(pid)
+            real_kill(pid, sig)
+
+        monkeypatch.setattr(os, "kill", kill)
         old = time.time() - 2 * 60 * 60
         names = {
             "dead_old": f"{dead}-a",

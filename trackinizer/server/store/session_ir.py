@@ -818,7 +818,7 @@ class _SessionIRMixin(_CascadeAuditMixin):
           api_key_id: The key each copied part is recorded as opened by.
 
         """
-        # pragma: no mutate[case-insensitive] start
+        # pragma: no mutate[case-insensitive] start -- Postgres folds these unquoted SQL keywords and names to lower case.
         copied = "unnest($3::int[], $4::int[], $5::int[]) AS copied(part, records, into_part)"
         arguments = (
             source,

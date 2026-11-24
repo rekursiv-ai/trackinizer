@@ -305,8 +305,7 @@ def _issue(
 
 def _write_forever(client: Client, root: uuid.UUID, *, interval: float) -> None:
     for n in itertools.count():
-        # Writes on the requested interval to seed a live view.
-        time.sleep(interval)  # house-ignore[sleep] -- See above.
+        time.sleep(interval)  # house-ignore[sleep] -- Seeds a live view at a rate.
         rows = client.list_kind(
             "Issue",
             limit=50,

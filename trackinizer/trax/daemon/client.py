@@ -339,8 +339,7 @@ def _spawn(path: Path, *, source_version: str) -> bool:
     while time.monotonic() < deadline:
         if _accepts(path):
             return True
-        # The daemon is another process; only its socket says it is up.
-        time.sleep(0.01)  # house-ignore[sleep] -- See above.
+        time.sleep(0.01)  # house-ignore[sleep] -- Only its socket says it is up.
     return False
 
 

@@ -38,18 +38,26 @@ _MOST_WRITTEN: Final = 256 << 20
 class _FakeWebsocket:
     """A websocket whose incoming messages the test feeds and whose sends it gates."""
 
-    def __init__(self, *, fail_sends: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_sends: BaseException | None = None,
+        fail_close: BaseException | None = None,
+    ) -> None:
         self.sent: list[bytes] = []
         self.started_bytes = 0
         self.closed = False
+        self.pending_at_close: int | None = None
         self.gate = asyncio.Event()
         self.gate.set()
         self.received = asyncio.Event()
         self.want_bytes = 0
         self._fail_sends = fail_sends
-        self._incoming: asyncio.Queue[bytes | Exception | None] = asyncio.Queue()
+        self._fail_close = fail_close
+        self._tasks_before = asyncio.all_tasks()
+        self._incoming: asyncio.Queue[str | bytes | Exception | None] = asyncio.Queue()
 
-    def feed(self, message: bytes | None) -> None:
+    def feed(self, message: str | bytes | None) -> None:
         self._incoming.put_nowait(message)
 
     def feed_close(self, code: int | None, reason: str = "") -> None:
@@ -60,14 +68,18 @@ class _FakeWebsocket:
     async def send(self, message: bytes, /) -> None:
         self.started_bytes += len(message)
         await self.gate.wait()
-        if self._fail_sends:
-            raise ConnectionClosedError(Close(1006, ""), None)
+        if self._fail_sends is not None:
+            raise self._fail_sends
         self.sent.append(message)
         if sum(map(len, self.sent)) >= self.want_bytes:
             self.received.set()
 
     async def close(self) -> None:
+        pending = asyncio.all_tasks() - self._tasks_before - {asyncio.current_task()}
+        self.pending_at_close = len(pending)
         self.closed = True
+        if self._fail_close is not None:
+            raise self._fail_close
 
     def __aiter__(self) -> AsyncIterator[str | bytes]:
         return self._messages()
@@ -80,10 +92,11 @@ class _FakeWebsocket:
 
 
 async def _settled(before: set[asyncio.Task[object]]) -> None:
-    """Wait until every task the bridge started has finished."""
+    """Wait until every task the bridge started has finished, none with an error."""
     pending = asyncio.all_tasks() - before - {asyncio.current_task()}
     async with asyncio.timeout(_SETTLE_SEC):
-        await asyncio.gather(*pending, return_exceptions=True)
+        results = await asyncio.gather(*pending, return_exceptions=True)
+    assert not [result for result in results if isinstance(result, Exception)]
     assert not (asyncio.all_tasks() - before - {asyncio.current_task()})
 
 
@@ -198,9 +211,13 @@ async def test_a_closed_writer_closes_the_socket() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failing_send_ends_everything() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionClosedError(Close(1006, ""), None), BrokenPipeError()],
+)
+async def test_a_failing_send_ends_everything(error: BaseException) -> None:
     before = asyncio.all_tasks()
-    fake = _FakeWebsocket(fail_sends=True)
+    fake = _FakeWebsocket(fail_sends=error)
     reader, writer = await bridged(fake, limit=_LIMIT)
 
     writer.write(b"into the void")
@@ -441,6 +458,88 @@ async def test_a_dial_that_names_no_asker_opens_for_the_keys_own_account(
         await dial_tools("http://box", api_key="k", host="lab", limit=_LIMIT)
 
     assert dialed == ["ws://box/api/hosts/lab/tools/ws"]
+
+
+@pytest.mark.asyncio
+async def test_a_text_message_crosses_as_its_utf8_bytes() -> None:
+    before = asyncio.all_tasks()
+    fake = _FakeWebsocket()
+    reader, writer = await bridged(fake, limit=_LIMIT)
+
+    fake.feed("hi\n")
+    fake.feed(None)
+    async with asyncio.timeout(_SETTLE_SEC):
+        assert await reader.read() == b"hi\n"
+    await _settled(before)
+    writer.close()
+    await writer.wait_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionClosedError(Close(1006, ""), None), OSError("gone")],
+)
+async def test_a_websocket_that_fails_to_close_still_ends_the_bridge(
+    error: BaseException,
+) -> None:
+    before = asyncio.all_tasks()
+    fake = _FakeWebsocket(fail_close=error)
+    reader, writer = await bridged(fake, limit=_LIMIT)
+
+    writer.close()
+    await writer.wait_closed()
+    async with asyncio.timeout(_SETTLE_SEC):
+        assert await reader.read() == b""
+    await _settled(before)
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+async def test_the_websocket_closes_only_after_both_pumps_end() -> None:
+    before = asyncio.all_tasks()
+    fake = _FakeWebsocket()
+    reader, writer = await bridged(fake, limit=_LIMIT)
+
+    fake.feed(None)
+    async with asyncio.timeout(_SETTLE_SEC):
+        assert await reader.read() == b""
+    await _settled(before)
+    assert fake.pending_at_close == 0
+    writer.close()
+    await writer.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_a_finished_bridge_releases_its_task() -> None:
+    before = asyncio.all_tasks()
+    fake = _FakeWebsocket()
+    reader, writer = await bridged(fake, limit=_LIMIT)
+
+    fake.feed(None)
+    async with asyncio.timeout(_SETTLE_SEC):
+        assert await reader.read() == b""
+    await _settled(before)
+    assert all(not task.done() for task in tool_bridge._RUNNING)
+    writer.close()
+    await writer.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_a_writer_reports_the_socket_error_its_reader_holds() -> None:
+    before = asyncio.all_tasks()
+    fake = _FakeWebsocket()
+    reader, writer = await bridged(fake, limit=_LIMIT)
+
+    fake.feed(None)
+    async with asyncio.timeout(_SETTLE_SEC):
+        assert await reader.read() == b""
+    writer.write(b"x")
+    await asyncio.sleep(0)
+    with pytest.raises(BrokenPipeError):
+        await writer.drain()
+    await _settled(before)
+    writer.close()
 
 
 if __name__ == "__main__":

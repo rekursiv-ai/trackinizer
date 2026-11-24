@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import asyncio
 
@@ -12,7 +14,9 @@ import pytest
 
 from trackinizer.conftest import executed_sql, make_conn, new_uuid
 from trackinizer.lib.postgres import Conn
+from trackinizer.server.access_policy import DefaultPolicy, Principal
 from trackinizer.server.primitives import (
+    _bind_reference_validators,
     _reject_edge_cycle,
     infer_produced_endpoints,
     insert_edge,
@@ -23,7 +27,13 @@ from trackinizer.server.primitives import (
     validate_edge_valence,
     validate_list_references,
 )
-from trackinizer.server.setter_dispatch import COLUMN_SPECS, RUNTIME_HOOKS
+from trackinizer.server.schema_gen import SEQ_FOR_KIND
+from trackinizer.server.setter_dispatch import (
+    COLUMN_SPECS,
+    NO_HOOKS,
+    RUNTIME_HOOKS,
+    TargetValidator,
+)
 from trackinizer.types.columns import ColumnSpec
 from trackinizer.types.errors import (
     ConflictError,
@@ -35,6 +45,201 @@ from trackinizer.types.inquiries import CITATION_VALENCE_DEFAULT
 
 if TYPE_CHECKING:
     from trackinizer.types.edges import Edge
+
+
+_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1))"
+_CYCLE_SQL = (
+    "WITH RECURSIVE descendants(id) AS ("
+    "    SELECT $1::uuid "
+    "    UNION "
+    "    SELECT e.to_id FROM edges e "
+    "    JOIN descendants d ON e.from_id = d.id "
+    "    WHERE e.edge_kind = $3"
+    ") SELECT EXISTS (SELECT 1 FROM descendants WHERE id = $2)"
+)
+_INSERT_EDGE_SQL = (
+    "INSERT INTO edges "
+    "(from_id, from_kind, to_id, to_kind, edge_kind, priority, "
+    "note, valence, labels) "
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
+    "ON CONFLICT (from_id, to_id, edge_kind) DO NOTHING "
+    "RETURNING from_id"
+)
+_PAIR_KINDS_SQL = (
+    "SELECT DISTINCT edge_kind FROM edges "
+    "WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1)"
+)
+_CREATED_SQL = "SELECT id, created FROM inquiries WHERE id = ANY($1::uuid[])"
+
+
+def _keep(value: object) -> object:
+    return value
+
+
+class TestEdgeSql:
+    @pytest.mark.asyncio
+    async def test_cycle_check_locks_and_walks_the_kinds_own_graph(self) -> None:
+        from_id, to_id = new_uuid(), new_uuid()
+        conn = make_conn()
+        conn.fetchval.return_value = False
+        await _reject_edge_cycle(
+            cast(Conn, conn),
+            from_id=from_id,
+            to_id=to_id,
+            edge_kind="supersedes",
+        )
+        conn.execute.assert_awaited_once_with(
+            _LOCK_SQL,
+            "trackinizer.edge_dag.supersedes",
+        )
+        conn.fetchval.assert_awaited_once_with(_CYCLE_SQL, to_id, from_id, "supersedes")
+
+    @pytest.mark.asyncio
+    async def test_insert_edge_writes_the_edge_row_exactly(self) -> None:
+        from_id, to_id = new_uuid(), new_uuid()
+        conn = make_conn()
+        conn.fetchval.side_effect = ["Issue", False, from_id]
+        inserted, to_kind = await insert_edge(
+            cast(Conn, conn),
+            from_id=from_id,
+            from_kind="Issue",
+            to_id=to_id,
+            edge_kind="narrows",
+            priority=3,
+            note="hi",
+            labels=("a",),
+        )
+        assert (inserted, to_kind) == (True, "Issue")
+        assert conn.fetchval.await_args_list[0].args == (
+            "SELECT kind FROM inquiries WHERE id = $1",
+            to_id,
+        )
+        assert conn.fetchval.await_args_list[2].args == (
+            _INSERT_EDGE_SQL,
+            from_id,
+            "Issue",
+            to_id,
+            "Issue",
+            "narrows",
+            3,
+            "hi",
+            None,
+            ["a"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_insert_edge_defaults_an_empty_note_and_an_unset_citation(
+        self,
+    ) -> None:
+        from_id, to_id = new_uuid(), new_uuid()
+        conn = make_conn()
+        conn.fetchval.side_effect = ["Issue", False, from_id]
+        await insert_edge(
+            cast(Conn, conn),
+            from_id=from_id,
+            from_kind="Issue",
+            to_id=to_id,
+            edge_kind="proves",
+        )
+        assert conn.fetchval.await_args_list[2].args == (
+            _INSERT_EDGE_SQL,
+            from_id,
+            "Issue",
+            to_id,
+            "Issue",
+            "proves",
+            None,
+            None,
+            CITATION_VALENCE_DEFAULT,
+            None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_insert_edge_stores_the_citation_valence_it_is_given(self) -> None:
+        from_id, to_id = new_uuid(), new_uuid()
+        conn = make_conn()
+        conn.fetchval.side_effect = ["Issue", False, from_id]
+        await insert_edge(
+            cast(Conn, conn),
+            from_id=from_id,
+            from_kind="Issue",
+            to_id=to_id,
+            edge_kind="proves",
+            valence=0.25,
+        )
+        assert conn.fetchval.await_args_list[2].args[8] == 0.25
+
+    @pytest.mark.asyncio
+    async def test_insert_edge_refuses_a_priority_on_a_structural_edge(self) -> None:
+        conn = make_conn()
+        conn.fetchval.return_value = "Issue"
+        with pytest.raises(ValidationError, match="cannot carry priority"):
+            await insert_edge(
+                cast(Conn, conn),
+                from_id=new_uuid(),
+                from_kind="Issue",
+                to_id=new_uuid(),
+                edge_kind="proves",
+                priority=3,
+            )
+        conn.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_inference_orders_the_pair_by_creation_time(self) -> None:
+        younger, older = UUID(int=1), UUID(int=2)
+        conn = make_conn()
+        conn.fetch = AsyncMock(
+            side_effect=[
+                [{"edge_kind": "narrows"}],
+                [
+                    {"id": younger, "created": datetime(2026, 2, 1, tzinfo=UTC)},
+                    {"id": older, "created": datetime(2026, 1, 1, tzinfo=UTC)},
+                ],
+            ],
+        )
+        assert await infer_produced_endpoints(
+            cast(Conn, conn),
+            from_id=younger,
+            to_id=older,
+        ) == (older, younger, "narrows")
+        assert conn.fetch.await_args_list[0].args == (_PAIR_KINDS_SQL, younger, older)
+        assert conn.fetch.await_args_list[1].args == (_CREATED_SQL, [younger, older])
+
+
+async def _refused_column(validate: TargetValidator | None) -> str:
+    """Return the column ``validate`` names when it refuses a reference not found."""
+    assert validate is not None
+    conn = make_conn()
+    conn.fetch = AsyncMock(return_value=[])
+    with pytest.raises(NotFoundError) as refused:
+        await validate(cast(Conn, conn), (new_uuid(),))
+    return str(refused.value).partition(" ")[0]
+
+
+class TestReferenceBinding:
+    @pytest.mark.asyncio
+    async def test_binding_a_column_with_no_hook_yet_uses_the_empty_hooks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        column = "experiment_codechanges"
+        monkeypatch.delitem(RUNTIME_HOOKS, column, raising=False)
+        _bind_reference_validators()
+        hooks = RUNTIME_HOOKS[column]
+        assert hooks.normalize is NO_HOOKS.normalize
+        assert await _refused_column(hooks.validate) == column
+
+    @pytest.mark.asyncio
+    async def test_binding_keeps_each_hook_and_names_its_column(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        column = "experiment_codechanges"
+        monkeypatch.setitem(RUNTIME_HOOKS, column, replace(NO_HOOKS, normalize=_keep))
+        _bind_reference_validators()
+        hooks = RUNTIME_HOOKS[column]
+        assert hooks.normalize is _keep
+        assert await _refused_column(hooks.validate) == column
 
 
 class TestInsertInquiryGuards:
@@ -129,6 +334,84 @@ class TestInsertInquiryGuards:
             for column in sql.partition("(")[2].partition(")")[0].split(",")
         ]
         assert call.args[1 + columns.index("description")] is None
+
+    @pytest.mark.asyncio
+    async def test_optional_text_is_null_only_when_empty(self) -> None:
+        conn = make_conn()
+        await insert_inquiry(
+            cast(Conn, conn),
+            new_uuid(),
+            "Issue",
+            values={
+                "title": "",
+                "account": "a@b.c",
+                "description": "kept",
+            },
+        )
+        call = conn.execute.call_args
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        columns = [
+            column.strip()
+            for column in sql.partition("(")[2].partition(")")[0].split(",")
+        ]
+        assert call.args[columns.index("title")] == ""
+        assert call.args[columns.index("description")] == "kept"
+
+    @pytest.mark.asyncio
+    async def test_blank_text_is_null_and_labels_are_canonical(self) -> None:
+        conn = make_conn()
+        await insert_inquiry(
+            cast(Conn, conn),
+            new_uuid(),
+            "Issue",
+            values={
+                "title": "x",
+                "account": "a@b.c",
+                "description": "  ",
+                "labels": [" b ", "a", "", "a"],
+            },
+        )
+        call = conn.execute.call_args
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        columns = [
+            column.strip()
+            for column in sql.partition("(")[2].partition(")")[0].split(",")
+        ]
+        assert call.args[columns.index("description")] is None
+        assert call.args[columns.index("labels")] == ["b", "a"]
+
+    @pytest.mark.asyncio
+    async def test_each_value_binds_to_its_numbered_placeholder(self) -> None:
+        conn = make_conn()
+        row_id = new_uuid()
+        await insert_inquiry(
+            cast(Conn, conn),
+            row_id,
+            "Issue",
+            status="complete",
+            values={"title": "x", "account": "a@b.c"},
+        )
+        call = conn.execute.call_args
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        assert sql.startswith("INSERT INTO inquiries (id, kind, seq, status, ")
+        columns = [
+            column.strip()
+            for column in sql.partition("(")[2].partition(")")[0].split(",")
+        ]
+        placeholders = ", ".join(f"${i}" for i in range(4, len(columns)))
+        assert sql.partition(") VALUES (")[2] == (
+            f"$1, $2, nextval('{SEQ_FOR_KIND['Issue']}'), COALESCE($3, 'active'), "
+            f"{placeholders})"
+        )
+        assert call.args[1:4] == (row_id, "Issue", "complete")
+        assert call.args[columns.index("title")] == "x"
+        assert call.args[columns.index("account")] == "a@b.c"
 
 
 class TestPureFunctions:
@@ -242,6 +525,57 @@ class TestPureFunctions:
         conn.fetchval.return_value = None
         with pytest.raises(NotFoundError, match="not found"):
             await lookup_kind(cast(Conn, conn), new_uuid())
+
+    @pytest.mark.asyncio
+    async def test_lookup_kind_reads_the_kind_of_its_one_id(self) -> None:
+        target = new_uuid()
+        conn = make_conn()
+        conn.fetchval.return_value = "Paper"
+        assert await lookup_kind(cast(Conn, conn), target) == "Paper"
+        conn.fetchval.assert_awaited_once_with(
+            "SELECT kind FROM inquiries WHERE id = $1",
+            target,
+        )
+
+    @pytest.mark.asyncio
+    async def test_lookup_kinds_reads_unlocked_rows_without_a_policy(self) -> None:
+        target = new_uuid()
+        conn = make_conn()
+        conn.fetch = AsyncMock(return_value=[])
+        await lookup_kinds(cast(Conn, conn), [target])
+        conn.fetch.assert_awaited_once_with(
+            "SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[])",
+            [target],
+        )
+
+    @pytest.mark.asyncio
+    async def test_lookup_kinds_locks_rows_only_when_asked(self) -> None:
+        target = new_uuid()
+        conn = make_conn()
+        conn.fetch = AsyncMock(return_value=[])
+        await lookup_kinds(cast(Conn, conn), [target], for_share=True)
+        conn.fetch.assert_awaited_once_with(
+            "SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[]) FOR SHARE",
+            [target],
+        )
+
+    @pytest.mark.asyncio
+    async def test_lookup_kinds_gates_rows_by_the_policy_and_principal(self) -> None:
+        target = new_uuid()
+        conn = make_conn()
+        conn.fetch = AsyncMock(return_value=[])
+        await lookup_kinds(
+            cast(Conn, conn),
+            [target],
+            policy=DefaultPolicy(),
+            principal=Principal(email="a@b.c", role="writer"),
+        )
+        sql, ids, *params = cast("tuple[object, ...]", conn.fetch.call_args.args)
+        assert isinstance(sql, str)
+        assert " AND (EXISTS (SELECT 1 FROM inquiries readable_inquiry" in sql
+        assert "readable_inquiry.id = inquiries.id AND (" in sql
+        assert ids == [target]
+        assert params
 
     @pytest.mark.asyncio
     async def test_validate_list_references_missing_raises_not_found(self) -> None:
@@ -366,6 +700,10 @@ class TestCLIHelpers:
         for bad in (1.5, -1.5, float("nan"), float("inf")):
             with pytest.raises(ValidationError, match="valence"):
                 validate_edge_valence("proves", bad)
+
+    def test_edge_valence_accepts_the_range_endpoints(self) -> None:
+        assert validate_edge_valence("proves", -1.0) == -1.0
+        assert validate_edge_valence("proves", 1.0) == 1.0
 
     def test_edge_valence_rejects_unknown_edge_kind(self) -> None:
         # A bogus edge_kind must be rejected by the guard, not silently accepted

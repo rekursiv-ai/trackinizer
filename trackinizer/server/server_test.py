@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import argparse
@@ -17,6 +18,7 @@ import pytest
 import uvicorn
 
 from trackinizer.lib.postgres import PostgresEngine
+from trackinizer.lib.userdirs import data_dir
 from trackinizer.server import server, web
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity
@@ -30,6 +32,7 @@ from trackinizer.server.route_iter import registered_paths
 from trackinizer.server.server import (
     _configure_logging,
     _parse_args,
+    _positive_session_ttl,
     _SuppressZeroTaskCancel,
     logger,
     main,
@@ -38,7 +41,6 @@ from trackinizer.server.server import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -82,7 +84,7 @@ class TestPureFunctions:
         assert logger.level == logging.INFO
 
     def test_configure_logging_invalid_raises(self) -> None:
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit, match="not-a-level"):
             _configure_logging("not-a-level")
 
     def test_configure_logging_returns_resolved_level(
@@ -115,7 +117,7 @@ class TestPureFunctions:
         """
         monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "abc")
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit, match="must be an integer"):
             _ = _parse_args(argparse.ArgumentParser(), [])
 
     def test_session_ttl_rejects_non_positive(
@@ -359,6 +361,221 @@ class TestPureFunctions:
             server._configure_app(flags)
 
 
+def test_flags_parse_to_their_types_defaults_choices_and_help(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "TRACKINIZER_ADDONS",
+        "TRACKINIZER_ASSISTANT",
+        "TRACKINIZER_DSN",
+        "TRACKINIZER_LOG_LEVEL",
+        "TRACKINIZER_NO_AUTH",
+        "TRACKINIZER_SESSION_MAX_AGE_SECONDS",
+        "TRACKINIZER_STAFF",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    defaults, _ = _parse_args(argparse.ArgumentParser(), [])
+    assert (defaults.engine, defaults.datadir, defaults.ephemeral) == (
+        "pglite",
+        None,
+        False,
+    )
+    assert (defaults.pglite_tcp, defaults.dsn, defaults.host) == (
+        False,
+        "",
+        "127.0.0.1",
+    )
+    assert (defaults.port, defaults.timeout_keep_alive) == (8765, 240)
+    assert (defaults.web, defaults.static_dir, defaults.app_dir) == (True, None, None)
+    assert (defaults.auth, defaults.assistant, defaults.staff) == (True, "", "")
+    assert (defaults.log_level, defaults.addons, defaults.addon_override) == (
+        None,
+        "",
+        [],
+    )
+
+    flags, remaining = _parse_args(
+        argparse.ArgumentParser(),
+        [
+            "--engine",
+            "pg",
+            "--datadir",
+            "d",
+            "--ephemeral",
+            "--pglite-tcp",
+            "--dsn",
+            "postgres://x",
+            "--host",
+            "10.0.0.1",
+            "--port",
+            "9000",
+            "--timeout-keep-alive",
+            "30",
+            "--no-web",
+            "--static-dir",
+            "s",
+            "--app-dir",
+            "a",
+            "--session-max-age-seconds",
+            "90",
+            "--no-auth",
+            "--assistant",
+            "scout=kb@service.invalid",
+            "--staff",
+            "*@example.com",
+            "--log-level",
+            "ERROR",
+            "--addons",
+            "x.y",
+            "--addon-override",
+            "a=1",
+            "--addon-override",
+            "b=2",
+        ],
+    )
+    assert remaining == []
+    assert (flags.engine, flags.datadir, flags.ephemeral) == ("pg", Path("d"), True)
+    assert (flags.pglite_tcp, flags.dsn, flags.host) == (
+        True,
+        "postgres://x",
+        "10.0.0.1",
+    )
+    assert (flags.port, flags.timeout_keep_alive) == (9000, 30)
+    assert (flags.web, flags.static_dir, flags.app_dir) == (
+        False,
+        Path("s"),
+        Path("a"),
+    )
+    assert (flags.session_max_age_seconds, flags.auth) == (90, False)
+    assert (flags.assistant, flags.staff, flags.log_level) == (
+        "scout=kb@service.invalid",
+        "*@example.com",
+        "ERROR",
+    )
+    assert (flags.addons, flags.addon_override) == ("x.y", ["a=1", "b=2"])
+
+    for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        accepted, _ = _parse_args(argparse.ArgumentParser(), ["--log-level", level])
+        assert accepted.log_level == level
+    for engine in ("pglite", "pg"):
+        accepted, _ = _parse_args(argparse.ArgumentParser(), ["--engine", engine])
+        assert accepted.engine == engine
+    for argv in (["--engine", "bogus"], ["--log-level", "bogus"]):
+        with pytest.raises(SystemExit):
+            _parse_args(argparse.ArgumentParser(), argv)
+
+    monkeypatch.setenv("TRACKINIZER_ADDONS", "env.addons")
+    monkeypatch.setenv("TRACKINIZER_ASSISTANT", "env=x@service.invalid")
+    monkeypatch.setenv("TRACKINIZER_DSN", "postgres://env")
+    monkeypatch.setenv("TRACKINIZER_STAFF", "*@env.test")
+    from_env, _ = _parse_args(argparse.ArgumentParser(), [])
+    assert (from_env.addons, from_env.assistant, from_env.dsn, from_env.staff) == (
+        "env.addons",
+        "env=x@service.invalid",
+        "postgres://env",
+        "*@env.test",
+    )
+
+    parser = argparse.ArgumentParser()
+    _ = _parse_args(parser, [])
+    actions = {action.dest: action for action in parser._actions}
+    helped = {
+        dest
+        for dest, action in actions.items()
+        if dest != "help" and action.help is not None
+    }
+    assert helped == {
+        "engine",
+        "datadir",
+        "ephemeral",
+        "pglite_tcp",
+        "dsn",
+        "timeout_keep_alive",
+        "static_dir",
+        "app_dir",
+        "session_max_age_seconds",
+        "auth",
+        "assistant",
+        "staff",
+        "addons",
+        "addon_override",
+    }
+    metavared = {dest for dest, action in actions.items() if action.metavar is not None}
+    assert metavared == {"app_dir", "assistant", "staff", "addons", "addon_override"}
+    datadir_path = str(data_dir() / "rekursiv-ai" / "trackinizer" / "pgdata")
+    assert datadir_path in (actions["datadir"].help or "")
+
+
+def test_session_ttl_accepts_one_second_and_names_a_zero_it_refuses() -> None:
+    assert _positive_session_ttl("1") == 1
+    with pytest.raises(argparse.ArgumentTypeError, match="got 0"):
+        _positive_session_ttl("0")
+
+
+def test_configure_logging_hands_basicconfig_the_level_and_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def basic_config(**kwargs: object) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(logging, "basicConfig", basic_config)
+
+    _configure_logging("DEBUG")
+
+    assert calls == [
+        {
+            "level": logging.DEBUG,
+            "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        },
+    ]
+
+
+def test_the_app_gets_its_static_dir_and_its_oauth_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fresh = FastAPI()
+    monkeypatch.setattr(server, "app", fresh)
+    webs: list[dict[str, object]] = []
+
+    def record_web(app: FastAPI, **kwargs: object) -> None:
+        del app
+        webs.append(kwargs)
+
+    monkeypatch.setattr(web, "attach", record_web)
+    flags, _ = _parse_args(argparse.ArgumentParser(), ["--static-dir", str(tmp_path)])
+
+    server._configure_app(flags)
+
+    assert webs[0]["static_dir"] == tmp_path
+
+
+def test_help_shows_the_module_docstring(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("sys.argv", ["trackinizer", "--help"])
+
+    with pytest.raises(SystemExit):
+        main()
+
+    assert "Server entry point" in capsys.readouterr().out
+
+
+def test_every_unrecognized_argument_is_named(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("sys.argv", ["trackinizer", "--bogus", "--other"])
+
+    with pytest.raises(SystemExit):
+        main()
+
+    assert "unrecognized arguments: --bogus --other" in capsys.readouterr().err
+
+
 class TestCLIHelpers:
     def test_main_invokes_uvicorn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called: dict[str, object] = {}
@@ -369,7 +586,7 @@ class TestCLIHelpers:
 
         monkeypatch.setattr(uvicorn, "run", fake_run)
         monkeypatch.setattr("sys.argv", ["trackinizer", "--port", "1234"])
-        main()
+        assert main() == 0
         assert called["host"] == "127.0.0.1"
         assert called["port"] == 1234
         assert called["timeout_keep_alive"] == 240

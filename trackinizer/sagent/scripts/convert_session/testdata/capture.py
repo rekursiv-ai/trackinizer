@@ -333,8 +333,7 @@ def _drive(
         print(f"  turn {index}/{len(script)}: {step.line[:48]}", file=sys.stderr)
         if step.escape:
             _await_marks(logs, tool_call, above=calls, deadline_sec=turn_sec)
-            # The tool must be running when Esc lands; the TUI signals no start.
-            time.sleep(2.0)  # house-ignore[sleep] -- See above.
+            time.sleep(2.0)  # house-ignore[sleep] -- The TUI signals no tool start.
             relay.write(b"\x1b")
         done = _await_turn(logs, done=done, quiet_sec=20.0, deadline_sec=turn_sec)
     relay.submit("/exit")
@@ -380,7 +379,7 @@ def _await_logs(root: Path, *, deadline_sec: float) -> None:
         if _log_size(root) > 0:
             # The file exists, but the TUI draws its prompt slightly after
             # opening the log; submitting into that gap loses the first turn.
-            time.sleep(3.0)  # house-ignore[sleep] -- See above.
+            time.sleep(3.0)  # house-ignore[sleep] -- The TUI signals no prompt.
             return
         time.sleep(_POLL_SEC)  # house-ignore[sleep] -- A live CLI's log is polled.
     print(f"  no session log under {root} yet; proceeding", file=sys.stderr)

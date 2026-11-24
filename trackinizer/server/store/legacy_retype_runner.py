@@ -210,8 +210,7 @@ class _Output:
 # Audience: internal -- an operator tool run on the server; no caller sees it.
 async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
     """Read the part's rows in ``idx`` order, ciphertext joined, rows locked."""
-    # pragma: no mutate start -- the db_pglite tests exercise this SQL, and the
-    # mutation run deselects them.
+    # pragma: no mutate start -- Its tests need PGlite, which the mutation run deselects.
     rows = await conn.fetch(
         "SELECT r.kind, r.context_id, r.timestamp, r.model, r.created, "
         "r.payload, r.text, "

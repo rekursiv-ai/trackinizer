@@ -186,7 +186,7 @@ class ToolMux:
         self._write = asyncio.Lock()
         self._streams: dict[UUID, MuxStream] = {}
         self._reader: asyncio.Task[None] | None = None
-        self._closed = False  # pragma: no mutate[truthiness]
+        self._closed = False  # pragma: no mutate[truthiness] -- Every read of `_closed` is a truth test.
 
     async def send(self, kind: bytes, stream_id: UUID, data: bytes = b"") -> None:
         """Write an envelope without concurrent writes to the physical socket."""

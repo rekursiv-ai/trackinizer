@@ -130,7 +130,7 @@ def export_lines(graph: GraphExport) -> Iterator[bytes]:
 # bug to surface here, not a bare ``NaN`` a strict reader rejects.
 def _line(value: object) -> bytes:
     """One compact JSON object and its newline."""
-    # pragma: no mutate[truthiness] start
+    # pragma: no mutate[truthiness] start -- json.dumps reads `ensure_ascii` and `allow_nan` only as truth values.
     text = json.dumps(
         value,
         default=_as_json,

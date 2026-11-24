@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Protocol, cast
 from unittest.mock import AsyncMock
 
+import hashlib
 import uuid
 
 import asyncpg
@@ -20,9 +21,12 @@ from trackinizer.conftest import (
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server import auth
 from trackinizer.server.auth import AuthIdentity, ProcessKey, generate_token
-from trackinizer.server.schema_gen import substitute_schema_placeholders
+from trackinizer.server.schema_gen import (
+    SEQ_FOR_KIND,
+    substitute_schema_placeholders,
+)
 from trackinizer.server.sql import schema_migrations
-from trackinizer.server.store.core import Store
+from trackinizer.server.store.core import Store, _reconcile_sequences
 
 
 def _identity(*, user_id: uuid.UUID | None = None) -> AuthIdentity:
@@ -122,6 +126,31 @@ class TestVerifiedBearerCache:
 
         assert [store.cached_bearer_identity(s) for s in "abc"] == [None, theirs, login]
 
+    def test_the_cache_evicts_its_soonest_expiring_entry_not_its_smallest_digest(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        monkeypatch.setattr(auth, "VERIFIED_BEARER_MAX_ENTRIES", 2)
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+        older = "older"
+        smaller_digest = next(
+            candidate
+            for candidate in (f"newer-{n}" for n in range(1_000))
+            if hashlib.sha256(candidate.encode()).digest()
+            < hashlib.sha256(older.encode()).digest()
+        )
+        identity = _identity()
+        store.remember_bearer_identity(older, identity)
+        clock[0] += 1.0
+        store.remember_bearer_identity(smaller_digest, identity)
+        clock[0] += 1.0
+        store.remember_bearer_identity("third", identity)
+
+        assert store.cached_bearer_identity(older) is None
+        assert store.cached_bearer_identity(smaller_digest) == identity
+
     def test_a_key_bumps_once_per_interval(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -149,7 +178,7 @@ class TestVerifiedBearerCache:
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
         monkeypatch.setattr(auth, "LAST_USED_BUMPED_AT_MAX_ENTRIES", 2)
-        oldest, middle, newest = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        oldest, middle, newest = uuid.UUID(int=3), uuid.UUID(int=1), uuid.UUID(int=2)
 
         for key in (oldest, middle, newest):
             assert store.should_bump_api_key_last_used(key)
@@ -335,6 +364,82 @@ class TestStoreBootstrap:
             if "INSERT INTO applied_migrations" in _sql(c.args)
         }
         assert recorded == {name for name, _body in schema_migrations()}
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_names_every_migration_used_twice(self) -> None:
+        store, engine = make_store()
+        addons = [
+            (name, "CREATE SCHEMA shop")
+            for name in (
+                "shop.0001.sql",
+                "shop.0001.sql",
+                "shop.0002.sql",
+                "shop.0002.sql",
+            )
+        ]
+        with pytest.raises(
+            ValueError,
+            match=r"Two migrations are named shop\.0001\.sql, shop\.0002\.sql\.",
+        ):
+            await store.bootstrap(addon_migrations=addons)
+        assert executed_sql(engine.conn) == []
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_retries_its_default_attempts_before_giving_up(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        slept = AsyncMock()
+        monkeypatch.setattr("trackinizer.server.store.core.asyncio.sleep", slept)
+        conn = make_conn()
+        conn.execute = AsyncMock(
+            side_effect=asyncpg.exceptions.ConnectionDoesNotExistError(
+                "connection was closed in the middle of operation",
+            ),
+        )
+        store, _engine = make_store(conn)
+
+        with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError):
+            await store.bootstrap()
+
+        assert slept.await_count == 5
+
+    @pytest.mark.asyncio
+    async def test_reconcile_skips_an_empty_kind_and_reconciles_the_rest(self) -> None:
+        conn = make_conn()
+        empty = next(iter(SEQ_FOR_KIND))
+
+        async def fetchval(sql: str, kind: str) -> int | None:
+            del sql
+            return None if kind == empty else 265
+
+        conn.fetchval.side_effect = fetchval
+
+        await _reconcile_sequences(conn)
+
+        assert conn.execute.await_count == len(SEQ_FOR_KIND) - 1
+
+    @pytest.mark.asyncio
+    async def test_reconcile_queries_each_kind_and_binds_its_max_into_its_sequence(
+        self,
+    ) -> None:
+        conn = make_conn()
+        conn.fetchval.return_value = 265
+
+        await _reconcile_sequences(conn)
+
+        assert [c.args[1] for c in conn.fetchval.call_args_list] == list(SEQ_FOR_KIND)
+        assert all(_sql(c.args) for c in conn.fetchval.call_args_list)
+        for (_kind, seq), call in zip(
+            SEQ_FOR_KIND.items(),
+            conn.execute.call_args_list,
+            strict=True,
+        ):
+            sql = _sql(call.args)
+            assert f"setval('{seq}'" in sql
+            assert f"FROM {seq}" in sql
+            assert "$1" in sql
+            assert call.args[1] == 265
 
     @pytest.mark.asyncio
     async def test_bootstrap_reconciles_lagging_sequences(self) -> None:
@@ -576,6 +681,61 @@ class TestStoreBootstrap:
         with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError) as exc:
             await store._bootstrap_once(())
         assert "DDL died first" in str(exc.value)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "unlock_fault",
+        [
+            asyncpg.PostgresConnectionError("unlock on dead connection"),
+            asyncpg.InterfaceError("unlock on dead connection"),
+            ConnectionRefusedError("unlock refused"),
+        ],
+        ids=["postgres-connection", "interface", "connection-refused"],
+    )
+    async def test_bootstrap_finally_unlock_suppresses_each_connection_death(
+        self,
+        unlock_fault: Exception,
+    ) -> None:
+        """Each connection-death error the unlock raises is dropped, not raised over."""
+        conn = make_conn()
+
+        async def execute(sql: str, *_args: object) -> object:
+            if "advisory_unlock" in sql:
+                raise unlock_fault
+            if "applied_migrations" in sql and "CREATE" in sql:
+                raise asyncpg.exceptions.ConnectionDoesNotExistError("DDL died first")
+            return "OK"
+
+        conn.execute = AsyncMock(side_effect=execute)
+        store, _engine = make_store(conn)
+
+        with pytest.raises(
+            asyncpg.exceptions.ConnectionDoesNotExistError,
+            match="DDL died first",
+        ):
+            await store._bootstrap_once(())
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_probes_freshness_on_its_connection(self) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+
+        await store.bootstrap()
+
+        assert any("to_regclass" in _sql(c.args) for c in conn.fetchval.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_seeds_the_admin_on_its_connection_and_policy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        seed = AsyncMock()
+        monkeypatch.setattr("trackinizer.server.store.core.bootstrap_admin", seed)
+        store, engine = make_store()
+
+        await store.bootstrap()
+
+        seed.assert_awaited_once_with(engine.conn, policy=store.access_policy)
 
 
 class _Execute(Protocol):

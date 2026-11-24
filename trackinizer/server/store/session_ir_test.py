@@ -542,7 +542,7 @@ async def test_concurrent_new_files_keep_distinct_parts(store: Store) -> None:
                     if blocked == 2:
                         break
                     # Lock waits live in Postgres; only pg_stat_activity and pg_locks report them.
-                    await asyncio.sleep(0.001)  # house-ignore[sleep] -- See above.
+                    await asyncio.sleep(0.001)  # house-ignore[sleep] -- No lock event.
         finally:
             await conn.execute("COMMIT")
             parts = await asyncio.gather(*tasks)
