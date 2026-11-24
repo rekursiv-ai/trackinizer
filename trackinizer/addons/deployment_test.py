@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import field
 from functools import partial
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import asyncio
 import logging
@@ -28,10 +28,10 @@ from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from uuid import UUID
 
-    from trackinizer.addons.addon import ServerContext, StandaloneContext
+    from trackinizer.addons.addon import Addon, ServerContext, StandaloneContext
     from trackinizer.lib.postgres import DatabaseEngine
     from trackinizer.server.agent_policy import AgentWork, Halt, Refusal
     from trackinizer.server.store.search import Kept, VectorHit
@@ -595,6 +595,61 @@ async def test_supervise_propagates_cancellation() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def test_deployment_binds_shared_sibling_addons_before_manifests() -> None:
+    events: list[tuple[str, object]] = []
+
+    class _Provider:
+        class Config(Fig["_Provider"]):
+            label: str = "shared"
+            """Identifier for the provider."""
+
+        def __init__(self, config: Config) -> None:
+            self.label = config.label
+
+        def manifest(self) -> AddonManifest:
+            return AddonManifest(title=self.label, description="Provider.")
+
+    class _Consumer:
+        class Config(Fig["_Consumer"]):
+            provider: _Provider.Config | None = None
+            """Shared provider config."""
+
+        def __init__(self, config: Config) -> None:
+            self.config = config
+            self.bound: _Provider | None = None
+
+        def bind_siblings(self, config: object, built: Mapping[int, Addon]) -> None:
+            if isinstance(config, _Consumer.Config) and config.provider is not None:
+                found = built.get(id(config.provider))
+                if isinstance(found, _Provider):
+                    self.bound = found
+                    events.append(("bound", found))
+
+        def manifest(self) -> AddonManifest:
+            events.append(("manifest", self.bound))
+            return AddonManifest(title="Consumer", description="Consumer.")
+
+    class _SharedSite(Makes["Deployment"], Deployment.Config):
+        consumer: _Consumer.Config = field(default_factory=_Consumer.Config)
+        """Declared before provider to test order-independent binding."""
+
+        provider: _Provider.Config = field(default_factory=_Provider.Config)
+        """Shared provider addon."""
+
+        @override
+        def finalize(self) -> _SharedSite:
+            self.consumer.provider = self.provider
+            return super().finalize()
+
+    _ = _SharedSite().make()
+
+    assert len(events) == 2
+    assert events[0][0] == "bound"
+    assert events[1][0] == "manifest"
+    assert isinstance(events[0][1], _Provider)
+    assert events[1][1] is events[0][1]
 
 
 async def _ping() -> dict[str, bool]:
