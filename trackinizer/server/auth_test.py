@@ -1515,6 +1515,20 @@ class TestProcessKeyRoutes:
         assert not await _let_through(None, method="POST")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path",
+        ["/api/sessions/{session_id}/parts", "/api/sessions/{session_id}/records"],
+    )
+    async def test_a_transcript_read_reaches_past_its_tree_to_the_route(
+        self,
+        path: str,
+    ) -> None:
+        """The route's transcript test decides: a key reads what its person reads."""
+        route = dict(iter_route_leaves(_served_app()))[path]
+
+        assert await _let_through(route, named=uuid.UUID(int=9))
+
+    @pytest.mark.asyncio
     async def test_route_scope_comes_from_the_allowlist(
         self,
         monkeypatch: pytest.MonkeyPatch,

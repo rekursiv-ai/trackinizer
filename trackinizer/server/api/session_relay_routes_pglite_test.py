@@ -1296,7 +1296,8 @@ async def test_a_process_key_serves_and_writes_its_own_process_s_session_alone(
         attached.append(await asyncio.wait_for(anext(viewer), 5))
 
     assert refused == [CLOSE_REFUSED, CLOSE_REFUSED]
-    assert elsewhere == [403, 403]
+    # It reads another session of Ada's as she does, and appends to none outside its tree.
+    assert elsewhere == [200, 403]
     assert [
         frame.process.state for frame in attached if isinstance(frame, ProcessLine)
     ] == ["attached", "attached"]

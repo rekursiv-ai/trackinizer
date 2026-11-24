@@ -420,10 +420,10 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
     is never sent by a browser on its own, so it needs no such check.
 
     A key a start minted for an agent process reaches only the routes that process
-    calls (``wire_process_keys.PROCESS_KEY_ROUTES``), and a route that names a
-    session only for the session its process was started for and the sessions its
-    agents spawned (:func:`process_reaches`): anything else is 403 here, before the
-    route's own code acts on it.
+    calls (``wire_process_keys.PROCESS_KEY_ROUTES``), and a route listed for its tree
+    only for the session its process was started for and the sessions its agents
+    spawned (:func:`process_reaches`): anything else is 403 here, before the route's
+    own code acts on it.
 
     ``request.app.state.store`` must hold the live :class:`Store` (it owns the
     engine and the ``last_used_at`` throttle). Raises 401 when no credential
