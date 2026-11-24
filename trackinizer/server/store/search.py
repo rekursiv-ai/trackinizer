@@ -50,6 +50,8 @@ from trackinizer.server.access_policy import (
     inquiry_read_filter,
 )
 from trackinizer.server.audience import SessionReader, visible_sql
+from trackinizer.server.notify import tx
+from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.store.session import SPAWN_EDGE_SQL
 from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
 from trackinizer.server.values import manifest_bound, vetted_sql
@@ -247,7 +249,8 @@ async def search_sessions(
             limit=limit,
         )
     )
-    async with engine.acquire() as conn:
+    async with engine.acquire() as conn, tx(conn):
+        await apply_regex_statement_timeout(conn)
         semantic = [] if nearest is None else await _semantic_arm(conn, nearest)
         fts = (
             await _fts_arm(conn, query, limit=limit, scope=scope)
@@ -342,7 +345,8 @@ async def search_inquiries(
         )
     )
     semantic = [(hit.owner_id, hit.field) for hit in nearest or []]
-    async with engine.acquire() as conn:
+    async with engine.acquire() as conn, tx(conn):
+        await apply_regex_statement_timeout(conn)
         keyword = (
             await _inquiry_keyword_arm(conn, query, limit=limit, reader=reader)
             if mode in ("fused", "keyword")
@@ -510,12 +514,20 @@ def _reads_all(reader: SessionReader) -> bool:
     )
 
 
-def _kept(params: list[object], *, scope: FeedScope) -> str:
+def _kept(
+    params: list[object],
+    *,
+    scope: FeedScope,
+) -> str:
     """Return the test, on ``i``, that a session is in ``scope`` and its reader reads it."""
     return " AND ".join(
         (
             *scope.clauses(params, kind=""),
-            visible_sql("i", params=params, reader=scope.reader),
+            visible_sql(
+                "i",
+                params=params,
+                reader=scope.reader,
+            ),
         ),
     )
 
@@ -523,6 +535,9 @@ def _kept(params: list[object], *, scope: FeedScope) -> str:
 # A session record's unit is its ``content``. Bind the manifest to the unit's record
 # coordinates: a compaction-restart can leave a stale vector whose record is now beyond
 # the live prefix, and the record's idx is what the bound applies to.
+# The vector arm embeds this test inside a correlated scalar subquery over one owner
+# row per candidate, so single-row chat lookup keeps Postgres from re-scanning every
+# chat per candidate vector.
 # Audience: internal -- a SQL fragment; the semantic arm that embeds it carries the gate.
 def _kept_units(params: list[object], *, scope: FeedScope) -> str:
     """Return the semantic arm's test over ``v`` and ``i``: see :data:`Kept`."""
@@ -530,7 +545,10 @@ def _kept_units(params: list[object], *, scope: FeedScope) -> str:
         "v.field = 'content' AND EXISTS (SELECT 1 FROM session_manifests m "
         "WHERE m.session_id = v.owner_id AND m.part = v.part AND v.idx < m.records) "
         "AND ",
-        _kept(params, scope=scope),
+        _kept(
+            params,
+            scope=scope,
+        ),
     )
 
 
@@ -638,7 +656,11 @@ class _InquiryReader:
             " AND EXISTS (SELECT 1 FROM inquiries s WHERE s.id = ",
             reference,
             " AND (s.kind <> 'AgentSession' OR ",
-            visible_sql("s", params=params, reader=self.sessions),
+            visible_sql(
+                "s",
+                params=params,
+                reader=self.sessions,
+            ),
             "))",
         )
 

@@ -128,6 +128,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_inquiries_live_session_owner
     ON inquiries (owner)
     WHERE kind = 'AgentSession' AND owner IS NOT NULL
           AND agentsession_ended IS NULL;
+-- Lookup and starter ordering by ``agentsession_cli_session_id`` (canvas polling,
+-- session resume, single-row chat visibility). Added in 082.
+CREATE INDEX IF NOT EXISTS idx_inquiries_agentsession_cli_session_id
+    ON inquiries (agentsession_cli_session_id, created, id)
+    WHERE kind = 'AgentSession' AND agentsession_cli_session_id IS NOT NULL;
+-- Partial index for ``LIKE 'chat:%'`` scans under any collation, preserving
+-- default-collation ``(agentsession_cli_session_id, created, id)`` order. Added in 082.
+CREATE INDEX IF NOT EXISTS idx_inquiries_science_chat_sessions
+    ON inquiries (agentsession_cli_session_id, created, id)
+    WHERE kind = 'AgentSession' AND agentsession_cli_session_id LIKE 'chat:%';
 -- One AccessGroup per verified company domain.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_inquiries_accessgroup_domain
     ON inquiries (accessgroup_domain)
@@ -1063,6 +1073,8 @@ CREATE TABLE IF NOT EXISTS science_chat_shares (
     shared_at       TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (conversation_id, email)
 );
+CREATE INDEX IF NOT EXISTS idx_science_chat_shares_email
+    ON science_chat_shares (email, conversation_id);
 
 -- A science chat that was deleted: no line starts a chat under its id again, so a
 -- line naming it is refused rather than reopening it as someone else's. Added in 043.

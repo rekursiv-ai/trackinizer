@@ -28,6 +28,7 @@ from treekle import from_plain
 from trackinizer.addons.embedding.model import Embedder
 from trackinizer.addons.embedding.units import Settings
 from trackinizer.server.notify import tx
+from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.store.search import VectorHit
 from trackinizer.server.values import vec_to_text, vetted_sql
 
@@ -225,18 +226,20 @@ async def _newest(
     """Return ``owner_id``'s newest vector that ``kept`` keeps, as text; ``None`` for none."""
     key, _dim = _checked(settings)
     params: list[object] = [owner_id]
-    vector = await conn.fetchval(
-        vetted_sql(
-            "SELECT v.embedding::text FROM embedding.vectors v "
-            "WHERE v.owner_id = $1 AND v.settings = '",
-            key,
-            "' AND (SELECT ",
-            kept(params),
-            " FROM inquiries i WHERE i.id = v.owner_id) "
-            "ORDER BY v.part DESC, v.idx DESC, v.chunk DESC LIMIT 1",
-        ),
-        *params,
-    )
+    async with tx(conn):
+        await apply_regex_statement_timeout(conn)
+        vector = await conn.fetchval(
+            vetted_sql(
+                "SELECT v.embedding::text FROM embedding.vectors v "
+                "WHERE v.owner_id = $1 AND v.settings = '",
+                key,
+                "' AND (SELECT ",
+                kept(params),
+                " FROM inquiries i WHERE i.id = v.owner_id) "
+                "ORDER BY v.part DESC, v.idx DESC, v.chunk DESC LIMIT 1",
+            ),
+            *params,
+        )
     return None if vector is None else from_plain(vector, str)
 
 
@@ -257,9 +260,10 @@ async def _scan(engine: DatabaseEngine, conn: Conn, *, filtered: bool) -> _Scan:
     return "iterative" if known else "widening"
 
 
-# Both scans run in a transaction and set only for it, never for the connection: the
-# PGlite connection is the only one there is, and a pooled one serves other queries
-# next, which a setting left behind would change.
+# Every scan runs in a transaction with ``statement_timeout`` and any scan option set
+# locally for it, never for the connection: the PGlite connection is the only one there
+# is, a pooled one serves other queries next, and a selective HNSW scan must not pin a
+# pool slot without bound.
 async def _nearest(
     conn: Conn,
     sql: str,
@@ -269,15 +273,15 @@ async def _nearest(
     scan: _Scan,
 ) -> list[Record]:
     """Run the arm's query, with the index kept offering candidates as ``scan`` says."""
-    match scan:
-        case "plain":
-            return await conn.fetch(sql, *params)
-        case "iterative":
-            async with tx(conn):
+    async with tx(conn):
+        await apply_regex_statement_timeout(conn)
+        match scan:
+            case "plain":
+                return await conn.fetch(sql, *params)
+            case "iterative":
                 await conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
                 return await conn.fetch(sql, *params)
-        case "widening":
-            async with tx(conn):
+            case "widening":
                 return await _widened(conn, sql, params, limit=limit)
 
 
