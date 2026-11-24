@@ -5,6 +5,7 @@ from trackinizer.lib.postgres.substrate import (
     Conn,
     DatabaseEngine,
     PGliteEngine,
+    PoolAcquireTimeoutError,
     PostgresEngine,
 )
 
@@ -14,5 +15,6 @@ __all__ = [
     "Conn",
     "DatabaseEngine",
     "PGliteEngine",
+    "PoolAcquireTimeoutError",
     "PostgresEngine",
 ]

@@ -35,6 +35,7 @@ design.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -145,6 +146,9 @@ router = APIRouter()
 
 _SESSION_SEARCH_MAX_LIMIT: Final = 200
 
+# Wait bound on ``Store.heavy_read_semaphore`` before failing fast with 503.
+_HEAVY_READ_ACQUIRE_TIMEOUT_SEC: Final = 2.0
+
 
 # See ``_AppRoute``: shared caches must never store a /trax/ response.
 _APP_CACHE_CONTROL: Final = "private, no-cache"
@@ -219,7 +223,7 @@ async def web_search(
         " ORDER BY created DESC, id DESC LIMIT $",
         str(len(params)),
     )
-    async with store.engine.acquire() as conn, tx(conn):
+    async with _heavy_read_slot(store), store.engine.acquire() as conn, tx(conn):
         # A field-scoped ``~*`` regex runs POSIX-side in Postgres, where a
         # pathological pattern (catastrophic backtracking) can pin the backend
         # for an unbounded time. Python ``re.compile`` only validates syntax,
@@ -317,9 +321,10 @@ async def web_search_sessions(
             status_code=400,
             detail="spawned names what near spawned; give near",
         )
-    with regex_failures_as_400():
+    store = get_store(request)
+    async with _heavy_read_slot(store):
         hits, searched = await search_sessions(
-            get_store(request).engine,
+            store.engine,
             query=q if near is None else near,
             spawned=spawned,
             vectors=_state(request).vector_search,
@@ -371,7 +376,7 @@ async def web_search_inquiries(
     """
     store = get_store(request)
     try:
-        with regex_failures_as_400():
+        async with _heavy_read_slot(store):
             hits, searched = await search_inquiries(
                 store.engine,
                 query=q,
@@ -418,7 +423,8 @@ async def web_recent_changes(
         params=params,
         principal=await request_principal(request, identity),
     )
-    async with store.engine.acquire() as conn:
+    async with _heavy_read_slot(store), store.engine.acquire() as conn, tx(conn):
+        await apply_regex_statement_timeout(conn)
         rows = await conn.fetch(
             vetted_sql(
                 _CHANGE_SELECT,
@@ -444,6 +450,15 @@ _NOT_WORK: Final[tuple[Change.Kind, ...]] = (
 )
 """Changes the server makes around a record, not work on it: cost roll-ups, a child's
 alert to its parents, subscription hooks, a purge and an admin's lock."""
+
+# Static SQL literal matching ``idx_change_log_work_key_created``'s partial
+# predicate verbatim so Postgres proves index eligibility on generic plans too
+# (a bound ``kind <> ALL($3::text[])`` parameter prevents partial-index matching).
+_NOT_WORK_SQL: Final = vetted_sql(
+    "(",
+    ", ".join(f"'{kind}'" for kind in _NOT_WORK),
+    ")",
+)
 
 
 @router.get("/worked_on")
@@ -477,26 +492,49 @@ async def web_worked_on(
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
     store = get_store(request)
-    params: list[object] = [limit, identity.email, list(_NOT_WORK)]
-    predicate = store.change_read_filter(
-        "c",
-        params=params,
-        principal=await request_principal(request, identity),
-    )
-    async with store.engine.acquire() as conn:
+    principal = await request_principal(request, identity)
+    async with _heavy_read_slot(store), store.engine.acquire() as conn, tx(conn):
+        await apply_regex_statement_timeout(conn)
+        key_rows = await conn.fetch(
+            "SELECT k.id FROM api_keys k "
+            "JOIN users u ON u.id = k.user_id "
+            "WHERE u.email = $1",
+            identity.email,
+        )
+        key_ids = [cast(UUID, row["id"]) for row in key_rows]
+        params: list[object] = [limit, key_ids, identity.email]
+        predicate = inquiry_read_filter(
+            "i.id",
+            policy=store.access_policy,
+            principal=principal,
+            params=params,
+        )
         rows = await conn.fetch(
             vetted_sql(
-                "SELECT c.subject_id AS id, i.kind, i.seq ",
-                _CHANGE_FROM,
-                " JOIN inquiries i ON i.id = c.subject_id",
-                f" WHERE {_CHANGE_PRINCIPAL} = $2",
+                "WITH my_changes AS ("
+                " SELECT c.subject_id, c.created FROM change_log c"
+                " WHERE c.api_key_id = ANY($2::uuid[])"
                 # The window bounds the walk of the log for one who changed little.
-                " AND c.created > now() - interval '30 days'",
-                " AND c.subject_kind <> 'AgentSession' AND c.kind <> ALL($3::text[])",
-                " AND NOT coalesce(i.labels, '{}') @> ARRAY['workspace']::text[]",
+                " AND c.created > now() - interval '30 days'"
+                " AND c.subject_kind <> 'AgentSession'"
+                " AND c.kind NOT IN ",
+                _NOT_WORK_SQL,
+                " UNION ALL"
+                " SELECT c.subject_id, c.created FROM change_log c"
+                " WHERE c.api_key_id IS NULL AND c.actor = $3"
+                " AND c.created > now() - interval '30 days'"
+                " AND c.subject_kind <> 'AgentSession'"
+                " AND c.kind NOT IN ",
+                _NOT_WORK_SQL,
+                ") SELECT m.subject_id AS id, i.kind, i.seq"
+                " FROM ("
+                " SELECT subject_id, max(created) AS last_at"
+                " FROM my_changes GROUP BY subject_id"
+                ") m"
+                " JOIN inquiries i ON i.id = m.subject_id"
+                " WHERE NOT coalesce(i.labels, '{}') @> ARRAY['workspace']::text[]",
                 "" if predicate == "TRUE" else f" AND ({predicate})",
-                " GROUP BY c.subject_id, i.kind, i.seq",
-                " ORDER BY max(c.created) DESC, c.subject_id LIMIT $1",
+                " ORDER BY m.last_at DESC, m.subject_id LIMIT $1",
             ),
             *params,
         )
@@ -709,7 +747,8 @@ async def web_graph(
             status_code=400,
             detail="focus must be record ids or Kind/seq",
         )
-    async with store.engine.acquire() as conn:
+    async with _heavy_read_slot(store), store.engine.acquire() as conn, tx(conn):
+        await apply_regex_statement_timeout(conn)
         distances: dict[UUID, int] = {}
         params: list[object] = [limit or 1000]
         if not wanted:
@@ -757,25 +796,32 @@ async def web_graph(
                 policy=store.access_policy,
                 principal=principal,
             )
-            if not distances:
-                raise HTTPException(status_code=404, detail="focus not found")
-            kept = "= ANY($1)"
-            params = [list(distances)]
-        node_rows = await conn.fetch(
-            vetted_sql(
-                "SELECT ",
-                _GRAPH_NODE_COLS,
-                " FROM inquiries WHERE id ",
-                kept,
-                " ORDER BY created ASC, id ASC",
-            ),
-            *params,
-        )
-        edge_rows = await conn.fetch(
-            "SELECT from_id, to_id, edge_kind, valence FROM edges "
-            "WHERE from_id = ANY($1) AND to_id = ANY($1)",
-            [r["id"] for r in node_rows],
-        )
+            if distances:
+                kept = "= ANY($1)"
+                params = [list(distances)]
+            else:
+                kept = ""
+        if kept:
+            node_rows = await conn.fetch(
+                vetted_sql(
+                    "SELECT ",
+                    _GRAPH_NODE_COLS,
+                    " FROM inquiries WHERE id ",
+                    kept,
+                    " ORDER BY created ASC, id ASC",
+                ),
+                *params,
+            )
+            edge_rows = await conn.fetch(
+                "SELECT from_id, to_id, edge_kind, valence FROM edges "
+                "WHERE from_id = ANY($1) AND to_id = ANY($1)",
+                [r["id"] for r in node_rows],
+            )
+        else:
+            node_rows: list[asyncpg.Record] = []
+            edge_rows: list[asyncpg.Record] = []
+    if wanted and not distances:
+        raise HTTPException(status_code=404, detail="focus not found")
     nodes = [_graph_node(r) for r in node_rows]
     if distances:
         for node, row in zip(nodes, node_rows, strict=True):
@@ -1932,3 +1978,24 @@ def _get(app: FastAPI, path: str, endpoint: Callable[..., Awaitable[object]]) ->
 def _app_files(app_dir: Path) -> StaticFiles:
     """Serve ``app_dir``; ``check_dir=False`` lets the server start before a build."""
     return StaticFiles(directory=app_dir, check_dir=False)
+
+
+@asynccontextmanager
+async def _heavy_read_slot(store: Store) -> AsyncGenerator[None]:
+    """Acquire one slot from ``store.heavy_read_semaphore`` or fail fast with 503."""
+    semaphore = store.heavy_read_semaphore
+    try:
+        await asyncio.wait_for(
+            semaphore.acquire(),
+            timeout=_HEAVY_READ_ACQUIRE_TIMEOUT_SEC,
+        )
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="server busy with concurrent heavy reads; retry shortly",
+            headers={"Retry-After": "2"},
+        ) from exc
+    try:
+        yield
+    finally:
+        semaphore.release()

@@ -38,15 +38,14 @@ async def test_query_budget_is_set_before_reading_a_selected_graph(
         await store.export_graph(selector=selector)
 
     statements = executed_sql(engine.conn)
-    timeout = f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"
-    if selected:
-        assert timeout in statements
-        first_read = next(
-            i for i, sql in enumerate(statements) if sql.startswith("SELECT")
-        )
-        assert statements.index(timeout) < first_read
-    else:
-        assert timeout not in statements
+    timeout = (
+        f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"
+        if selected
+        else "SET LOCAL statement_timeout = 0"
+    )
+    assert timeout in statements
+    first_read = next(i for i, sql in enumerate(statements) if sql.startswith("SELECT"))
+    assert statements.index(timeout) < first_read
 
 
 @pytest.mark.asyncio
@@ -196,6 +195,8 @@ async def test_the_policy_decides_what_is_kept_after_the_snapshot_commits() -> N
     committed = statements.index("COMMIT")
     marked = [i for i, sql in enumerate(statements) if "marked_by_policy" in sql]
     assert "REPEATABLE READ, READ ONLY" in statements[1]
+    assert "SET LOCAL statement_timeout = 0" in statements[:committed]
+    assert "SET LOCAL statement_timeout = 0" in statements[committed:]
     assert len(marked) == 2
     assert min(marked) > committed
 

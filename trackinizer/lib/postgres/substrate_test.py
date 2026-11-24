@@ -1159,6 +1159,154 @@ async def test_postgres_enter_configures_pool_listener_and_exit(
     assert engine._listener is None
 
 
+@pytest.mark.asyncio
+async def test_postgres_engine_merges_pool_server_settings_leaving_listener_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = AsyncMock(close=AsyncMock())
+    listener = AsyncMock(add_listener=AsyncMock(), close=AsyncMock())
+    create_pool = AsyncMock(return_value=pool)
+    connect = AsyncMock(return_value=listener)
+    monkeypatch.setattr(asyncpg, "create_pool", create_pool)
+    monkeypatch.setattr(asyncpg, "connect", connect)
+    monkeypatch.setattr(substrate, "_init_connection", AsyncMock())
+    engine = PostgresEngine(
+        "postgresql:///unused",
+        listen_channel="updates",
+        max_size=16,
+        acquire_timeout=5.0,
+        server_settings={"statement_timeout": "30000", "lock_timeout": "5000"},
+    )
+
+    async with engine:
+        pass
+
+    assert create_pool.await_args is not None
+    assert create_pool.await_args.kwargs["max_size"] == 16
+    assert create_pool.await_args.kwargs["server_settings"] == {
+        "jit": "off",
+        "statement_timeout": "30000",
+        "lock_timeout": "5000",
+    }
+    assert connect.await_args is not None
+    assert connect.await_args.kwargs["server_settings"] == {"jit": "off"}
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+def test_postgres_engine_rejects_non_positive_acquire_timeout(bad: float) -> None:
+    with pytest.raises(ValueError, match="acquire_timeout"):
+        PostgresEngine(
+            "postgresql:///unused",
+            listen_channel="updates",
+            acquire_timeout=bad,
+        )
+
+
+@pytest.mark.asyncio
+async def test_postgres_acquire_timeout_raises_dedicated_error_not_body_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = PostgresEngine(
+        "postgresql:///unused",
+        listen_channel="updates",
+        acquire_timeout=0.25,
+    )
+    seen_timeouts: list[float | None] = []
+
+    class SlowPool:
+        def acquire(self, *, timeout: float | None = None) -> object:
+            seen_timeouts.append(timeout)
+
+            class _Ctx:
+                async def __aenter__(self) -> object:
+                    raise TimeoutError("pool exhausted")
+
+                async def __aexit__(self, *exc: object) -> None:
+                    del exc
+
+            return _Ctx()
+
+    monkeypatch.setattr(engine, "_pool", SlowPool())
+
+    with caplog.at_level("WARNING"), pytest.raises(substrate.PoolAcquireTimeoutError):
+        async with engine.acquire():
+            pass
+
+    assert seen_timeouts == [0.25]
+    assert any("acquire timed out" in rec.message for rec in caplog.records)
+
+    class OkPool:
+        def acquire(self, *, timeout: float | None = None) -> object:
+            del timeout
+
+            class _Ctx:
+                async def __aenter__(self) -> object:
+                    return object()
+
+                async def __aexit__(self, *exc: object) -> None:
+                    del exc
+
+            return _Ctx()
+
+    monkeypatch.setattr(engine, "_pool", OkPool())
+
+    with pytest.raises(TimeoutError) as caught:
+        async with engine.acquire():
+            raise TimeoutError("caller body timeout")
+
+    assert type(caught.value) is TimeoutError
+
+
+@pytest.mark.asyncio
+async def test_postgres_acquire_warns_when_slow_and_propagates_timeout_when_unbounded(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = PostgresEngine("postgresql:///unused", listen_channel="updates")
+    ticks = iter([10.0, 10.6])
+    with monkeypatch.context() as mp:
+        mp.setattr(time, "monotonic", lambda: next(ticks, 20.0))
+
+        class SlowOkPool:
+            def acquire(self) -> object:
+                class _Ctx:
+                    async def __aenter__(self) -> object:
+                        return object()
+
+                    async def __aexit__(self, *exc: object) -> None:
+                        del exc
+
+                return _Ctx()
+
+        mp.setattr(engine, "_pool", SlowOkPool())
+
+        with caplog.at_level("WARNING"):
+            async with engine.acquire():
+                pass
+
+    assert any("acquire waited" in rec.message for rec in caplog.records)
+
+    class FailingPool:
+        def acquire(self) -> object:
+            class _Ctx:
+                async def __aenter__(self) -> object:
+                    raise TimeoutError("unexpected")
+
+                async def __aexit__(self, *exc: object) -> None:
+                    del exc
+
+            return _Ctx()
+
+    monkeypatch.setattr(engine, "_pool", FailingPool())
+
+    with pytest.raises(TimeoutError) as caught:
+        async with engine.acquire():
+            pass
+
+    assert type(caught.value) is TimeoutError
+
+
 def test_postgres_on_notify_publishes_string_payload() -> None:
     engine = PostgresEngine("postgresql:///unused", listen_channel="updates")
     connection = asyncpg.Connection.__new__(asyncpg.Connection)  # pyrefly: ignore[bad-specialization] -- pyrefly reads a bare generic class as ``Connection[Unknown]``, outside its own bound.

@@ -192,6 +192,10 @@ class _ExportMixin(_ReadMixin):
             )
             if selector:
                 await apply_regex_statement_timeout(conn)
+            else:
+                # Full backup exports read every table in one snapshot and may
+                # exceed the server's default interactive statement timeout.
+                await conn.execute("SET LOCAL statement_timeout = 0")
             # A fresh database applies the baseline and every numbered file in
             # one bootstrap, so they share ``applied_at``; the baseline still
             # came first, and a plain name tie-break would sort it after
@@ -232,7 +236,12 @@ class _ExportMixin(_ReadMixin):
                     *params,
                 )
             ]
-        kept = await self._kept(tables, withheld=withheld, principal=principal)
+        kept = await self._kept(
+            tables,
+            withheld=withheld,
+            principal=principal,
+            unbounded=not selector,
+        )
         return GraphExport(
             migrations=tuple(cast(str, row["name"]) for row in migrations),
             audiences=tuple(sorted(reader.audiences)),
@@ -251,6 +260,7 @@ class _ExportMixin(_ReadMixin):
         *,
         withheld: Sequence[UUID],
         principal: Principal | None,
+        unbounded: bool = False,
     ) -> _Kept:
         """Ask the policy which read inquiries and changes ``principal`` may keep."""
         if (
@@ -296,7 +306,11 @@ class _ExportMixin(_ReadMixin):
             params=change_params,
             principal=principal,
         )
-        async with self.engine.acquire() as conn:
+        async with self.engine.acquire() as conn, tx(conn):
+            if unbounded:
+                # Full exports check every inquiry and change_log row and may
+                # exceed the server's default interactive statement timeout.
+                await conn.execute("SET LOCAL statement_timeout = 0")
             kept_inquiries = await conn.fetch(
                 vetted_sql(
                     "SELECT id FROM inquiries WHERE id = ANY($1::uuid[]) AND (",

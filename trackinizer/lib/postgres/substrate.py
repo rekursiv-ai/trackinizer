@@ -16,7 +16,13 @@ NOTIFY; PostgresEngine bridges the dedicated listener into the same bus).
 
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager, ExitStack, suppress
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncExitStack,
+    ExitStack,
+    asynccontextmanager,
+    suppress,
+)
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -25,6 +31,8 @@ from typing import TYPE_CHECKING, Final, Protocol, Self, cast
 import asyncio
 import hashlib
 import json
+import logging
+import math
 import os
 import shutil
 import signal
@@ -57,6 +65,12 @@ if TYPE_CHECKING:
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
+_LOGGER: Final = logging.getLogger(__name__)
+
+
+class PoolAcquireTimeoutError(TimeoutError):
+    """Raised when acquiring a Postgres pool connection exceeds ``acquire_timeout``."""
+
 
 type Conn = PoolConnectionProxy[Record] | Connection[Record]
 
@@ -515,10 +529,23 @@ class PostgresEngine:
         *,
         listen_channel: str,
         max_size: int = 8,
+        acquire_timeout: float | None = None,
+        server_settings: Mapping[str, str] | None = None,
     ) -> None:
+        if acquire_timeout is not None and (
+            not math.isfinite(acquire_timeout) or acquire_timeout <= 0
+        ):
+            raise ValueError(
+                f"acquire_timeout must be a positive finite number, got {acquire_timeout!r}",
+            )
         self._dsn = dsn
         self._listen_channel = listen_channel
         self._max_size = max_size
+        self._acquire_timeout = acquire_timeout
+        self._pool_server_settings: dict[str, str] = {
+            **_SERVER_SETTINGS,
+            **(server_settings or {}),
+        }
         self._listener: asyncpg.Connection[asyncpg.Record] | None = None
         self._pool: asyncpg.Pool[asyncpg.Record] | None = None
         self._bus = _LocalBus()
@@ -540,7 +567,7 @@ class PostgresEngine:
             min_size=1,
             max_size=self._max_size,
             init=_init_connection,
-            server_settings=_SERVER_SETTINGS,
+            server_settings=self._pool_server_settings,
         )
         listener: asyncpg.Connection[asyncpg.Record] | None = None
         try:
@@ -581,16 +608,56 @@ class PostgresEngine:
             raise ValueError("Expected self._pool is not None.")
         await self._pool.close()
 
-    def acquire(self) -> pool.PoolAcquireContext[asyncpg.Record]:
+    def acquire(
+        self,
+    ) -> AbstractAsyncContextManager[PoolConnectionProxy[asyncpg.Record]]:
         """Acquire a connection from the pool.
 
         Returns:
-          result: The asyncpg.pool.PoolAcquireContext[asyncpg.Record].
+          result: Async context manager yielding a pooled connection proxy.
+
+        Raises:
+          ValueError: Engine has not been entered.
+          PoolAcquireTimeoutError: Acquiring a connection exceeded ``acquire_timeout``.
 
         """
         if self._pool is None:
             raise ValueError("engine not entered")
-        return self._pool.acquire()
+        return self._acquire_conn(self._pool)
+
+    @asynccontextmanager
+    async def _acquire_conn(
+        self,
+        pool_ref: asyncpg.Pool[asyncpg.Record],
+    ) -> AsyncGenerator[PoolConnectionProxy[asyncpg.Record]]:
+        async with AsyncExitStack() as stack:
+            started = time.monotonic()
+            ctx = (
+                pool_ref.acquire()
+                if self._acquire_timeout is None
+                else pool_ref.acquire(timeout=self._acquire_timeout)
+            )
+            try:
+                conn = await stack.enter_async_context(ctx)
+            except TimeoutError as exc:
+                if self._acquire_timeout is None:
+                    raise
+                _LOGGER.warning(
+                    "postgres pool acquire timed out after %.2fs (max_size=%d)",
+                    self._acquire_timeout,
+                    self._max_size,
+                )
+                raise PoolAcquireTimeoutError(
+                    f"postgres pool acquire timed out after {self._acquire_timeout:.2f}s",
+                ) from exc
+            waited = time.monotonic() - started
+            if waited >= 0.5:
+                _LOGGER.warning(
+                    "postgres pool acquire waited %.2fs (max_size=%d)",
+                    waited,
+                    self._max_size,
+                )
+            yield conn
 
     async def notify(self, channel: str, payload: str) -> None:
         """Send a NOTIFY via ``pg_notify`` (parameterised; ``NOTIFY`` syntax cannot).

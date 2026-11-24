@@ -3193,6 +3193,41 @@ async def test_migration_082_matches_a_fresh_schema(
     assert await _catalog_names_aside(conn) == fresh_install
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_083_matches_a_fresh_schema(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    """A 082 database migrated by 083, once or twice, has a fresh install's catalog."""
+    conn = pglite_rollback_conn
+    await conn.execute("DROP INDEX idx_change_log_work_key_created")
+    await conn.execute(
+        "ALTER TABLE change_log RESET ("
+        "autovacuum_analyze_scale_factor, autovacuum_analyze_threshold, "
+        "autovacuum_vacuum_insert_scale_factor, autovacuum_vacuum_insert_threshold)",
+    )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.083.sql'")
+    assert await _catalog_names_aside(conn) != fresh_install
+
+    await conn.execute(load_sql("schema.083"))
+    await conn.execute(load_sql("schema.083"))
+
+    assert await _catalog_names_aside(conn) == fresh_install
+    reloptions = from_plain(
+        await conn.fetchval(
+            "SELECT reloptions FROM pg_class WHERE relname = 'change_log'",
+        ),
+        list[str],
+    )
+    assert set(reloptions) >= {
+        "autovacuum_analyze_scale_factor=0",
+        "autovacuum_analyze_threshold=50000",
+        "autovacuum_vacuum_insert_scale_factor=0",
+        "autovacuum_vacuum_insert_threshold=200000",
+    }
+
+
 async def _stamps(conn: Conn) -> set[str]:
     """Return the definitions of 080's triggers and their functions."""
     rows = await conn.fetch(

@@ -128,17 +128,21 @@ async def ensure_index(conn: Conn, settings: Settings) -> None:
 
     """
     key, dim = _checked(settings)
-    await conn.execute(
-        vetted_sql(
-            "CREATE INDEX IF NOT EXISTS vectors_hnsw_",
-            key,
-            " ON embedding.vectors USING hnsw ((embedding::halfvec(",
-            dim,
-            ")) halfvec_cosine_ops) WHERE settings = '",
-            key,
-            "'",
-        ),
-    )
+    # Building an HNSW index over a large vector table can exceed the server's
+    # default interactive statement timeout; opt out for this DDL transaction.
+    async with tx(conn):
+        await conn.execute("SET LOCAL statement_timeout = 0")
+        await conn.execute(
+            vetted_sql(
+                "CREATE INDEX IF NOT EXISTS vectors_hnsw_",
+                key,
+                " ON embedding.vectors USING hnsw ((embedding::halfvec(",
+                dim,
+                ")) halfvec_cosine_ops) WHERE settings = '",
+                key,
+                "'",
+            ),
+        )
 
 
 async def drop_other_indexes(conn: Conn, settings: Settings) -> None:

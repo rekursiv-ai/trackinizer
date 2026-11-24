@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol, Self
 
+import math
 import os
 import re
 import secrets
@@ -38,6 +39,11 @@ else:
 
 
 __all__ = [
+    "DEFAULT_DB_ACQUIRE_TIMEOUT_SEC",
+    "DEFAULT_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS",
+    "DEFAULT_DB_LOCK_TIMEOUT_MS",
+    "DEFAULT_DB_POOL_SIZE",
+    "DEFAULT_DB_STATEMENT_TIMEOUT_MS",
     "DEFAULT_TOOL_AGENT_SOCKETS",
     "DEFAULT_TOOL_STREAMS",
     "Assistant",
@@ -74,6 +80,11 @@ class ConfigError(Exception):
     """
 
 
+DEFAULT_DB_POOL_SIZE: Final = 16
+DEFAULT_DB_ACQUIRE_TIMEOUT_SEC: Final = 5.0
+DEFAULT_DB_STATEMENT_TIMEOUT_MS: Final = 30_000
+DEFAULT_DB_LOCK_TIMEOUT_MS: Final = 5_000
+DEFAULT_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: Final = 30_000
 DEFAULT_TOOL_AGENT_SOCKETS: Final = 1024
 DEFAULT_TOOL_STREAMS: Final = 128
 
@@ -263,6 +274,10 @@ class Config:
     tool_line_bytes: int = 16 << 20
     remote_agent_services: tuple[RemoteAgentService, ...] = ()
     default_remote_agent_service: str = ""
+    db_pool_size: int = DEFAULT_DB_POOL_SIZE
+    db_acquire_timeout_sec: float = DEFAULT_DB_ACQUIRE_TIMEOUT_SEC
+    db_statement_timeout_ms: int = DEFAULT_DB_STATEMENT_TIMEOUT_MS
+    db_lock_timeout_ms: int = DEFAULT_DB_LOCK_TIMEOUT_MS
 
     @classmethod
     def from_env(cls) -> Self:
@@ -317,6 +332,25 @@ class Config:
             default_remote_agent_service=parse_default_remote_agent_service(
                 os.environ.get("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", ""),
                 services=remote_agent_services,
+            ),
+            db_pool_size=_tool_cap(
+                "TRACKINIZER_DB_POOL_SIZE",
+                default=DEFAULT_DB_POOL_SIZE,
+                maximum=256,
+            ),
+            db_acquire_timeout_sec=_positive_float(
+                "TRACKINIZER_DB_ACQUIRE_TIMEOUT_SEC",
+                default=DEFAULT_DB_ACQUIRE_TIMEOUT_SEC,
+            ),
+            db_statement_timeout_ms=_tool_cap(
+                "TRACKINIZER_DB_STATEMENT_TIMEOUT_MS",
+                default=DEFAULT_DB_STATEMENT_TIMEOUT_MS,
+                maximum=3_600_000,
+            ),
+            db_lock_timeout_ms=_tool_cap(
+                "TRACKINIZER_DB_LOCK_TIMEOUT_MS",
+                default=DEFAULT_DB_LOCK_TIMEOUT_MS,
+                maximum=3_600_000,
             ),
         )
 
@@ -373,6 +407,25 @@ class Config:
                 os.environ.get("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", ""),
                 services=remote_agent_services,
             ),
+            db_pool_size=_tool_cap(
+                "TRACKINIZER_DB_POOL_SIZE",
+                default=DEFAULT_DB_POOL_SIZE,
+                maximum=256,
+            ),
+            db_acquire_timeout_sec=_positive_float(
+                "TRACKINIZER_DB_ACQUIRE_TIMEOUT_SEC",
+                default=DEFAULT_DB_ACQUIRE_TIMEOUT_SEC,
+            ),
+            db_statement_timeout_ms=_tool_cap(
+                "TRACKINIZER_DB_STATEMENT_TIMEOUT_MS",
+                default=DEFAULT_DB_STATEMENT_TIMEOUT_MS,
+                maximum=3_600_000,
+            ),
+            db_lock_timeout_ms=_tool_cap(
+                "TRACKINIZER_DB_LOCK_TIMEOUT_MS",
+                default=DEFAULT_DB_LOCK_TIMEOUT_MS,
+                maximum=3_600_000,
+            ),
         )
 
 
@@ -386,6 +439,20 @@ def _tool_cap(name: str, *, default: int, maximum: int = 65_536) -> int:
     except ValueError:
         raise ConfigError(message) from None
     if value < 1 or value > maximum:
+        raise ConfigError(message)
+    return value
+
+
+def _positive_float(name: str, *, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    message = f"{name} must be a positive finite number, got {raw!r}"
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ConfigError(message) from None
+    if not math.isfinite(value) or value <= 0:
         raise ConfigError(message)
     return value
 
@@ -797,6 +864,15 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
     return substrate.PostgresEngine(
         dsn=config.dsn,
         listen_channel=notify.NOTIFY_CHANNEL,
+        max_size=config.db_pool_size,
+        acquire_timeout=config.db_acquire_timeout_sec,
+        server_settings={
+            "statement_timeout": str(config.db_statement_timeout_ms),
+            "lock_timeout": str(config.db_lock_timeout_ms),
+            "idle_in_transaction_session_timeout": str(
+                DEFAULT_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+            ),
+        },
     )
 
 

@@ -470,6 +470,31 @@ CREATE INDEX IF NOT EXISTS idx_change_log_new_status
     ON change_log (new_status) WHERE new_status IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_change_log_new_judgement
     ON change_log (new_belief_judgement) WHERE new_belief_judgement IS NOT NULL;
+-- Partial covering btree for ``GET /api/web/worked_on``: excludes ``AgentSession``
+-- and non-work kinds (which dominate ``change_log`` via ``dependency_changed``) so
+-- both ``api_key_id = ANY(...)`` and ``api_key_id IS NULL AND actor = ...`` run as
+-- index-only scans without touching the heap.
+CREATE INDEX IF NOT EXISTS idx_change_log_work_key_created
+    ON change_log (api_key_id, created DESC)
+    INCLUDE (subject_id, actor)
+    WHERE subject_kind <> 'AgentSession'
+      AND kind NOT IN (
+          'marginal_cost',
+          'dependency_changed',
+          'implicit_subs_opened',
+          'implicit_subs_closed',
+          'purged',
+          'locked',
+          'unlocked'
+      );
+-- Append-only ``change_log`` rarely triggers default percentage-based autovacuum
+-- thresholds once large; fixed insert thresholds keep planner stats fresh.
+ALTER TABLE change_log SET (
+    autovacuum_analyze_scale_factor = 0,
+    autovacuum_analyze_threshold = 50000,
+    autovacuum_vacuum_insert_scale_factor = 0,
+    autovacuum_vacuum_insert_threshold = 200000
+);
 
 -- Auth v2 (Phase 2) self-heal: rename pre-v2 ``change_log.author`` to
 -- ``change_log.actor``. Postgres' ``ALTER TABLE ... RENAME COLUMN`` does
