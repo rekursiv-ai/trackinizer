@@ -476,15 +476,18 @@ class _CascadeAuditMixin(_StoreShared):
     # the ``to`` parent -- but both run through the same single rule, not a special
     # case.
     #
-    # ``edge_rows`` lets ``purge()`` hand in a pre-captured edge list (its child's edges
-    # are about to be cascade-deleted, so the live SELECT would miss them). Each row
-    # must carry ``from_id, from_kind, to_id, to_kind, edge_kind, note, valence,
-    # labels``. Subsequent ancestor hops re-query live via the same path.
+    # ``edge_rows`` lets ``purge()`` and ``remove_edge()`` hand in a pre-captured edge
+    # list (the subject's edges are about to be deleted, so the live SELECT would miss
+    # them). Each row must come from :meth:`_fetch_touching_edges` and carry
+    # ``from_id, from_kind, to_id, to_kind, edge_kind, priority, note, valence, labels,
+    # peer_subscribed``. Subsequent ancestor hops re-query live via the same helper.
     #
     # Iterative BFS over the dependency DAG: a recursive walk would blow the Python
-    # stack on long chains, even though edge acyclicity bounds the visited set. Each
-    # (parent, edge) hop emits one ``dependency_changed`` row and then re-queues its own
-    # ancestors.
+    # stack on long chains, even though edge acyclicity bounds the visited set. Only
+    # subscribed dependents emit a ``dependency_changed`` row (and take the subject
+    # lock inside ``emit_change``); unsubscribed intermediate nodes are still traversed
+    # with ``cur_cause`` preserved so subscribed ancestors always receive alerts with a
+    # valid ``caused_by`` FK.
     async def _cascade_dependency_changed(
         self,
         conn: Conn,
@@ -494,10 +497,10 @@ class _CascadeAuditMixin(_StoreShared):
         caused_by: UUID,
         edge_rows: Sequence[asyncpg.Record] | None = None,
     ) -> None:
-        """Emit ancestor re-assessment alerts through parent edges."""
-        # Each edge in the walk fires exactly one ``dependency_changed``
-        # row -- including multiple distinct edges from the same parent
-        # (e.g. a Belief that both ``proves`` and ``favors``
+        """Emit ancestor re-assessment alerts for subscribed dependents."""
+        # Each edge in the walk to a subscribed dependent fires exactly one
+        # ``dependency_changed`` row -- including multiple distinct edges from
+        # the same parent (e.g. a Belief that both ``proves`` and ``favors``
         # cites the same Artifact gets two events, one per edge). The
         # ``walked`` set keeps the BFS frontier bounded so a parent
         # reachable via N edges doesn't trigger N redundant ancestor
@@ -510,33 +513,63 @@ class _CascadeAuditMixin(_StoreShared):
         ] = collections.deque([(child_id, child_kind, caused_by, edge_rows)])
         while frontier:
             cur_id, cur_kind, cur_cause, cur_edges = frontier.popleft()
-            for parent_id, parent_kind, edge in await self._parent_edges(
+            for (
+                parent_id,
+                parent_kind,
+                edge,
+                subscribed,
+            ) in await self._parent_edges(
                 conn,
                 cur_id,
                 cur_edges,
             ):
-                change_id, _ = await self.emit_change(
-                    conn,
-                    actor="librarian",
-                    subject_id=parent_id,
-                    subject_kind=parent_kind,
-                    kind="dependency_changed",
-                    caused_by=cur_cause,
-                    new=_peer_snapshot(edge, peer_id=cur_id, peer_kind=cur_kind),
-                    cascade=False,
-                )
+                if subscribed:
+                    # ``dependency_changed`` is in ``_NON_PROPAGATING_CHANGE_KINDS``,
+                    # so this emit starts no cascade of its own: this walk is it.
+                    next_cause, _ = await self.emit_change(
+                        conn,
+                        actor="librarian",
+                        subject_id=parent_id,
+                        subject_kind=parent_kind,
+                        kind="dependency_changed",
+                        caused_by=cur_cause,
+                        new=_peer_snapshot(edge, peer_id=cur_id, peer_kind=cur_kind),
+                    )
+                else:
+                    next_cause = cur_cause
                 # Queue the parent's ancestors only once per parent,
                 # regardless of how many distinct edges led us there.
                 if parent_id not in walked:
                     walked.add(parent_id)
-                    frontier.append((parent_id, parent_kind, change_id, None))
+                    frontier.append((parent_id, parent_kind, next_cause, None))
+
+    # One query shared by :meth:`_parent_edges`, :meth:`purge_held`, and
+    # :meth:`remove_edge` so pre-captured and live hops carry identical columns.
+    # Joining ``inquiries`` on the peer endpoint avoids an N+1 query per parent
+    # and takes no row locks on unsubscribed ancestors.
+    async def _fetch_touching_edges(
+        self,
+        conn: Conn,
+        inquiry_id: UUID,
+    ) -> list[asyncpg.Record]:
+        """Fetch every edge touching ``inquiry_id`` and whether its peer is subscribed."""
+        return await conn.fetch(
+            "SELECT e.from_id, e.from_kind, e.to_id, e.to_kind, "
+            "e.edge_kind, e.priority, e.note, e.valence, e.labels, "
+            "COALESCE(cardinality(peer.subscribers), 0) > 0 AS peer_subscribed "
+            "FROM edges e "
+            "LEFT JOIN inquiries peer "
+            "ON peer.id = CASE WHEN e.from_id = $1 THEN e.to_id ELSE e.from_id END "
+            "WHERE e.from_id = $1 OR e.to_id = $1",
+            inquiry_id,
+        )
 
     # Reads the :class:`EdgeKindPolicy` registry for the dependent endpoint of each edge
     # kind: ``cascade_dependent="from"`` for provenance / supersession / ``requires``;
     # ``cascade_dependent="to"`` for ``narrows`` and the ``proves`` / ``favors``
     # citations (the cited claim is re-assessed). When ``edge_rows`` is None, queries
-    # live; otherwise iterates the caller-supplied list (used by ``purge`` to capture
-    # edges before FK cascade deletes them).
+    # live; otherwise iterates the caller-supplied list (used by ``purge`` and
+    # ``remove_edge`` to capture edges before DELETE removes them).
     #
     # Assumes single-version deployment: a stored ``edge_kind`` outside this Store's
     # :data:`EDGE_POLICIES` raises ``KeyError`` (fail-fast) rather than silently
@@ -548,16 +581,11 @@ class _CascadeAuditMixin(_StoreShared):
         conn: Conn,
         child_id: UUID,
         edge_rows: Sequence[asyncpg.Record] | None,
-    ) -> list[tuple[UUID, Inquiry.InquiryKind, asyncpg.Record]]:
-        """Resolve every (dependent, dependency_edge) pair touching ``child_id``."""
+    ) -> list[tuple[UUID, Inquiry.InquiryKind, asyncpg.Record, bool]]:
+        """Resolve every (dependent, dependency_edge, subscribed) touching ``child_id``."""
         if edge_rows is None:
-            edge_rows = await conn.fetch(
-                "SELECT from_id, from_kind, to_id, to_kind, "
-                "edge_kind, priority, note, valence, labels FROM edges "
-                "WHERE from_id = $1 OR to_id = $1",
-                child_id,
-            )
-        out: list[tuple[UUID, Inquiry.InquiryKind, asyncpg.Record]] = []
+            edge_rows = await self._fetch_touching_edges(conn, child_id)
+        out: list[tuple[UUID, Inquiry.InquiryKind, asyncpg.Record, bool]] = []
         for row in edge_rows:
             edge_kind = cast(Edge.Kind, row["edge_kind"])
             policy = EDGE_POLICIES[edge_kind]
@@ -573,7 +601,9 @@ class _CascadeAuditMixin(_StoreShared):
             # not self-alert.
             if dependent_id == child_id:
                 continue
-            out.append((dependent_id, dependent_kind, row))
+            out.append(
+                (dependent_id, dependent_kind, row, bool(row["peer_subscribed"])),
+            )
         return out
 
     # Silently no-ops when no buffer is active. Callers that mutate through the
@@ -689,12 +719,7 @@ class _CascadeAuditMixin(_StoreShared):
             raise ConflictError(
                 "an AccessGroup is never purged; it is retired by status",
             )
-        parent_edges = await conn.fetch(
-            "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
-            "priority, note, valence, labels FROM edges "
-            "WHERE from_id = $1 OR to_id = $1",
-            target_id,
-        )
+        parent_edges = await self._fetch_touching_edges(conn, target_id)
         # Emit while the row still exists so ``subscribers_snapshot``
         # captures who was watching right before the DELETE.
         cause, _ = await self.emit_change(

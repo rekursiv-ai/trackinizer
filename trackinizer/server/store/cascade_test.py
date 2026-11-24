@@ -76,6 +76,7 @@ class TestPurge:
             "note": "load-bearing",
             "valence": 0.9,
             "labels": ["important"],
+            "peer_subscribed": True,
         }
         # Cascade re-walks the graph for the parent; that walk uses the
         # aliased ``parent_id``/``parent_kind`` shape. The mock returns

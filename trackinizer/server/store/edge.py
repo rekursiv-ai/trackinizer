@@ -939,12 +939,7 @@ class _EdgeMixin(_CascadeAuditMixin):
             # dependent endpoint (notably the broader Issue on a
             # ``narrows`` removal) never gets its ``dependency_changed``
             # alert. Mirrors ``purge()``.
-            captured_edges = await conn.fetch(
-                "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
-                "priority, note, valence, labels FROM edges "
-                "WHERE from_id = $1 OR to_id = $1",
-                from_id,
-            )
+            captured_edges = await self._fetch_touching_edges(conn, from_id)
             await conn.execute(
                 "DELETE FROM edges WHERE from_id = $1 AND to_id = $2 "
                 "AND edge_kind = $3",

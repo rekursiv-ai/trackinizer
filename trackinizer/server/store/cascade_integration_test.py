@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import uuid
@@ -105,14 +106,15 @@ class TestAgainstPostgres:
         )
         await integ_store.purge(blocker_id, actor="user")
         async with integ_store.engine.acquire() as conn:
-            row = await conn.fetchrow(
+            rows = await conn.fetch(
                 "SELECT old_peer_id, old_peer_edge_kind FROM change_log "
                 "WHERE subject_id = $1 AND kind = 'edge_removed'",
                 blocked_id,
             )
-        assert row is not None
-        assert row["old_peer_id"] == blocker_id
-        assert row["old_peer_edge_kind"] == "requires"
+        assert {(r["old_peer_id"], r["old_peer_edge_kind"]) for r in rows} == {
+            (blocker_id, "requires"),
+            (blocker_id, "produced_by"),
+        }
 
     async def test_narrower_change_alerts_narrows(
         self,
@@ -148,6 +150,71 @@ class TestAgainstPostgres:
         assert row["new_peer_id"] == narrower_id
         assert row["new_peer_edge_kind"] == "narrows"
         assert row["subscribers_snapshot"] == ["alice"]
+
+    async def test_unsubscribed_parent_skips_alert_while_subscribed_grandparent_receives_it(
+        self,
+        integ_store: Store,
+    ) -> None:
+        """Unsubscribed parents emit no row, but traversal still alerts subscribed ancestors."""
+        grandparent_id = await integ_store.submit_issue(
+            SubmitIssue(
+                account="tester@example.com",
+                title="top goal",
+                subscribers=["alice"],
+            ),
+        )
+        parent_id = await integ_store.submit_issue(
+            SubmitIssue(
+                account="tester@example.com",
+                title="unsubscribed middle",
+                narrows=[(grandparent_id, None)],
+            ),
+        )
+        child_id = await integ_store.submit_issue(
+            SubmitIssue(
+                account="tester@example.com",
+                title="leaf task",
+                narrows=[(parent_id, None)],
+            ),
+        )
+        change_id = await integ_store.set_status(child_id, "complete", actor="user")
+        assert change_id is not None
+        async with integ_store.engine.acquire() as conn:
+            parent_alerts = await conn.fetch(
+                "SELECT id FROM change_log "
+                "WHERE subject_id = $1 AND kind = 'dependency_changed'",
+                parent_id,
+            )
+            grandparent_alert = await conn.fetchrow(
+                "SELECT caused_by, new_peer_id, new_peer_edge_kind, "
+                "subscribers_snapshot FROM change_log "
+                "WHERE subject_id = $1 AND kind = 'dependency_changed' "
+                "AND caused_by = $2",
+                grandparent_id,
+                change_id,
+            )
+        assert parent_alerts == []
+        assert grandparent_alert is not None
+        assert grandparent_alert["caused_by"] == change_id
+        assert grandparent_alert["new_peer_id"] == parent_id
+        assert grandparent_alert["new_peer_edge_kind"] == "narrows"
+        assert grandparent_alert["subscribers_snapshot"] == ["alice"]
+        since = datetime(2000, 1, 1, tzinfo=UTC)
+        for_alice = await integ_store.what_changed_for_me("alice", since)
+        for_anyone = await integ_store.what_changed_for_anyone(since)
+        assert any(
+            c.subject_id == grandparent_id
+            and c.kind == "dependency_changed"
+            and c.caused_by == change_id
+            for c in for_alice
+        )
+        assert any(
+            c.subject_id == grandparent_id
+            and c.kind == "dependency_changed"
+            and c.caused_by == change_id
+            and tuple(c.subscribers_snapshot) == ("alice",)
+            for c, _seq in for_anyone
+        )
 
 
 @pytest.mark.db_pglite

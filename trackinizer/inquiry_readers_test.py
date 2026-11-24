@@ -101,6 +101,10 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
         "producer Issues; the caller's sessions are audience-gated",
     ),
     "server/web.py": ("policy", "every web read"),
+    "tools/compact_change_log.py": (
+        "trusted",
+        "offline operator tool, run with the server stopped: no request reaches it",
+    ),
 }
 """Each reading module, relative to this package, its class, and why."""
 
