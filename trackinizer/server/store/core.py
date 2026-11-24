@@ -9,7 +9,7 @@ and composes them into the public :class:`Store`.
 from __future__ import annotations
 
 from collections import Counter
-from contextlib import suppress
+from contextlib import AsyncExitStack, suppress
 from typing import TYPE_CHECKING, Final
 
 import asyncio
@@ -323,93 +323,102 @@ class _LifecycleMixin(_StoreShared):
         addon_migrations: Sequence[tuple[str, str]],
     ) -> None:  # pragma: no mutate block -- Its SQL needs a real database.
         """One idempotent bootstrap pass; see :meth:`bootstrap`."""
-        async with self.engine.acquire() as conn:
-            await conn.execute(
-                "SELECT pg_advisory_lock(hashtext('trackinizer.bootstrap'))",
-            )
-            try:
+        async with self.engine.acquire() as conn, AsyncExitStack() as stack:
+            # Pool connections carry ``lock_timeout`` (5 s) and ``statement_timeout``
+            # (30 s), which would abort waiting behind another server's migration.
+            # Acquire the session-level advisory lock inside a transaction so
+            # ``SET LOCAL`` clears both timeouts for the wait and Postgres restores
+            # the pool settings at ``COMMIT`` or ``ROLLBACK`` with no GUC leak.
+            async with tx(conn):
+                await conn.execute("SET LOCAL statement_timeout = 0")
+                await conn.execute("SET LOCAL lock_timeout = 0")
                 await conn.execute(
-                    "CREATE TABLE IF NOT EXISTS applied_migrations ("
-                    "name TEXT PRIMARY KEY, "
-                    "applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
+                    "SELECT pg_advisory_lock(hashtext('trackinizer.bootstrap'))",
                 )
-                applied = {
-                    r["name"]
-                    for r in await conn.fetch("SELECT name FROM applied_migrations")
-                }
-                migrations = list(schema_migrations())
-                if not migrations:
-                    raise RuntimeError(
-                        "schema_migrations returned no entries; SQL assets may be missing",
-                    )
-                baseline_name, baseline_body = migrations[0]
-                numbered_migrations = migrations[1:]
-                if baseline_name not in applied:
-                    is_fresh_database = (
-                        await conn.fetchval("SELECT to_regclass('public.inquiries')")
-                        is None
-                    )
-                    if is_fresh_database:
-                        async with tx(conn):
-                            await conn.execute("SET LOCAL statement_timeout = 0")
-                            await conn.execute("SET LOCAL lock_timeout = 0")
-                            await conn.execute(
-                                substitute_schema_placeholders(baseline_body),
-                            )
-                            for name, _body in migrations:
-                                await conn.execute(
-                                    "INSERT INTO applied_migrations (name) "
-                                    "VALUES ($1) ON CONFLICT (name) DO NOTHING",
-                                    name,
-                                )
-                        applied.update(name for name, _body in migrations)
-                    else:
-                        await conn.execute(
-                            "INSERT INTO applied_migrations (name) VALUES ($1) "
-                            "ON CONFLICT (name) DO NOTHING",
-                            baseline_name,
-                        )
-                        applied.add(baseline_name)
-                pending = [
-                    *(
-                        (name, substitute_schema_placeholders(body))
-                        for name, body in numbered_migrations
-                        if name not in applied
-                    ),
-                    *(each for each in addon_migrations if each[0] not in applied),
-                ]
-                for name, body in pending:
+                stack.push_async_callback(_unlock_bootstrap, conn)
+            await conn.execute(
+                "CREATE TABLE IF NOT EXISTS applied_migrations ("
+                "name TEXT PRIMARY KEY, "
+                "applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
+            )
+            applied = {
+                r["name"]
+                for r in await conn.fetch("SELECT name FROM applied_migrations")
+            }
+            migrations = list(schema_migrations())
+            if not migrations:
+                raise RuntimeError(
+                    "schema_migrations returned no entries; SQL assets may be missing",
+                )
+            baseline_name, baseline_body = migrations[0]
+            numbered_migrations = migrations[1:]
+            if baseline_name not in applied:
+                is_fresh_database = (
+                    await conn.fetchval("SELECT to_regclass('public.inquiries')")
+                    is None
+                )
+                if is_fresh_database:
                     async with tx(conn):
                         await conn.execute("SET LOCAL statement_timeout = 0")
                         await conn.execute("SET LOCAL lock_timeout = 0")
-                        await conn.execute(body)
                         await conn.execute(
-                            "INSERT INTO applied_migrations (name) VALUES ($1) "
-                            "ON CONFLICT (name) DO NOTHING",
-                            name,
+                            substitute_schema_placeholders(baseline_body),
                         )
-                # Seed the admin allowlist row when ``users`` is empty
-                # (auth v2 Phase 1). Idempotent: once any user logs in
-                # the path no-ops. Runs after migrations so the table
-                # exists on first boot.
-                await bootstrap_admin(conn, policy=self.access_policy)
-                await _reconcile_sequences(conn)
-            finally:
-                # If the body died because the connection dropped, the unlock
-                # raises the same family -- and that fresh exception would
-                # replace the original cause in the traceback. Suppress only the
-                # connection-death set so the real failure propagates; the
-                # advisory lock is session-scoped and dies with the connection
-                # anyway. A genuine unlock failure on a live connection still
-                # surfaces.
-                with suppress(
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    ConnectionRefusedError,
-                ):
+                        for name, _body in migrations:
+                            await conn.execute(
+                                "INSERT INTO applied_migrations (name) "
+                                "VALUES ($1) ON CONFLICT (name) DO NOTHING",
+                                name,
+                            )
+                    applied.update(name for name, _body in migrations)
+                else:
                     await conn.execute(
-                        "SELECT pg_advisory_unlock(hashtext('trackinizer.bootstrap'))",
+                        "INSERT INTO applied_migrations (name) VALUES ($1) "
+                        "ON CONFLICT (name) DO NOTHING",
+                        baseline_name,
                     )
+                    applied.add(baseline_name)
+            pending = [
+                *(
+                    (name, substitute_schema_placeholders(body))
+                    for name, body in numbered_migrations
+                    if name not in applied
+                ),
+                *(each for each in addon_migrations if each[0] not in applied),
+            ]
+            for name, body in pending:
+                async with tx(conn):
+                    await conn.execute("SET LOCAL statement_timeout = 0")
+                    await conn.execute("SET LOCAL lock_timeout = 0")
+                    await conn.execute(body)
+                    await conn.execute(
+                        "INSERT INTO applied_migrations (name) VALUES ($1) "
+                        "ON CONFLICT (name) DO NOTHING",
+                        name,
+                    )
+            # Seed the admin allowlist row when ``users`` is empty
+            # (auth v2 Phase 1). Idempotent: once any user logs in
+            # the path no-ops. Runs after migrations so the table
+            # exists on first boot.
+            await bootstrap_admin(conn, policy=self.access_policy)
+            await _reconcile_sequences(conn)
+
+
+# If the body died because the connection dropped, the unlock raises the same
+# family -- and that fresh exception would replace the original cause in the
+# traceback. Suppress only the connection-death set so the real failure
+# propagates; the advisory lock is session-scoped and dies with the connection
+# anyway. A genuine unlock failure on a live connection still surfaces.
+async def _unlock_bootstrap(conn: Conn) -> None:
+    """Release the bootstrap session advisory lock if the connection is still live."""
+    with suppress(
+        asyncpg.PostgresConnectionError,
+        asyncpg.InterfaceError,
+        ConnectionRefusedError,
+    ):
+        await conn.execute(
+            "SELECT pg_advisory_unlock(hashtext('trackinizer.bootstrap'))",
+        )
 
 
 # Monotonic and idempotent: a kind with no rows is skipped (its sequence keeps minting

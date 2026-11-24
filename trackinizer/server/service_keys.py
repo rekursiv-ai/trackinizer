@@ -18,6 +18,7 @@ revoked key.
 
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, cast
 
 import logging
@@ -68,9 +69,20 @@ async def ensure_service_keys(
     """
     # The lock spans each file's read and publish, not just the database's transaction:
     # two servers starting at once would otherwise both find no file, both mint, and the
-    # second would revoke the key the first writes.
-    await conn.execute("SELECT pg_advisory_lock(hashtext('trackinizer.service_keys'))")
-    try:
+    # second would revoke the key the first writes. Acquire the session-level lock inside
+    # a transaction so ``SET LOCAL`` clears the pool's ``lock_timeout`` and
+    # ``statement_timeout`` for the wait without leaking them onto the pooled connection.
+    async with AsyncExitStack() as stack:
+        async with tx(conn):
+            await conn.execute("SET LOCAL statement_timeout = 0")
+            await conn.execute("SET LOCAL lock_timeout = 0")
+            await conn.execute(
+                "SELECT pg_advisory_lock(hashtext('trackinizer.service_keys'))",
+            )
+            stack.push_async_callback(
+                conn.execute,
+                "SELECT pg_advisory_unlock(hashtext('trackinizer.service_keys'))",
+            )
         for name, role in keys.accounts:
             await _ensure(
                 conn,
@@ -79,10 +91,6 @@ async def ensure_service_keys(
                 role=role,
                 path=keys.directory / name,
             )
-    finally:
-        await conn.execute(
-            "SELECT pg_advisory_unlock(hashtext('trackinizer.service_keys'))",
-        )
 
 
 async def _ensure(
