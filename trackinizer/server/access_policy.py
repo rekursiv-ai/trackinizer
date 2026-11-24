@@ -237,7 +237,7 @@ def inquiry_read_filter(
         principal=principal,
     )
     # The chat test above leaves no ``TRUE`` here; the export, which strips it, does.
-    if predicate == "TRUE":  # pragma: no cover  # pragma: no mutate
+    if predicate == "TRUE":  # pragma: no cover  # pragma: no mutate -- Export-only.
         return predicate
     return vetted_sql(
         "EXISTS (SELECT 1 FROM inquiries readable_inquiry WHERE readable_inquiry.id = ",

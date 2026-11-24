@@ -359,7 +359,7 @@ class TestConcurrentRequests:
                             contaminated.append((expected, seen))
                         return
                     # Spreads each thread's reads across the others' runs, to catch a leak.
-                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- Interleave.
 
             return run
 
@@ -392,7 +392,7 @@ class TestConcurrentRequests:
                             contaminated.append((expected, seen))
                         return
                     # Spreads each thread's reads across the others' runs, to catch a leak.
-                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- Interleave.
 
             return run
 
@@ -419,7 +419,7 @@ class TestConcurrentRequests:
                 for _ in range(20):
                     echo(name, nl=False)
                     # Spreads each thread's reads across the others' runs, to catch a leak.
-                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- Interleave.
 
             return run
 

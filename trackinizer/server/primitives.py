@@ -72,7 +72,7 @@ async def insert_inquiry(
     *,
     status: Inquiry.Status | None = None,
     values: Mapping[str, object],
-) -> None:  # pragma: no mutate block
+) -> None:  # pragma: no mutate block -- Its SQL needs a real database.
     """Insert one ``inquiries`` row, drawing ``seq`` from the per-kind sequence.
 
     ``values`` holds every non-identity column by its flat storage name (base

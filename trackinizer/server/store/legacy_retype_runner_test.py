@@ -25,7 +25,9 @@ import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine
 from trackinizer.server.store import legacy_retype_runner
+from trackinizer.server.store.legacy_retype import SlashCommandOut
 from trackinizer.server.store.legacy_retype_runner import (
+    RetypeStats,
     retype_all,
     retype_session,
 )
@@ -471,6 +473,183 @@ async def test_slash_command_without_timestamp_uses_capture_time(store: Store) -
             session_id,
         )
     assert timestamp == created
+
+
+@pytest.mark.asyncio
+async def test_retype_all_reads_shard_zero_of_one_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine()
+    session = uuid4()
+    engine.conn.fetch.return_value = [{"session_id": session}]
+    seen: list[tuple[object, UUID]] = []
+
+    async def retype(conn: object, session_id: UUID) -> RetypeStats:
+        seen.append((conn, session_id))
+        return RetypeStats(sessions=1)
+
+    monkeypatch.setattr(legacy_retype_runner, "retype_session", retype)
+
+    stats = await retype_all(cast("DatabaseEngine", engine))
+
+    call = engine.conn.fetch.call_args
+    assert call is not None
+    query, *args = call.args
+    assert isinstance(query, str)
+    assert args == [-1, 1, 0]
+    assert seen == [(engine.conn, session)]
+    assert stats.sessions == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shard", [0, 1])
+async def test_each_shard_inside_the_count_is_read(shard: int) -> None:
+    engine = FakeEngine()
+    engine.conn.fetch.return_value = []
+
+    await retype_all(cast("DatabaseEngine", engine), shards=2, shard=shard)
+
+    call = engine.conn.fetch.call_args
+    assert call is not None
+    query, *args = call.args
+    assert isinstance(query, str)
+    assert args == [-1, 2, shard]
+
+
+@pytest.mark.asyncio
+async def test_retype_session_hands_its_connection_and_rows_to_each_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine()
+    session = uuid4()
+    source = legacy_retype_runner._Source(
+        kind="UncategorizedRecord",
+        context_id=None,
+        timestamp=None,
+        model=None,
+        created=_CREATED,
+        payload_text="{}",
+        text="",
+        legacy_kind="legacy/UserMessage",
+        ciphertext="",
+    )
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def read_sources(conn: object, session_id: UUID) -> list[object]:
+        calls.append(("read", (conn, session_id)))
+        return [source]
+
+    def source_outputs(
+        found: object,
+        commands: list[SlashCommandOut],
+    ) -> list[object]:
+        calls.append(("outputs", (found, commands)))
+        commands.append(SlashCommandOut(command="model", args="opus"))
+        return []
+
+    async def replace_part(
+        conn: object,
+        session_id: UUID,
+        outputs: list[object],
+    ) -> None:
+        calls.append(("replace", (conn, session_id, outputs)))
+
+    async def insert_commands(
+        conn: object,
+        session_id: UUID,
+        commands: list[SlashCommandOut],
+    ) -> None:
+        calls.append(("insert", (conn, session_id, commands)))
+
+    monkeypatch.setattr(legacy_retype_runner, "_read_sources", read_sources)
+    monkeypatch.setattr(legacy_retype_runner, "_source_outputs", source_outputs)
+    monkeypatch.setattr(legacy_retype_runner, "_replace_part", replace_part)
+    monkeypatch.setattr(legacy_retype_runner, "_insert_slash_commands", insert_commands)
+
+    stats = await retype_session(cast("Conn", engine.conn), session)
+
+    commands = [SlashCommandOut(command="model", args="opus")]
+    assert calls == [
+        ("read", (engine.conn, session)),
+        ("outputs", (source, commands)),
+        ("replace", (engine.conn, session, [])),
+        ("insert", (engine.conn, session, commands)),
+    ]
+    assert stats == RetypeStats(
+        sessions=1,
+        rewritten=1,
+        records_in=1,
+        records_out=0,
+        slash_commands=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_replace_part_writes_each_column_and_the_ciphertext_it_seals() -> None:
+    engine = FakeEngine()
+    session = uuid4()
+    stamp = datetime(2026, 9, 3, tzinfo=UTC)
+    outputs = [
+        legacy_retype_runner._Output(
+            kind="UserMessage",
+            context_id=3,
+            timestamp=stamp,
+            model="m",
+            created=_CREATED,
+            payload_text='{"content":"hi"}',
+            text="hi",
+            ciphertext="c2VhbGVk",
+        ),
+        legacy_retype_runner._Output(
+            kind="Thinking",
+            context_id=None,
+            timestamp=None,
+            model=None,
+            created=_CREATED,
+            payload_text="{}",
+            text="",
+            ciphertext="",
+        ),
+    ]
+
+    await legacy_retype_runner._replace_part(
+        cast("Conn", engine.conn),
+        session,
+        outputs,
+    )
+
+    assert [call.args[1:] for call in engine.conn.execute.call_args_list] == [
+        (session, -1),
+        (session, -1),
+        (
+            session,
+            -1,
+            ["UserMessage", "Thinking"],
+            [3, None],
+            [stamp, None],
+            ["m", None],
+            ['{"content":"hi"}', "{}"],
+            ["hi", ""],
+            [_CREATED, _CREATED],
+        ),
+        (session, -1, [0], [b"c2VhbGVk"]),
+        (session, -1, 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_read_sources_queries_the_part_for_its_session() -> None:
+    engine = FakeEngine()
+    engine.conn.fetch.return_value = []
+    session = uuid4()
+
+    await legacy_retype_runner._read_sources(cast("Conn", engine.conn), session)
+
+    call = engine.conn.fetch.call_args
+    assert call is not None
+    query, *args = call.args
+    assert isinstance(query, str)
+    assert args == [session, -1]
 
 
 if __name__ == "__main__":

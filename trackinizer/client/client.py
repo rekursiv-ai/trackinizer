@@ -2705,7 +2705,7 @@ class Client:
         self._check_route("GET", where)
         try:
             with self._http.stream(
-                "GET",  # pragma: no mutate[case-insensitive]
+                "GET",  # pragma: no mutate[case-insensitive] -- Methods are uppercased.
                 where,
                 # The read outlasts the server's keep-alive, or a quiet session
                 # would end it.
@@ -3564,12 +3564,12 @@ def _line_frames(response: httpx2.Response, *, where: str) -> Iterator[ViewerFra
 def _sse_data(lines: Iterator[str]) -> Iterator[str]:
     """Yield the data of each unnamed server-sent event in ``lines``."""
     # A named event is the keep-alive, which carries nothing; a comment has no field.
-    named = False  # pragma: no mutate[truthiness]
+    named = False  # pragma: no mutate[truthiness] -- Only truth matters.
     for line in lines:
         if line.startswith("event:"):
             named = True
         elif not line:
-            named = False  # pragma: no mutate[truthiness]
+            named = False  # pragma: no mutate[truthiness] -- Only truth matters.
         elif line.startswith("data:") and not named:
             yield line.removeprefix("data:").strip()
 

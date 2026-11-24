@@ -23,11 +23,14 @@ from trackinizer.conftest import (
     queue_field_rows,
 )
 from trackinizer.mock_test_support import AsyncMockProtocol
+from trackinizer.server.access_policy import Principal, Resource
 from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.server.store import submit
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
+from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.wire.bodies import (
     BatchEdge,
@@ -944,8 +947,724 @@ class TestSubmitArtifact:
         )
 
 
+_NOW = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)
+_SUBMIT_CALLS = [
+    pytest.param(
+        "submit_issue",
+        SubmitIssue(title="i", account="a@e.com", validation="v", priority=2),
+        "Issue",
+        {"issue_kind": None, "issue_validation": "v", "issue_priority": 2},
+        {},
+        id="issue",
+    ),
+    pytest.param(
+        "submit_artifact",
+        SubmitArtifact(title="a", account="a@e.com"),
+        "Artifact",
+        None,
+        {},
+        id="artifact",
+    ),
+    pytest.param(
+        "submit_experiment",
+        SubmitExperiment(
+            title="e",
+            account="a@e.com",
+            codechanges=[UUID(int=3)],
+            outcome="ok",
+            config={"k": 1},
+        ),
+        "Experiment",
+        {
+            "experiment_codechanges": [UUID(int=3)],
+            "experiment_outcome": "ok",
+            "experiment_config": {"k": 1},
+        },
+        {},
+        id="experiment",
+    ),
+    pytest.param(
+        "submit_paper",
+        SubmitPaper(
+            title="p",
+            account="a@e.com",
+            abstract="ab",
+            authors=["x"],
+            venue="v",
+            subvenue="s",
+            publish_date=_NOW,
+            source="doi:10.1/x",
+            google_scholar_cluster_id="gc",
+            google_scholar_cites_id="gt",
+        ),
+        "Paper",
+        {
+            "paper_abstract": "ab",
+            "paper_authors": ["x"],
+            "paper_publication_type": None,
+            "paper_venue": "v",
+            "paper_subvenue": "s",
+            "paper_publish_date": _NOW,
+            "paper_source": "doi:10.1/x",
+            "paper_google_scholar_cluster_id": "gc",
+            "paper_google_scholar_cites_id": "gt",
+        },
+        {},
+        id="paper",
+    ),
+    pytest.param(
+        "submit_belief",
+        SubmitBelief(
+            title="b",
+            account="a@e.com",
+            judgement="proven",
+            confidence=0.5,
+        ),
+        "Belief",
+        {"belief_judgement": "proven", "belief_confidence": 0.5},
+        {},
+        id="belief",
+    ),
+    pytest.param(
+        "submit_codechange",
+        SubmitCodeChange(title="c", account="a@e.com", sha="a" * 40),
+        "CodeChange",
+        {"codechange_sha": "a" * 40},
+        {},
+        id="codechange",
+    ),
+    pytest.param(
+        "submit_webresult",
+        SubmitWebResult(title="w", account="a@e.com", url="https://x"),
+        "WebResult",
+        {"webresult_url": "https://x"},
+        {},
+        id="webresult",
+    ),
+    pytest.param(
+        "submit_websearch",
+        SubmitWebSearch(
+            title="s",
+            account="a@e.com",
+            query="q",
+            provider="exa",
+        ),
+        "WebSearch",
+        {"websearch_query": "q", "websearch_provider": "exa"},
+        {},
+        id="websearch",
+    ),
+    pytest.param(
+        "submit_agentsession",
+        SubmitAgentSession(title="s", account="a@e.com", cli="claude"),
+        "AgentSession",
+        None,
+        {"audience": "open"},
+        id="agentsession",
+    ),
+    pytest.param(
+        "submit_accessgroup",
+        SubmitAccessGroup(title="g", account="a@e.com"),
+        "AccessGroup",
+        None,
+        {},
+        id="accessgroup",
+    ),
+]
+
+
+class TestSubmitForwardsItsArguments:
+    """Each ``submit_X`` hands its kind, arguments and extras to the generic path."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "body", "kind", "extras", "call"),
+        _SUBMIT_CALLS,
+    )
+    async def test_hands_kind_key_actor_principal_and_connection_on(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        method: str,
+        body: SubmitBase,
+        kind: str,
+        extras: dict[str, object] | None,
+        call: dict[str, object],
+    ) -> None:
+        store, _engine = make_store()
+        generic = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_generic", generic)
+        key, conn = new_uuid(), make_conn()
+        principal = Principal(email="p@e.com", role="viewer")
+
+        await cast("Callable[..., Awaitable[UUID]]", getattr(store, method))(
+            body,
+            api_key_id=key,
+            actor="alice",
+            principal=principal,
+            conn=conn,
+            **call,
+        )
+
+        sent = generic.await_args
+        assert sent is not None
+        assert sent.args == (body,)
+        assert sent.kwargs["kind"] == kind
+        assert sent.kwargs["api_key_id"] == key
+        assert sent.kwargs["actor"] == "alice"
+        assert sent.kwargs["principal"] is principal
+        assert sent.kwargs["conn"] is conn
+        if extras is not None:
+            assert sent.kwargs["extras"] == extras
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "body", "kind", "extras", "call"),
+        _SUBMIT_CALLS,
+    )
+    async def test_names_the_system_as_actor_when_none_is_given(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        method: str,
+        body: SubmitBase,
+        kind: str,
+        extras: dict[str, object] | None,
+        call: dict[str, object],
+    ) -> None:
+        del kind, extras
+        store, _engine = make_store()
+        generic = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_generic", generic)
+
+        await cast("Callable[..., Awaitable[UUID]]", getattr(store, method))(
+            body,
+            **call,
+        )
+
+        sent = generic.await_args
+        assert sent is not None
+        assert sent.kwargs["actor"] == "system"
+
+
+class TestSubmitDispatchForwardsItsArguments:
+    """``Store.submit`` hands every argument it was given to the kind's method."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "body", "kind", "extras", "call"),
+        _SUBMIT_CALLS,
+    )
+    async def test_passes_key_actor_principal_and_connection_to_the_kind(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        method: str,
+        body: SubmitBase,
+        kind: str,
+        extras: dict[str, object] | None,
+        call: dict[str, object],
+    ) -> None:
+        del kind, extras, call
+        store, _engine = make_store()
+        routed = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, method, routed)
+        key, conn = new_uuid(), make_conn()
+        principal = Principal(email="p@e.com", role="viewer")
+
+        await store.submit(
+            body,
+            api_key_id=key,
+            actor="alice",
+            session_audience="open",
+            principal=principal,
+            conn=conn,
+        )
+
+        routed.assert_awaited_once()
+        sent = routed.await_args
+        assert sent is not None
+        assert sent.args == (body,)
+        assert sent.kwargs["api_key_id"] == key
+        assert sent.kwargs["actor"] == "alice"
+        assert sent.kwargs["principal"] is principal
+        assert sent.kwargs["conn"] is conn
+
+
+class TestSubmitEdgeAudits:
+    """Edges a submit writes name their kinds, endpoints and the created change."""
+
+    @pytest.mark.asyncio
+    async def test_an_issue_audits_its_narrows_and_requires_edges(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, engine = make_store()
+        cause, broader, prerequisite = new_uuid(), new_uuid(), new_uuid()
+        monkeypatch.setattr(store, "emit_change", AsyncMock(return_value=(cause, ())))
+        edge = AsyncMock()
+        monkeypatch.setattr(store, "insert_edge_and_audit", edge)
+        key = new_uuid()
+
+        issue_id = await store.submit_issue(
+            SubmitIssue(
+                title="t",
+                narrows=[(broader, 2)],
+                requires=[prerequisite],
+                account="tester@example.com",
+            ),
+            api_key_id=key,
+            actor="alice",
+        )
+
+        narrows, requires = edge.await_args_list
+        assert narrows.args == (engine.conn,)
+        assert narrows.kwargs == {
+            "subject_id": issue_id,
+            "subject_kind": "Issue",
+            "to_id": broader,
+            "edge_kind": "narrows",
+            "api_key_id": key,
+            "actor": "alice",
+            "caused_by": cause,
+            "priority": 2,
+        }
+        assert requires.args == (engine.conn,)
+        assert requires.kwargs == {
+            "subject_id": issue_id,
+            "subject_kind": "Issue",
+            "to_id": prerequisite,
+            "edge_kind": "requires",
+            "api_key_id": key,
+            "actor": "alice",
+            "caused_by": cause,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_belief_audits_each_citation_as_an_edge_into_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, engine = make_store()
+        cause, supporting, opposing = new_uuid(), new_uuid(), new_uuid()
+        monkeypatch.setattr(store, "emit_change", AsyncMock(return_value=(cause, ())))
+        edge = AsyncMock()
+        monkeypatch.setattr(store, "insert_edge_and_audit", edge)
+        key = new_uuid()
+
+        belief_id = await store.submit_belief(
+            SubmitBelief(
+                title="b",
+                proved_by=[
+                    Citation(
+                        artifact_id=supporting,
+                        artifact_kind="Experiment",
+                        valence=0.8,
+                    ),
+                ],
+                favored_by=[
+                    Citation(
+                        artifact_id=opposing,
+                        artifact_kind="Experiment",
+                        valence=-0.5,
+                    ),
+                ],
+                account="tester@example.com",
+            ),
+            api_key_id=key,
+            actor="alice",
+        )
+
+        proves, favors = edge.await_args_list
+        assert proves.args == (engine.conn,)
+        assert proves.kwargs == {
+            "subject_id": belief_id,
+            "subject_kind": "Belief",
+            "to_id": supporting,
+            "edge_kind": "proves",
+            "api_key_id": key,
+            "actor": "alice",
+            "caused_by": cause,
+            "require_to_kind": "Experiment",
+            "cite_peer_as_from": True,
+            "valence": 0.8,
+        }
+        assert favors.kwargs == {
+            "subject_id": belief_id,
+            "subject_kind": "Belief",
+            "to_id": opposing,
+            "edge_kind": "favors",
+            "api_key_id": key,
+            "actor": "alice",
+            "caused_by": cause,
+            "require_to_kind": "Experiment",
+            "cite_peer_as_from": True,
+            "valence": -0.5,
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_replay_probe_looks_up_the_submitted_key(self) -> None:
+        conn = make_conn()
+        winner, key = new_uuid(), new_uuid()
+        queue_field_rows(
+            conn,
+            {"subject_id": winner, "change_kind": "created", "subject_kind": "Issue"},
+        )
+        store, _engine = make_store(conn)
+
+        assert (
+            await store.submit_issue(SubmitIssue(title="t", idempotency_key=key))
+            == winner
+        )
+        assert conn.fetchrow.await_args_list[0].args[1:] == (key,)
+
+
+class TestSubmitGenericAndOnConnContract:
+    """``_submit_generic`` routes its arguments; ``_submit_on_conn`` writes them."""
+
+    @pytest.mark.asyncio
+    async def test_routes_every_argument_to_on_conn_on_a_shared_connection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        on_conn = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_on_conn", on_conn)
+        conn, key, row_id = make_conn(), new_uuid(), new_uuid()
+        principal = Principal(email="p@e.com", role="viewer")
+        req = SubmitIssue(title="t", account="a@e.com")
+        pre, post = AsyncMock(), AsyncMock()
+
+        await store._submit_generic(
+            req,
+            kind="Issue",
+            api_key_id=key,
+            actor="alice",
+            extras={"x": 1},
+            pre_insert=pre,
+            post_insert=post,
+            principal=principal,
+            conn=conn,
+            row_id=row_id,
+        )
+
+        on_conn.assert_awaited_once_with(
+            conn,
+            req,
+            kind="Issue",
+            api_key_id=key,
+            actor="alice",
+            extras={"x": 1},
+            pre_insert=pre,
+            post_insert=post,
+            principal=principal,
+            row_id=row_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_opens_its_own_transaction_on_the_engine_connection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, engine = make_store()
+        on_conn = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_on_conn", on_conn)
+        key = new_uuid()
+        principal = Principal(email="p@e.com", role="viewer")
+        req = SubmitIssue(title="t", account="a@e.com")
+        pre, post = AsyncMock(), AsyncMock()
+
+        await store._submit_generic(
+            req,
+            kind="Issue",
+            api_key_id=key,
+            actor="alice",
+            extras={"x": 1},
+            pre_insert=pre,
+            post_insert=post,
+            principal=principal,
+            conn=None,
+            row_id=UUID(int=9),
+        )
+
+        on_conn.assert_awaited_once_with(
+            engine.conn,
+            req,
+            kind="Issue",
+            api_key_id=key,
+            actor="alice",
+            extras={"x": 1},
+            pre_insert=pre,
+            post_insert=post,
+            principal=principal,
+            row_id=UUID(int=9),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_collision_on_another_constraint_is_raised_not_replayed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        violation = asyncpg.UniqueViolationError("duplicate key")
+        violation.constraint_name = "uq_other"
+        monkeypatch.setattr(store, "_submit_on_conn", AsyncMock(side_effect=violation))
+        lookup = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_lookup_existing_by_change", lookup)
+        req = SubmitIssue(title="t", idempotency_key=new_uuid(), account="a@e.com")
+
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await store._submit_generic(
+                req,
+                kind="Issue",
+                api_key_id=None,
+                actor="system",
+                extras=None,
+                pre_insert=None,
+                post_insert=None,
+                principal=None,
+                conn=None,
+                row_id=None,
+            )
+
+        lookup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_replay_probe_after_a_collision_uses_the_submitted_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        violation = asyncpg.UniqueViolationError("duplicate key")
+        violation.constraint_name = "change_log_pkey"
+        monkeypatch.setattr(store, "_submit_on_conn", AsyncMock(side_effect=violation))
+        winner, key = new_uuid(), new_uuid()
+        lookup = AsyncMock(return_value=winner)
+        monkeypatch.setattr(store, "_lookup_existing_by_change", lookup)
+        req = SubmitIssue(title="t", idempotency_key=key, account="a@e.com")
+
+        assert (
+            await store._submit_generic(
+                req,
+                kind="Issue",
+                api_key_id=None,
+                actor="system",
+                extras=None,
+                pre_insert=None,
+                post_insert=None,
+                principal=None,
+                conn=None,
+                row_id=None,
+            )
+            == winner
+        )
+        assert lookup.await_args is not None
+        assert lookup.await_args.args[0] == key
+
+    @pytest.mark.asyncio
+    async def test_on_conn_writes_the_row_it_was_given_and_audits_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, engine = make_store()
+        conn = engine.conn
+        insert = AsyncMock()
+        monkeypatch.setattr(submit, "insert_inquiry", insert)
+        cause = new_uuid()
+        emit = AsyncMock(return_value=(cause, ()))
+        monkeypatch.setattr(store, "emit_change", emit)
+        on_create = AsyncMock()
+        monkeypatch.setattr(type(store.access_policy), "on_create", on_create)
+        key = new_uuid()
+        principal = Principal(email="p@e.com", role="viewer")
+        req = SubmitIssue(
+            title="t",
+            account="a@e.com",
+            status="complete",
+            marginal_cost=Cost(agent_usd=0.25),
+        )
+
+        row_id = await store._submit_on_conn(
+            conn,
+            req,
+            kind="Issue",
+            api_key_id=key,
+            actor="alice",
+            extras=None,
+            pre_insert=None,
+            post_insert=None,
+            principal=principal,
+            row_id=None,
+        )
+
+        insert.assert_awaited_once()
+        assert insert.await_args is not None
+        assert insert.await_args.args[:3] == (conn, row_id, "Issue")
+        assert insert.await_args.kwargs["status"] == "complete"
+        on_create.assert_awaited_once_with(
+            conn,
+            principal=principal,
+            resource=Resource(kind="inquiry", id=str(row_id), account="a@e.com"),
+        )
+        emit.assert_awaited_once_with(
+            conn,
+            api_key_id=key,
+            actor="alice",
+            subject_id=row_id,
+            subject_kind="Issue",
+            kind="created",
+            reason="",
+            marginal_cost=req.marginal_cost,
+        )
+
+
+class TestSubmitReplayAndDefaults:
+    """Replay bookkeeping, the batch's default actor and an issue's kinds."""
+
+    @pytest.mark.asyncio
+    async def test_an_item_with_a_key_but_no_backdate_is_not_looked_up_for_replay(
+        self,
+    ) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+
+        await store.submit_batch(
+            [SubmitIssue(title="a", idempotency_key=new_uuid(), account="a@e.com")],
+        )
+
+        assert not any("SELECT id FROM change_log" in sql for sql in executed_sql(conn))
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_row_id_that_arrives_as_text_is_recognised(self) -> None:
+        conn = make_conn()
+        spent, modified = new_uuid(), datetime(2024, 3, 4, tzinfo=UTC)
+        conn.fetch.return_value = [{"id": str(spent)}]
+        store, _engine = make_store(conn)
+
+        ids = await store.submit_batch(
+            [
+                SubmitIssue(
+                    title="a",
+                    idempotency_key=spent,
+                    account="a@e.com",
+                    created=modified,
+                    modified=modified,
+                ),
+            ],
+        )
+
+        restamps = [
+            call.args[1:]
+            for call in conn.execute.call_args_list
+            if call.args
+            and call.args[0] == "UPDATE inquiries SET modified = $2 WHERE id = $1"
+        ]
+        assert restamps == [(ids[0], modified)]
+
+    @pytest.mark.asyncio
+    async def test_a_batch_item_without_an_actor_is_submitted_as_the_system(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        submitted = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "submit", submitted)
+
+        await store.submit_batch([SubmitIssue(title="a", account="a@e.com")])
+
+        assert submitted.await_args is not None
+        assert submitted.await_args.kwargs["actor"] == "system"
+
+    @pytest.mark.asyncio
+    async def test_an_issue_stores_its_kinds_in_canonical_form(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        generic = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_generic", generic)
+
+        await store.submit_issue(
+            SubmitIssue(
+                title="i",
+                issue_kind=["bug", "task", "bug"],
+                account="a@e.com",
+            ),
+        )
+
+        assert generic.await_args is not None
+        assert generic.await_args.kwargs["extras"]["issue_kind"] == ("bug", "task")
+
+
 class TestSubmitBatch:
     """``submit_batch`` is all-or-nothing in one shared transaction."""
+
+    @pytest.mark.asyncio
+    async def test_each_item_gets_its_own_actor_or_the_batch_actor_and_the_callers_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, engine = make_store()
+        ids = [new_uuid(), new_uuid()]
+        submitted = AsyncMock(side_effect=ids)
+        monkeypatch.setattr(store, "submit", submitted)
+        key, principal = new_uuid(), Principal(email="p@e.com", role="viewer")
+
+        assert (
+            await store.submit_batch(
+                [
+                    SubmitIssue(title="a", actor="bob", account="a@e.com"),
+                    SubmitIssue(title="b", account="a@e.com"),
+                ],
+                api_key_id=key,
+                actor="alice",
+                session_audience="open",
+                principal=principal,
+            )
+            == ids
+        )
+
+        first, second = submitted.await_args_list
+        assert first.kwargs == {
+            "api_key_id": key,
+            "actor": "bob",
+            "session_audience": "open",
+            "principal": principal,
+            "conn": engine.conn,
+        }
+        assert second.kwargs["actor"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_an_edge_is_written_with_its_valence_and_the_callers_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        source, target, key = new_uuid(), new_uuid(), new_uuid()
+        monkeypatch.setattr(store, "submit", AsyncMock(side_effect=[source, target]))
+        edge_write = AsyncMock()
+        monkeypatch.setattr(store, "_add_edge_on_conn", edge_write)
+
+        await store.submit_batch(
+            [SubmitIssue(title="a"), SubmitIssue(title="b")],
+            edges=[
+                BatchEdge(
+                    from_index=0,
+                    to_index=1,
+                    edge_kind="proves",
+                    valence=0.4,
+                ),
+            ],
+            api_key_id=key,
+            actor="alice",
+        )
+
+        edge_write.assert_awaited_once()
+        assert edge_write.await_args is not None
+        assert edge_write.await_args.kwargs["valence"] == 0.4
+        assert edge_write.await_args.kwargs["api_key_id"] == key
+        assert edge_write.await_args.kwargs["from_id"] == source
+        assert edge_write.await_args.kwargs["to_id"] == target
 
     @pytest.mark.asyncio
     async def test_commits_all_items_in_one_transaction(self) -> None:

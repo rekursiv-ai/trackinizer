@@ -114,8 +114,9 @@ async def dial_tools(
     if not base.startswith(("http://", "https://")):
         msg = f"server URL must start with http:// or https://: {url!r}"
         raise ValueError(msg)
-    # Letters are always safe, so a mutant's ``safe`` of letters is this same one.
-    path = TOOLS_WS_PATH.format(name=quote(host, safe=""))  # pragma: no mutate
+    # pragma: no mutate start -- quote() never escapes letters, so a letters safe= is alike.
+    path = TOOLS_WS_PATH.format(name=quote(host, safe=""))
+    # pragma: no mutate end
     query = "" if asker is None else f"?{urlencode({'asker': asker})}"
     try:
         socket_ = await connect(

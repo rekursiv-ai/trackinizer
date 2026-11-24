@@ -1128,7 +1128,7 @@ async def _copy(
     for table in tables:
         filled = await conn.fetchval(
             vetted_sql(
-                "SELECT EXISTS (SELECT 1 FROM ",  # pragma: no mutate[case-insensitive]
+                "SELECT EXISTS (SELECT 1 FROM ",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
                 _name(table),
                 ")",  # pragma: no mutate -- a word after the table only aliases it.
             ),
@@ -1139,15 +1139,15 @@ async def _copy(
         target = _name((_COPIES, copy))
         await conn.execute(
             vetted_sql(
-                "DROP TABLE IF EXISTS ",  # pragma: no mutate[case-insensitive]
+                "DROP TABLE IF EXISTS ",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
                 target,
             ),
         )
         await conn.execute(
             vetted_sql(
-                "CREATE TABLE ",  # pragma: no mutate[case-insensitive]
+                "CREATE TABLE ",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
                 target,
-                " AS SELECT * FROM ",  # pragma: no mutate[case-insensitive]
+                " AS SELECT * FROM ",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
                 _name(table),
             ),
         )
@@ -1165,19 +1165,19 @@ async def _copy(
         # never read, whose position is its start, which ``setval`` must be told.
         last = await conn.fetchval(
             vetted_sql(
-                "SELECT last_value FROM ",  # pragma: no mutate[case-insensitive]
+                "SELECT last_value FROM ",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
                 sequence,
             ),
         )
         called = await conn.fetchval(
             vetted_sql(
-                "SELECT is_called FROM ",  # pragma: no mutate[case-insensitive]
+                "SELECT is_called FROM ",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
                 sequence,
             ),
         )
         script.append(
             vetted_sql(
-                "SELECT setval('",  # pragma: no mutate[case-insensitive]
+                "SELECT setval('",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
                 sequence.replace("'", "''"),
                 "', ",
                 str(cast(int, last)),
@@ -1187,7 +1187,7 @@ async def _copy(
             ),
         )
     present = await conn.fetch(
-        "SELECT nspname FROM pg_namespace WHERE nspname = ANY($1::text[])",  # pragma: no mutate[case-insensitive]
+        "SELECT nspname FROM pg_namespace WHERE nspname = ANY($1::text[])",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
         list(schemas),
     )
     return _Baseline(
@@ -1222,9 +1222,9 @@ async def _drop(conn: Conn, schema: str) -> None:
     """Drop ``schema`` and everything in it, if it is there."""
     await conn.execute(
         vetted_sql(
-            "DROP SCHEMA IF EXISTS ",  # pragma: no mutate[case-insensitive]
+            "DROP SCHEMA IF EXISTS ",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
             _quoted(schema),
-            " CASCADE",  # pragma: no mutate[case-insensitive]
+            " CASCADE",  # pragma: no mutate[case-insensitive] -- Postgres reads unquoted SQL keywords ignoring case.
         ),
     )
 

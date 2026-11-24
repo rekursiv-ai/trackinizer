@@ -294,7 +294,7 @@ class Config:
             engine=parse_engine(os.environ.get("TRACKINIZER_ENGINE", "pglite")),
             datadir=Path(env_datadir)
             if (
-                env_datadir := os.environ.get(  # pragma: no mutate
+                env_datadir := os.environ.get(  # pragma: no mutate -- Truth only.
                     "TRACKINIZER_DATADIR",
                     "",
                 )
@@ -505,7 +505,7 @@ def session_secret_from_env() -> str:
     """
     secret = os.environ.get(
         "TRACKINIZER_SESSION_SECRET",
-        "",  # pragma: no mutate[truthiness]
+        "",  # pragma: no mutate[truthiness] -- Only truth is tested.
     )
     path = os.environ.get("TRACKINIZER_SESSION_SECRET_FILE", "")
     if secret and path.strip():
@@ -545,7 +545,7 @@ def session_secret_from_file(path: str) -> str:
         finally:
             Path(staged).unlink()
     return target.read_text(
-        encoding="utf-8",  # pragma: no mutate[case-insensitive]
+        encoding="utf-8",  # pragma: no mutate[case-insensitive] -- Codecs ignore case.
     ).strip()
 
 

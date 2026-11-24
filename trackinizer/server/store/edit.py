@@ -91,7 +91,7 @@ class _EditMixin(_CascadeAuditMixin):
             # can't blank a required field that the route validates. A
             # whitespace-only title is no title.
             raise ConflictError(
-                "title cannot be empty",  # pragma: no mutate[diagnostic-text]
+                "title cannot be empty",  # pragma: no mutate[diagnostic-text] -- Clients display this 409 detail; no production code matches its wording.
             )
         return await self._set_field(
             target_id,

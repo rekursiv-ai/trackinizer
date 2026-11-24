@@ -126,8 +126,7 @@ async def session_reaper_loop(
 
     """
     while True:
-        # A periodic sweep; the interval is the schedule.
-        await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- See above.
+        await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- The sweep period.
         try:
             _ = await reap_silent_sessions(store, now=datetime.now(UTC))
         except Exception:

@@ -292,7 +292,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         principal: Principal | None = None,
         conn: Conn | None = None,
         row_id: UUID | None = None,
-    ) -> UUID:  # pragma: no mutate block
+    ) -> UUID:  # pragma: no mutate block -- Its SQL needs a real database.
         """Single insert path for every submit_X; ``row_id`` None mints the id."""
         if conn is not None:
             return await self._submit_on_conn(
@@ -378,7 +378,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         post_insert: PostInsert | None,
         principal: Principal | None = None,
         row_id: UUID | None = None,
-    ) -> UUID:  # pragma: no mutate block
+    ) -> UUID:  # pragma: no mutate block -- Its SQL needs a real database.
         """Probe + insert one inquiry on an already-open transaction."""
         # The effective idempotency key is the body field if present, else the
         # slot the route layer set from an ``Idempotency-Key`` header. Both

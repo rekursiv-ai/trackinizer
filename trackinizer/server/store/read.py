@@ -820,7 +820,7 @@ class _ReadMixin(_StoreShared):
         # comparison with a min-UUID sentinel on page one mirrors the
         # next-page semantics exactly minus the tie.
         cursor_id = after_id if after_id is not None else UUID(int=0)
-        # pragma: no mutate[case-insensitive] start
+        # pragma: no mutate[case-insensitive] start -- Postgres reads these keywords and unquoted names ignoring case.
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
                 vetted_sql(

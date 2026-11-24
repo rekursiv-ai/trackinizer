@@ -355,7 +355,7 @@ class _Kept:
 
 async def _exported_columns(conn: Conn) -> dict[str, tuple[tuple[str, bool], ...]]:
     """Each exported table's columns in order, flagged when stored as ``json``."""
-    # pragma: no mutate[case-insensitive] start
+    # pragma: no mutate[case-insensitive] start -- PostgreSQL folds unquoted keywords and identifiers to lower case.
     rows = await conn.fetch(
         "SELECT table_name, column_name, data_type "
         "FROM information_schema.columns "

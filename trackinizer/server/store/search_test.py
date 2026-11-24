@@ -9,7 +9,7 @@ the reader's test core hands the semantic arm. The properties are the database's
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final, cast, override
 from uuid import UUID, uuid4
 
@@ -26,6 +26,7 @@ from trackinizer.server.notify import tx
 from trackinizer.server.regex_timeout import STATEMENT_TIMEOUT_MS
 from trackinizer.server.store.search import (
     _INQUIRY_KEYWORDS,
+    _INQUIRY_TEXT,
     _NOTE_KEYWORDS,
     INQUIRY_TEXT_COLUMNS,
     RRF_K,
@@ -34,9 +35,13 @@ from trackinizer.server.store.search import (
     VectorHit,
     _ArmHit,
     _fts_arm,
+    _inquiry_keyword_arm,
+    _inquiry_labels,
     _InquiryReader,
+    _kept,
     _kept_units,
     _merge,
+    _reads_all,
     _semantic_arm,
     _spawned_below,
     search_inquiries,
@@ -44,7 +49,7 @@ from trackinizer.server.store.search import (
 )
 from trackinizer.server.store.session import SPAWN_EDGE_SQL
 from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
-from trackinizer.server.values import vetted_sql
+from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.wire_science_chat import FORK_EDGE_LABEL
 
@@ -1317,6 +1322,249 @@ async def test_a_malformed_inquiry_search_is_refused_before_any_read(
         )
 
     assert (engine.conn.mock_calls, arm.asked) == ([], [])
+
+
+def _keyword_query(
+    reader: _InquiryReader,
+    query: str,
+    limit: int,
+) -> tuple[list[str], list[object]]:
+    """Return the tests the inquiry keyword arm splices in and the values it binds."""
+    params: list[object] = [query, limit]
+    text_owner = reader.inquiry(params)
+    note_owner = reader.inquiry(params)
+    note_target = reader.reads("e.to_id", params)
+    return [text_owner, note_owner, note_target], params
+
+
+def _spliced(sql: object, *, once: list[str], twice: list[str]) -> bool:
+    """Say whether ``sql`` holds each of ``once`` once and each of ``twice`` twice."""
+    text = str(sql)
+    return all(text.count(each) == 1 for each in once) and all(
+        text.count(each) == 2 for each in twice
+    )
+
+
+_ISSUE_READER: Final = _InquiryReader(
+    policy=_OwnPolicy(),
+    principal=_ME,
+    sessions=_ANYONE.reader,
+    kind="Issue",
+)
+
+
+@pytest.mark.asyncio
+async def test_an_inquiry_search_runs_both_arms_and_cuts_at_twenty_by_default() -> None:
+    conn = make_conn()
+    owner = UUID(int=1)
+    unit = {"owner_id": owner, "field": "text"}
+    label = {"kind": "Issue", "seq": 7, "title": "t", "snippet": "s"}
+    conn.fetch.side_effect = [[unit], [unit | label]]
+    arm = _Fixed(hits=[VectorHit(owner_id=owner, part=0, idx=0, field="text", chunk=0)])
+    engine = FakeEngine(conn)
+
+    hits, searched = await search_inquiries(
+        cast("DatabaseEngine", engine),
+        query="q",
+        vectors=arm,
+        policy=None,
+        principal=None,
+        sessions=_ANYONE.reader,
+    )
+
+    assert [(hit.inquiry_id, hit.source) for hit in hits] == [(owner, "both")]
+    assert (searched, arm.asked) == (True, [("q", True, 20)])
+    assert arm.kept[0][0] is engine
+    keyword, _labels = conn.fetch.await_args_list
+    assert keyword.args[1:3] == ("q", 20)
+
+
+@pytest.mark.asyncio
+async def test_an_inquiry_search_binds_its_reader_query_and_limit_into_each_read() -> (
+    None
+):
+    conn = make_conn()
+    first, second = UUID(int=1), UUID(int=2)
+    label = {"kind": "Issue", "seq": 7, "title": "t", "snippet": "s"}
+    conn.fetch.side_effect = [
+        [{"owner_id": each, "field": "text"} for each in (first, second)],
+        [{"owner_id": first, "field": "text"} | label],
+    ]
+    arm = _Fixed(hits=[])
+
+    hits, _searched = await search_inquiries(
+        cast("DatabaseEngine", FakeEngine(conn)),
+        query="q",
+        vectors=arm,
+        policy=_OwnPolicy(),
+        principal=_ME,
+        sessions=_ANYONE.reader,
+        kind="Issue",
+        limit=1,
+    )
+
+    units: list[object] = []
+    _ = _ISSUE_READER.units(units)
+    assert [hit.inquiry_id for hit in hits] == [first]
+    assert arm.asked == [("q", True, 1)]
+    assert arm.kept[0][2] == units
+    keyword, labels = conn.fetch.await_args_list
+    fragments, bound = _keyword_query(_ISSUE_READER, "q", 1)
+    assert keyword.args[1:] == tuple(bound)
+    assert _spliced(
+        keyword.args[0],
+        once=fragments,
+        twice=[_INQUIRY_KEYWORDS, _NOTE_KEYWORDS],
+    )
+    assert labels.args[1:] == ([first], ["text"], "q")
+
+
+@pytest.mark.asyncio
+async def test_the_keyword_arm_binds_the_query_limit_and_reader_and_returns_plain_ids() -> (
+    None
+):
+    conn = make_conn()
+    owner = UUID(int=4)
+    conn.fetch.return_value = [{"owner_id": str(owner), "field": "text"}]
+
+    units = await _inquiry_keyword_arm(
+        cast("Conn", conn),
+        "q",
+        limit=3,
+        reader=_ISSUE_READER,
+    )
+
+    assert units == [(owner, "text")]
+    assert conn.fetch.await_args is not None
+    fragments, bound = _keyword_query(_ISSUE_READER, "q", 3)
+    assert conn.fetch.await_args.args[1:] == tuple(bound)
+    assert _spliced(
+        conn.fetch.await_args.args[0],
+        once=fragments,
+        twice=[_INQUIRY_KEYWORDS, _NOTE_KEYWORDS],
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_labels_bind_the_units_and_the_query_and_return_plain_ids() -> None:
+    conn = make_conn()
+    owner, other = UUID(int=4), UUID(int=5)
+    conn.fetch.return_value = [
+        {
+            "owner_id": str(owner),
+            "field": "text",
+            "kind": "Issue",
+            "seq": 7,
+            "title": "t",
+            "snippet": "s",
+        },
+    ]
+
+    labels = await _inquiry_labels(
+        cast("Conn", conn),
+        [(owner, "text"), (other, "edge:narrows:x")],
+        "q",
+    )
+
+    assert labels == {(owner, "text"): ("Issue", 7, "t", "s")}
+    assert conn.fetch.await_args is not None
+    assert conn.fetch.await_args.args[1:] == (
+        [owner, other],
+        ["text", "edge:narrows:x"],
+        "q",
+    )
+    assert _spliced(conn.fetch.await_args.args[0], once=[_INQUIRY_TEXT], twice=[])
+
+
+@pytest.mark.asyncio
+async def test_the_full_text_arm_splices_the_manifest_bound_and_the_scope_test() -> (
+    None
+):
+    conn = make_conn()
+    scope = FeedScope(actors=("agent",), reader=_OPEN_READER)
+
+    _ = await _fts_arm(cast("Conn", conn), "lock", limit=2, scope=scope)
+
+    params: list[object] = ["lock", 2]
+    manifest_join, manifest_predicate = manifest_bound("r")
+    visible = _kept(params, scope=scope)
+    assert conn.fetch.await_args is not None
+    assert conn.fetch.await_args.args[1:] == tuple(params)
+    assert _spliced(
+        conn.fetch.await_args.args[0],
+        once=[manifest_join, manifest_predicate, visible],
+        twice=[],
+    )
+
+
+def test_the_semantic_arms_test_splices_the_scope_test_of_a_single_row() -> None:
+    params: list[object] = []
+    expected: list[object] = []
+
+    test = _kept_units(params, scope=_ANYONE)
+
+    kept = _kept(
+        expected,
+        scope=_ANYONE,
+    )
+    assert _spliced(test, once=[kept], twice=[])
+    assert params == expected
+
+
+def test_an_inquiry_of_no_kind_is_tested_by_its_read_alone() -> None:
+    reader = _InquiryReader(
+        policy=_OwnPolicy(),
+        principal=_ME,
+        sessions=_ANYONE.reader,
+        kind=None,
+    )
+    params: list[object] = []
+    expected: list[object] = []
+
+    test = reader.inquiry(params)
+
+    assert test == reader.reads("i.id", expected)
+    assert params == expected
+
+
+def test_a_scope_keeps_a_session_by_each_of_its_clauses_and_the_readers_test() -> None:
+    scope = FeedScope(actors=("agent",), kinds=("message",), reader=_OPEN_READER)
+    params: list[object] = []
+    expected: list[object] = []
+
+    test = _kept(params, scope=scope)
+
+    clauses = scope.clauses(expected, kind="")
+    visible = visible_sql("i", params=expected, reader=_OPEN_READER)
+    assert len(clauses) == 2
+    assert test.startswith(" AND ".join(clauses))
+    assert test.endswith(visible)
+    assert params == expected
+
+
+_NO_SESSIONS: Final = replace(_EVERYTHING, every_session=False)
+_NO_CHATS: Final = replace(
+    _EVERYTHING,
+)
+_NO_OVERSIGHT: Final = replace(_EVERYTHING, oversight=False)
+_NO_PRIVATE: Final = replace(_EVERYTHING, hidden=False)
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [
+        pytest.param(_OPEN_READER, id="audiences"),
+        pytest.param(_NO_SESSIONS, id="every session"),
+        pytest.param(_NO_CHATS, id="every chat"),
+        pytest.param(_NO_OVERSIGHT, id="oversight"),
+        pytest.param(_NO_PRIVATE, id="hidden"),
+    ],
+)
+def test_a_reader_short_of_any_one_grant_does_not_read_all(
+    reader: SessionReader,
+) -> None:
+    assert not _reads_all(reader)
+    assert _reads_all(_EVERYTHING)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

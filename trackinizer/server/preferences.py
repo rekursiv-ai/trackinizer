@@ -759,7 +759,7 @@ def assistant_view(stored: object) -> dict[str, JsonValue]:
     view = stored_preferences(stored).model_dump(
         # Every field dumps alike in either mode today; "json" keeps a later
         # non-JSON type (a datetime, a set) sendable.
-        mode="json",  # pragma: no mutate
+        mode="json",  # pragma: no mutate -- JSON-native fields: modes dump alike.
         include=set(ASSISTANT_KEYS),
     )
     return from_plain(view, dict[str, JsonValue])
@@ -868,7 +868,10 @@ async def write_preferences(
         "WHERE id = $3 RETURNING preferences",
         # Every field dumps alike in either mode today; "json" keeps a later
         # non-JSON type (a datetime, a set) storable as jsonb.
-        checked.model_dump(mode="json", include=set(chosen)),  # pragma: no mutate
+        checked.model_dump(
+            mode="json",  # pragma: no mutate -- Fields are JSON-native.
+            include=set(chosen),
+        ),
         # A retired key goes with the next write, so a stored value never lingers.
         [
             *sorted(key for key, value in change.items() if value is None),

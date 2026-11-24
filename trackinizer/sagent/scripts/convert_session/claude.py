@@ -1907,7 +1907,7 @@ class _Reader:
         # it has to be carried forward from the ``tool_use`` block that opened
         # it.
         self._tools: dict[str, tuple[str, str | None]] = {}
-        self._started = False  # pragma: no mutate[truthiness]
+        self._started = False  # pragma: no mutate[truthiness] -- Only `if not self._started:` reads it, as a truth value.
         self._ends_newline = True
         self._stated_newline = True
         # Where the opening clear will sit once it is known. Claude spreads

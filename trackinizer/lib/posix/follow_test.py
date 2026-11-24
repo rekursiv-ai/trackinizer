@@ -1614,7 +1614,7 @@ async def _live_tree(root: Path, target: Path) -> None:
                     writer.write("partial")
                     writer.flush()
                     # Proves absence: a partial line must not be yielded in this window.
-                    await asyncio.sleep(0.02)  # house-ignore[sleep] -- See above.
+                    await asyncio.sleep(0.02)  # house-ignore[sleep] -- No partial line.
                     assert not pending.done()
                     writer.write("-line\n")
                     writer.flush()

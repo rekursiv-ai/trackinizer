@@ -668,8 +668,7 @@ def _convert_all(
 def _watch_launcher(launcher: int, poll_sec: float) -> None:
     """Poll ``launcher`` every ``poll_sec`` and exit the process once it is gone."""
     while True:
-        # No portable event marks the launcher's exit; see above.
-        time.sleep(poll_sec)  # house-ignore[sleep] -- See above.
+        time.sleep(poll_sec)  # house-ignore[sleep] -- The launcher's exit has no event.
         try:
             os.kill(launcher, 0)
         except OSError:

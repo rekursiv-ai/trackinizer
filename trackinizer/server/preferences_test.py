@@ -712,6 +712,21 @@ def test_a_draft_names_its_base_even_when_unset() -> None:
     assert read.drafts["i1:title"].base is None
 
 
+def test_a_draft_base_up_to_100_000_json_bytes_is_kept_and_no_more() -> None:
+    fits = "x" * 99_998
+    kept = Preferences.model_validate(
+        {"drafts": {"i1:title": {"text": "", "base": fits}}},
+    )
+    assert kept.drafts["i1:title"].base == fits
+    with pytest.raises(pydantic.ValidationError) as refused:
+        Preferences.model_validate(
+            {"drafts": {"i1:title": {"text": "", "base": "x" * 99_999}}},
+        )
+    assert [error["msg"] for error in refused.value.errors()] == [
+        "Value error, is larger than 100000 bytes",
+    ]
+
+
 @pytest.mark.parametrize(
     "window",
     [
