@@ -25,6 +25,7 @@ from trackinizer.addons.embedding.search import (
 )
 from trackinizer.addons.embedding.units import Settings
 from trackinizer.conftest import FakeEngine, executed_sql, make_conn, rolled_back
+from trackinizer.server.regex_timeout import STATEMENT_TIMEOUT_MS
 from trackinizer.server.store.search import VectorHit
 from trackinizer.server.values import vec_to_text
 
@@ -52,6 +53,7 @@ _SQL: Final = (
 )
 _SET_WIDTH: Final = "SELECT set_config('hnsw.ef_search', $1, true)"
 _ITERATE: Final = "SET LOCAL hnsw.iterative_scan = strict_order"
+_TIMEOUT: Final = f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"
 _VERSION: Final = "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
 
 
@@ -184,7 +186,7 @@ async def test_an_unfiltered_search_runs_the_one_statement() -> None:
 
     hits = await _ask(_loaded(), _engine(conn), filtered=False, limit=7)
 
-    assert executed_sql(conn) == [_SQL]
+    assert executed_sql(conn) == ["BEGIN", _TIMEOUT, _SQL, "COMMIT"]
     assert conn.fetch.await_args is not None
     assert conn.fetch.await_args.args[1:] == (await _query_text(), 7, 0)
     assert hits == [
@@ -213,7 +215,7 @@ async def test_the_iterative_scan_is_set_for_one_transaction() -> None:
 
     hits = await _ask(_loaded(), _engine(conn), filtered=True, limit=3)
 
-    assert executed_sql(conn) == ["BEGIN", _ITERATE, _SQL, "COMMIT"]
+    assert executed_sql(conn) == ["BEGIN", _TIMEOUT, _ITERATE, _SQL, "COMMIT"]
     assert conn.fetch.await_args is not None
     assert conn.fetch.await_args.args[1:] == (await _query_text(), 3, 0)
     assert len(hits or []) == 3
@@ -246,6 +248,7 @@ async def test_widening_asks_for_more_candidates_until_the_limit_is_filled_or_th
 
     assert executed_sql(conn) == [
         "BEGIN",
+        _TIMEOUT,
         _SQL,
         *[statement for _ in widths for statement in (_SET_WIDTH, _SQL)],
         "COMMIT",
@@ -272,13 +275,13 @@ async def test_widening_asks_for_more_candidates_until_the_limit_is_filled_or_th
 @pytest.mark.parametrize(
     ("version", "statements"),
     [
-        ("0.8.0", ["BEGIN", _ITERATE, _SQL, "COMMIT"]),
-        ("0.10.2", ["BEGIN", _ITERATE, _SQL, "COMMIT"]),
-        ("1.0.0", ["BEGIN", _ITERATE, _SQL, "COMMIT"]),
-        ("0.7.4", ["BEGIN", _SQL, "COMMIT"]),
-        ("0.5.1", ["BEGIN", _SQL, "COMMIT"]),
-        (None, ["BEGIN", _SQL, "COMMIT"]),
-        ("unreleased", ["BEGIN", _SQL, "COMMIT"]),
+        ("0.8.0", ["BEGIN", _TIMEOUT, _ITERATE, _SQL, "COMMIT"]),
+        ("0.10.2", ["BEGIN", _TIMEOUT, _ITERATE, _SQL, "COMMIT"]),
+        ("1.0.0", ["BEGIN", _TIMEOUT, _ITERATE, _SQL, "COMMIT"]),
+        ("0.7.4", ["BEGIN", _TIMEOUT, _SQL, "COMMIT"]),
+        ("0.5.1", ["BEGIN", _TIMEOUT, _SQL, "COMMIT"]),
+        (None, ["BEGIN", _TIMEOUT, _SQL, "COMMIT"]),
+        ("unreleased", ["BEGIN", _TIMEOUT, _SQL, "COMMIT"]),
     ],
 )
 async def test_a_filtered_search_is_scanned_as_the_installed_pgvector_allows(
@@ -431,6 +434,25 @@ async def test_the_units_nearest_a_session_are_other_sessions_and_gated_as_it_is
 
     assert [(hit.owner_id, hit.idx) for hit in found or []] == [(near, 0), (far, 0)]
     assert hidden == []
+
+
+@pytest.mark.asyncio
+async def test_the_vector_arm_sets_statement_timeout_on_owner_lookup() -> None:
+    """Near-owner lookup also bounds its query with ``SET LOCAL statement_timeout``."""
+    conn = make_conn()
+    conn.fetchval.return_value = None
+
+    hits = await _loaded().nearest(
+        _engine(conn),
+        query=UUID(int=9),
+        kept=_first_records,
+        filtered=False,
+        limit=7,
+    )
+
+    assert hits == []
+    assert executed_sql(conn)[:2] == ["BEGIN", _TIMEOUT]
+    assert executed_sql(conn)[-1] == "COMMIT"
 
 
 class _Counting(HashEmbedder):

@@ -23,6 +23,7 @@ from trackinizer.server.access_policy import (
 )
 from trackinizer.server.audience import SessionReader, visible_sql
 from trackinizer.server.notify import tx
+from trackinizer.server.regex_timeout import STATEMENT_TIMEOUT_MS
 from trackinizer.server.store.search import (
     _INQUIRY_KEYWORDS,
     _NOTE_KEYWORDS,
@@ -220,8 +221,12 @@ async def test_each_mode_returns_only_its_own_arm(
     )
 
     assert arm.asked == asked
+    timeout_sql = f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"
+    assert timeout_sql in executed_sql(conn)
     assert [
-        next(each for each in statements if each in sql) for sql in executed_sql(conn)
+        next(each for each in statements if each in sql)
+        for sql in executed_sql(conn)
+        if any(each in sql for each in statements)
     ] == statements
     assert [(h.idx, h.source) for h in hits] == [
         (0, "fts" if mode == "keyword" else "semantic"),
@@ -244,7 +249,8 @@ async def test_fused_merges_both_arms() -> None:
     assert [(each, test) for each, test, _ in arm.kept] == [
         (engine, _kept_units([], scope=WHOLE_FEED)),
     ]
-    assert len(executed_sql(conn)) == 2
+    assert f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}" in executed_sql(conn)
+    assert len(conn.fetch.await_args_list) == 2
     assert conn.fetch.await_args is not None
     assert conn.fetch.await_args.args[1:3] == ("q", 20)
 
@@ -270,7 +276,11 @@ async def test_a_search_near_a_session_asks_the_vector_arm_for_it_and_reads_no_t
     )
 
     assert arm.asked == [(near, True, 5)]
-    assert ["left(r.text" in sql for sql in executed_sql(conn)] == [True]
+    assert [
+        "left(r.text" in str(call.args[0]) for call in conn.fetch.await_args_list
+    ] == [
+        True,
+    ]
     assert [(h.idx, h.source) for h in hits] == [(0, "semantic")]
     assert searched
     # The arm's test: no unit of a session it spawned or was spawned by, then the
@@ -1215,8 +1225,10 @@ async def test_each_inquiry_mode_returns_only_its_own_arm(
     )
 
     assert arm.asked == asked
+    assert f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}" in executed_sql(conn)
     assert [
-        next(each for each in statements if each in sql) for sql in executed_sql(conn)
+        next(each for each in statements if each in str(call.args[0]))
+        for call in conn.fetch.await_args_list
     ] == statements
     assert hits == [
         InquirySearchHit(
@@ -1257,7 +1269,11 @@ def test_a_unit_is_read_at_each_end_and_a_session_end_by_its_audience() -> None:
             " AND EXISTS (SELECT 1 FROM inquiries s WHERE s.id = ",
             reference,
             " AND (s.kind <> 'AgentSession' OR ",
-            visible_sql("s", params=expected, reader=_ANYONE.reader),
+            visible_sql(
+                "s",
+                params=expected,
+                reader=_ANYONE.reader,
+            ),
             "))",
         )
         for reference in ("i.id", "NULLIF(split_part(v.field, ':', 3), '')::uuid")

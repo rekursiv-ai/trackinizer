@@ -73,6 +73,8 @@ class SweepState:
         before the first page of each.
       owners: The backlog has passed the records and walks the inquiries.
       walked: The backlog has been walked to its oldest source.
+      cleaned: Rows and indexes of other settings keys have been removed after
+        the walk.
       worked: The last round embedded or deleted something.
       written: The units the last round wrote.
 
@@ -82,6 +84,7 @@ class SweepState:
     after: tuple[object, ...] | None = None
     owners: bool = False
     walked: bool = False
+    cleaned: bool = False
     worked: bool = False
     written: int = 0
 
@@ -157,7 +160,7 @@ async def sweep_once(
         through = str(await conn.fetchval("SELECT pg_current_snapshot()::text"))
     worked = False
     written = 0
-    if state.since is not None:
+    if state.since is not None and state.since != through:
         for source in (records,) if owners is None else (records, owners):
             while page := await _changed(
                 engine,
@@ -174,7 +177,12 @@ async def sweep_once(
                     slice_units=slice_units,
                 )
                 worked = True
-    after, walking_owners, walked = state.after, state.owners, state.walked
+    after, walking_owners, walked, cleaned = (
+        state.after,
+        state.owners,
+        state.walked,
+        state.cleaned,
+    )
     if not walked:
         source = records if owners is None or not walking_owners else owners
         page = await _backlog(engine, source, after=after, limit=slice_units)
@@ -193,11 +201,14 @@ async def sweep_once(
             worked = True
         else:
             walked = True
-    if walked:
+    if walked and not cleaned:
         async with engine.acquire() as conn:
+            # ``< OR >`` rather than ``<>`` so the planner reads ``vectors_settings``
+            # instead of scanning the whole vectors table once all rows match ``$1``.
             deleted = await conn.fetchval(
                 "WITH gone AS (DELETE FROM embedding.vectors WHERE ctid IN "
-                "(SELECT ctid FROM embedding.vectors WHERE settings <> $1 LIMIT 10000) "
+                "(SELECT ctid FROM embedding.vectors "
+                "WHERE settings < $1 OR settings > $1 LIMIT 10000) "
                 "RETURNING 1) SELECT count(*) FROM gone",
                 settings.key,
             )
@@ -205,11 +216,13 @@ async def sweep_once(
                 worked = True
             else:
                 await drop_other_indexes(conn, settings)
+                cleaned = True
     return SweepState(
         since=through,
         after=after,
         owners=walking_owners,
         walked=walked,
+        cleaned=cleaned,
         worked=worked,
         written=written,
     )

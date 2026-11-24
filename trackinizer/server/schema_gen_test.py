@@ -277,12 +277,22 @@ class TestSchema:
             "schema.079.sql",
             "schema.080.sql",
             "schema.081.sql",
+            "schema.082.sql",
         ]
 
     def test_the_pin_check_spells_the_wire_shape(self) -> None:
         """The baseline and 040 check the shape ``wire/audience.py`` accepts."""
         for sql in (load_sql("schema"), load_sql("schema.040")):
             assert f"CHECK (open_into ~ '{AUDIENCE_SHAPE}')" in sql
+
+    def test_migration_082_and_baseline_declare_chat_session_and_share_indexes(
+        self,
+    ) -> None:
+        """The baseline and 082 both define the partial CLI/chat and share-email indexes."""
+        for sql in (load_sql("schema"), load_sql("schema.082")):
+            assert "idx_inquiries_agentsession_cli_session_id" in sql
+            assert "idx_inquiries_science_chat_sessions" in sql
+            assert "idx_science_chat_shares_email" in sql
 
     def test_the_session_audience_column_spells_the_wire_shape(self) -> None:
         """``types`` cannot import ``wire``, so the two spellings are compared here."""

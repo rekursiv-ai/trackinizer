@@ -531,7 +531,8 @@ async def test_two_writers_of_one_source_both_finish_and_leave_its_rows_once(
 _SNAPSHOT: Final = "SELECT pg_current_snapshot()::text"
 _DELETE_OTHER_KEYS: Final = (
     "WITH gone AS (DELETE FROM embedding.vectors WHERE ctid IN "
-    "(SELECT ctid FROM embedding.vectors WHERE settings <> $1 LIMIT 10000) "
+    "(SELECT ctid FROM embedding.vectors "
+    "WHERE settings < $1 OR settings > $1 LIMIT 10000) "
     "RETURNING 1) SELECT count(*) FROM gone"
 )
 _JOIN: Final = (
@@ -576,7 +577,12 @@ async def test_a_walked_round_deletes_other_keys_then_drops_their_indexes(
         slice_units=2,
     )
 
-    assert state == SweepState(since="5:9:", walked=True, worked=worked)
+    assert state == SweepState(
+        since="5:9:",
+        walked=True,
+        cleaned=deleted == 0,
+        worked=worked,
+    )
     assert [call.args for call in conn.fetchval.await_args_list] == [
         (_SNAPSHOT,),
         (_DELETE_OTHER_KEYS, settings.key),
@@ -738,7 +744,13 @@ async def test_a_changed_page_alone_is_work() -> None:
         slice_units=4,
     )
 
-    assert state == SweepState(since="5:9:", walked=True, worked=True, written=1)
+    assert state == SweepState(
+        since="5:9:",
+        walked=True,
+        cleaned=True,
+        worked=True,
+        written=1,
+    )
 
 
 @pytest.mark.asyncio
@@ -756,7 +768,36 @@ async def test_an_empty_backlog_ends_the_walk() -> None:
         slice_units=2,
     )
 
-    assert state == SweepState(since="5:9:", walked=True)
+    assert state == SweepState(since="5:9:", walked=True, cleaned=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("through", "changed_fetches"),
+    [("5:9:", 0), ("5:10:", 1)],
+    ids=["unchanged-snapshot", "advanced-snapshot"],
+)
+async def test_a_cleaned_round_does_not_rescan_other_keys(
+    through: str,
+    changed_fetches: int,
+) -> None:
+    """Once cleaned, idle rounds skip stale-key deletes; an unchanged snapshot skips deltas."""
+    conn = make_conn()
+    conn.fetchval.side_effect = [through]
+    conn.fetch.side_effect = [[]]
+    model = HashEmbedder(dim=2)
+
+    state = await sweep_once(
+        cast("DatabaseEngine", FakeEngine(conn)),
+        model=model,
+        settings=_settings(model),
+        state=SweepState(since="5:9:", walked=True, cleaned=True),
+        slice_units=2,
+    )
+
+    assert state == SweepState(since=through, walked=True, cleaned=True)
+    assert [call.args for call in conn.fetchval.await_args_list] == [(_SNAPSHOT,)]
+    assert len(conn.fetch.await_args_list) == changed_fetches
 
 
 def _row(

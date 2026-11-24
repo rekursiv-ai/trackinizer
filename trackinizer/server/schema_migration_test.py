@@ -1141,6 +1141,7 @@ async def test_migration_043_matches_the_baseline_science_chat_tables(
 
     await conn.execute("DROP TABLE science_chat_shares, science_chat_tombstones")
     await conn.execute(load_sql("schema.043"))
+    await conn.execute(load_sql("schema.082"))
     migrated = [await _table_shape(conn, table) for table in tables]
     # Replaying it over the existing table is a no-op, not an error.
     await conn.execute(load_sql("schema.043"))
@@ -3169,6 +3170,27 @@ async def test_migration_081_drops_the_old_embedding_tables_a_fresh_install_lack
 
     assert await _catalog_names_aside(conn) == fresh_install
     assert "embedding_tables_down.sql" not in {name for name, _ in schema_migrations()}
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_082_matches_a_fresh_schema(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    """A 081 database migrated by 082, once or twice, has a fresh install's catalog."""
+    conn = pglite_rollback_conn
+    await conn.execute(
+        "DROP INDEX idx_inquiries_agentsession_cli_session_id, "
+        "idx_inquiries_science_chat_sessions, idx_science_chat_shares_email",
+    )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.082.sql'")
+    assert await _catalog_names_aside(conn) != fresh_install
+
+    await conn.execute(load_sql("schema.082"))
+    await conn.execute(load_sql("schema.082"))
+
+    assert await _catalog_names_aside(conn) == fresh_install
 
 
 async def _stamps(conn: Conn) -> set[str]:

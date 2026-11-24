@@ -317,20 +317,21 @@ async def web_search_sessions(
             status_code=400,
             detail="spawned names what near spawned; give near",
         )
-    hits, searched = await search_sessions(
-        get_store(request).engine,
-        query=q if near is None else near,
-        spawned=spawned,
-        vectors=_state(request).vector_search,
-        mode=mode,
-        limit=limit,
-        scope=feed_scope(
-            request,
-            identity,
-            whose=whose or _searched_by_default(request, identity),
-            hidden=hidden,
-        ),
-    )
+    with regex_failures_as_400():
+        hits, searched = await search_sessions(
+            get_store(request).engine,
+            query=q if near is None else near,
+            spawned=spawned,
+            vectors=_state(request).vector_search,
+            mode=mode,
+            limit=limit,
+            scope=feed_scope(
+                request,
+                identity,
+                whose=whose or _searched_by_default(request, identity),
+                hidden=hidden,
+            ),
+        )
     return {
         "hits": [_session_hit_to_dict(hit) for hit in hits],
         "semantic": searched,
@@ -370,17 +371,18 @@ async def web_search_inquiries(
     """
     store = get_store(request)
     try:
-        hits, searched = await search_inquiries(
-            store.engine,
-            query=q,
-            vectors=_state(request).vector_search,
-            policy=store.access_policy,
-            principal=await request_principal(request, identity),
-            sessions=session_reader(request, identity),
-            mode=mode,
-            kind=kind,
-            limit=limit,
-        )
+        with regex_failures_as_400():
+            hits, searched = await search_inquiries(
+                store.engine,
+                query=q,
+                vectors=_state(request).vector_search,
+                policy=store.access_policy,
+                principal=await request_principal(request, identity),
+                sessions=session_reader(request, identity),
+                mode=mode,
+                kind=kind,
+                limit=limit,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {

@@ -20,6 +20,7 @@ from uuid import UUID, uuid4
 from fastapi import FastAPI, HTTPException, Request
 from treekle import from_plain
 
+import asyncpg
 import pytest
 
 from trackinizer.conftest import make_store
@@ -554,6 +555,30 @@ async def test_a_malformed_inquiry_search_is_400(store: Store) -> None:
         with pytest.raises(HTTPException) as caught:
             await web.web_search_inquiries(request, q=q, identity=_VIEWER, limit=limit)
         assert caught.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_search_statement_timeout_is_reported_as_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A statement-timeout cancellation on session or inquiry search returns 400, not 500."""
+
+    async def _timed_out(*_args: object, **_kwargs: object) -> object:
+        raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(web, "search_sessions", _timed_out)
+    monkeypatch.setattr(web, "search_inquiries", _timed_out)
+    request = _request(make_store()[0])
+
+    with pytest.raises(HTTPException) as sessions_exc:
+        await web.web_search_sessions(request, q="x", identity=_VIEWER)
+    with pytest.raises(HTTPException) as inquiries_exc:
+        await web.web_search_inquiries(request, q="x", identity=_VIEWER)
+
+    assert sessions_exc.value.status_code == 400
+    assert "time budget" in sessions_exc.value.detail
+    assert inquiries_exc.value.status_code == 400
+    assert "time budget" in inquiries_exc.value.detail
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
