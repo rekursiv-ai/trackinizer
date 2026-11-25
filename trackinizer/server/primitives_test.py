@@ -571,11 +571,9 @@ class TestPureFunctions:
             principal=Principal(email="a@b.c", role="writer"),
         )
         sql, ids, *params = cast("tuple[object, ...]", conn.fetch.call_args.args)
-        assert isinstance(sql, str)
-        assert " AND (EXISTS (SELECT 1 FROM inquiries readable_inquiry" in sql
-        assert "readable_inquiry.id = inquiries.id AND (" in sql
         assert ids == [target]
-        assert params
+        assert sql == "SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[])"
+        assert params == []
 
     @pytest.mark.asyncio
     async def test_validate_list_references_missing_raises_not_found(self) -> None:

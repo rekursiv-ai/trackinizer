@@ -1543,9 +1543,6 @@ def test_a_scope_keeps_a_session_by_each_of_its_clauses_and_the_readers_test() -
 
 
 _NO_SESSIONS: Final = replace(_EVERYTHING, every_session=False)
-_NO_CHATS: Final = replace(
-    _EVERYTHING,
-)
 _NO_OVERSIGHT: Final = replace(_EVERYTHING, oversight=False)
 _NO_PRIVATE: Final = replace(_EVERYTHING, hidden=False)
 
@@ -1555,7 +1552,6 @@ _NO_PRIVATE: Final = replace(_EVERYTHING, hidden=False)
     [
         pytest.param(_OPEN_READER, id="audiences"),
         pytest.param(_NO_SESSIONS, id="every session"),
-        pytest.param(_NO_CHATS, id="every chat"),
         pytest.param(_NO_OVERSIGHT, id="oversight"),
         pytest.param(_NO_PRIVATE, id="hidden"),
     ],

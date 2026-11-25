@@ -408,19 +408,32 @@ def test_prune_survives_a_child_it_cannot_stat(
     good = tmp_path / "2-good"
     good.mkdir()
     os.utime(good, (0, 0))
-    real_stat = Path.stat
+    real_iterdir, real_stat, real_is_dir = Path.iterdir, Path.stat, Path.is_dir
 
     def stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
         if self.name == "1-bad":
             raise PermissionError(self)
         return real_stat(self, follow_symlinks=follow_symlinks)
 
+    # As Python 3.12's is_dir does, through the stat it cannot make.
+    def is_dir(self: Path) -> bool:
+        if self.name == "1-bad":
+            raise PermissionError(self)
+        return real_is_dir(self)
+
+    # The unreadable child comes first, so a prune it stopped would miss ``good``.
+    def iterdir(self: Path) -> list[Path]:
+        return sorted(real_iterdir(self))
+
     monkeypatch.setattr(
         "trackinizer.server.config._owner_dead",
         _owner_always_dead,
     )
     monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    monkeypatch.setattr(Path, "iterdir", iterdir)
     _prune_stale_ephemeral_dirs(tmp_path, stale_seconds=60)
+    monkeypatch.undo()
     assert bad.exists()
     assert not good.exists()
 
