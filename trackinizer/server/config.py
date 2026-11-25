@@ -896,11 +896,12 @@ def _prune_stale_ephemeral_dirs(root: Path, *, stale_seconds: int = 60 * 60) -> 
     """Remove ephemeral workdirs left behind by hard-killed servers."""
     with suppress(OSError):
         for child in root.iterdir():
-            if not child.is_dir():
-                continue
+            # Python 3.12's is_dir raises what a failed stat raises; 3.14's says False.
             with suppress(OSError):
-                if _owner_dead(child.name) and (
-                    time.time() - child.stat().st_mtime > stale_seconds
+                if (
+                    child.is_dir()
+                    and _owner_dead(child.name)
+                    and time.time() - child.stat().st_mtime > stale_seconds
                 ):
                     shutil.rmtree(child, ignore_errors=True)
 

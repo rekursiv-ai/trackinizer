@@ -767,7 +767,7 @@ class TestRoutes:
         assert f"AND c.kind NOT IN {web._NOT_WORK_SQL}" in sql
         assert "c.api_key_id = ANY($2::uuid[])" in sql
         assert "c.api_key_id IS NULL AND c.actor = $3" in sql
-        assert "@> ARRAY['workspace']::text[] AND (" in sql
+        assert "@> ARRAY['workspace']::text[] ORDER BY" in sql
         assert work_call.args[1:4] == (7, [key_id], _TEST_IDENTITY.email)
         executed = [str(c.args[0]) for c in engine.conn.execute.call_args_list]
         assert any("SET LOCAL statement_timeout" in s for s in executed)
