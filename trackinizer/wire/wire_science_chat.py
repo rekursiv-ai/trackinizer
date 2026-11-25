@@ -237,6 +237,11 @@ class ChatHead(BaseModel):
     live: bool
     """Whether the session is open: not ended."""
 
+    host: str | None = None
+    """The host its agent process runs on, or last ran on, as the process's polls said
+    (``session_liveness``), where the paths its agent names without a host are; None
+    before any process polled, and for a caller who does not read the chat."""
+
     forks: int
     """How many times the conversation has been forked."""
 
