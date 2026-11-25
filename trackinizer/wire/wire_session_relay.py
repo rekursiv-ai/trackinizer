@@ -309,6 +309,9 @@ class AgentProcess(BaseModel):
     login_host: str = ""
     """The name of the host whose login makes its model calls; empty for its own."""
 
+    remote: bool = False
+    """Whether a remote agent service runs it, rather than a person's own host."""
+
     state: Literal["starting", "attached", "detached"]
     reason: str = ""
     """Why it is ``detached``: ``stopped``, ``exited``, ``disconnected``, or what its

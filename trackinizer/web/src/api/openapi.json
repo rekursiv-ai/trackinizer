@@ -95,6 +95,11 @@
       "title": "Reason",
       "type": "string"
      },
+     "remote": {
+      "default": false,
+      "title": "Remote",
+      "type": "boolean"
+     },
      "session_id": {
       "format": "uuid",
       "title": "Session Id",
