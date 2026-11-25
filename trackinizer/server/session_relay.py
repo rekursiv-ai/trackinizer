@@ -537,6 +537,7 @@ class SessionRelay:
             process_id=process_id,
             host=host,
             login_host=spec.login_host,
+            remote=remote,
             state="starting",
             since=_now(),
         )

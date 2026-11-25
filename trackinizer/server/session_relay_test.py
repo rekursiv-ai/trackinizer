@@ -1161,6 +1161,24 @@ async def test_a_start_tells_its_daemon_the_persons_watcher_setting_is_on() -> N
     assert serve.watcher is True
 
 
+@pytest.mark.parametrize("remote", [True, False], ids=["remote agent", "own host"])
+async def test_a_process_says_whether_a_remote_agent_runs_it_until_it_ends(
+    *,
+    remote: bool,
+) -> None:
+    relay = SessionRelay()
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    started = _start(relay, remote=remote)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    _ = await viewer.process()
+
+    assert relay.give_up(_SESSION, process_id=_PROCESS, taken=True) is True
+
+    told = await viewer.process()
+    assert (started.remote, told.failed, told.remote) == (remote, True, remote)
+
+
 async def test_a_start_is_offered_to_its_own_host_alone() -> None:
     relay = SessionRelay()
     _ = _start(relay)
