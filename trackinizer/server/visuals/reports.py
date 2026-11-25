@@ -319,10 +319,14 @@ async def publish_artifact_content(
             policy=store.access_policy,
             principal=principal,
         )
+        # A purge deletes the Artifact's row but keeps its revision, so the sum
+        # counts only revisions whose Artifact still exists.
         used_bytes = from_plain(
             await conn.fetchval(
-                "SELECT coalesce(sum(content_bytes), 0)::bigint "
-                "FROM visual_report_revisions WHERE author_id = $1",
+                "SELECT coalesce(sum(revisions.content_bytes), 0)::bigint "
+                "FROM visual_report_revisions AS revisions "
+                "WHERE revisions.author_id = $1 AND EXISTS "
+                "(SELECT 1 FROM inquiries WHERE inquiries.id = revisions.artifact_id)",
                 user_id,
             ),
             int,
