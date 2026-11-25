@@ -138,7 +138,10 @@ async def test_report_key_does_not_reuse_an_unrelated_artifact(
 async def test_artifact_user_storage_quota_is_atomic_and_replayable(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """A user at 500 MB cannot publish another file; an old retry still works."""
+    """A user at 500 MB cannot publish another file until they delete one.
+
+    An old retry still works, and a deleted Artifact's revision stops counting.
+    """
     client, store = pglite_route_client
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -165,15 +168,13 @@ async def test_artifact_user_storage_quota_is_atomic_and_replayable(
         headers={"Idempotency-Key": key},
     )
     assert first.status_code == 201, first.text
+    first_id = uuid.UUID(
+        from_plain(json_loads(first.content, dict[str, object])["artifact_id"], str),
+    )
     async with store.engine.acquire() as conn:
         stored = await conn.fetchval(
             "SELECT content_bytes FROM visual_report_revisions WHERE artifact_id = $1",
-            uuid.UUID(
-                from_plain(
-                    json_loads(first.content, dict[str, object])["artifact_id"],
-                    str,
-                ),
-            ),
+            first_id,
         )
         assert from_plain(stored, int) > 0
         await conn.execute(
@@ -203,6 +204,13 @@ async def test_artifact_user_storage_quota_is_atomic_and_replayable(
     )
     assert replay.status_code == 201
     assert json.loads(replay.content) == json.loads(first.content)
+    await store.purge(first_id, actor=TEST_USER_EMAIL)
+    freed = await client.post(
+        "/api/artifacts/content",
+        json={**payload, "title": "Next atlas"},
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert freed.status_code == 201, freed.text
 
 
 @pytest.mark.db_pglite

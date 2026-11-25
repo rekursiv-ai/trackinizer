@@ -20,7 +20,11 @@ import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
 from trackinizer.lib.postgres.substrate import Conn
-from trackinizer.server.access_policy import DefaultPolicy, Principal
+from trackinizer.server.access_policy import (
+    DefaultPolicy,
+    Principal,
+    inquiry_read_filter,
+)
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
@@ -62,8 +66,10 @@ _PREVIOUS: Final = (
     "WHERE revisions.artifact_id = $1 FOR UPDATE OF reports"
 )
 _USED: Final = (
-    "SELECT coalesce(sum(content_bytes), 0)::bigint "
-    "FROM visual_report_revisions WHERE author_id = $1"
+    "SELECT coalesce(sum(revisions.content_bytes), 0)::bigint "
+    "FROM visual_report_revisions AS revisions "
+    "WHERE revisions.author_id = $1 AND EXISTS "
+    "(SELECT 1 FROM inquiries WHERE inquiries.id = revisions.artifact_id)"
 )
 _NEXT_REVISION: Final = (
     "SELECT coalesce(max(revision), 0) + 1 "
@@ -579,6 +585,31 @@ async def test_structured_content_freezes_cited_rows_and_signed_edges() -> None:
 
 
 @pytest.mark.asyncio
+async def test_publish_reads_its_issue_and_citations_as_the_publisher_does() -> None:
+    """A publisher can neither file from nor cite a row they may not read."""
+    run = _Run()
+    record_id = uuid.uuid4()
+    principal = Principal(email=_AUTHOR, role="writer")
+    issue_sql, issue_params = _read_as(
+        principal,
+        "SELECT kind FROM inquiries WHERE id = $1",
+        run.issue_id,
+        suffix=" FOR SHARE",
+    )
+    record_sql, record_params = _read_as(principal, _RECORD, record_id)
+    run.db.answers[issue_sql] = ["Issue"]
+    run.db.answers[record_sql] = [{"kind": "Paper", "seq": 3, "title": "Source"}]
+
+    await run.publish(
+        _html_body(run, citations=[ArtifactCitationRef(record_id=record_id)]),
+        principal=principal,
+    )
+
+    assert run.db.calls[3] == ("fetchval", issue_sql, issue_params)
+    assert ("fetchrow", record_sql, record_params) in run.db.calls
+
+
+@pytest.mark.asyncio
 async def test_matching_replay_returns_the_stored_revision_unchanged() -> None:
     """A retry with the same key and body reads back, writing nothing."""
     run = _Run()
@@ -741,6 +772,25 @@ def _exact(message: str) -> str:
     return f"^{re.escape(message)}$"
 
 
+def _read_as(
+    principal: Principal,
+    select: str,
+    record_id: uuid.UUID,
+    *,
+    suffix: str = "",
+) -> tuple[str, tuple[object, ...]]:
+    """Return the SQL and bindings of ``select`` gated as ``principal`` reads."""
+    params: list[object] = [record_id]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=DefaultPolicy(),
+        principal=principal,
+        params=params,
+    )
+    gate = "" if predicate == "TRUE" else f" AND ({predicate})"
+    return f"{select}{gate}{suffix}", tuple(params)
+
+
 def _html_body(
     run: _Run,
     *,
@@ -871,7 +921,12 @@ class _Run:
         )
         self.store = _FakeStore(db=self.db)
 
-    async def publish(self, body: PublishArtifactContent) -> ArtifactContentRevision:
+    async def publish(
+        self,
+        body: PublishArtifactContent,
+        *,
+        principal: Principal | None = None,
+    ) -> ArtifactContentRevision:
         return await publish_artifact_content(
             cast(Store, self.store),
             user_id=self.user_id,
@@ -879,6 +934,7 @@ class _Run:
             api_key_id=self.api_key_id,
             body=body,
             key=self.key,
+            principal=principal,
         )
 
     def edge(self, *, to_id: uuid.UUID, edge_kind: str) -> dict[str, object]:
