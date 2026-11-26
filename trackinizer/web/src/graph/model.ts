@@ -1,11 +1,13 @@
 import type { Graph } from "../api/graph";
 import {
+  type LensMode,
   type LinkLook,
   linkLook,
   type NodeLook,
   nodeLook,
   type Palette,
 } from "./encode";
+import { computeLens, type LensKeyItem } from "./lenses";
 import { must } from "../must";
 
 /**
@@ -22,6 +24,9 @@ export type DrawNode = {
   created: string;
   judgement?: string;
   confidence?: number;
+  account?: string;
+  owner?: string;
+  labels?: readonly string[];
   /** Distinct inquiries it shares an edge with. */
   degree: number;
   /** An Issue that narrows nothing: the top of a tree (S6-03: `requires` makes no parent). */
@@ -77,6 +82,8 @@ export type Lens = {
   readonly matches: ReadonlySet<string>;
   /** Nodes whose titles show under them: the roots, while grouped. */
   readonly labelled: ReadonlySet<string>;
+  /** Visual encoding mode (`"kind"` by default, or `"epistemic"`). */
+  readonly mode?: LensMode;
 };
 
 /** Nothing hidden, lit or found. */
@@ -105,6 +112,7 @@ export const PLAIN_LENS: Lens = {
 export class GraphModel {
   nodes: DrawNode[] = [];
   links: DrawLink[] = [];
+  keyItems: LensKeyItem[] = [];
   #palette: Palette;
   #lens: Lens = PLAIN_LENS;
   #neighbours = new Map<string, Set<string>>();
@@ -204,7 +212,10 @@ export class GraphModel {
       strong,
       matches,
       labelled,
+      mode = "kind",
     } = this.#lens;
+    const computed = computeLens(mode, this.nodes, this.links, this.#palette);
+    this.keyItems = computed.keyItems;
     for (const drawn of this.nodes) {
       const far = lit?.get(drawn.id);
       const dimmed = lit !== null && far === undefined;
@@ -219,6 +230,7 @@ export class GraphModel {
         far: far !== undefined && far >= 2,
         halo,
         label,
+        override: computed.overrides?.get(drawn.id),
       });
       drawn.hidden =
         hiddenKinds.has(drawn.kind) ||
@@ -233,21 +245,40 @@ export class GraphModel {
       const dimmed =
         lit !== null &&
         (!lit.has(link.from) || !lit.has(link.to) || skipEdges.has(link.kind));
-      link.look = linkLook(
+      const baseLook = linkLook(
         link,
         Math.max(from.degree, to.degree),
         this.#palette,
         dimmed,
       );
+      if (!dimmed && computed.crossBoundary?.has(link)) {
+        link.look = {
+          ...baseLook,
+          color: this.#palette.match,
+          width: Math.max(baseLook.width, 1.8),
+        };
+      } else if (!dimmed && computed.linkAlpha) {
+        const a = computed.linkAlpha.get(link) ?? 1;
+        link.look = {
+          ...baseLook,
+          color: a < 0.35 ? this.#palette.faint : baseLook.color,
+          width: baseLook.width * (0.4 + 0.8 * a),
+        };
+      } else {
+        link.look = baseLook;
+      }
       link.hidden = from.hidden || to.hidden;
     }
   }
 }
 
-/** `drawn` without a Belief's fields, which an answer that lacks them has cleared. */
+/** `drawn` without optional per-answer fields, which an answer that lacks them has cleared. */
 function withoutBelief(drawn: DrawNode): DrawNode {
   delete drawn.judgement;
   delete drawn.confidence;
+  delete drawn.account;
+  delete drawn.owner;
+  delete drawn.labels;
   return drawn;
 }
 

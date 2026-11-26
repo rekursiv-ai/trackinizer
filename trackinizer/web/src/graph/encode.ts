@@ -49,6 +49,25 @@ export type NodeLook = {
   } | null;
 };
 
+/** Which visual encoding mode is active on the canvas. */
+export type LensMode =
+  | "kind"
+  | "epistemic"
+  | "depth"
+  | "recency"
+  | "account"
+  | "owner"
+  | "label";
+
+/** Computed visual override returned by a `GraphLens` strategy. */
+export type LensOverride = {
+  readonly fill: string;
+  readonly alpha: number;
+  readonly fillAlpha?: number;
+  readonly ring?: string;
+  readonly dot?: string | null;
+};
+
 /** Where a node stands in what the view lights and finds. */
 export type Standing = {
   /** Outside the focus, or a hovered or selected node's neighbourhood. */
@@ -59,6 +78,8 @@ export type Standing = {
   readonly halo?: "strong" | "match" | null;
   /** Text to draw under it. */
   readonly label?: string | null;
+  /** Visual override from the active `GraphLens`, when not `"kind"`. */
+  readonly override?: LensOverride;
 };
 
 /** How one edge is drawn; its arrow takes its colour. */
@@ -99,9 +120,8 @@ export type NodeShape = {
 export function nodeLook(
   shape: NodeShape,
   palette: Palette,
-  { dimmed = false, far = false, halo = null, label = null }: Standing = {},
+  { dimmed = false, far = false, halo = null, label = null, override }: Standing = {},
 ): NodeLook {
-  const fill = palette.kinds[shape.kind] ?? palette.fallback;
   const retired =
     shape.status === "stopped" ||
     shape.status === "abandoned" ||
@@ -109,27 +129,39 @@ export function nodeLook(
   const belief = shape.kind === "Belief";
   const judgement = belief ? shape.judgement : undefined;
   const fade = far ? FAR_FADE : 1;
-  const alpha = (dimmed ? DIMMED_ALPHA : retired ? RETIRED_ALPHA : 1) * fade;
-  const fillAlpha =
-    dimmed || retired
-      ? alpha
-      : (0.35 + 0.65 * (belief ? (shape.confidence ?? 1) : 1)) * fade;
   const radius = Math.min(14, 4 + 2.2 * Math.sqrt(shape.degree));
+
+  const fill = override?.fill ?? palette.kinds[shape.kind] ?? palette.fallback;
+  const baseAlpha = override ? override.alpha : 1;
+  const alpha = (dimmed ? DIMMED_ALPHA : retired ? RETIRED_ALPHA : baseAlpha) * fade;
+  const fillAlpha =
+    override?.fillAlpha !== undefined
+      ? override.fillAlpha * (dimmed ? DIMMED_ALPHA : fade)
+      : judgement === "disproven"
+        ? 0
+        : override || dimmed || retired
+          ? alpha
+          : (0.35 + 0.65 * (belief ? (shape.confidence ?? 1) : 1)) * fade;
+  const ring =
+    override?.ring ??
+    (judgement === "disproven"
+      ? fill
+      : (palette.status[shape.status] ?? palette.fallback));
+  const dot = override
+    ? (override.dot ?? null)
+    : judgement === "proven" && !retired && !dimmed
+      ? (palette.status.complete ?? palette.fallback)
+      : null;
+
   return {
     radius: shape.root ? Math.max(radius, 12) + 4 : radius,
     fill,
-    fillAlpha: judgement === "disproven" ? 0 : fillAlpha,
+    fillAlpha,
     wash: judgement === "undecidable" ? palette.background : null,
     washAlpha: fillAlpha * 0.4,
-    ring:
-      judgement === "disproven"
-        ? fill
-        : (palette.status[shape.status] ?? palette.fallback),
+    ring,
     ringAlpha: alpha,
-    dot:
-      judgement === "proven" && !retired && !dimmed
-        ? (palette.status.complete ?? palette.fallback)
-        : null,
+    dot: !retired && !dimmed ? dot : null,
     halo: halo === "strong" ? palette.halo : halo === "match" ? palette.match : null,
     label:
       label === null
@@ -210,6 +242,17 @@ export function readPalette(
     halo: token("--text"),
     match: token("--accent-hover"),
   };
+}
+
+export const EPISTEMIC_ECHO_COLOR = "#ff6b3d";
+export const EPISTEMIC_ECHO_RING = "#ff3b30";
+
+/** Categorical wheel built from the active theme's kind hues. */
+export function categoryColors(palette: Palette): string[] {
+  const hues = Object.values(palette.kinds).filter(
+    (color) => color && color !== palette.fallback,
+  );
+  return hues.length > 0 ? hues : [palette.fallback];
 }
 
 const RETIRED_ALPHA = 0.25;

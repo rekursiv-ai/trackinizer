@@ -11,6 +11,10 @@ export type GraphNode = {
   /** A Belief's verdict and certainty, absent when unset and on other kinds. */
   readonly judgement?: string;
   readonly confidence?: number;
+  /** Author account, claimed owner, and topic labels when populated. */
+  readonly account?: string;
+  readonly owner?: string;
+  readonly labels?: readonly string[];
 };
 
 /** One edge, stored child to parent: `from_id` narrows, or proves, `to_id`. */

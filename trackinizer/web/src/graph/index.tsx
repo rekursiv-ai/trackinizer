@@ -32,13 +32,16 @@ import {
   FocusRow,
   type Hidden,
   Key,
+  LensMenu,
   LimitMenu,
   ReplayMenu,
   Tooltip,
   ZoomButtons,
 } from "./controls";
+import type { LensMode } from "./encode";
 import "./graph.css";
 import { hopCounts, isWithin, reach } from "./hops";
+import { LENS_MODES, type LensKeyItem } from "./lenses";
 import { graphQuery, useLiveGraph } from "./live";
 import { type DrawNode, GraphModel, type Lens } from "./model";
 import { useThemePalette } from "./palette";
@@ -122,6 +125,7 @@ export function GraphView({
   const asking = nodes.length > ASK_ABOVE && consent !== view.limit;
   const palette = useThemePalette(meta);
   const [model] = useState(() => new GraphModel(palette));
+  const [lensItems, setLensItems] = useState<readonly LensKeyItem[]>([]);
   const host = useRef<HTMLDivElement>(null);
   const body = useRef<HTMLDivElement>(null);
   const searchBox = useRef<HTMLInputElement>(null);
@@ -142,7 +146,12 @@ export function GraphView({
   const [rootsWanted, setRootsWanted] = useState(false);
   const byId = useMemo(() => new Map(nodes.map((row) => [row.id, row])), [nodes]);
   const selected = selectedId === null ? undefined : byId.get(selectedId);
-  const replayer = useReplay(model, renderer, () => setSelectedId(null));
+  const replayer = useReplay(
+    model,
+    renderer,
+    () => setSelectedId(null),
+    setLensItems,
+  );
   /** The limit whose graph was last drawn anew: a new limit's graph is framed once it settles. */
   const drawn = useRef<number | null>(null);
 
@@ -167,19 +176,37 @@ export function GraphView({
         : null,
     [data, focusNode, shownBy],
   );
-  // A focus holds the light; without one, a selection does, or a hover.
+  // A focus holds the light; without one, a selection/hover does, else search trail if enabled.
   const lightId = focusNode ? null : (selected?.id ?? hovered?.node.id ?? null);
+  const searching = query.trim() !== "";
+  const trail = Boolean(view.trail);
+  const only = focusNode !== undefined && view.only;
+  const searchMatches = useMemo(
+    () =>
+      searching
+        ? searchNodes(
+            nodes.filter((row) => shownBy.keep(row)),
+            query,
+          )
+        : NO_NODES,
+    [searching, nodes, shownBy, query],
+  );
   const lit = useMemo(() => {
     if (focus && reached)
       return new Map([...reached].filter(([, far]) => isWithin(far, focus.hops)));
-    if (!data || lightId === null) return null;
-    return new Map(
-      [...reach(data, lightId, { skipEdges: NO_STRINGS, keep: shownBy.keep })].filter(
-        ([, far]) => far <= 1,
-      ),
-    );
-  }, [focus, reached, data, lightId, shownBy]);
-  const only = focusNode !== undefined && view.only;
+    if (!data) return null;
+    if (lightId !== null) {
+      return new Map(
+        [...reach(data, lightId, { skipEdges: NO_STRINGS, keep: shownBy.keep })].filter(
+          ([, far]) => far <= 1,
+        ),
+      );
+    }
+    if (trail && searching) {
+      return new Map(searchMatches.map((row) => [row.id, 0]));
+    }
+    return null;
+  }, [focus, reached, data, lightId, shownBy, trail, searching, searchMatches]);
   const drawnNodes = useMemo(
     () => nodes.filter((row) => shownBy.keep(row) && !(only && !lit?.has(row.id))),
     [nodes, shownBy, only, lit],
@@ -194,8 +221,8 @@ export function GraphView({
   const resultsId = useId();
   const keyId = useId();
   const rootsId = useId();
-  const searching = query.trim() !== "";
   const grouped = place.grouped ?? true;
+  const lensMode: LensMode = view.lens ?? "kind";
   const roots = useMemo(
     () => (grouped && data ? findRoots(data) : null),
     [grouped, data],
@@ -212,8 +239,9 @@ export function GraphView({
       labelled: new Set(
         roots?.groups.flatMap((group) => (group.root ? [group.key] : [])) ?? [],
       ),
+      mode: lensMode,
     }),
-    [shownBy, lit, focusNode, only, selected, matches, roots],
+    [shownBy, lit, focusNode, only, selected, matches, roots, lensMode],
   );
 
   const focusOn = (row: GraphNode) =>
@@ -242,19 +270,21 @@ export function GraphView({
   );
   useEffect(() => {
     if (!renderer || !data || replayer.running || asking) return;
-    if (model.apply(data)) {
-      renderer.setData(
-        model.nodes,
-        model.links,
+    if (
+      applyGraph(
+        model,
+        renderer,
+        data,
         drawn.current === view.limit ? null : frameNew(),
-      );
+        setLensItems,
+      )
+    ) {
       drawn.current = view.limit;
-    } else {
-      renderer.repaint();
     }
   }, [renderer, model, data, view.limit, replayer.running, asking]);
   useEffect(() => {
     model.show(palette, lens);
+    setLensItems(model.keyItems);
     renderer?.repaint();
   }, [model, renderer, palette, lens]);
   // A new focus, or new hops or edges to walk, frames what it lights; a re-read of the same graph leaves the view be.
@@ -444,6 +474,10 @@ export function GraphView({
           inputRef={searchBox}
           listId={listed ? resultsId : null}
           activeId={listed && markedAt >= 0 ? `${resultsId}-${markedAt}` : undefined}
+          trail={trail}
+          onTrail={() =>
+            setView((state) => ({ ...state, trail: !Boolean(state.trail) }))
+          }
         />
         <span className="graph-count muted num">
           {countText(
@@ -468,6 +502,10 @@ export function GraphView({
           <Icon name="orbit" size={14} />
           <span className="hide-sm">Group by root</span>
         </button>
+        <LensMenu
+          lens={lensMode}
+          onLens={(next) => setView((state) => ({ ...state, lens: next }))}
+        />
         {grouped ? (
           <button
             type="button"
@@ -482,17 +520,6 @@ export function GraphView({
             <span className="hide-sm">Roots list</span>
           </button>
         ) : null}
-        <button
-          type="button"
-          className="btn ghost"
-          aria-pressed={view.key}
-          aria-controls={keyShown ? keyId : undefined}
-          title="Show or hide the key to the canvas"
-          onClick={() => setView((state) => ({ ...state, key: !state.key }))}
-        >
-          <Icon name="tag" size={14} />
-          Key
-        </button>
         <FilterMenu
           meta={meta}
           nodes={nodes}
@@ -512,6 +539,17 @@ export function GraphView({
           }}
           onStop={replayer.stop}
         />
+        <button
+          type="button"
+          className="btn ghost"
+          aria-pressed={view.key}
+          aria-controls={keyShown ? keyId : undefined}
+          title="Show or hide the key to the canvas"
+          onClick={() => setView((state) => ({ ...state, key: !state.key }))}
+        >
+          <Icon name="tag" size={14} />
+          Key
+        </button>
       </div>
       <FilterChips
         hidden={hidden}
@@ -609,6 +647,8 @@ export function GraphView({
               onHiddenKinds={(hiddenKinds) =>
                 setView((state) => ({ ...state, hiddenKinds }))
               }
+              lensMode={lensMode}
+              lensItems={lensItems}
             />
           ) : null}
           <ZoomButtons
@@ -749,12 +789,31 @@ function usePeekLinks(
   };
 }
 
+function applyGraph(
+  model: GraphModel,
+  renderer: Renderer,
+  graph: Graph,
+  frame: ((node: DrawNode) => boolean) | null,
+  onKeyItems: (items: readonly LensKeyItem[]) => void,
+): boolean {
+  const changed = model.apply(graph);
+  if (changed) renderer.setData(model.nodes, model.links, frame);
+  else renderer.repaint();
+  onKeyItems(model.keyItems);
+  return changed;
+}
+
 /**
  * Replay, restartable, at a speed that may change while it runs. While it
  * runs the graph shows what it has grown, and answers wait; `onStart` clears
  * what the view had picked.
  */
-function useReplay(model: GraphModel, renderer: Renderer | null, onStart: () => void) {
+function useReplay(
+  model: GraphModel,
+  renderer: Renderer | null,
+  onStart: () => void,
+  onKeyItems: (items: readonly LensKeyItem[]) => void,
+) {
   const [running, setRunning] = useState(false);
   const [speed, setSpeedState] = useState(1);
   const speedNow = useRef(1);
@@ -779,13 +838,13 @@ function useReplay(model: GraphModel, renderer: Renderer | null, onStart: () => 
       stop.current = replay(graph, {
         speed: () => speedNow.current,
         step: (grown) => {
-          if (model.apply(grown))
-            renderer.setData(
-              model.nodes,
-              model.links,
-              grown.nodes.length === graph.nodes.length ? EVERY_NODE : null,
-            );
-          else renderer.repaint();
+          applyGraph(
+            model,
+            renderer,
+            grown,
+            grown.nodes.length === graph.nodes.length ? EVERY_NODE : null,
+            onKeyItems,
+          );
         },
         done: () => setRunning(false),
       });
@@ -864,6 +923,10 @@ type ViewState = {
   readonly key: boolean;
   /** The roots list shows while grouped. */
   readonly roots: boolean;
+  /** Active visual encoding lens. */
+  readonly lens?: LensMode;
+  /** Search contagion trail toggle. */
+  readonly trail?: boolean;
 };
 
 /**
@@ -885,9 +948,10 @@ function initialState(): ViewState {
 /** The view's state kept for the tab, or null for anything this build cannot use. */
 function readViewState(saved: unknown): ViewState | null {
   if (typeof saved !== "object" || saved === null) return null;
-  const { limit, hiddenKinds, hiddenStatuses, skipEdges, only, key, roots } = saved as {
-    [field: string]: unknown;
-  };
+  const { limit, hiddenKinds, hiddenStatuses, skipEdges, only, key, roots, lens, trail } =
+    saved as {
+      [field: string]: unknown;
+    };
   return Number.isSafeInteger(limit) &&
     (limit as number) >= 1 &&
     isStrings(hiddenKinds) &&
@@ -895,7 +959,9 @@ function readViewState(saved: unknown): ViewState | null {
     isStrings(skipEdges) &&
     typeof only === "boolean" &&
     typeof key === "boolean" &&
-    typeof roots === "boolean"
+    typeof roots === "boolean" &&
+    (lens === undefined || (typeof lens === "string" && LENS_MODES.has(lens))) &&
+    (trail === undefined || typeof trail === "boolean")
     ? {
         limit: limit as number,
         hiddenKinds,
@@ -904,6 +970,8 @@ function readViewState(saved: unknown): ViewState | null {
         only,
         key,
         roots,
+        ...(lens !== undefined ? { lens: lens as LensMode } : {}),
+        ...(trail !== undefined ? { trail } : {}),
       }
     : null;
 }

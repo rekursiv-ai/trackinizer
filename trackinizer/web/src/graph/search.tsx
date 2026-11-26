@@ -30,6 +30,8 @@ export function SearchBox({
   inputRef,
   listId,
   activeId,
+  trail,
+  onTrail,
 }: {
   query: string;
   onQuery: (text: string) => void;
@@ -39,6 +41,9 @@ export function SearchBox({
   listId: string | null;
   /** The marked match's element. */
   activeId: string | undefined;
+  /** Whether to isolate matches + connecting edges as a contagion trail. */
+  trail?: boolean;
+  onTrail?: () => void;
 }) {
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
@@ -66,6 +71,17 @@ export function SearchBox({
         onChange={(event) => onQuery(event.target.value)}
         onKeyDown={onKeyDown}
       />
+      {query && onTrail ? (
+        <button
+          type="button"
+          className="graph-trail-btn"
+          aria-pressed={trail}
+          title="Isolate matching nodes and edges between them"
+          onClick={onTrail}
+        >
+          Trail
+        </button>
+      ) : null}
       <kbd>{query ? "esc" : "/"}</kbd>
     </div>
   );
