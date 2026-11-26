@@ -120,6 +120,7 @@ from trackinizer.wire.wire_session_relay import (
     LOGINS_FACT,
     NO_PLACE,
     NOT_LIVE,
+    PROTOCOL,
     REMOTE_AGENTS_FACT,
     SESSION_INPUTS_PATH,
     SESSION_LINES_PATH,
@@ -567,6 +568,13 @@ async def process_socket(websocket: WebSocket, session_id: UUID) -> None:
     hello = await _hello(socket, sleep=sleep)
     if hello is None:
         await socket.close(BAD_FRAME, "the first frame is a Hello")
+        return
+    # Refused, not reconnected: its frames name classes this release renamed.
+    if hello.protocol != PROTOCOL or "protocol" not in hello.model_fields_set:
+        await socket.close(
+            CLOSE_REFUSED,
+            "this agent process is from another release of the server; restart it",
+        )
         return
     try:
         host_id = await _process_host_id(websocket, identity, hello=hello)
