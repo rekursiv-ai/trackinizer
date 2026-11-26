@@ -29,14 +29,22 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int, int]]:
 
 @pytest.mark.parametrize(
     "pid",
-    [1, 0, -1, -500, os.getpid()],
-    ids=["init", "own-group-by-zero", "every-process", "a-group", "this-process"],
+    [1, 0, -1, -500],
+    ids=["init", "own-group-by-zero", "every-process", "a-group"],
 )
 def test_a_signal_past_one_other_process_is_refused(
     sent: list[tuple[str, int, int]],
     pid: int,
 ) -> None:
     """``kill(-1)`` is every process the user may signal; ``kill(-g)`` a whole group."""
+    with pytest.raises(ValueError, match=f"pid {pid}:"):
+        kill(pid, signal.SIGTERM)
+    assert sent == []
+
+
+def test_a_signal_to_this_process_is_refused(sent: list[tuple[str, int, int]]) -> None:
+    """Read at run time: a runner may collect in one process and run in another."""
+    pid = os.getpid()
     with pytest.raises(ValueError, match=f"pid {pid}:"):
         kill(pid, signal.SIGTERM)
     assert sent == []
