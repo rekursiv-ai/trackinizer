@@ -413,7 +413,12 @@ async def _backlog(
             ") AND ",
         )
     )
-    async with engine.acquire() as conn:
+    async with engine.acquire() as conn, tx(conn):
+        # A page may test millions of settled sources before it finds its pending
+        # few: over 10M records a walk took 37 s, past the server's default
+        # timeout, which cancelled a page every round, so nothing new was ever
+        # embedded.
+        await conn.execute("SET LOCAL statement_timeout = 0")
         return list(
             await conn.fetch(
                 vetted_sql(
