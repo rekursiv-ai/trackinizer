@@ -2,8 +2,10 @@
 
 A datadir snapshot is bound to the storage internals that wrote it. The
 export is the portable form: every inquiry, edge, and ``change_log`` row, plus
-the per-kind detail tables, as one JSON object per line. It is read-only;
-nothing here imports it back.
+the per-kind detail tables, as one JSON object per line. The HTTP endpoint is
+read-only; a complete export can be restored locally through the server's
+administrative restore path. Filtered exports remain read-only slices, not
+standalone restore packages.
 
 Line 1 is the header::
 
@@ -16,6 +18,8 @@ audiences the caller reads: the session tables hold no row of a session outside
 them, so a file that names fewer than the deployment has is a partial backup.
 ``withheld_sessions`` counts the sessions whose transcripts the file leaves out,
 the ones the caller does not read; a file that counts any is a partial backup too.
+Restore targets the destination's normal current schema and fails transactionally
+if the exported rows are not compatible with it.
 Every later line is one row::
 
     {"table": "<name>", "row": {"<column>": <value>, ...}}

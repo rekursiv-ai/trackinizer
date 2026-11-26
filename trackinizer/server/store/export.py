@@ -65,6 +65,10 @@ from trackinizer.server.audience import (
 )
 from trackinizer.server.notify import tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
+from trackinizer.server.store.export_columns import (
+    ExportColumn,
+    exported_columns,
+)
 from trackinizer.server.store.read import (
     _lower_filter,
     _ReadMixin,
@@ -101,11 +105,6 @@ _ORDER_BY: Final[Mapping[str, str]] = {
 """A total order per table: its primary key, led by ``created`` where the
 table has one, so rows written since the last export land at the end of the
 next one instead of reshuffling it."""
-
-_SKIPPED_COLUMNS: Final[Mapping[str, frozenset[str]]] = {
-    # A ``tsvector`` the database derives from ``text``; the text is exported.
-    "session_records": frozenset({"search"}),
-}
 
 _SCOPE_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     "inquiries": ("id",),
@@ -353,25 +352,9 @@ class _Kept:
         )
 
 
-async def _exported_columns(conn: Conn) -> dict[str, tuple[tuple[str, bool], ...]]:
-    """Each exported table's columns in order, flagged when stored as ``json``."""
-    # pragma: no mutate[case-insensitive] start -- PostgreSQL folds unquoted keywords and identifiers to lower case.
-    rows = await conn.fetch(
-        "SELECT table_name, column_name, data_type "
-        "FROM information_schema.columns "
-        "WHERE table_schema = current_schema() AND table_name = ANY($1::text[]) "
-        "ORDER BY table_name, ordinal_position",
-        list(EXPORT_TABLES),
-    )
-    # pragma: no mutate end
-    columns: dict[str, list[tuple[str, bool]]] = {table: [] for table in EXPORT_TABLES}
-    for row in rows:
-        table = cast(str, row["table_name"])
-        column = cast(str, row["column_name"])
-        if column in _SKIPPED_COLUMNS.get(table, frozenset()):
-            continue
-        columns[table].append((column, row["data_type"] == "json"))
-    return {table: tuple(cols) for table, cols in columns.items()}
+async def _exported_columns(conn: Conn) -> dict[str, tuple[ExportColumn, ...]]:
+    """Compatibility wrapper for the shared export/restore catalog reader."""
+    return await exported_columns(conn)
 
 
 # The selected ids are a SUBQUERY reused per table rather than a list read back and
@@ -398,14 +381,14 @@ def _scope(selector: Sequence[Filter]) -> tuple[str, list[object]]:
 async def _read_table(
     conn: Conn,
     table: str,
-    columns: tuple[tuple[str, bool], ...],
+    columns: tuple[ExportColumn, ...],
     *,
     reader: SessionReader,
     scope: str = "",
     scope_params: Sequence[object] = (),
 ) -> tuple[dict[str, object], ...]:
     """Every in-scope row of ``table`` the caller may read, in export order, as plain values."""
-    select = ", ".join(f'"{name}"' for name, _ in columns)
+    select = ", ".join(f'"{column.name}"' for column in columns)
     # The scope's operands go first: its placeholders were numbered from ``$1``, and
     # the audience test numbers its own after whatever is already here.
     params: list[object] = list(scope_params)
@@ -424,7 +407,7 @@ async def _read_table(
     # Audience: gated -- a table keyed by session leaves out the rows of a session
     # ``reader`` may not read. Found from the columns, so a session table the export
     # gains is gated without an edit here.
-    if any(name == "session_id" for name, _ in columns):
+    if any(column.name == "session_id" for column in columns):
         conditions.append(
             hidden_exists_sql(
                 f"{table}.session_id",
@@ -445,10 +428,10 @@ async def _read_table(
         ),
         *params,
     )
-    json_columns = [name for name, is_json in columns if is_json]
+    json_columns = [column.name for column in columns if column.is_json]
     rows: list[dict[str, object]] = []
     for record in records:
-        row = {name: record[name] for name, _ in columns}
+        row = {column.name: record[column.name] for column in columns}
         for name in json_columns:
             if (text := row[name]) is not None:
                 row[name] = json.loads(cast(str, text))

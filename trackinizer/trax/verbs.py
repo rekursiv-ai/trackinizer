@@ -2848,7 +2848,11 @@ Notes:
   {"table": ..., "row": {...}}. Covers every inquiry, edge, and change_log
   row plus experiment metrics and agent-session records. Leaves out
   embeddings, encrypted thinking, and users and API keys. An unchanged
-  graph exports byte-for-byte the same. Read-only: nothing imports it yet.
+  graph exports byte-for-byte the same. The HTTP export is read-only; a
+  complete file can be restored locally with ``trackinizer restore``.
+  The destination uses its normal current schema; incompatible rows fail the
+  restore transaction rather than being guessed at.
+  Filtered exports remain slices and cannot be restored as a complete graph.
 
   A selector clause reads like any other filter (labels is x, labels nre x)
   and several AND together. It picks the inquiries; edges come along when
