@@ -359,6 +359,15 @@ def test_an_agent_s_send_names_its_session_its_label_and_its_booking() -> None:
     assert SendMessage.model_validate_json(sent.model_dump_json()) == sent
 
 
+def test_a_send_s_text_holds_words() -> None:
+    # ``min_length=1`` alone admits " ", which an agent once sent 23 times: each
+    # drew a message with nothing under its head.
+    for blank in (" ", "\t", "\n \n"):
+        with pytest.raises(ValidationError, match="value must be non-empty"):
+            _ = SendMessage(actor="scientist", text=blank)
+    assert SendMessage(actor="scientist", text=" hi ").text == " hi "
+
+
 class TestPaths:
     def test_path_helpers_interpolate_session_id(self) -> None:
         sid = uuid.uuid4()
