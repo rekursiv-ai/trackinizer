@@ -2,7 +2,28 @@
 // so it loads with the graph's chunk, and the view's tests replace it: jsdom has no
 // canvas.
 import ForceGraph from "force-graph";
+import { boundsOf, fitBounds } from "./camera";
 import { clusterForce } from "./clusters";
+import {
+  CLOSE_ZOOM,
+  CROSS_ISLAND_STRENGTH,
+  FIT_MAX_ZOOM,
+  FIT_MS,
+  FIT_PADDING_PX,
+  FORCE_ALPHA_DECAY,
+  FORCE_ALPHA_MIN,
+  FORCE_CHARGE,
+  FORCE_DISTANCE_MAX,
+  FORCE_GRAVITY,
+  FORCE_LINK_DISTANCE,
+  FORCE_VELOCITY_DECAY,
+  HALO_GAP_PX,
+  LABEL_GAP_PX,
+  LABEL_PX,
+  LINK_STRENGTH,
+  MOVE_MS,
+  ZOOM_MS,
+} from "./constants";
 import { type DrawLink, type DrawNode, isPlaced } from "./model";
 
 /** What covers the canvas, in pixels: a strip on its right (Peek, the key or the zoom buttons). */
@@ -107,14 +128,14 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
     .linkColor((link) => link.look.color)
     .linkDirectionalArrowLength(4)
     .linkDirectionalArrowRelPos(1)
-    .d3VelocityDecay(0.58)
+    .d3VelocityDecay(FORCE_VELOCITY_DECAY)
     // The layout stops once it has cooled, about 170 ticks, rather than after
     // force-graph's 15 s: it is framed then, and an idle canvas costs nothing.
     // Never by the clock: a tab opened in the background gets no frames, and
     // force-graph's 15 s, counted all the same, would stop it at its first
     // frame once shown, every node still where it started (a packed disc).
-    .d3AlphaDecay(0.04)
-    .d3AlphaMin(0.001)
+    .d3AlphaDecay(FORCE_ALPHA_DECAY)
+    .d3AlphaMin(FORCE_ALPHA_MIN)
     .cooldownTime(Infinity)
     .onNodeHover((node) => {
       pointed = node;
@@ -128,9 +149,9 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
       if (frameWhenSettled) frame(framed);
       frameWhenSettled = false;
     });
-  graph.d3Force("charge")?.strength(-70).distanceMax(280);
-  graph.d3Force("link")?.distance(55).strength(LINK_STRENGTH);
-  graph.d3Force("gravity", gravity(0.02));
+  graph.d3Force("charge")?.strength(FORCE_CHARGE).distanceMax(FORCE_DISTANCE_MAX);
+  graph.d3Force("link")?.distance(FORCE_LINK_DISTANCE).strength(LINK_STRENGTH);
+  graph.d3Force("gravity", gravity(FORCE_GRAVITY));
   // The canvas's size as laid out now: a panel that opened or narrowed in the same
   // render has moved its edge, and the resize observer hears of it only later.
   const fitHost = () => graph.width(host.clientWidth).height(host.clientHeight);
@@ -152,22 +173,16 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
     fitHost();
     const bounds = boundsOf(graph.graphData().nodes, filter);
     if (!bounds) return;
-    const { left, right, top, bottom } = bounds;
-    const over = covered();
-    const [width, height] = [graph.width() - over.right, graph.height()];
-    // A padding to suit what is left: beside Peek and a list, a narrow canvas can be under 200 px wide.
-    const padding = Math.min(FIT_PADDING_PX, width / 8, height / 8);
-    const zoom = Math.min(
+    const target = fitBounds(
+      bounds,
+      graph.width(),
+      graph.height(),
+      covered().right,
       FIT_MAX_ZOOM,
-      (width - 2 * padding) / Math.max(right - left, 1),
-      (height - 2 * padding) / Math.max(bottom - top, 1),
+      FIT_PADDING_PX,
     );
-    graph.centerAt(
-      (left + right) / 2 + over.right / 2 / zoom,
-      (top + bottom) / 2,
-      FIT_MS,
-    );
-    graph.zoom(zoom, FIT_MS);
+    graph.centerAt(target.x, target.y, FIT_MS);
+    graph.zoom(target.zoom, FIT_MS);
   };
   return {
     setData(nodes, links, frameAfter) {
@@ -236,25 +251,6 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
     },
   };
 };
-
-/**
- * The box around the drawn, placed nodes `filter` keeps, or null for none. A
- * loop: spread into `Math.min`, 150,000 places overflowed the call stack.
- */
-function boundsOf(
-  nodes: readonly DrawNode[],
-  filter: (node: DrawNode) => boolean,
-): { left: number; right: number; top: number; bottom: number } | null {
-  let [left, right, top, bottom] = [Infinity, -Infinity, Infinity, -Infinity];
-  for (const node of nodes) {
-    if (node.hidden || !isPlaced(node) || !filter(node)) continue;
-    left = Math.min(left, node.x);
-    right = Math.max(right, node.x);
-    top = Math.min(top, node.y);
-    bottom = Math.max(bottom, node.y);
-  }
-  return left <= right ? { left, right, top, bottom } : null;
-}
 
 /** A disc of the node's fill, its wash, its ring and its dot, and its halo (`NodeLook`). */
 function drawNode(node: DrawNode, ctx: CanvasRenderingContext2D, scale: number): void {
@@ -397,18 +393,3 @@ function gravity(strength: number) {
 
 const NO_DASH: number[] = [];
 const everything = () => true;
-const LINK_STRENGTH = 0.6;
-/** Measured best by the grouping's design: 988 of 997 nodes sat nearest their own island, against 966 at 0.6. */
-const CROSS_ISLAND_STRENGTH = 0.05;
-const FIT_MS = 400;
-/** A fit to one node, or a few close together, stops here rather than fill the canvas with them. */
-const FIT_MAX_ZOOM = 4;
-const ZOOM_MS = 200;
-/** The halo's gap from the disc, and the label's, in screen pixels. */
-const HALO_GAP_PX = 3.5;
-const LABEL_GAP_PX = 3;
-const LABEL_PX = 11;
-/** v1's jump to a node: 600 ms to at least 2.5x. */
-const MOVE_MS = 600;
-const CLOSE_ZOOM = 2.5;
-const FIT_PADDING_PX = 70;

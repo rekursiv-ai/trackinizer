@@ -38,16 +38,12 @@ import {
   ZoomButtons,
 } from "./controls";
 import "./graph.css";
-import { hopCounts, isWithin, reach } from "./hops";
+import { buildAdjacency, hopCounts, isWithin, oneHop, reach } from "./hops";
 import { graphQuery, useLiveGraph } from "./live";
 import { type DrawNode, GraphModel, type Lens } from "./model";
 import { useThemePalette } from "./palette";
-import {
-  type Covered,
-  type CreateRenderer,
-  forceGraphRenderer,
-  type Renderer,
-} from "./renderer";
+import type { Covered, CreateRenderer, Renderer } from "./renderer";
+import { webglRenderer } from "./webglRenderer";
 import { replay } from "./replay";
 import { findRoots } from "./roots";
 import { RootsPanel } from "./RootsPanel";
@@ -94,7 +90,7 @@ type Place = Extract<Route, { name: "graph" }>;
  * `createRenderer` draws it; tests replace it, as jsdom has no canvas.
  */
 export function GraphView({
-  createRenderer = forceGraphRenderer,
+  createRenderer = webglRenderer,
 }: {
   createRenderer?: CreateRenderer;
 }) {
@@ -167,18 +163,21 @@ export function GraphView({
         : null,
     [data, focusNode, shownBy],
   );
+  const adjacency = useMemo(
+    () =>
+      data && !focusNode
+        ? buildAdjacency(data, { skipEdges: NO_STRINGS, keep: shownBy.keep })
+        : null,
+    [data, focusNode, shownBy],
+  );
   // A focus holds the light; without one, a selection does, or a hover.
   const lightId = focusNode ? null : (selected?.id ?? hovered?.node.id ?? null);
   const lit = useMemo(() => {
     if (focus && reached)
       return new Map([...reached].filter(([, far]) => isWithin(far, focus.hops)));
-    if (!data || lightId === null) return null;
-    return new Map(
-      [...reach(data, lightId, { skipEdges: NO_STRINGS, keep: shownBy.keep })].filter(
-        ([, far]) => far <= 1,
-      ),
-    );
-  }, [focus, reached, data, lightId, shownBy]);
+    if (!adjacency || lightId === null) return null;
+    return oneHop(adjacency, lightId);
+  }, [focus, reached, adjacency, lightId]);
   const only = focusNode !== undefined && view.only;
   const drawnNodes = useMemo(
     () => nodes.filter((row) => shownBy.keep(row) && !(only && !lit?.has(row.id))),

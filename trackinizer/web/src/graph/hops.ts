@@ -5,6 +5,51 @@ import type { Hops } from "../router/route";
 import { must } from "../must";
 
 /**
+ * Precomputed undirected adjacency over `graph` for nodes `keep` retains and
+ * edges outside `skipEdges`, so 1-hop lookups run in O(degree) without
+ * rebuilding the graph on every hover.
+ */
+export function buildAdjacency(
+  graph: Graph,
+  {
+    skipEdges,
+    keep,
+  }: { skipEdges: ReadonlySet<string>; keep: (node: GraphNode) => boolean },
+): Map<string, readonly string[]> {
+  const neighbours = new Map<string, string[]>();
+  for (const node of graph.nodes) {
+    if (keep(node)) neighbours.set(node.id, []);
+  }
+  for (const { from_id, to_id, edge_kind } of graph.edges) {
+    if (skipEdges.has(edge_kind)) continue;
+    const fromPeers = neighbours.get(from_id);
+    const toPeers = neighbours.get(to_id);
+    if (!fromPeers || !toPeers) continue;
+    fromPeers.push(to_id);
+    toPeers.push(from_id);
+  }
+  return neighbours;
+}
+
+/**
+ * Immediate (1-hop) neighbourhood of `from` in `adjacency`: `from` at 0 and
+ * each adjacent node at 1, or empty when `from` is absent.
+ */
+export function oneHop(
+  adjacency: ReadonlyMap<string, readonly string[]>,
+  from: string,
+): Map<string, number> {
+  const hops = new Map<string, number>();
+  const peers = adjacency.get(from);
+  if (!peers) return hops;
+  hops.set(from, 0);
+  for (const peer of peers) {
+    if (!hops.has(peer)) hops.set(peer, 1);
+  }
+  return hops;
+}
+
+/**
  * How many edges each inquiry is from `from`, by a breadth-first walk over
  * `graph`'s edges in either direction: `from` itself at 0, and only what the
  * walk reaches. It walks no edge of a kind in `skipEdges`, and neither counts

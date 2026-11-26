@@ -1,3 +1,9 @@
+import {
+  CLUSTER_PULL as PULL,
+  CLUSTER_PUSH as PUSH,
+  CLUSTER_SPACING as SPACING,
+  GOLDEN_ANGLE,
+} from "./constants";
 import { must } from "../must";
 /** A node as the layout moves it: d3 gives each its place and speed. */
 export type Body = { x?: number; y?: number; vx?: number; vy?: number };
@@ -144,14 +150,6 @@ function pushApart(a: Disc, b: Disc, angle: number): void {
   b.shiftY += unitY * push * a.size;
 }
 
-/** How hard a node is pulled toward its group's middle, per unit of distance, at full heat. */
-const PULL = 0.1;
-/** How much of two groups' overlap the push undoes per tick, at full heat. */
-const PUSH = 0.5;
-/** A group of `n` nodes counts as a disc of radius `SPACING * sqrt(n)`: its nodes' room at the layout's spacing. */
-const SPACING = 30;
-/** Spreads the directions coincident groups part in, as sunflower seeds are. */
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 /** The neighbour grid's cell: a one-node group's disc across. */
 const CELL_PX = 2 * SPACING;
 /** Packs a cell's column and row into one key, distinct while rows stay within ±2^25 cells. */
