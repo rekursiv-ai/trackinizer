@@ -243,28 +243,12 @@ export class GraphModel {
       const dimmed =
         lit !== null &&
         (!lit.has(link.from) || !lit.has(link.to) || skipEdges.has(link.kind));
-      const baseLook = linkLook(
+      link.look = linkLook(
         link,
         Math.max(from.degree, to.degree),
         this.#palette,
         dimmed,
       );
-      if (!dimmed && computed.crossBoundary?.has(link)) {
-        link.look = {
-          ...baseLook,
-          color: this.#palette.match,
-          width: Math.max(baseLook.width, 1.8),
-        };
-      } else if (!dimmed && computed.linkAlpha) {
-        const a = computed.linkAlpha.get(link) ?? 1;
-        link.look = {
-          ...baseLook,
-          color: a < 0.35 ? this.#palette.faint : baseLook.color,
-          width: baseLook.width * (0.4 + 0.8 * a),
-        };
-      } else {
-        link.look = baseLook;
-      }
       link.hidden = from.hidden || to.hidden;
     }
   }

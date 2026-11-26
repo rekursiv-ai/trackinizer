@@ -14,8 +14,6 @@ export type LensKeyItem = {
 export type LensResult = {
   readonly overrides: Map<string, LensOverride> | null;
   readonly keyItems: LensKeyItem[];
-  readonly crossBoundary: Set<DrawLink> | null;
-  readonly linkAlpha: Map<DrawLink, number> | null;
 };
 
 /** Strategy contract for a graph visual encoding lens. */
@@ -34,8 +32,6 @@ export interface GraphLens {
 const EMPTY_RESULT: LensResult = {
   overrides: null,
   keyItems: [],
-  crossBoundary: null,
-  linkAlpha: null,
 };
 
 /** Default inquiry-kind coloring; `nodeLook` handles it with no overrides. */
@@ -58,7 +54,6 @@ const EpistemicLens: GraphLens = {
   compute(nodes, _links, palette) {
     const other: LensOverride = {
       fill: palette.fallback,
-      ring: palette.fallback,
       alpha: 0.2,
     };
     const verdicts: readonly {
@@ -69,17 +64,17 @@ const EpistemicLens: GraphLens = {
       {
         key: "proven",
         label: "Proven",
-        override: { fill: palette.support, ring: palette.support, alpha: 1 },
+        override: { fill: palette.support, alpha: 1 },
       },
       {
         key: "unproven",
         label: "Unproven",
-        override: { fill: UNPROVEN_COLOR, ring: UNPROVEN_COLOR, alpha: 0.95 },
+        override: { fill: UNPROVEN_COLOR, alpha: 0.95 },
       },
       {
         key: "disproven",
         label: "Disproven",
-        override: { fill: palette.against, fillAlpha: 0, ring: palette.against, alpha: 1 },
+        override: { fill: palette.against, fillAlpha: 0, alpha: 1 },
       },
       { key: "other", label: "Other / unjudged", override: other },
     ];
@@ -93,9 +88,9 @@ const EpistemicLens: GraphLens = {
       key,
       label,
       color: override.fillAlpha === 0 ? "transparent" : override.fill,
-      ring: override.ring,
+      ring: override.fillAlpha === 0 ? override.fill : undefined,
     }));
-    return { overrides, keyItems, crossBoundary: null, linkAlpha: null };
+    return { overrides, keyItems };
   },
 };
 
@@ -124,27 +119,21 @@ function spectrumLens(spec: {
       for (const node of nodes) {
         const ratio = ratios.get(node.id);
         if (ratio === undefined) {
-          overrides.set(node.id, { fill: dark, ring: dark, alpha: 0.12 });
+          overrides.set(node.id, { fill: dark, alpha: 0.12 });
           continue;
         }
         const color = lerpHex(dark, bright, ratio);
         overrides.set(node.id, {
           fill: color,
-          ring: color,
           alpha: spec.minAlpha + (1 - spec.minAlpha) * ratio,
         });
-      }
-      const linkAlpha = new Map<DrawLink, number>();
-      for (const link of links) {
-        const r = Math.max(ratios.get(link.from) ?? 0, ratios.get(link.to) ?? 0);
-        linkAlpha.set(link, 0.1 + 0.9 * r);
       }
       const keyItems: LensKeyItem[] = [
         { key: "lo", label: labels[0], color: dark },
         { key: "mid", label: labels[1], color: lerpHex(dark, bright, 0.5) },
         { key: "hi", label: labels[2], color: bright },
       ];
-      return { overrides, keyItems, crossBoundary: null, linkAlpha };
+      return { overrides, keyItems };
     },
   };
 }
@@ -241,8 +230,8 @@ const AccountLens: GraphLens = {
   id: "account",
   label: "Account",
   short: "By author",
-  hint: "Color by author account & bridges",
-  compute(nodes, links, palette) {
+  hint: "Color by author account",
+  compute(nodes, _links, palette) {
     const counts = new Map<string, number>();
     let missing = 0;
     for (const node of nodes) {
@@ -253,20 +242,12 @@ const AccountLens: GraphLens = {
     const wheel = categoryColors(palette);
     const colorOf = new Map(ranked.map(([name], i) => [name, wheel[i % wheel.length]!]));
     const overrides = new Map<string, LensOverride>();
-    const byId = new Map<string, string>();
     for (const node of nodes) {
       if (node.account) {
-        byId.set(node.id, node.account);
         overrides.set(node.id, { fill: colorOf.get(node.account)!, alpha: 1 });
       } else {
         overrides.set(node.id, { fill: palette.fallback, alpha: 0.18 });
       }
-    }
-    const crossBoundary = new Set<DrawLink>();
-    for (const link of links) {
-      const a = byId.get(link.from);
-      const b = byId.get(link.to);
-      if (a && b && a !== b) crossBoundary.add(link);
     }
     const keyItems: LensKeyItem[] = [
       ...ranked.slice(0, 8).map(([name, count]) => ({
@@ -279,7 +260,7 @@ const AccountLens: GraphLens = {
         ? [{ key: "_missing", label: "No account", color: palette.fallback, count: missing }]
         : []),
     ];
-    return { overrides, keyItems, crossBoundary, linkAlpha: null };
+    return { overrides, keyItems };
   },
 };
 
