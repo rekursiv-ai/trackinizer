@@ -1,7 +1,5 @@
 import {
   categoryColors,
-  EPISTEMIC_ECHO_COLOR,
-  EPISTEMIC_ECHO_RING,
   type LensMode,
   type LensOverride,
   type Palette,
@@ -54,60 +52,36 @@ const KindLens: GraphLens = {
   compute: () => EMPTY_RESULT,
 };
 
-const ANCHORED_KINDS: ReadonlySet<string> = new Set([
-  "Paper",
-  "Experiment",
-  "CodeChange",
-  "WebResult",
-  "WebSearch",
-]);
-const ECHO_CONFIDENCE = 0.85;
+const UNPROVEN_COLOR = "#eab308";
 
-/** Semantic lens separating uncontested echo chambers from grounded evidence and disproofs. */
+/** Factual lens showing Belief `judgement` states (`proven`, `unproven`, `disproven`). */
 const EpistemicLens: GraphLens = {
   id: "epistemic",
   label: "Epistemic",
-  short: "Echo vs. proof",
-  hint: "Echo chambers, anchors & disproofs",
-  compute(nodes, links, palette) {
-    const byId = new Map(nodes.map((node) => [node.id, node]));
-    const challenged = new Set<string>();
-    const paperBacked = new Set<string>();
-    for (const link of links) {
-      if (link.valence !== undefined && link.valence < 0) challenged.add(link.to);
-      if (
-        (link.kind === "proves" || link.kind === "favors") &&
-        byId.get(link.from)?.kind === "Paper"
-      ) {
-        paperBacked.add(link.to);
-      }
-    }
+  short: "Belief verdicts",
+  hint: "Highlight proven, unproven, and disproven Beliefs",
+  compute(nodes, _links, palette) {
     const overrides = new Map<string, LensOverride>();
     for (const node of nodes) {
       if (node.kind === "Belief") {
-        if (node.judgement === "disproven") {
+        if (node.judgement === "proven") {
+          overrides.set(node.id, {
+            fill: palette.support,
+            ring: palette.support,
+            alpha: 1,
+          });
+        } else if (node.judgement === "unproven") {
+          overrides.set(node.id, {
+            fill: UNPROVEN_COLOR,
+            ring: UNPROVEN_COLOR,
+            alpha: 0.95,
+          });
+        } else if (node.judgement === "disproven") {
           overrides.set(node.id, {
             fill: palette.against,
             fillAlpha: 0,
             ring: palette.against,
             alpha: 1,
-          });
-        } else if (
-          node.judgement === "proven" &&
-          (node.confidence ?? 0) >= ECHO_CONFIDENCE &&
-          !challenged.has(node.id)
-        ) {
-          overrides.set(node.id, {
-            fill: EPISTEMIC_ECHO_COLOR,
-            ring: EPISTEMIC_ECHO_RING,
-            dot: EPISTEMIC_ECHO_RING,
-            alpha: 1,
-          });
-        } else if (paperBacked.has(node.id) || challenged.has(node.id)) {
-          overrides.set(node.id, {
-            fill: palette.support,
-            ring: palette.support,
-            alpha: 0.9,
           });
         } else {
           overrides.set(node.id, {
@@ -116,12 +90,6 @@ const EpistemicLens: GraphLens = {
             alpha: 0.2,
           });
         }
-      } else if (ANCHORED_KINDS.has(node.kind)) {
-        overrides.set(node.id, {
-          fill: palette.support,
-          ring: palette.support,
-          alpha: 0.9,
-        });
       } else {
         overrides.set(node.id, {
           fill: palette.fallback,
@@ -132,16 +100,16 @@ const EpistemicLens: GraphLens = {
     }
     const keyItems: LensKeyItem[] = [
       {
-        key: "echo",
-        label: "Echo chamber (uncontested proven)",
-        color: EPISTEMIC_ECHO_COLOR,
-        ring: EPISTEMIC_ECHO_RING,
-      },
-      {
-        key: "anchored",
-        label: "Anchored / challenged",
+        key: "proven",
+        label: "Proven",
         color: palette.support,
         ring: palette.support,
+      },
+      {
+        key: "unproven",
+        label: "Unproven",
+        color: UNPROVEN_COLOR,
+        ring: UNPROVEN_COLOR,
       },
       {
         key: "disproven",
@@ -150,8 +118,8 @@ const EpistemicLens: GraphLens = {
         ring: palette.against,
       },
       {
-        key: "speculative",
-        label: "Speculative / unanchored",
+        key: "other",
+        label: "Other / unjudged",
         color: palette.fallback,
         ring: palette.fallback,
       },
@@ -160,7 +128,7 @@ const EpistemicLens: GraphLens = {
   },
 };
 
-const BLUE_SHADES = ["#142942", "#28598f", "#3b82f6", "#6bb6ff", "#c7ecff"] as const;
+const BLUE_SHADES = ["#10233b", "#1a3c66", "#255799", "#3474d4", "#4d90f0"] as const;
 const GREEN_SHADES = ["#112b20", "#245c43", "#388e65", "#5ec48e", "#c2fce0"] as const;
 
 /** Shared base for continuous single-hue spectrum lenses (`Depth` and `Recency`). */
@@ -430,50 +398,12 @@ const AccountLens = new CategoryLens({
   pick: fieldPicker((n) => n.account),
 });
 
-const OwnerLens = new CategoryLens({
-  id: "owner",
-  label: "Owner",
-  short: "Claimed by",
-  hint: "Color by claimed owner",
-  missingLabel: "Unassigned",
-  highlightCross: true,
-  pick: fieldPicker((n) => n.owner),
-});
-
-const LabelLens = new CategoryLens({
-  id: "label",
-  label: "Topic / Tag",
-  short: "By label",
-  hint: "Color by most specific label",
-  missingLabel: "No labels",
-  pick(nodes) {
-    const freq = new Map<string, number>();
-    for (const node of nodes) {
-      for (const lbl of node.labels ?? []) freq.set(lbl, (freq.get(lbl) ?? 0) + 1);
-    }
-    const out = new Map<string, string>();
-    for (const node of nodes) {
-      const labels = node.labels ?? [];
-      if (labels.length === 0) continue;
-      const sorted = [...labels].sort(
-        (a, b) => (freq.get(a) ?? 0) - (freq.get(b) ?? 0),
-      );
-      const chosen = sorted.find((l) => (freq.get(l) ?? 0) >= 2) ?? sorted[0]!;
-      out.set(node.id, chosen);
-    }
-    return out;
-  },
-});
-
-/** Single source of truth for all graph lenses, in menu order. */
 export const LENSES: readonly GraphLens[] = [
   KindLens,
   EpistemicLens,
   DepthLens,
   RecencyLens,
   AccountLens,
-  OwnerLens,
-  LabelLens,
 ];
 
 export const LENS_MODES: ReadonlySet<string> = new Set(LENSES.map((l) => l.id));

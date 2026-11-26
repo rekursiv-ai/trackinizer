@@ -55,9 +55,7 @@ export type LensMode =
   | "epistemic"
   | "depth"
   | "recency"
-  | "account"
-  | "owner"
-  | "label";
+  | "account";
 
 /** Computed visual override returned by a `GraphLens` strategy. */
 export type LensOverride = {
@@ -243,9 +241,6 @@ export function readPalette(
     match: token("--accent-hover"),
   };
 }
-
-export const EPISTEMIC_ECHO_COLOR = "#ff6b3d";
-export const EPISTEMIC_ECHO_RING = "#ff3b30";
 
 /** Categorical wheel built from the active theme's kind hues. */
 export function categoryColors(palette: Palette): string[] {

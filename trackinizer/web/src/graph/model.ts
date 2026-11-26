@@ -25,8 +25,6 @@ export type DrawNode = {
   judgement?: string;
   confidence?: number;
   account?: string;
-  owner?: string;
-  labels?: readonly string[];
   /** Distinct inquiries it shares an edge with. */
   degree: number;
   /** An Issue that narrows nothing: the top of a tree (S6-03: `requires` makes no parent). */
@@ -277,8 +275,6 @@ function withoutBelief(drawn: DrawNode): DrawNode {
   delete drawn.judgement;
   delete drawn.confidence;
   delete drawn.account;
-  delete drawn.owner;
-  delete drawn.labels;
   return drawn;
 }
 
