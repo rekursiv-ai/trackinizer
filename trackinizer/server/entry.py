@@ -45,6 +45,10 @@ def main() -> int:
 
     """
     try:
+        if len(sys.argv) > 1 and sys.argv[1] == "restore":
+            from trackinizer.server.restore_command import main as restore
+
+            return restore(sys.argv[2:])
         return serve()
     except ModuleNotFoundError as err:
         if err.name is None or err.name.partition(".")[0] not in SERVER_ONLY:

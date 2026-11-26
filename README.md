@@ -287,7 +287,11 @@ unchanged graph exports the same bytes twice. Line format:
 subgraph those clauses match instead. Clauses read like any other filter and
 AND together; the inquiries decide the subgraph, and an edge comes along only
 when both of its ends did. The header names the selector, so a reader can
-tell a slice from a backup.
+tell a slice from a complete logical backup. A complete export can be restored
+into an empty local database with `trackinizer restore graph.jsonl`; the
+destination uses its normal current schema, and incompatible data fails and
+rolls back. Credentials and deployment configuration are intentionally not
+restored.
 
 ## Package dependency graph
 
@@ -424,6 +428,7 @@ trackinizer --app-dir DIR          # the web app built in DIR at /trax/
 trackinizer --assistant ACTOR=EMAIL  # the service account that acts for an asker (or $TRACKINIZER_ASSISTANT)
 trackinizer --staff PATTERNS         # who is staff: user@host or *@domain (or $TRACKINIZER_STAFF)
 trackinizer --no-web               # without /api/web, /trax/ or the login page
+trackinizer restore FILE           # restore a complete export into an empty database
 ```
 
 `trax` is the client half and talks to any reachable server, so it is

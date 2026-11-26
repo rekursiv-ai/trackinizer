@@ -31,10 +31,7 @@ else:
 from trackinizer.server import auth
 from trackinizer.server.auth import bootstrap_admin
 from trackinizer.server.notify import tx
-from trackinizer.server.schema_gen import (
-    SEQ_FOR_KIND,
-    substitute_schema_placeholders,
-)
+from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.authority import _AuthorityMixin
 from trackinizer.server.store.cascade import _CascadeAuditMixin
@@ -45,6 +42,7 @@ from trackinizer.server.store.edit import _EditMixin
 from trackinizer.server.store.export import _ExportMixin
 from trackinizer.server.store.metrics import _MetricsMixin
 from trackinizer.server.store.read import _ReadMixin
+from trackinizer.server.store.restore import _RestoreMixin
 from trackinizer.server.store.session import _SessionMixin
 from trackinizer.server.store.session_feed import _SessionFeedMixin
 from trackinizer.server.store.session_ir import _SessionIRMixin
@@ -52,7 +50,7 @@ from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.store.submit import (
     _SubmitMixin,
 )
-from trackinizer.server.values import vetted_sql
+from trackinizer.server.store.sequences import _reconcile_sequences
 
 
 __all__ = ["Store"]
@@ -421,35 +419,6 @@ async def _unlock_bootstrap(conn: Conn) -> None:
         )
 
 
-# Monotonic and idempotent: a kind with no rows is skipped (its sequence keeps minting
-# from the start), and a sequence already at or beyond the table maximum is left
-# untouched. Only a sequence lagging its data -- the signature of a datadir rebuild or
-# dump reload that wrote literal ``seq`` values without replaying ``setval`` -- is
-# bumped, so the next ``nextval`` cannot re-mint an existing ref.
-# Audience: internal -- reads sequences; the dynamic name is never a session table.
-async def _reconcile_sequences(conn: Conn) -> None:
-    """Advance each per-kind ref sequence to the maximum ``seq`` in rows."""
-    for kind, seq_name in SEQ_FOR_KIND.items():
-        max_seq = await conn.fetchval(
-            "SELECT MAX(seq) FROM inquiries WHERE kind = $1",
-            kind,
-        )
-        if max_seq is None:
-            continue
-        # ``GREATEST`` guard never lowers a healthy sequence; ``setval``'s
-        # implicit ``is_called=true`` makes the next value ``max_seq + 1``.
-        await conn.execute(
-            vetted_sql(
-                "SELECT setval('",
-                seq_name,
-                "', GREATEST((SELECT last_value FROM ",
-                seq_name,
-                "), $1))",
-            ),
-            max_seq,
-        )
-
-
 def _is_transient_pglite_fault(err: BaseException) -> bool:
     """Whether ``err`` is a connection-closed fault (retry) vs API misuse (raise)."""
     text = str(err).lower()
@@ -459,6 +428,7 @@ def _is_transient_pglite_fault(err: BaseException) -> bool:
 class Store(
     _LifecycleMixin,
     _ExportMixin,
+    _RestoreMixin,
     _ReadMixin,
     _AuthorityMixin,
     _MetricsMixin,

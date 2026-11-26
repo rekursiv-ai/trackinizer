@@ -790,7 +790,8 @@ GET /api/export
 GET /api/export?filter=<json>
 ```
 
-The whole graph as JSON lines (`application/x-ndjson`), for backup or a
+The whole graph as JSON lines (`application/x-ndjson`), for a portable logical
+backup or a
 public mirror: every inquiry, edge, and change-log row, plus experiment
 metrics and agent-session records, read in one snapshot. Viewer role, like
 any read. A session's records are exported only to a caller that reads it
@@ -798,7 +799,11 @@ any read. A session's records are exported only to a caller that reads it
 reads another person's chat, and in `domain` or `individual` mode a person who is no
 staff and no admin reads only their organisation's sessions, so an export is a whole
 backup only when nothing is withheld; its header counts what
-it left out. Read-only; nothing imports it yet. Line shape: section 3.24.
+it left out. The endpoint is read-only. A complete unfiltered export can be
+restored into a fresh local database with `trackinizer restore`; the destination
+uses its normal current schema and rejects incompatible rows transactionally.
+Credentials are not exported, and unavailable `api_key_id` audit references are
+cleared during restore. Line shape: section 3.24.
 
 A repeated `filter` narrows the export to the subgraph its clauses match,
 in the spelling section 3.3 already uses for a list query, and ANDed. Only
