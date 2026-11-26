@@ -49,6 +49,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Final, cast
 from uuid import UUID, uuid4
 
@@ -581,6 +582,11 @@ async def process_socket(websocket: WebSocket, session_id: UUID) -> None:
     except HTTPException:
         await socket.close(CLOSE_REFUSED, "another key serves this process")
         return
+    # A person's own key runs on their own host; a minted key's host says the rest.
+    remote = identity.process is not None and await _serves_others(
+        websocket,
+        host_id=identity.process.host_id,
+    )
     relay = get_session_relay(websocket)
     current = relay.process(session_id)
     # Where the process runs once the relay takes it: a known process keeps its host.
@@ -595,6 +601,7 @@ async def process_socket(websocket: WebSocket, session_id: UUID) -> None:
         socket,
         hello,
         host_id=host_id,
+        remote=remote,
         allowed=partial(_answers, serves),
         key=identity.api_key_id,
         attached=partial(
@@ -768,6 +775,11 @@ class _ProcessWebSocket:
 _GONE: Final = 1006
 """The code of a socket whose peer left without a close of its own."""
 
+_SERVICE_FACTS: Final[Mapping[str, bool]] = MappingProxyType(
+    {SESSIONS_FACT: True, REMOTE_AGENTS_FACT: True},
+)
+"""What a remote agent service's host reports: it runs agents, and confines each."""
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Place:
@@ -890,7 +902,7 @@ async def _start_place(
             name=name,
             own=bool(spec.host),
             facts={SESSIONS_FACT: True},
-            service_facts={SESSIONS_FACT: True, REMOTE_AGENTS_FACT: True},
+            service_facts=_SERVICE_FACTS,
             services=services,
             served=served,
         )
@@ -973,6 +985,24 @@ async def _host_id(
         UUID,
         default=None,
     )
+
+
+# The relay holds what a start said of its place, and a restart drops it: a process
+# that attaches again is placed again by the host its key is bound to, by the rule
+# ``_place`` finds a service by, so a stop still reaches the service that ends it.
+async def _serves_others(connection: HTTPConnection, *, host_id: UUID) -> bool:
+    """Say whether ``host_id`` is a remote agent service the configuration names."""
+    async with request_engine(connection).acquire() as conn:
+        for service in get_remote_agent_services(connection):
+            found = await _host_id(
+                conn,
+                name=service.name,
+                owner=service.account,
+                facts=_SERVICE_FACTS,
+            )
+            if found == host_id:
+                return True
+    return False
 
 
 # A process a key was minted for is served under that key alone, and that key serves no
