@@ -47,7 +47,8 @@ Each frame on the process socket is one text message of at most
 :data:`MAX_FRAME_BYTES`. The server ends the socket with a close code of
 ``wire_terminals`` and a reason: ``CLOSE_ENDED`` when a person stopped the process,
 ``CLOSE_TAKEN_OVER`` when another process holds the session, ``CLOSE_REFUSED`` when
-the key may not serve it, and ``CLOSE_HOST_REVOKED`` when its host was revoked. A
+the key may not serve it or the process speaks another :data:`PROTOCOL`, and
+``CLOSE_HOST_REVOKED`` when its host was revoked. A
 process ends on any of them and reconnects on every other close; one that ends
 itself closes with 1000.
 
@@ -83,6 +84,7 @@ __all__ = [
     "MAX_REASON_CHARS",
     "NOT_LIVE",
     "NO_PLACE",
+    "PROTOCOL",
     "REMOTE_AGENTS_FACT",
     "REMOTE_AGENT_FLAGS",
     "SESSIONS_FACT",
@@ -174,6 +176,11 @@ keep-alive. A reader that hears nothing for 2.5 times this has lost the stream."
 MAX_REASON_CHARS: Final = 4_096
 """The most characters a daemon reports of why a process ended, and of its output."""
 
+PROTOCOL: Final = 1
+"""The process socket's frames, numbered: raise it when a frame changes in a way a
+process started before the deploy would misread, and the server refuses that process.
+One that sends no number predates the field."""
+
 type InputKind = Literal["UserMessage", "ModelHalt", "Command"]
 """What a person may send the root agent: a line, a stop of the turn, or a slash
 line."""
@@ -193,6 +200,9 @@ class Hello(BaseModel):
 
     host: str
     """The name of the host it runs on."""
+
+    protocol: int = PROTOCOL
+    """The frames the process speaks, as :data:`PROTOCOL` numbers them."""
 
 
 class BackgroundJob(BaseModel):

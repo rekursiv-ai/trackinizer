@@ -199,6 +199,7 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
         "process_id": "00000000-0000-0000-0000-000000000002",
         "version": "0.4.2",
         "host": "lab-box",
+        "protocol": 1,
     }
     assert EventLine(kind="ModelHalt", payload={}).model_dump(mode="json") == {
         "type": "event",

@@ -63,6 +63,7 @@ from trackinizer.wire.wire_session_relay import (
     HOST_SESSIONS_ENDED_PATH,
     HOST_SESSIONS_WAIT_PATH,
     MAX_FRAME_BYTES,
+    PROTOCOL,
     SESSION_INPUTS_PATH,
     SESSION_LINES_PATH,
     SESSION_PROCESS_PATH,
@@ -247,11 +248,16 @@ class _Peer:
         return Input.model_validate_json(text)
 
     async def close_code(self) -> int:
+        return (await self.close_message())[0]
+
+    async def close_message(self) -> tuple[int, str]:
         message = await self._next()
         assert message["type"] == "websocket.close", message
         code = cast(object, message["code"])
+        reason = cast(object, message.get("reason") or "")
         assert isinstance(code, int)
-        return code
+        assert isinstance(reason, str)
+        return code, reason
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -2053,6 +2059,30 @@ async def test_a_socket_whose_first_frame_is_no_hello_is_closed_as_bad(
         assert world.sleeps.pass_(10.0) == 1
 
     assert await peer.close_code() == BAD_FRAME
+
+
+@pytest.mark.parametrize("protocol", [None, PROTOCOL + 1])
+async def test_a_process_on_another_protocol_is_refused_and_told_to_restart(
+    world: _World,
+    protocol: int | None,
+) -> None:
+    ada = await world.person("ada@x.y")
+    session_id = await world.session("ada@x.y")
+    hello = Hello(process_id=uuid.uuid4(), version="1", host="laptop")
+
+    peer = world.process(await world.key(ada), session_id)
+    # A process started before the field existed sends none.
+    peer.push(
+        hello.model_dump_json(exclude={"protocol"})
+        if protocol is None
+        else hello.model_copy(update={"protocol": protocol}).model_dump_json(),
+    )
+
+    assert await peer.close_message() == (
+        CLOSE_REFUSED,
+        "this agent process is from another release of the server; restart it",
+    )
+    assert world.relay.process(session_id) is None
 
 
 async def test_a_socket_the_relay_refuses_changes_nothing_of_its_session(
