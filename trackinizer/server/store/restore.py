@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Final, cast
@@ -20,6 +19,8 @@ from trackinizer.wire.wire_export import EXPORT_TABLES
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping, Sequence
+
     from trackinizer.lib.postgres import Conn
 
 
@@ -68,6 +69,7 @@ class _RestoreMixin(_StoreShared):
 
         Raises:
           RestoreError: The document or destination is not restorable.
+
         """
         iterator = iter(source)
         try:
@@ -80,7 +82,7 @@ class _RestoreMixin(_StoreShared):
         async with self.engine.acquire() as conn, tx(conn):
             await self._require_empty_restore_target(conn)
             columns = await exported_columns(conn)
-            counts = {table: 0 for table in EXPORT_TABLES}
+            counts = dict.fromkeys(EXPORT_TABLES, 0)
             causes: list[tuple[UUID, UUID]] = []
             redacted = 0
             current_table: str | None = None

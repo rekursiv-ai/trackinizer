@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
-from uuid import UUID
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import gzip
 import json
@@ -22,6 +22,10 @@ from trackinizer.server.store.restore import (
     _restore_change_causes,
     _restore_value,
 )
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _header(**overrides: object) -> str:
@@ -167,7 +171,7 @@ def test_restore_converts_portable_scalar_and_array_values() -> None:
         ),
         "2026-11-25T12:30:00+00:00",
         item,
-    ) == datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
+    ) == datetime(2026, 11, 25, 12, 30, tzinfo=UTC)
     assert _restore_value(
         ExportColumn(name="refs", data_type="ARRAY", udt_name="_uuid"),
         ["00000000-0000-0000-0000-000000000001"],

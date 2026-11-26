@@ -46,7 +46,7 @@ def main() -> int:
     """
     try:
         if len(sys.argv) > 1 and sys.argv[1] == "restore":
-            from trackinizer.server.restore_command import main as restore
+            from trackinizer.server.restore_command import main as restore  # noqa: PLC0415 -- keep server-only imports lazy.
 
             return restore(sys.argv[2:])
         return serve()

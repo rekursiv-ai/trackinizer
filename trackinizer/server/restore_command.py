@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import argparse
 import asyncio
 import json
-from dataclasses import replace
-from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+import sys
 
 import asyncpg
 
@@ -18,6 +20,8 @@ from trackinizer.server.store.core import Store
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from trackinizer.server.store.restore import RestoreReport
 
 
@@ -32,7 +36,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = asyncio.run(_restore(args))
     except (ConfigError, OSError, ValueError, RuntimeError, asyncpg.PostgresError) as error:
         parser.error(str(error))
-    print(
+    sys.stdout.write(
         json.dumps(
             {
                 "rows": dict(report.rows_by_table),
@@ -40,7 +44,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "source_schema": report.source_schema,
             },
             sort_keys=True,
-        ),
+        )
+        + "\n",
     )
     return 0
 

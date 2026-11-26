@@ -10,8 +10,7 @@ needs the destination catalog and transaction.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, TextIO
+from typing import TYPE_CHECKING, TextIO
 
 import gzip
 import json
@@ -24,7 +23,8 @@ from trackinizer.wire.wire_export import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
+    from pathlib import Path
 
 
 __all__ = [
@@ -98,7 +98,7 @@ class GraphExportReader:
             row = payload.get("row")
             if not isinstance(table, str) or not isinstance(row, dict):
                 raise RestoreError(
-                    f"line {line_number}: expected {{\"table\", \"row\"}}",
+                    f'line {line_number}: expected {{"table", "row"}}',
                 )
             try:
                 table_index = EXPORT_TABLES.index(table)
