@@ -522,6 +522,7 @@ async def _attached(
                 socket,
                 Hello(process_id=process_id, version="1", host="box"),
                 host_id=host_id,
+                remote=False,
                 allowed=_always,
             ),
         ),

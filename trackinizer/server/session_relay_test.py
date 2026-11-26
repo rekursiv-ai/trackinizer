@@ -176,6 +176,7 @@ def _serve(
     host: str = "laptop",
     version: str = "1.2",
     host_id: UUID | None = None,
+    remote: bool = False,
     allowed: Allowed = _always,
     key: UUID | None = None,
 ) -> asyncio.Future[None]:
@@ -186,6 +187,7 @@ def _serve(
             socket,
             _hello(process, host=host, version=version),
             host_id=host_id,
+            remote=remote,
             allowed=allowed,
             key=key,
         ),
@@ -427,6 +429,7 @@ async def test_what_a_socket_does_while_attached_runs_once_taken_and_ends_with_i
         refused,
         _hello(_OTHER),
         host_id=None,
+        remote=False,
         allowed=_always,
         attached=partial(attached, "refused"),
     )
@@ -439,6 +442,7 @@ async def test_what_a_socket_does_while_attached_runs_once_taken_and_ends_with_i
             taken,
             _hello(),
             host_id=None,
+            remote=False,
             allowed=_always,
             attached=partial(attached, "taken"),
         ),
@@ -454,6 +458,7 @@ async def test_what_a_socket_does_while_attached_runs_once_taken_and_ends_with_i
             failing,
             _hello(_OTHER),
             host_id=None,
+            remote=False,
             allowed=_always,
             attached=partial(attached, "failing", fails=True),
         ),
@@ -1254,6 +1259,52 @@ async def test_a_stop_of_a_process_a_remote_agent_service_took_is_handed_to_its_
     )
     # Handed once.
     assert await relay.wait(_HOST, wait_sec=0, dropped=_here) is None
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [True, False],
+    ids=["a remote agent service's", "a person's own host's"],
+)
+async def test_a_process_the_relay_does_not_know_is_as_remote_as_its_host_says(
+    *,
+    remote: bool,
+) -> None:
+    """After a restart a process attaches unstarted: its host says how it is stopped."""
+    relay = SessionRelay()
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    served = _serve(relay, _Socket(), host_id=_HOST, remote=remote)
+    attached = await viewer.process()
+
+    _ = await relay.stop(_SESSION)
+
+    assert (attached.state, attached.remote) == ("attached", remote)
+    assert await relay.wait(_HOST, wait_sec=0, dropped=_here) == (
+        StopProcess(process_id=_PROCESS) if remote else None
+    )
+    await served
+
+
+async def test_a_process_the_relay_does_not_know_drops_a_remote_one_s_before_it() -> (
+    None
+):
+    """A person's own process after a service's is stopped by its own daemon alone."""
+    relay = SessionRelay()
+    _ = _start(relay, remote=True)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    _ = await relay.stop(_SESSION)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    served = _serve(relay, _Socket(), process=_ENDED, host_id=_LAPTOP)
+    attached = await viewer.process()
+
+    _ = await relay.stop(_SESSION)
+
+    assert (attached.process_id, attached.remote) == (_ENDED, False)
+    assert await relay.wait(_LAPTOP, wait_sec=0, dropped=_here) is None
+    await served
 
 
 async def test_a_stop_reaches_no_person_s_host_nor_a_start_no_service_took() -> None:

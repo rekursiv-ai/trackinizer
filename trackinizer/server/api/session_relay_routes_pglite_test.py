@@ -1309,6 +1309,59 @@ async def test_a_process_key_serves_and_writes_its_own_process_s_session_alone(
     ] == ["attached", "attached"]
 
 
+@pytest.mark.parametrize(
+    ("host", "remote"),
+    [("remote-agents", True), ("lab", False)],
+    ids=["a remote agent service", "the person's own host"],
+)
+async def test_after_a_restart_a_process_is_as_remote_as_its_keys_host_and_stops_so(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    host: str,
+    remote: bool,
+) -> None:
+    """A restart drops what its start said: the host its key is bound to says it again."""
+    ada = await world.person("ada@x.y")
+    _ = await world.person(_AGENTS)
+    hosts = {
+        "lab": await world.host("lab", owner="ada@x.y", facts=_RUNS),
+        "remote-agents": await world.host(
+            "remote-agents",
+            owner=_AGENTS,
+            facts=_SERVICE,
+        ),
+    }
+    headers = await world.key(ada)
+    session_id = await world.session("ada@x.y")
+    started = await world.start(headers, session_id, host=host)
+    serve = await world.served(hosts[host])
+    restarted = _Relay()
+    patch_state(monkeypatch, "session_relay", restarted)
+    viewer = restarted.lines(session_id, allowed=_always)
+    _ = await anext(viewer)
+    _ = world.process(
+        {"Authorization": f"Bearer {serve.token}"},
+        session_id,
+        hello=Hello(process_id=serve.process_id, version="1", host=host),
+    )
+    attached = await asyncio.wait_for(anext(viewer), 5)
+
+    stopped = await world.call(
+        "DELETE",
+        SESSION_PROCESS_PATH.format(session_id=session_id),
+        headers=headers,
+    )
+    waited = await world.wait(hosts[host])
+
+    assert (started.status_code, stopped.status_code) == (200, 200), stopped.text
+    assert isinstance(attached, ProcessLine)
+    assert (attached.process.state, attached.process.remote) == ("attached", remote)
+    assert waited.json() == (
+        {"type": "stop", "process_id": str(serve.process_id)} if remote else None
+    )
+
+
 async def test_after_a_restart_a_key_no_process_holds_is_revoked_past_its_grace(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,

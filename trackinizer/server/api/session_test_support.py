@@ -310,6 +310,7 @@ async def attached_process(
             socket,
             Hello(process_id=uuid.uuid4(), version="test", host=host),
             host_id=None,
+            remote=False,
             allowed=_always,
             key=key,
         ),

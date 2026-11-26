@@ -973,6 +973,61 @@ async def test_a_start_runs_on_her_own_host_first_else_a_service_that_admits_her
     )
 
 
+_SERVICE: Final = RemoteAgentService(name="remote-agents", account=_AGENTS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("services", "steps", "host", "serves"),
+    [
+        (
+            (_SERVICE,),
+            (_found("remote-agents", _AGENTS, _REMOTE, _SERVICE_HOST),),
+            _SERVICE_HOST,
+            True,
+        ),
+        (
+            (_SERVICE,),
+            (_found("remote-agents", _AGENTS, _REMOTE, _SERVICE_HOST),),
+            _HERS,
+            False,
+        ),
+        (
+            (_SERVICE,),
+            (_found("remote-agents", _AGENTS, _REMOTE, None),),
+            _SERVICE_HOST,
+            False,
+        ),
+        ((), (), _SERVICE_HOST, False),
+    ],
+    ids=[
+        "the service's own host",
+        "another host",
+        "a service whose host does not report confining",
+        "no service named",
+    ],
+)
+async def test_a_host_serves_others_where_a_start_would_place_a_service(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    services: tuple[RemoteAgentService, ...],
+    steps: tuple[Says, ...],
+    host: UUID,
+    serves: bool,
+) -> None:
+    """The rule ``_place`` finds a service by, asked of the host a key is bound to."""
+    engine = ExchangeEngine(*steps)
+    patch_state(monkeypatch, "engine", engine)
+    patch_state(monkeypatch, "config", Config(remote_agent_services=services))
+
+    found = await session_relay_routes._serves_others(
+        cast("Request", SimpleNamespace(app=app)),
+        host_id=host,
+    )
+
+    assert (found, engine.done) == (serves, True)
+
+
 @dataclass(slots=True, kw_only=True)
 class _Serving:
     """An agent policy that serves whom a test says; the start's place is all asked."""

@@ -60,7 +60,7 @@ Typical usage example:
   serve = await relay.wait(h, wait_sec=25, dropped=request.is_disconnected)
   relay.give_up(session_id, process_id=p, taken=True)  # later: never answered
   await relay.serve_process(
-      session_id, socket, hello, host_id=h, allowed=still_writes, key=k
+      session_id, socket, hello, host_id=h, remote=False, allowed=still_writes, key=k
   )
   await relay.sweep()  # on a timer: end what its rule no longer lets through
   relay.forget_idle(keyed=live_keys)  # then forget what nothing of is live
@@ -255,6 +255,7 @@ class SessionRelay:
         hello: Hello,
         *,
         host_id: UUID | None,
+        remote: bool,
         allowed: Allowed,
         key: UUID | None = None,
         attached: Attached = _nothing,
@@ -267,6 +268,8 @@ class SessionRelay:
           hello: The first frame it sent.
           host_id: The host the process is known by, or ``None``; read only for a
             process the relay does not know.
+          remote: Whether that host is a remote agent service, which ends a stopped
+            process whole; read only for a process the relay does not know.
           allowed: The rule its key was let in by, which each :meth:`sweep` asks again.
           key: The id of the API key it opened its socket with, which
             :meth:`socket_key` tells; ``None`` for none.
@@ -291,6 +294,7 @@ class SessionRelay:
             live,
             hello,
             host_id=host_id,
+            remote=remote,
             connection=_Connection(socket=socket, allowed=allowed, key=key),
         )
         reading = asyncio.ensure_future(self._read(session_id, live, connection))
@@ -889,6 +893,7 @@ class SessionRelay:
         hello: Hello,
         *,
         host_id: UUID | None,
+        remote: bool,
         connection: _Connection,
     ) -> _Connection:
         """Make ``connection`` the session's process's, as its ``Hello`` says it is."""
@@ -916,6 +921,7 @@ class SessionRelay:
                 )
         else:
             live.host_id = host_id
+            live.remote = remote
             live.connection = connection
             live.output = ""
             self._change(
@@ -924,6 +930,7 @@ class SessionRelay:
                     session_id=session_id,
                     process_id=hello.process_id,
                     host=hello.host,
+                    remote=remote,
                     state="attached",
                     version=hello.version,
                     since=_now(),
