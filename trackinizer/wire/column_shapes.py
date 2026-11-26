@@ -432,10 +432,9 @@ def _classify(flat: FlatColumn) -> ColumnShape | None:
 
 # Keeps multi-word spellings intact (``DOUBLE PRECISION``), which the sets below match
 # verbatim.
-# one.
 def _sql_head(sql_type: str) -> str:
-    """Return a declared type minus any precision, so ``NUMERIC(14, 6)`` reads as."""
-    return sql_type.split("(", maxsplit=1)[0].strip().upper()
+    """Return a declared type minus any precision: ``NUMERIC(14, 6)`` reads as one."""
+    return sql_type.partition("(")[0].strip().upper()
 
 
 # Postgres' whole vocabulary for the type, not the subset declared today: ``INT`` /

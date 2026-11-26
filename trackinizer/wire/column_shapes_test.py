@@ -103,6 +103,12 @@ class TestTheOracleIsPerColumnAndOp:
         assert "{col}" not in template
         assert SESSION_RECORD_FIELDS[column] in template
 
+    def test_a_renamed_class_s_projection_reads_both_its_names(self) -> None:
+        template = sql_template("agent_message", "notnull")
+
+        assert template is not None
+        assert "'AgentMessage', 'AgentToAgentMessage'" in template
+
 
 class TestTheNumericVocabularyIsComplete:
     r"""A declared type must classify by what Postgres MEANS, not its spelling.
