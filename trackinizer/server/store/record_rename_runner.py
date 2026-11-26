@@ -8,7 +8,9 @@ its payload. These classes were renamed:
   TurnContext         -> SessionContext
 
 The payload is JSON, not JSONB, and is read back byte for byte, so the tags are
-renamed as text: no other byte of a payload changes. ``text`` does not change, so
+renamed as text: no other byte of a payload changes. A tag in ``py/dict`` data, as a
+call's arguments, tags no record, and stays as the server serves it
+(``session_records.served_payload``). ``text`` does not change, so
 no row is restamped and nothing is embedded again. Running it again changes
 nothing: no old name is left.
 
@@ -45,10 +47,14 @@ Arguments: the DSN and the shard count.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
+import json
+import re
 import time
+
+from trackinizer.sagent.journal.types import renamed_records
 
 
 if TYPE_CHECKING:
@@ -58,40 +64,64 @@ if TYPE_CHECKING:
 __all__ = [
     "RenameStats",
     "rename_shard",
+    "renamed_text",
 ]
 
 
-# One scan: the union of the predicates in the WHERE, and each column rewritten
-# only where its own predicate matches.
-_RENAME: Final = """
-UPDATE session_records
-SET
-    payload = CASE
-        WHEN payload::text ~ '"py/object"\\s*:\\s*"(AgentToAgentMessage|ToolResult|TurnContext)"'
-        THEN regexp_replace(
-            regexp_replace(
-                regexp_replace(
-                    payload::text,
-                    '("py/object"\\s*:\\s*)"AgentToAgentMessage"', '\\1"AgentMessage"', 'g'
-                ),
-                '("py/object"\\s*:\\s*)"ToolResult"', '\\1"ToolMessage"', 'g'
-            ),
-            '("py/object"\\s*:\\s*)"TurnContext"', '\\1"SessionContext"', 'g'
-        )::json
-        ELSE payload
-    END,
-    kind = CASE kind
-        WHEN 'AgentToAgentMessage' THEN 'AgentMessage'
-        WHEN 'ToolResult' THEN 'ToolMessage'
-        WHEN 'TurnContext' THEN 'SessionContext'
-        ELSE kind
-    END
+# One scan finds each row a former name may tag; which of its tags name a record is
+# worked out in Python (``renamed_text``), which no SQL pattern can say.
+_CANDIDATES: Final = """
+SELECT session_id, part, idx, kind, payload::text AS payload
+FROM session_records
 WHERE session_id >= $1 AND ($2::uuid IS NULL OR session_id < $2)
-AND (
-    kind IN ('AgentToAgentMessage', 'ToolResult', 'TurnContext')
-    OR payload::text ~ '"py/object"\\s*:\\s*"(AgentToAgentMessage|ToolResult|TurnContext)"'
-)
+AND (kind = ANY($3::text[]) OR payload::text ~ $4)
+FOR UPDATE
 """
+
+# ``unnest`` arrays, not executemany: one round trip for the shard's rows.
+_RENAME: Final = """
+UPDATE session_records AS r
+SET kind = t.kind, payload = t.payload::json
+FROM unnest($1::uuid[], $2::int[], $3::int[], $4::text[], $5::text[])
+    AS t(session_id, part, idx, kind, payload)
+WHERE r.session_id = t.session_id AND r.part = t.part AND r.idx = t.idx
+"""
+
+
+# A tag as a stored row spells it, spaced any way; one in a string is escaped, so its
+# quotes do not match.
+_TAG: Final = re.compile(
+    r'("py/object"\s*:\s*)"(' + "|".join(map(re.escape, renamed_records())) + ')"',
+)
+_PLAIN: Final = re.compile(r'"py/dict"\s*:\s*')
+
+
+# ``py/dict`` holds plain data, as a call's arguments, which no tag in it makes a
+# record: the server serves it as it is (``session_records.served_payload``).
+def renamed_text(text: str) -> str:
+    """Return a payload's text with each record's former class name renamed.
+
+    Args:
+      text: A stored payload, JSON.
+
+    Returns:
+      renamed: ``text`` with each tag of a renamed class, outside ``py/dict``
+        data, naming its new name; no other byte changes.
+
+    """
+    decoder = json.JSONDecoder()
+    parts: list[str] = []
+    at = 0
+    # Each search starts past the data before it, so one nested in it is never found.
+    while (plain := _PLAIN.search(text, at)) is not None:
+        end = decoder.raw_decode(text, plain.end())[1]
+        parts += [
+            _TAG.sub(_renamed_tag, text[at : plain.end()]),
+            text[plain.end() : end],
+        ]
+        at = end
+    parts.append(_TAG.sub(_renamed_tag, text[at:]))
+    return "".join(parts)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -134,14 +164,23 @@ async def rename_shard(
     # The range splits the 128-bit key space evenly; uuid4 ids spread across it.
     start = UUID(int=(shard << 128) // shards)
     end = None if shard == shards - 1 else UUID(int=((shard + 1) << 128) // shards)
+    names = renamed_records()
     began = time.monotonic()
-    async with engine.acquire() as conn:
-        status = await conn.execute(_RENAME, start, end)
-    # ``UPDATE <n>``.
-    return RenameStats(
-        rows=int(status.rpartition(" ")[2]),
-        seconds=time.monotonic() - began,
-    )
+    changed: list[tuple[object, object, object, str, str]] = []
+    async with engine.acquire() as conn, conn.transaction():
+        for r in await conn.fetch(_CANDIDATES, start, end, list(names), _TAG.pattern):
+            kind, payload = cast(str, r["kind"]), cast(str, r["payload"])
+            renamed = (names.get(kind, kind), renamed_text(payload))
+            if renamed != (kind, payload):
+                changed.append((r["session_id"], r["part"], r["idx"], *renamed))
+        if changed:
+            _ = await conn.execute(_RENAME, *map(list, zip(*changed, strict=True)))
+    return RenameStats(rows=len(changed), seconds=time.monotonic() - began)
+
+
+def _renamed_tag(found: re.Match[str]) -> str:
+    """Return the tag ``found`` matched, naming the class's new name."""
+    return f'{found.group(1)}"{renamed_records()[found.group(2)]}"'
 
 
 if __name__ == "__main__":

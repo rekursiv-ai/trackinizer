@@ -1024,6 +1024,7 @@ test("a tool step is named by what it did: its result's kind, else its call's na
     "List",
     "WebSearch",
     "WebFetch",
+    "WebBrowser",
     "Agent",
     "Task",
   ];
@@ -1041,6 +1042,7 @@ test("a tool step is named by what it did: its result's kind, else its call's na
     "list",
     "web",
     "fetch",
+    "web",
     "agent",
     "agent",
   ]);
@@ -1054,6 +1056,7 @@ test("a tool step is named by what it did: its result's kind, else its call's na
     "WriteResult",
     "WebSearchResult",
     "WebFetchResult",
+    "WebBrowserResult",
     "AgentSpawnResult",
     "UncategorizedToolResult",
     "ToolErrorResult",
@@ -1066,6 +1069,7 @@ test("a tool step is named by what it did: its result's kind, else its call's na
     "write",
     "web",
     "fetch",
+    "web",
     "agent",
     "call",
     "call",
