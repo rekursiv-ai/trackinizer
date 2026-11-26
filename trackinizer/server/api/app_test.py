@@ -244,6 +244,18 @@ _FAILURES: Final[tuple[tuple[Exception, int, str], ...]] = (
 )
 """What each failure route raises, and the status and detail its handler answers."""
 
+_REFUSED: Final = {
+    "S": "ERROR",
+    "M": "new row violates a constraint: secret-value",
+    "D": "Key (to_id)=(secret-value) is not present.",
+    "s": "public",
+    "t": "edges",
+    "c": "to_id",
+    "n": "edges_to_id_fkey",
+}
+"""A refused write's server error fields but its SQLSTATE: names of the schema,
+and a message and detail quoting the row's values."""
+
 
 @pytest.fixture(scope="module")
 def failing() -> tuple[FastAPI, TestClient]:
@@ -434,6 +446,46 @@ class TestRequestLogging:
         assert f"request_id={request_id}" in record.getMessage()
         # Encoded as uvicorn's access log does, so a path cannot forge a field.
         assert "path=/api/a%20b " in record.getMessage()
+
+    # The answer hides the cause, so the log keeps it: by the request id the web app
+    # shows beside the error, at WARNING, which production keeps.
+    @pytest.mark.parametrize(
+        ("sqlstate", "status"),
+        [("23503", 409), ("23514", 409), ("23505", 409), ("22021", 422)],
+        ids=["foreign key", "check", "unique", "unstorable value"],
+    )
+    def test_a_refused_write_logs_its_cause_by_request_id_without_its_values(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        sqlstate: str,
+        status: int,
+    ) -> None:
+        error = asyncpg.PostgresError.new({**_REFUSED, "C": sqlstate})
+        built = app.bare_app()
+        built.add_api_route("/refused", _raising(error))
+        request_id = uuid4()
+
+        with caplog.at_level(logging.WARNING):
+            response = TestClient(built, raise_server_exceptions=False).get(
+                "/refused",
+                headers={"X-Request-ID": str(request_id)},
+            )
+
+        (record,) = (
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_database_refused"
+        )
+        assert (response.status_code, record.levelno) == (status, logging.WARNING)
+        assert record.getMessage() == (
+            f"event=trackinizer_database_refused request_id={request_id} "
+            f"status_code={status} sqlstate={sqlstate} "
+            f"error_type={type(error).__name__} schema=public table=edges "
+            "column=to_id constraint=edges_to_id_fkey"
+        )
+        fields = from_plain(record.__dict__, dict[str, object])
+        assert from_plain(fields.get("constraint"), str) == "edges_to_id_fkey"
+        assert "secret-value" not in caplog.text + response.text
 
     def test_a_request_logs_one_complete_line(
         self,

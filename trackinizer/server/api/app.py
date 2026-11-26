@@ -619,17 +619,18 @@ async def fk_violation_handler(
     a bad reference. ``exc.detail`` is dropped: it names internal columns /
     constraints (``Key (from_id)=(...) is not present``), which must not
     reach the client (REV-OPUS-03). The generic message is enough for the
-    caller to know the reference was bad.
+    caller to know the reference was bad; the log keeps the cause
+    (:func:`_log_refused`).
 
     Args:
-      request: FastAPI Request object (unused).
-      exc: ForeignKeyViolationError from asyncpg (unused).
+      request: FastAPI Request object, for its request id.
+      exc: ForeignKeyViolationError from asyncpg.
 
     Returns:
       response: JSON response with 409 status and generic detail message.
 
     """
-    del request, exc
+    _log_refused(request, exc, status_code=409)
     return JSONResponse(
         status_code=409,
         content={"detail": "foreign key violation"},
@@ -646,17 +647,18 @@ async def check_violation_handler(
     the kind-vs-column gates on ``change_log``: the client supplied a
     value the database refused, which is a client error, not a server bug.
     ``exc.detail`` is dropped: it names the violated constraint / column,
-    internal schema detail the client must not see (REV-OPUS-03).
+    internal schema detail the client must not see (REV-OPUS-03); the log
+    keeps the cause (:func:`_log_refused`).
 
     Args:
-      request: FastAPI Request object (unused).
-      exc: CheckViolationError from asyncpg (unused).
+      request: FastAPI Request object, for its request id.
+      exc: CheckViolationError from asyncpg.
 
     Returns:
       response: JSON response with 409 status and generic detail message.
 
     """
-    del request, exc
+    _log_refused(request, exc, status_code=409)
     return JSONResponse(
         status_code=409,
         content={"detail": "check constraint violated"},
@@ -669,17 +671,18 @@ async def data_error_handler(request: Request, exc: asyncpg.DataError) -> JSONRe
     SQLSTATE class 22 is the data itself: a NUL byte in text, a number out of
     range, a malformed timestamp. A resend fails the same way, so as a 500 it read
     as an outage, and an uploader retried it forever. The message can quote the
-    value, which may be a secret, so only the SQLSTATE is returned.
+    value, which may be a secret, so only the SQLSTATE is returned, and the log
+    keeps the column it came for (:func:`_log_refused`).
 
     Args:
-      request: FastAPI Request object (unused).
-      exc: The DataError from asyncpg, read only for its SQLSTATE.
+      request: FastAPI Request object, for its request id.
+      exc: The DataError from asyncpg, read for its SQLSTATE and its names.
 
     Returns:
       response: JSON response with 422 status, a generic detail and a code.
 
     """
-    del request
+    _log_refused(request, exc, status_code=422)
     return JSONResponse(
         status_code=422,
         content={
@@ -696,17 +699,18 @@ async def unique_violation_handler(
     """Translate a unique-constraint violation into HTTP 409.
 
     ``exc.detail`` is dropped: it names the conflicting key / column
-    values, internal detail the client must not see (REV-OPUS-03).
+    values, internal detail the client must not see (REV-OPUS-03); the log
+    keeps the cause (:func:`_log_refused`).
 
     Args:
-      request: FastAPI Request object (unused).
-      exc: UniqueViolationError from asyncpg (unused).
+      request: FastAPI Request object, for its request id.
+      exc: UniqueViolationError from asyncpg.
 
     Returns:
       response: JSON response with 409 status and generic detail message.
 
     """
-    del request, exc
+    _log_refused(request, exc, status_code=409)
     return JSONResponse(
         status_code=409,
         content={"detail": "unique constraint violated"},
@@ -789,6 +793,34 @@ def _redacted_location(error: dict[str, object]) -> list[str | int]:
     if error["type"] == "extra_forbidden":
         return [*location[:-1], "extra"]
     return location
+
+
+# A refused write answers 4xx, which the request's own line logs at INFO, below what
+# production keeps; this line, at WARNING, keeps the cause the answer hides. Never
+# its message or detail, which quote the row's values.
+def _log_refused(
+    request: Request,
+    exc: asyncpg.PostgresError,
+    *,
+    status_code: int,
+) -> None:
+    """Log what the database refused, by request id, naming the schema, not values."""
+    fields = {
+        "request_id": str(getattr(request.state, "request_id", "")),
+        "status_code": status_code,
+        "sqlstate": exc.sqlstate,
+        "error_type": type(exc).__name__,
+        "schema": exc.schema_name,
+        "table": exc.table_name,
+        "column": exc.column_name,
+        "constraint": exc.constraint_name,
+    }
+    _logger.warning(
+        "event=trackinizer_database_refused request_id=%s status_code=%s sqlstate=%s "
+        "error_type=%s schema=%s table=%s column=%s constraint=%s",
+        *fields.values(),
+        extra={"event": "trackinizer_database_refused", **fields},
+    )
 
 
 app = _build_app()
