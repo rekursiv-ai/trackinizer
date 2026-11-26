@@ -653,7 +653,16 @@ async def test_a_backlog_page_is_embedded_written_and_its_last_record_kept(
         *(() if after is None else after),
     )
     assert model.calls == [["hi"]]
-    begin, delete, insert, commit = (call.args for call in conn.execute.await_args_list)
+    read_begin, untimed, read_commit, begin, delete, insert, commit = (
+        call.args for call in conn.execute.await_args_list
+    )
+    # A page may scan millions of records to find its pending few, past the
+    # server's default statement timeout.
+    assert (read_begin, untimed, read_commit) == (
+        ("BEGIN",),
+        ("SET LOCAL statement_timeout = 0",),
+        ("COMMIT",),
+    )
     assert (begin, commit) == (("BEGIN",), ("COMMIT",))
     assert delete == (
         (
