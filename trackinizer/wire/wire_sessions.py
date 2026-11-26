@@ -40,7 +40,9 @@ _MAX_ACCOUNT_CHARS: Final = 254
 # value can never match and is almost certainly a client bug; reject it at the boundary
 # rather than silently never-deliver or store junk. ``Field(min_length=1)`` alone admits
 # ``" "``, so each such field binds this validator. The one rule for every scalar string
-# field, mirroring the list-element ``_reject_blank_strings`` rule in ``bodies.py``.
+# field, mirroring the list-element ``_reject_blank_strings`` rule in ``bodies.py``. A
+# message's ``text`` binds it too: whitespace alone says nothing, yet would be delivered
+# and drawn as an empty message.
 def _reject_blank(value: str | None) -> str | None:
     """Reject an empty-or-whitespace scalar string; pass ``None`` through."""
     if value is not None and not value.strip():
@@ -687,6 +689,7 @@ class SendMessage(BaseModel):
     _validate_scalars = field_validator(
         "actor",
         "room",
+        "text",
         "asker",
         "from_label",
         mode="after",
