@@ -1,11 +1,13 @@
 import type { Graph } from "../api/graph";
 import {
+  type LensMode,
   type LinkLook,
   linkLook,
   type NodeLook,
   nodeLook,
   type Palette,
 } from "./encode";
+import { computeLens, type LensKeyItem } from "./lenses";
 import { must } from "../must";
 
 /**
@@ -22,6 +24,7 @@ export type DrawNode = {
   created: string;
   judgement?: string;
   confidence?: number;
+  account?: string;
   /** Distinct inquiries it shares an edge with. */
   degree: number;
   /** An Issue that narrows nothing: the top of a tree (S6-03: `requires` makes no parent). */
@@ -77,6 +80,8 @@ export type Lens = {
   readonly matches: ReadonlySet<string>;
   /** Nodes whose titles show under them: the roots, while grouped. */
   readonly labelled: ReadonlySet<string>;
+  /** Visual encoding mode (`"kind"` by default, or `"epistemic"`). */
+  readonly mode?: LensMode;
 };
 
 /** Nothing hidden, lit or found. */
@@ -105,6 +110,7 @@ export const PLAIN_LENS: Lens = {
 export class GraphModel {
   nodes: DrawNode[] = [];
   links: DrawLink[] = [];
+  keyItems: LensKeyItem[] = [];
   #palette: Palette;
   #lens: Lens = PLAIN_LENS;
   #neighbours = new Map<string, Set<string>>();
@@ -204,7 +210,10 @@ export class GraphModel {
       strong,
       matches,
       labelled,
+      mode = "kind",
     } = this.#lens;
+    const computed = computeLens(mode, this.nodes, this.links, this.#palette);
+    this.keyItems = computed.keyItems;
     for (const drawn of this.nodes) {
       const far = lit?.get(drawn.id);
       const dimmed = lit !== null && far === undefined;
@@ -219,6 +228,7 @@ export class GraphModel {
         far: far !== undefined && far >= 2,
         halo,
         label,
+        override: computed.overrides?.get(drawn.id),
       });
       drawn.hidden =
         hiddenKinds.has(drawn.kind) ||
@@ -244,10 +254,11 @@ export class GraphModel {
   }
 }
 
-/** `drawn` without a Belief's fields, which an answer that lacks them has cleared. */
+/** `drawn` without optional per-answer fields, which an answer that lacks them has cleared. */
 function withoutBelief(drawn: DrawNode): DrawNode {
   delete drawn.judgement;
   delete drawn.confidence;
+  delete drawn.account;
   return drawn;
 }
 

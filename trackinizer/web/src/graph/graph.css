@@ -30,6 +30,20 @@
 .graph-search input::placeholder {
   color: var(--muted);
 }
+.graph-trail-btn {
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.graph-trail-btn[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
 .graph-count {
   font-size: 12.5px;
   white-space: nowrap;

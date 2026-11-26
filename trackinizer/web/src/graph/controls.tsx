@@ -11,7 +11,8 @@ import { capitalize, StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
 import { EmptyState } from "../ui/view";
-import { linkLook, type Palette } from "./encode";
+import { type LensMode, linkLook, type Palette } from "./encode";
+import { LENSES, type LensKeyItem } from "./lenses";
 import type { DrawNode } from "./model";
 import { hopsName } from "./search";
 import { must } from "../must";
@@ -22,6 +23,41 @@ export type Hidden = {
   readonly statuses: readonly string[];
 };
 type Field = keyof Hidden;
+
+/** Visual encoding lens selector, driven directly by `LENSES`. */
+export function LensMenu({
+  lens,
+  onLens,
+}: {
+  lens: LensMode;
+  onLens: (next: LensMode) => void;
+}) {
+  const current = LENSES.find((opt) => opt.id === lens) ?? LENSES[0];
+  return (
+    <Menu
+      label="Lens"
+      trigger={
+        <button
+          type="button"
+          className="btn ghost"
+          aria-label="Lens"
+          title="Choose what node colors and rings highlight"
+        >
+          <Icon name="eye" size={14} />
+          <span className="hide-sm">Lens: {current?.label}</span>
+        </button>
+      }
+      options={LENSES.map((opt) => ({
+        value: opt.id,
+        label: opt.label,
+        hint: opt.short,
+        title: opt.hint,
+        checked: opt.id === lens,
+      }))}
+      onPick={(value) => onLens(value as LensMode)}
+    />
+  );
+}
 
 /**
  * The Filter menu, as a list's: pick Kind or Status, then tick what shows. Each
@@ -378,6 +414,8 @@ export function Key({
   edges,
   hiddenKinds,
   onHiddenKinds,
+  lensMode = "kind",
+  lensItems = [],
 }: {
   id: string;
   meta: Meta;
@@ -390,6 +428,8 @@ export function Key({
   edges: readonly { readonly kind: string; readonly valence?: number }[];
   hiddenKinds: readonly string[];
   onHiddenKinds: (hiddenKinds: readonly string[]) => void;
+  lensMode?: LensMode;
+  lensItems?: readonly LensKeyItem[];
 }) {
   const counts = tally(nodes.map((node) => node.kind));
   const shown = kinds.filter((kind) => !hiddenKinds.includes(kind));
@@ -425,33 +465,43 @@ export function Key({
       ? [{ name: "Against", look: { color: palette.against, dash: null } }]
       : []),
   ];
+  const primarySection =
+    lensMode !== "kind"
+      ? {
+          name: LENSES.find((opt) => opt.id === lensMode)?.label ?? "Lens",
+          items: lensItems.map(({ key, label, color, ring, count }) => (
+            <li key={key}>
+              <KeyDot color={color} ring={ring} />
+              {label}
+              {count !== undefined ? (
+                <span className="graph-tally num">{count}</span>
+              ) : null}
+            </li>
+          )),
+        }
+      : {
+          name: "Kinds",
+          items: kinds.map((kind) => {
+            const on = shown.includes(kind);
+            const next = pick(kind);
+            return (
+              <li key={kind}>
+                <button
+                  type="button"
+                  aria-pressed={on}
+                  title={next.title}
+                  onClick={() => onHiddenKinds(next.hidden)}
+                >
+                  <KeyDot color={palette.kinds[kind] ?? palette.fallback} />
+                  {kindLook(kind).plural}
+                  {on ? <span className="graph-tally num">{counts.get(kind)}</span> : null}
+                </button>
+              </li>
+            );
+          }),
+        };
   const sections = [
-    {
-      name: "Kinds",
-      items: kinds.map((kind) => {
-        const on = shown.includes(kind);
-        const next = pick(kind);
-        return (
-          <li key={kind}>
-            <button
-              type="button"
-              aria-pressed={on}
-              title={next.title}
-              onClick={() => onHiddenKinds(next.hidden)}
-            >
-              <span className="graph-mark">
-                <span
-                  className="graph-dot"
-                  style={{ background: palette.kinds[kind] ?? palette.fallback }}
-                />
-              </span>
-              {kindLook(kind).plural}
-              {on ? <span className="graph-tally num">{counts.get(kind)}</span> : null}
-            </button>
-          </li>
-        );
-      }),
-    },
+    primarySection,
     {
       name: "Links",
       items: strokes.map(({ name, look }) => (
@@ -497,6 +547,20 @@ export function Key({
           </div>
         ))}
     </aside>
+  );
+}
+
+function KeyDot({ color, ring }: { color: string; ring?: string }) {
+  return (
+    <span className="graph-mark">
+      <span
+        className="graph-dot"
+        style={{
+          background: color,
+          ...(ring ? { boxShadow: `0 0 0 2px ${ring}` } : {}),
+        }}
+      />
+    </span>
   );
 }
 

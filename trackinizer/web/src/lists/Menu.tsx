@@ -16,6 +16,8 @@ export type MenuOption = {
   readonly icon?: ReactNode;
   /** Shown on the right, muted. */
   readonly hint?: string;
+  /** Full description shown on hover. */
+  readonly title?: string;
   /** Ticked: the current grouping, or a filter value in use. */
   readonly checked?: boolean;
   /** Destructive, such as Purge: drawn in the error colour. */
@@ -199,6 +201,7 @@ function MenuBody({
             key={option.value}
             id={optionId(index)}
             role="option"
+            title={option.title}
             aria-selected={option.checked ?? false}
             className={[
               "menu-item",
