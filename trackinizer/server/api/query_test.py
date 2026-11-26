@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient as FastAPITestClient
 from hypothesis import (
     given,
+    settings,
     strategies as st,
 )
 from treekle import from_plain, json_loads, to_plain
@@ -1222,6 +1223,7 @@ _QUERY_VALUES = st.sampled_from(
 )
 
 
+@settings(max_examples=100, deadline=None)
 @given(
     seq_ranges=st.lists(_QUERY_VALUES, max_size=3),
     filters=st.lists(_QUERY_VALUES, max_size=3),

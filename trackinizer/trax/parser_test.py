@@ -8,6 +8,7 @@ import uuid
 
 from hypothesis import (
     given,
+    settings,
     strategies as st,
 )
 
@@ -1788,6 +1789,7 @@ _ALPHABET: list[str] = sorted(
 )
 
 
+@settings(max_examples=400, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), min_size=1, max_size=10))
 @pytest.mark.compute_large_fixture
 def test_parser_never_leaks_non_client_error(tokens: list[str]) -> None:
@@ -1810,6 +1812,7 @@ _A_KIND: Inquiry.InquiryKind = (
 )
 
 
+@settings(max_examples=300, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), max_size=8))
 @pytest.mark.compute_large_fixture
 def test_parse_list_query_never_leaks(tokens: list[str]) -> None:
@@ -1817,6 +1820,7 @@ def test_parse_list_query_never_leaks(tokens: list[str]) -> None:
         parse_list_query(_A_KIND, tokens)
 
 
+@settings(max_examples=300, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), max_size=8))
 @pytest.mark.compute_large_fixture
 def test_parse_bulk_apply_never_leaks(tokens: list[str]) -> None:
@@ -1824,6 +1828,7 @@ def test_parse_bulk_apply_never_leaks(tokens: list[str]) -> None:
         parse_bulk_apply(_A_KIND, tokens)
 
 
+@settings(max_examples=300, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), max_size=8))
 @pytest.mark.compute_large_fixture
 def test_parse_subject_list_never_leaks(tokens: list[str]) -> None:
@@ -1831,6 +1836,7 @@ def test_parse_subject_list_never_leaks(tokens: list[str]) -> None:
         parse_subject_list(tokens, default_kind=_A_KIND)
 
 
+@settings(max_examples=300, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), min_size=1, max_size=8))
 @pytest.mark.compute_large_fixture
 def test_consume_ref_never_leaks(tokens: list[str]) -> None:
@@ -1852,6 +1858,7 @@ def _meta_value(word: str) -> tuple[str, str]:
     return "add", "x"  # Label / labels.
 
 
+@settings(max_examples=300, deadline=None)
 @given(st.sampled_from(_EDGE_KW), st.sampled_from(_COLLISION))
 def test_pre_target_equals_edge_marked_post_target(edge_kw: str, word: str) -> None:
     """Pre-target metadata == ``edge``-marked post-target, for collision words.
@@ -1870,6 +1877,7 @@ def test_pre_target_equals_edge_marked_post_target(edge_kw: str, word: str) -> N
     assert pre[0].metadata.get(key) == post[0].metadata.get(key)
 
 
+@settings(max_examples=300, deadline=None)
 @given(st.sampled_from(_EDGE_KW), st.sampled_from(_COLLISION))
 def test_bare_collision_after_ref_never_lands_on_edge(edge_kw: str, word: str) -> None:
     """A bare collision word after a ref is NEVER edge metadata (maximal munch).
