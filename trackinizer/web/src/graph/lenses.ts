@@ -1,9 +1,4 @@
-import {
-  categoryColors,
-  type LensMode,
-  type LensOverride,
-  type Palette,
-} from "./encode";
+import type { LensMode, LensOverride, Palette } from "./encode";
 import type { DrawLink, DrawNode } from "./model";
 
 /** One entry in the dynamic `Key` for the active lens. */
@@ -61,240 +56,107 @@ const EpistemicLens: GraphLens = {
   short: "Belief verdicts",
   hint: "Highlight proven, unproven, and disproven Beliefs",
   compute(nodes, _links, palette) {
-    const overrides = new Map<string, LensOverride>();
-    for (const node of nodes) {
-      if (node.kind === "Belief") {
-        if (node.judgement === "proven") {
-          overrides.set(node.id, {
-            fill: palette.support,
-            ring: palette.support,
-            alpha: 1,
-          });
-        } else if (node.judgement === "unproven") {
-          overrides.set(node.id, {
-            fill: UNPROVEN_COLOR,
-            ring: UNPROVEN_COLOR,
-            alpha: 0.95,
-          });
-        } else if (node.judgement === "disproven") {
-          overrides.set(node.id, {
-            fill: palette.against,
-            fillAlpha: 0,
-            ring: palette.against,
-            alpha: 1,
-          });
-        } else {
-          overrides.set(node.id, {
-            fill: palette.fallback,
-            ring: palette.fallback,
-            alpha: 0.2,
-          });
-        }
-      } else {
-        overrides.set(node.id, {
-          fill: palette.fallback,
-          ring: palette.fallback,
-          alpha: 0.2,
-        });
-      }
-    }
-    const keyItems: LensKeyItem[] = [
+    const other: LensOverride = {
+      fill: palette.fallback,
+      ring: palette.fallback,
+      alpha: 0.2,
+    };
+    const verdicts: readonly {
+      readonly key: string;
+      readonly label: string;
+      readonly override: LensOverride;
+    }[] = [
       {
         key: "proven",
         label: "Proven",
-        color: palette.support,
-        ring: palette.support,
+        override: { fill: palette.support, ring: palette.support, alpha: 1 },
       },
       {
         key: "unproven",
         label: "Unproven",
-        color: UNPROVEN_COLOR,
-        ring: UNPROVEN_COLOR,
+        override: { fill: UNPROVEN_COLOR, ring: UNPROVEN_COLOR, alpha: 0.95 },
       },
       {
         key: "disproven",
         label: "Disproven",
-        color: "transparent",
-        ring: palette.against,
+        override: { fill: palette.against, fillAlpha: 0, ring: palette.against, alpha: 1 },
       },
-      {
-        key: "other",
-        label: "Other / unjudged",
-        color: palette.fallback,
-        ring: palette.fallback,
-      },
+      { key: "other", label: "Other / unjudged", override: other },
     ];
+    const byJudgement = new Map(verdicts.map((v) => [v.key, v.override]));
+    const overrides = new Map<string, LensOverride>();
+    for (const node of nodes) {
+      const key = node.kind === "Belief" ? (node.judgement ?? "other") : "other";
+      overrides.set(node.id, byJudgement.get(key) ?? other);
+    }
+    const keyItems: LensKeyItem[] = verdicts.map(({ key, label, override }) => ({
+      key,
+      label,
+      color: override.fillAlpha === 0 ? "transparent" : override.fill,
+      ring: override.ring,
+    }));
     return { overrides, keyItems, crossBoundary: null, linkAlpha: null };
   },
 };
 
-const BLUE_SHADES = ["#10233b", "#1a3c66", "#255799", "#3474d4", "#4d90f0"] as const;
-const GREEN_SHADES = ["#112b20", "#245c43", "#388e65", "#5ec48e", "#c2fce0"] as const;
-
-/** Shared base for continuous single-hue spectrum lenses (`Depth` and `Recency`). */
-class SpectrumLens implements GraphLens {
-  readonly id: LensMode;
-  readonly label: string;
-  readonly short: string;
-  readonly hint: string;
-  readonly #shades: readonly string[];
-  readonly #minAlpha: number;
-  readonly #rank: (
+/** Factory for continuous single-hue spectrum lenses (`Depth` and `Recency`). */
+function spectrumLens(spec: {
+  id: LensMode;
+  label: string;
+  short: string;
+  hint: string;
+  stops: readonly [string, string];
+  minAlpha: number;
+  rank: (
     nodes: readonly DrawNode[],
     links: readonly DrawLink[],
   ) => { ratios: Map<string, number>; labels: [string, string, string] };
-
-  constructor(spec: {
-    id: LensMode;
-    label: string;
-    short: string;
-    hint: string;
-    shades: readonly string[];
-    minAlpha: number;
-    rank: (
-      nodes: readonly DrawNode[],
-      links: readonly DrawLink[],
-    ) => { ratios: Map<string, number>; labels: [string, string, string] };
-  }) {
-    this.id = spec.id;
-    this.label = spec.label;
-    this.short = spec.short;
-    this.hint = spec.hint;
-    this.#shades = spec.shades;
-    this.#minAlpha = spec.minAlpha;
-    this.#rank = spec.rank;
-  }
-
-  compute(nodes: readonly DrawNode[], links: readonly DrawLink[]): LensResult {
-    const { ratios, labels } = this.#rank(nodes, links);
-    const overrides = new Map<string, LensOverride>();
-    for (const node of nodes) {
-      const ratio = ratios.get(node.id);
-      if (ratio === undefined) {
+}): GraphLens {
+  const [dark, bright] = spec.stops;
+  return {
+    id: spec.id,
+    label: spec.label,
+    short: spec.short,
+    hint: spec.hint,
+    compute(nodes, links) {
+      const { ratios, labels } = spec.rank(nodes, links);
+      const overrides = new Map<string, LensOverride>();
+      for (const node of nodes) {
+        const ratio = ratios.get(node.id);
+        if (ratio === undefined) {
+          overrides.set(node.id, { fill: dark, ring: dark, alpha: 0.12 });
+          continue;
+        }
+        const color = lerpHex(dark, bright, ratio);
         overrides.set(node.id, {
-          fill: this.#shades[0]!,
-          ring: this.#shades[0]!,
-          alpha: 0.12,
+          fill: color,
+          ring: color,
+          alpha: spec.minAlpha + (1 - spec.minAlpha) * ratio,
         });
-        continue;
       }
-      const shade = shadeAt(this.#shades, ratio);
-      overrides.set(node.id, {
-        fill: shade,
-        ring: shade,
-        alpha: this.#minAlpha + (1 - this.#minAlpha) * ratio,
-      });
-    }
-    const linkAlpha = new Map<DrawLink, number>();
-    for (const link of links) {
-      const r = Math.max(ratios.get(link.from) ?? 0, ratios.get(link.to) ?? 0);
-      linkAlpha.set(link, 0.1 + 0.9 * r);
-    }
-    const keyItems: LensKeyItem[] = [
-      { key: "lo", label: labels[0], color: shadeAt(this.#shades, 0) },
-      { key: "mid", label: labels[1], color: shadeAt(this.#shades, 0.5) },
-      { key: "hi", label: labels[2], color: shadeAt(this.#shades, 1) },
-    ];
-    return { overrides, keyItems, crossBoundary: null, linkAlpha };
-  }
-}
-
-/** Shared base for categorical lenses (`Account`, `Owner`, `Topic / Tag`). */
-class CategoryLens implements GraphLens {
-  readonly id: LensMode;
-  readonly label: string;
-  readonly short: string;
-  readonly hint: string;
-  readonly #missingLabel: string;
-  readonly #highlightCross: boolean;
-  readonly #pick: (
-    nodes: readonly DrawNode[],
-  ) => Map<string, string>;
-
-  constructor(spec: {
-    id: LensMode;
-    label: string;
-    short: string;
-    hint: string;
-    missingLabel: string;
-    highlightCross?: boolean;
-    pick: (nodes: readonly DrawNode[]) => Map<string, string>;
-  }) {
-    this.id = spec.id;
-    this.label = spec.label;
-    this.short = spec.short;
-    this.hint = spec.hint;
-    this.#missingLabel = spec.missingLabel;
-    this.#highlightCross = spec.highlightCross ?? false;
-    this.#pick = spec.pick;
-  }
-
-  compute(
-    nodes: readonly DrawNode[],
-    links: readonly DrawLink[],
-    palette: Palette,
-  ): LensResult {
-    const valueOf = this.#pick(nodes);
-    const counts = new Map<string, number>();
-    let missing = 0;
-    for (const node of nodes) {
-      const val = valueOf.get(node.id);
-      if (val) counts.set(val, (counts.get(val) ?? 0) + 1);
-      else missing += 1;
-    }
-    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-    const wheel = categoryColors(palette);
-    const colorOf = new Map(
-      ranked.map(([name], i) => [name, wheel[i % wheel.length]!]),
-    );
-    const overrides = new Map<string, LensOverride>();
-    for (const node of nodes) {
-      const val = valueOf.get(node.id);
-      if (val) {
-        overrides.set(node.id, { fill: colorOf.get(val)!, alpha: 1 });
-      } else {
-        overrides.set(node.id, { fill: palette.fallback, alpha: 0.18 });
-      }
-    }
-    let crossBoundary: Set<DrawLink> | null = null;
-    if (this.#highlightCross) {
-      crossBoundary = new Set<DrawLink>();
+      const linkAlpha = new Map<DrawLink, number>();
       for (const link of links) {
-        const a = valueOf.get(link.from);
-        const b = valueOf.get(link.to);
-        if (a && b && a !== b) crossBoundary.add(link);
+        const r = Math.max(ratios.get(link.from) ?? 0, ratios.get(link.to) ?? 0);
+        linkAlpha.set(link, 0.1 + 0.9 * r);
       }
-    }
-    const keyItems: LensKeyItem[] = [
-      ...ranked.slice(0, 8).map(([name, count]) => ({
-        key: name,
-        label: name,
-        color: colorOf.get(name)!,
-        count,
-      })),
-      ...(missing > 0
-        ? [
-            {
-              key: "_missing",
-              label: this.#missingLabel,
-              color: palette.fallback,
-              count: missing,
-            },
-          ]
-        : []),
-    ];
-    return { overrides, keyItems, crossBoundary, linkAlpha: null };
-  }
+      const keyItems: LensKeyItem[] = [
+        { key: "lo", label: labels[0], color: dark },
+        { key: "mid", label: labels[1], color: lerpHex(dark, bright, 0.5) },
+        { key: "hi", label: labels[2], color: bright },
+      ];
+      return { overrides, keyItems, crossBoundary: null, linkAlpha };
+    },
+  };
 }
 
 const MAX_DEPTH = 9; // 10 levels: 0..9
 
-const DepthLens = new SpectrumLens({
+const DepthLens = spectrumLens({
   id: "depth",
   label: "Depth",
   short: "Hops from root",
   hint: "Brighter with distance from root",
-  shades: BLUE_SHADES,
+  stops: ["#10233b", "#4d90f0"],
   minAlpha: 0.2,
   rank(nodes, links) {
     const roots = new Set(nodes.filter((n) => n.root).map((n) => n.id));
@@ -353,12 +215,12 @@ const DepthLens = new SpectrumLens({
   },
 });
 
-const RecencyLens = new SpectrumLens({
+const RecencyLens = spectrumLens({
   id: "recency",
   label: "Recency",
   short: "Creation time",
   hint: "Earliest to latest creation time",
-  shades: GREEN_SHADES,
+  stops: ["#112b20", "#8cf0be"],
   minAlpha: 0.16,
   rank(nodes) {
     const dated = nodes
@@ -367,9 +229,7 @@ const RecencyLens = new SpectrumLens({
       .sort((a, b) => a.t - b.t);
     const ratios = new Map<string, number>();
     const denom = Math.max(1, dated.length - 1);
-    for (const [index, entry] of dated.entries()) {
-      ratios.set(entry.id, index / denom);
-    }
+    for (const [index, entry] of dated.entries()) ratios.set(entry.id, index / denom);
     return {
       ratios,
       labels: ["Oldest (dark/dim)", "Middle", "Latest (bright mint)"],
@@ -377,27 +237,53 @@ const RecencyLens = new SpectrumLens({
   },
 });
 
-function fieldPicker(pick: (node: DrawNode) => string | undefined) {
-  return (nodes: readonly DrawNode[]) => {
-    const out = new Map<string, string>();
-    for (const node of nodes) {
-      const val = pick(node);
-      if (val) out.set(node.id, val);
-    }
-    return out;
-  };
-}
-
-const AccountLens = new CategoryLens({
+const AccountLens: GraphLens = {
   id: "account",
   label: "Account",
   short: "By author",
   hint: "Color by author account & bridges",
-  missingLabel: "No account",
-  highlightCross: true,
-  pick: fieldPicker((n) => n.account),
-});
+  compute(nodes, links, palette) {
+    const counts = new Map<string, number>();
+    let missing = 0;
+    for (const node of nodes) {
+      if (node.account) counts.set(node.account, (counts.get(node.account) ?? 0) + 1);
+      else missing += 1;
+    }
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const wheel = categoryColors(palette);
+    const colorOf = new Map(ranked.map(([name], i) => [name, wheel[i % wheel.length]!]));
+    const overrides = new Map<string, LensOverride>();
+    const byId = new Map<string, string>();
+    for (const node of nodes) {
+      if (node.account) {
+        byId.set(node.id, node.account);
+        overrides.set(node.id, { fill: colorOf.get(node.account)!, alpha: 1 });
+      } else {
+        overrides.set(node.id, { fill: palette.fallback, alpha: 0.18 });
+      }
+    }
+    const crossBoundary = new Set<DrawLink>();
+    for (const link of links) {
+      const a = byId.get(link.from);
+      const b = byId.get(link.to);
+      if (a && b && a !== b) crossBoundary.add(link);
+    }
+    const keyItems: LensKeyItem[] = [
+      ...ranked.slice(0, 8).map(([name, count]) => ({
+        key: name,
+        label: name,
+        color: colorOf.get(name)!,
+        count,
+      })),
+      ...(missing > 0
+        ? [{ key: "_missing", label: "No account", color: palette.fallback, count: missing }]
+        : []),
+    ];
+    return { overrides, keyItems, crossBoundary, linkAlpha: null };
+  },
+};
 
+/** Single source of truth for all graph lenses, in menu order. */
 export const LENSES: readonly GraphLens[] = [
   KindLens,
   EpistemicLens,
@@ -419,16 +305,15 @@ export function computeLens(
   return (LENS_BY_ID.get(mode) ?? KindLens).compute(nodes, links, palette);
 }
 
-/** Continuously interpolate across hex color stops for `ratio` in `[0, 1]`. */
-function shadeAt(shades: readonly string[], ratio: number): string {
-  const clamped = Math.min(1, Math.max(0, ratio));
-  const scaled = clamped * (shades.length - 1);
-  const lo = Math.floor(scaled);
-  const hi = Math.min(shades.length - 1, lo + 1);
-  return lerpHex(shades[lo]!, shades[hi]!, scaled - lo);
+function categoryColors(palette: Palette): string[] {
+  const hues = Object.values(palette.kinds).filter(
+    (color) => color && color !== palette.fallback,
+  );
+  return hues.length > 0 ? hues : [palette.fallback];
 }
 
-function lerpHex(a: string, b: string, t: number): string {
+function lerpHex(a: string, b: string, ratio: number): string {
+  const t = Math.min(1, Math.max(0, ratio));
   const ar = Number.parseInt(a.slice(1, 3), 16);
   const ag = Number.parseInt(a.slice(3, 5), 16);
   const ab = Number.parseInt(a.slice(5, 7), 16);

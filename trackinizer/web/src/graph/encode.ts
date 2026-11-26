@@ -242,14 +242,6 @@ export function readPalette(
   };
 }
 
-/** Categorical wheel built from the active theme's kind hues. */
-export function categoryColors(palette: Palette): string[] {
-  const hues = Object.values(palette.kinds).filter(
-    (color) => color && color !== palette.fallback,
-  );
-  return hues.length > 0 ? hues : [palette.fallback];
-}
-
 const RETIRED_ALPHA = 0.25;
 /** Under the retired look's alpha, so a dimmed node never reads as retired work (the design's 0.14). */
 const DIMMED_ALPHA = 0.14;

@@ -471,15 +471,7 @@ export function Key({
           name: LENSES.find((opt) => opt.id === lensMode)?.label ?? "Lens",
           items: lensItems.map(({ key, label, color, ring, count }) => (
             <li key={key}>
-              <span className="graph-mark">
-                <span
-                  className="graph-dot"
-                  style={{
-                    background: color,
-                    ...(ring ? { boxShadow: `0 0 0 2px ${ring}` } : {}),
-                  }}
-                />
-              </span>
+              <KeyDot color={color} ring={ring} />
               {label}
               {count !== undefined ? (
                 <span className="graph-tally num">{count}</span>
@@ -500,12 +492,7 @@ export function Key({
                   title={next.title}
                   onClick={() => onHiddenKinds(next.hidden)}
                 >
-                  <span className="graph-mark">
-                    <span
-                      className="graph-dot"
-                      style={{ background: palette.kinds[kind] ?? palette.fallback }}
-                    />
-                  </span>
+                  <KeyDot color={palette.kinds[kind] ?? palette.fallback} />
                   {kindLook(kind).plural}
                   {on ? <span className="graph-tally num">{counts.get(kind)}</span> : null}
                 </button>
@@ -560,6 +547,20 @@ export function Key({
           </div>
         ))}
     </aside>
+  );
+}
+
+function KeyDot({ color, ring }: { color: string; ring?: string }) {
+  return (
+    <span className="graph-mark">
+      <span
+        className="graph-dot"
+        style={{
+          background: color,
+          ...(ring ? { boxShadow: `0 0 0 2px ${ring}` } : {}),
+        }}
+      />
+    </span>
   );
 }
 
