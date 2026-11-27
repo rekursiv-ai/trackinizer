@@ -108,14 +108,17 @@ export class GraphCamera {
     const t = this.#tween;
     if (!t) return false;
     const raw = Math.min(1, (nowMs - t.startMs) / t.durationMs);
+    if (raw >= 1) {
+      this.x = t.toX;
+      this.y = t.toY;
+      this.zoom = t.toZoom;
+      this.#tween = null;
+      return false;
+    }
     const ease = 1 - (1 - raw) ** 3;
     this.x = t.fromX + (t.toX - t.fromX) * ease;
     this.y = t.fromY + (t.toY - t.fromY) * ease;
     this.zoom = t.fromZoom + (t.toZoom - t.fromZoom) * ease;
-    if (raw >= 1) {
-      this.#tween = null;
-      return false;
-    }
     return true;
   }
 

@@ -48,76 +48,122 @@ export const webglRenderer: CreateRenderer = (host, events, covered) => {
     return forceGraphRenderer(host, events, covered);
   }
 
-  const labelCanvas = document.createElement("canvas");
-  glCanvas.style.cssText =
-    "position:absolute;inset:0;width:100%;height:100%;display:block;";
-  labelCanvas.style.cssText =
-    "position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;";
-  host.replaceChildren(glCanvas, labelCanvas);
+  let nodeProg: WebGLProgram | null = null;
+  let linkProg: WebGLProgram | null = null;
+  let arrowProg: WebGLProgram | null = null;
+  let nodeQuadBuf: WebGLBuffer | null = null;
+  let linkQuadBuf: WebGLBuffer | null = null;
+  let arrowTriBuf: WebGLBuffer | null = null;
+  let nodeInstBuf: WebGLBuffer | null = null;
+  let linkInstBuf: WebGLBuffer | null = null;
+  let nodeVao: WebGLVertexArrayObject | null = null;
+  let linkVao: WebGLVertexArrayObject | null = null;
+  let arrowVao: WebGLVertexArrayObject | null = null;
+  let worker: Worker | null = null;
 
-  const font = getComputedStyle(host).fontFamily || "sans-serif";
-  const labels = new LabelOverlay(labelCanvas, font);
-  const camera = new GraphCamera();
+  const deleteGlResources = () => {
+    if (nodeProg) gl.deleteProgram(nodeProg);
+    if (linkProg) gl.deleteProgram(linkProg);
+    if (arrowProg) gl.deleteProgram(arrowProg);
+    if (nodeQuadBuf) gl.deleteBuffer(nodeQuadBuf);
+    if (linkQuadBuf) gl.deleteBuffer(linkQuadBuf);
+    if (arrowTriBuf) gl.deleteBuffer(arrowTriBuf);
+    if (nodeInstBuf) gl.deleteBuffer(nodeInstBuf);
+    if (linkInstBuf) gl.deleteBuffer(linkInstBuf);
+    if (nodeVao) gl.deleteVertexArray(nodeVao);
+    if (linkVao) gl.deleteVertexArray(linkVao);
+    if (arrowVao) gl.deleteVertexArray(arrowVao);
+  };
 
-  const nodeProg = compileProgram(gl, NODE_VERT, NODE_FRAG);
-  const linkProg = compileProgram(gl, LINK_VERT, LINK_FRAG);
-  const arrowProg = compileProgram(gl, ARROW_VERT, ARROW_FRAG);
+  let labelCanvas: HTMLCanvasElement;
+  let labels: LabelOverlay;
+  let camera: GraphCamera;
+  let uNodeCam: WebGLUniformLocation | null;
+  let uNodeRes: WebGLUniformLocation | null;
+  let uLinkCam: WebGLUniformLocation | null;
+  let uLinkRes: WebGLUniformLocation | null;
+  let uLinkArrow: WebGLUniformLocation | null;
+  let uArrowCam: WebGLUniformLocation | null;
+  let uArrowRes: WebGLUniformLocation | null;
+  let uArrowLen: WebGLUniformLocation | null;
 
-  const nodeQuadBuf = createStaticBuffer(
-    gl,
-    new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
-  );
-  const linkQuadBuf = createStaticBuffer(
-    gl,
-    new Float32Array([0, -0.5, 1, -0.5, 0, 0.5, 0, 0.5, 1, -0.5, 1, 0.5]),
-  );
-  const arrowTriBuf = createStaticBuffer(
-    gl,
-    new Float32Array([0, 0, -1, 0.5, -1, -0.5]),
-  );
-  const nodeInstBuf = gl.createBuffer();
-  const linkInstBuf = gl.createBuffer();
-  if (!nodeInstBuf || !linkInstBuf)
-    throw new Error("Failed to create instance buffers");
+  try {
+    labelCanvas = document.createElement("canvas");
+    glCanvas.style.cssText =
+      "position:absolute;inset:0;width:100%;height:100%;display:block;";
+    labelCanvas.style.cssText =
+      "position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;";
 
-  const nodeVao = createInstancedVao(gl, nodeQuadBuf, nodeInstBuf, NODE_FLOATS, [
-    [1, 2, 0],
-    [2, 1, 2],
-    [3, 4, 3],
-    [4, 4, 7],
-    [5, 4, 11],
-    [6, 4, 15],
-    [7, 4, 19],
-  ]);
-  const linkVao = createInstancedVao(gl, linkQuadBuf, linkInstBuf, LINK_STRIDE_FLOATS, [
-    [1, 2, 0],
-    [2, 2, 2],
-    [3, 1, 4],
-    [4, 1, 5],
-    [5, 1, 6],
-    [6, 4, 7],
-  ]);
-  const arrowVao = createInstancedVao(
-    gl,
-    arrowTriBuf,
-    linkInstBuf,
-    LINK_STRIDE_FLOATS,
-    [
+    const font = getComputedStyle(host).fontFamily || "sans-serif";
+    labels = new LabelOverlay(labelCanvas, font);
+    camera = new GraphCamera();
+
+    nodeProg = compileProgram(gl, NODE_VERT, NODE_FRAG);
+    linkProg = compileProgram(gl, LINK_VERT, LINK_FRAG);
+    arrowProg = compileProgram(gl, ARROW_VERT, ARROW_FRAG);
+
+    nodeQuadBuf = createStaticBuffer(
+      gl,
+      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+    );
+    linkQuadBuf = createStaticBuffer(
+      gl,
+      new Float32Array([0, -0.5, 1, -0.5, 0, 0.5, 0, 0.5, 1, -0.5, 1, 0.5]),
+    );
+    arrowTriBuf = createStaticBuffer(
+      gl,
+      new Float32Array([0, 0, -1, 0.5, -1, -0.5]),
+    );
+    nodeInstBuf = gl.createBuffer();
+    linkInstBuf = gl.createBuffer();
+    if (!nodeInstBuf || !linkInstBuf) {
+      throw new Error("Failed to create instance buffers");
+    }
+
+    nodeVao = createInstancedVao(gl, nodeQuadBuf, nodeInstBuf, NODE_FLOATS, [
+      [1, 2, 0],
+      [2, 1, 2],
+      [3, 4, 3],
+      [4, 4, 7],
+      [5, 4, 11],
+      [6, 4, 15],
+      [7, 4, 19],
+    ]);
+    linkVao = createInstancedVao(gl, linkQuadBuf, linkInstBuf, LINK_STRIDE_FLOATS, [
+      [1, 2, 0],
+      [2, 2, 2],
+      [3, 1, 4],
+      [4, 1, 5],
+      [5, 1, 6],
+      [6, 4, 7],
+    ]);
+    arrowVao = createInstancedVao(gl, arrowTriBuf, linkInstBuf, LINK_STRIDE_FLOATS, [
       [1, 2, 0],
       [2, 2, 2],
       [3, 1, 4],
       [4, 4, 7],
-    ],
-  );
+    ]);
 
-  const uNodeCam = gl.getUniformLocation(nodeProg, "u_cam");
-  const uNodeRes = gl.getUniformLocation(nodeProg, "u_res");
-  const uLinkCam = gl.getUniformLocation(linkProg, "u_cam");
-  const uLinkRes = gl.getUniformLocation(linkProg, "u_res");
-  const uLinkArrow = gl.getUniformLocation(linkProg, "u_arrowLen");
-  const uArrowCam = gl.getUniformLocation(arrowProg, "u_cam");
-  const uArrowRes = gl.getUniformLocation(arrowProg, "u_res");
-  const uArrowLen = gl.getUniformLocation(arrowProg, "u_arrowLen");
+    uNodeCam = gl.getUniformLocation(nodeProg, "u_cam");
+    uNodeRes = gl.getUniformLocation(nodeProg, "u_res");
+    uLinkCam = gl.getUniformLocation(linkProg, "u_cam");
+    uLinkRes = gl.getUniformLocation(linkProg, "u_res");
+    uLinkArrow = gl.getUniformLocation(linkProg, "u_arrowLen");
+    uArrowCam = gl.getUniformLocation(arrowProg, "u_cam");
+    uArrowRes = gl.getUniformLocation(arrowProg, "u_res");
+    uArrowLen = gl.getUniformLocation(arrowProg, "u_arrowLen");
+
+    worker = new Worker(new URL("./layout.worker.ts", import.meta.url), {
+      type: "module",
+    });
+  } catch {
+    worker?.terminate();
+    deleteGlResources();
+    host.replaceChildren();
+    return forceGraphRenderer(host, events, covered);
+  }
+
+  host.replaceChildren(glCanvas, labelCanvas);
 
   let nodes: DrawNode[] = [];
   let links: DrawLink[] = [];
@@ -314,9 +360,6 @@ export const webglRenderer: CreateRenderer = (host, events, covered) => {
     if (!rafId && !disposed) rafId = requestAnimationFrame(renderFrame);
   };
 
-  const worker = new Worker(new URL("./layout.worker.ts", import.meta.url), {
-    type: "module",
-  });
   worker.onmessage = (event: MessageEvent<WorkerOut>) => {
     if (disposed || event.data.gen !== workerGen) return;
     const { x, y, settled } = event.data;
@@ -503,17 +546,7 @@ export const webglRenderer: CreateRenderer = (host, events, covered) => {
       worker.terminate();
       resize.disconnect();
       unbindPointer();
-      gl.deleteProgram(nodeProg);
-      gl.deleteProgram(linkProg);
-      gl.deleteProgram(arrowProg);
-      gl.deleteBuffer(nodeQuadBuf);
-      gl.deleteBuffer(linkQuadBuf);
-      gl.deleteBuffer(arrowTriBuf);
-      gl.deleteBuffer(nodeInstBuf);
-      gl.deleteBuffer(linkInstBuf);
-      gl.deleteVertexArray(nodeVao);
-      gl.deleteVertexArray(linkVao);
-      gl.deleteVertexArray(arrowVao);
+      deleteGlResources();
       host.replaceChildren();
     },
   };
